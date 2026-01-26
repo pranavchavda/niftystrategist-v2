@@ -3,9 +3,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import {
   ChartBarIcon,
   CpuChipIcon,
-  TagIcon,
   Cog6ToothIcon,
-  DocumentTextIcon,
   QuestionMarkCircleIcon,
   ArrowRightStartOnRectangleIcon,
   BookOpenIcon,
@@ -13,18 +11,21 @@ import {
   PhotoIcon,
   PaperClipIcon,
   XMarkIcon,
+  ArrowTrendingUpIcon,
+  WalletIcon,
 } from '@heroicons/react/24/outline';
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
 import { decodeJWT } from '../utils/route-permissions';
 
+// TODO: Replace with trading logo
 const logo = new URL('../assets/eblogo-notext.webp', import.meta.url).href;
 
 const sections = [
   {
     title: 'Dashboard',
     description:
-      'Real-time sales analytics, Google Ads performance and other metrics.',
+      'Portfolio overview, positions, and P&L tracking.',
     icon: ChartBarIcon,
     href: '/dashboard',
     permission: 'dashboard.access',
@@ -32,7 +33,7 @@ const sections = [
   {
     title: 'Tasks',
     description:
-      'AI-powered task management with Google Tasks integration.',
+      'AI-powered task management for trading activities.',
     icon: CheckBadgeIcon,
     href: '/tasks',
     permission: 'notes.access',
@@ -40,7 +41,7 @@ const sections = [
   {
     title: 'Memory',
     description:
-      'Product specifications, user preferences, and operational knowledge.',
+      'Trading preferences, risk tolerance, and learned patterns.',
     icon: CpuChipIcon,
     href: '/memory',
     permission: 'memory.access',
@@ -48,31 +49,15 @@ const sections = [
   {
     title: 'Notes',
     description:
-      'Personal knowledge base with bidirectional links and AI search.',
+      'Personal knowledge base for trading research and analysis.',
     icon: BookOpenIcon,
     href: '/notes',
     permission: 'notes.access',
   },
   {
-    title: 'Price Monitor',
-    description:
-      'Automatic MAP compliance monitoring and product matching.',
-    icon: TagIcon,
-    href: '/price-monitor',
-    permission: 'price_monitor.access',
-  },
-  {
-    title: 'CMS',
-    description:
-      'Edit landing pages, hero banners, and metaobjects.',
-    icon: DocumentTextIcon,
-    href: '/cms',
-    permission: 'cms.access',
-  },
-  {
     title: 'Settings',
     description:
-      'Customize theme, AI models, and preferences.',
+      'Customize trading preferences and AI models.',
     icon: Cog6ToothIcon,
     href: '/settings',
     permission: 'settings.access',
@@ -82,12 +67,6 @@ const sections = [
 interface LandingStats {
   toolsCount: number;
   docsCount: number;
-  mapCompliance: {
-    rate: number | null;
-    totalProducts: number;
-    violations: number;
-    hasData: boolean;
-  };
 }
 
 export default function Index() {
@@ -95,14 +74,8 @@ export default function Index() {
   const [mounted, setMounted] = useState(false);
   const [userName, setUserName] = useState('User');
   const [stats, setStats] = useState<LandingStats>({
-    toolsCount: 78,
-    docsCount: 42,
-    mapCompliance: {
-      rate: null,
-      totalProducts: 0,
-      violations: 0,
-      hasData: false,
-    },
+    toolsCount: 17,
+    docsCount: 10,
   });
   const [initialMessage, setInitialMessage] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
@@ -128,7 +101,7 @@ export default function Index() {
     }
 
     return payload?.permissions || [];
-  }, [userName]); // Added userName to deps to ensure update if needed, though simpler valid here
+  }, [userName]);
 
   // Greeting logic
   const greeting = useMemo(() => {
@@ -185,10 +158,10 @@ export default function Index() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 font-sans text-zinc-900 dark:text-zinc-100 selection:bg-amber-500/30">
+    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 font-sans text-zinc-900 dark:text-zinc-100 selection:bg-blue-500/30">
       {/* Background Gradients - Subtle */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-amber-500/5 rounded-full blur-[100px] -translate-y-1/2 translate-x-1/2" />
+        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-blue-500/5 rounded-full blur-[100px] -translate-y-1/2 translate-x-1/2" />
         <div className="absolute bottom-0 left-0 w-[500px] h-[500px] bg-zinc-500/5 rounded-full blur-[100px] translate-y-1/2 -translate-x-1/2" />
       </div>
 
@@ -196,8 +169,8 @@ export default function Index() {
       <header className="sticky top-0 z-50 w-full backdrop-blur-xl bg-white/70 dark:bg-zinc-900/70 border-b border-zinc-200/50 dark:border-zinc-800/50 transition-all">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img src={logo} alt="EspressoBot" className="mt-2 py-2 h-14 w-14 object-contain rounded-lg " />
-            <span className="text-lg tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-zinc-900 to-zinc-400  font-bold dark:from-zinc-100 dark:to-zinc-600 ">EspressoBot</span>
+            <ArrowTrendingUpIcon className="h-8 w-8 text-blue-600 dark:text-blue-400" />
+            <span className="text-lg tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-zinc-900 to-zinc-400 font-bold dark:from-zinc-100 dark:to-zinc-600">Nifty Strategist</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -246,7 +219,7 @@ export default function Index() {
                   {greeting}, {userName}.
                 </h1>
                 <p className="mt-2 text-lg text-zinc-500 dark:text-zinc-400">
-                  What do you want to get done today?
+                  What would you like to analyze today?
                 </p>
               </div>
             </div>
@@ -307,7 +280,7 @@ export default function Index() {
                     setAttachedImages(prev => [...prev, ...images]);
                     setAttachedFiles(prev => [...prev, ...docs]);
                   }}
-                  placeholder="Delegate to EspressoBot..."
+                  placeholder="Analyze RELIANCE, check my portfolio, find swing trades..."
                   authToken={localStorage.getItem('auth_token')}
                 />
               </div>
@@ -317,7 +290,7 @@ export default function Index() {
             {visibleSections.length > 0 && (
               <div className="pt-4">
                 <h2 className="text-sm font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-5">Applications</h2>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                   {visibleSections.map((section) => (
                     <button
                       key={section.href}
@@ -327,7 +300,7 @@ export default function Index() {
                       <div className="mb-3 p-2 bg-zinc-50 dark:bg-zinc-800 rounded-lg text-zinc-500 dark:text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 group-hover:bg-zinc-100 dark:group-hover:bg-zinc-700/50 transition-colors">
                         <section.icon className="w-6 h-6" />
                       </div>
-                      <h3 className="font-semibold text-zinc-900 dark:text-zinc-100 mb-1 group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors">
+                      <h3 className="font-semibold text-zinc-900 dark:text-zinc-100 mb-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
                         {section.title}
                       </h3>
                       <p className="text-xs text-zinc-500 dark:text-zinc-500 line-clamp-2">
@@ -338,21 +311,34 @@ export default function Index() {
                 </div>
               </div>
             )}
+
+            {/* Paper Trading Notice */}
+            <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800/50">
+              <div className="flex items-start gap-3">
+                <WalletIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Paper Trading Mode</p>
+                  <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">
+                    You're using simulated trading with virtual funds. Connect Upstox in Settings for live trading.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         ) : (
           <div className=" md:py-10 flex flex-col items-center justify-center text-center">
             <div className="w-full h-full md:pt-20 md:pb-10 my-8 bg-gradient-to-br from-zinc-900 to-zinc-700 dark:from-white dark:to-zinc-300 rounded-2xl flex justify-center shadow-2xl transform rotate-3">
-              <img src={logo} alt="Logo" className="w-12 h-12 object-contain brightness-0 invert dark:brightness-100 dark:invert-0" />
+              <ArrowTrendingUpIcon className="w-12 h-12 text-white dark:text-zinc-900" />
             </div>
-            <h1 className="text-4xl font-bold text-zinc-900 dark:text-white mb-4">Welcome to EspressoBot</h1>
+            <h1 className="text-4xl font-bold text-zinc-900 dark:text-white mb-4">Welcome to Nifty Strategist</h1>
             <p className="text-xl text-zinc-600 dark:text-zinc-400 max-w-md mb-10 leading-relaxed">
-              The autonomous AI operational manager for iDrinkCoffee.com.
+              AI-powered trading assistant for Indian stock markets (NSE/BSE).
             </p>
             <button
               onClick={handleLogin}
               className="px-8 py-3 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-full font-semibold text-lg shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all"
             >
-              Login to Dashboard
+              Get Started
             </button>
           </div>
         )}
@@ -361,7 +347,7 @@ export default function Index() {
       {/* Footer */}
       <footer className="mt-auto py-8 text-center bg-white/50 dark:bg-zinc-900/50 border-t border-zinc-200/50 dark:border-zinc-800/50">
         <p className="text-xs text-zinc-400 dark:text-zinc-600">
-          EspressoBot v0.7 • Created for iDrinkCoffee.com
+          Nifty Strategist v2.0 - AI Trading Assistant
         </p>
       </footer>
     </div>
@@ -371,7 +357,7 @@ export default function Index() {
 // React router Meta function
 export function meta() {
   return [
-    { title: "EspressoBot Home" },
-    { name: "description", content: "EspressoBot - AI Operational Manager" }
+    { title: "Nifty Strategist - AI Trading Assistant" },
+    { name: "description", content: "AI-powered trading assistant for Indian stock markets" }
   ];
 }

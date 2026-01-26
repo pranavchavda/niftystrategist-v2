@@ -1,5 +1,6 @@
-import { BuildingStorefrontIcon, ShieldCheckIcon, SparklesIcon } from "@heroicons/react/24/outline";
+import { ShieldCheckIcon, ArrowTrendingUpIcon, ChartBarIcon } from "@heroicons/react/24/outline";
 
+// TODO: Replace with trading logo
 const logo = new URL("../assets/eblogo.webp", import.meta.url).href;
 
 // For now, we'll use client-side auth check
@@ -62,26 +63,21 @@ export default function Login() {
 
       <div className="relative z-10 w-full max-w-md px-4 py-12">
         <div className="mb-6 text-center text-xs font-semibold uppercase tracking-[0.45em] text-zinc-500 dark:text-zinc-500">
-          iDrinkCoffee.com Internal
+          AI Trading Assistant
         </div>
 
         <div className="rounded-3xl border border-white/60 bg-white/80 p-8 shadow-2xl shadow-blue-500/10 backdrop-blur-xl dark:border-white/10 dark:bg-white/5 dark:shadow-black/40">
           <div className="flex justify-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/70 bg-white/90 shadow-md dark:border-white/15 dark:bg-white/10">
-              <img
-                src={logo}
-                alt="EspressoBot"
-                className="h-12 w-12 object-contain"
-                draggable="false"
-              />
+              <ArrowTrendingUpIcon className="h-10 w-10 text-blue-600 dark:text-blue-400" />
             </div>
           </div>
 
           <h1 className="mt-6 text-center text-3xl font-bold tracking-tight text-zinc-900 dark:text-white">
-            Sign into EspressoBot
+            Sign into Nifty Strategist
           </h1>
           <p className="mt-3 text-center text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Authenticate to orchestrate EspressoBot workflows
+            AI-powered trading assistant for Indian stock markets
           </p>
 
           <div className="mt-8 space-y-3">
@@ -111,14 +107,9 @@ export default function Login() {
                 Continue with Google
               </span>
             </button>
-
-            <div className="flex items-center justify-center gap-2 rounded-2xl border border-zinc-200/70 bg-white/80 px-4 py-3 text-xs font-medium uppercase tracking-[0.3em] text-zinc-500 backdrop-blur-sm dark:border-white/10 dark:bg-white/5 dark:text-zinc-400">
-              <ShieldCheckIcon className="h-4 w-4" />
-              <span>SSO restricted to @idrinkcoffee.com</span>
-            </div>
           </div>
 
-          
+
 
           {isDevMode && (
             <div className="mt-6 space-y-4">
@@ -141,7 +132,7 @@ export default function Login() {
           )}
 
           <p className="mt-10 text-center text-xs text-zinc-500 dark:text-zinc-400">
-            Need access? Email <span className="font-medium text-zinc-700 dark:text-zinc-200">pranav@idrinkcoffee.com</span> or message Pranav in Flock to activate your account after you login via Google.
+            Paper trading mode enabled by default. Connect Upstox in Settings for live trading.
           </p>
         </div>
       </div>

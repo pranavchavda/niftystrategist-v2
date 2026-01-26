@@ -6,6 +6,7 @@ declare module "react-router" {
   interface Register {
     pages: Pages
     routeFiles: RouteFiles
+    routeModules: RouteModules
   }
 }
 
@@ -30,12 +31,6 @@ type Pages = {
     };
   };
   "/dashboard": {
-    params: {};
-  };
-  "/bfcm": {
-    params: {};
-  };
-  "/boxing-week": {
     params: {};
   };
   "/memory": {
@@ -67,26 +62,6 @@ type Pages = {
   "/user/profile": {
     params: {};
   };
-  "/price-monitor/*": {
-    params: {
-      "*": string;
-    };
-  };
-  "/inventory/*": {
-    params: {
-      "*": string;
-    };
-  };
-  "/cms/*": {
-    params: {
-      "*": string;
-    };
-  };
-  "/flock/*": {
-    params: {
-      "*": string;
-    };
-  };
   "/admin/docs": {
     params: {};
   };
@@ -101,7 +76,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/chat/:threadId" | "/dashboard" | "/bfcm" | "/boxing-week" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/price-monitor/*" | "/inventory/*" | "/cms/*" | "/flock/*" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -121,7 +96,7 @@ type RouteFiles = {
   };
   "./routes/_auth.tsx": {
     id: "routes/_auth";
-    page: "/chat/:threadId" | "/dashboard" | "/bfcm" | "/boxing-week" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/price-monitor/*" | "/inventory/*" | "/cms/*" | "/flock/*" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/chat.$threadId.tsx": {
     id: "routes/chat.$threadId";
@@ -130,14 +105,6 @@ type RouteFiles = {
   "./routes/dashboard.tsx": {
     id: "routes/dashboard";
     page: "/dashboard";
-  };
-  "./routes/bfcm.tsx": {
-    id: "routes/bfcm";
-    page: "/bfcm";
-  };
-  "./routes/boxing-week.tsx": {
-    id: "routes/boxing-week";
-    page: "/boxing-week";
   };
   "./routes/memory.tsx": {
     id: "routes/memory";
@@ -175,22 +142,6 @@ type RouteFiles = {
     id: "routes/user.profile";
     page: "/user/profile";
   };
-  "./routes/price-monitor.tsx": {
-    id: "routes/price-monitor";
-    page: "/price-monitor/*";
-  };
-  "./routes/inventory.tsx": {
-    id: "routes/inventory";
-    page: "/inventory/*";
-  };
-  "./routes/cms.tsx": {
-    id: "routes/cms";
-    page: "/cms/*";
-  };
-  "./routes/flock.tsx": {
-    id: "routes/flock";
-    page: "/flock/*";
-  };
   "./routes/admin.docs.tsx": {
     id: "routes/admin.docs";
     page: "/admin/docs";
@@ -203,4 +154,27 @@ type RouteFiles = {
     id: "routes/admin.models";
     page: "/admin/models";
   };
+};
+
+type RouteModules = {
+  "root": typeof import("./app/root.tsx");
+  "routes/_index": typeof import("./app/./routes/_index.tsx");
+  "routes/login": typeof import("./app/./routes/login.tsx");
+  "routes/help": typeof import("./app/./routes/help.tsx");
+  "routes/public.notes.$publicId": typeof import("./app/./routes/public.notes.$publicId.tsx");
+  "routes/_auth": typeof import("./app/./routes/_auth.tsx");
+  "routes/chat.$threadId": typeof import("./app/./routes/chat.$threadId.tsx");
+  "routes/dashboard": typeof import("./app/./routes/dashboard.tsx");
+  "routes/memory": typeof import("./app/./routes/memory.tsx");
+  "routes/notes": typeof import("./app/./routes/notes.tsx");
+  "routes/notes.$noteId": typeof import("./app/./routes/notes.$noteId.tsx");
+  "routes/tasks": typeof import("./app/./routes/tasks.tsx");
+  "routes/settings": typeof import("./app/./routes/settings.tsx");
+  "routes/settings.mcp": typeof import("./app/./routes/settings.mcp.tsx");
+  "routes/automations": typeof import("./app/./routes/automations.tsx");
+  "routes/user": typeof import("./app/./routes/user.tsx");
+  "routes/user.profile": typeof import("./app/./routes/user.profile.tsx");
+  "routes/admin.docs": typeof import("./app/./routes/admin.docs.tsx");
+  "routes/admin.users": typeof import("./app/./routes/admin.users.tsx");
+  "routes/admin.models": typeof import("./app/./routes/admin.models.tsx");
 };

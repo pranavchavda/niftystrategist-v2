@@ -1,6 +1,5 @@
 """
-FastAPI Main Application for EspressoBot with Pydantic AI
-Enhanced to support frontend integration
+FastAPI Main Application for Nifty Strategist v2 - AI Trading Agent
 """
 
 import os
@@ -25,29 +24,23 @@ from dotenv import load_dotenv
 
 # Import our agents and models
 from agents.orchestrator import OrchestratorAgent, OrchestratorDeps
-from agents.marketing_agent import MarketingAgent
-from agents.google_workspace_agent import GoogleWorkspaceAgent, GoogleWorkspaceDeps
 from agents.web_search_agent import WebSearchAgent, WebSearchDeps
-from agents.shopify_mcp_user_agent import ShopifyMCPUserAgent
 from agents.vision_agent import vision_agent
-from agents.price_monitor_agent import PriceMonitorAgent
-from agents.graphics_designer_agent import GraphicsDesignerAgent
 from models.state import ConversationState, MessageRole
 from pydantic_ai.messages import BinaryContent
 from config.models import is_vision_capable
 from auth import (
     User, TokenData,
     create_access_token, get_current_user, get_current_user_optional,
-    GoogleOAuthMock, requires_permission
+    requires_permission, GoogleOAuthMock
 )
-from google_auth import GoogleAuth
 # Database imports
 from database import DatabaseManager, Conversation, Message, MemoryOps
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 # API routers
-from api import dashboard, price_monitor, stats, bfcm
+from api import dashboard, stats
 
 
 # Helper to process messages with vision capability detection
@@ -469,13 +462,8 @@ class ConversationData(BaseModel):
 # Global agents (initialized on startup)
 orchestrator: Optional[OrchestratorAgent] = None  # Default orchestrator
 orchestrator_cache: Dict[str, OrchestratorAgent] = {}  # Cache orchestrators by model ID
-marketing_agent: Optional[MarketingAgent] = None
-google_workspace_agent: Optional[GoogleWorkspaceAgent] = None
 web_search_agent: Optional[WebSearchAgent] = None
-shopify_mcp_user_agent: Optional[ShopifyMCPUserAgent] = None
-vision_agent: Optional[Any] = None  # Vision agent (imported as function)
-price_monitor_agent: Optional[PriceMonitorAgent] = None
-graphics_designer_agent: Optional[Any] = None  # Graphics designer agent
+vision_agent_instance: Optional[Any] = None  # Vision agent (imported as function)
 
 # In-memory storage (replace with database in production)
 conversation_states: Dict[str, ConversationState] = {}
@@ -501,7 +489,7 @@ async def get_orchestrator_for_model(model_id: str, user_id: Optional[int] = Non
     from agents.vision_agent import vision_agent as va
     from database.models import AIModel
     from sqlalchemy import select
-    global orchestrator_cache, marketing_agent, google_workspace_agent, web_search_agent, shopify_mcp_user_agent, price_monitor_agent, graphics_designer_agent
+    global orchestrator_cache, web_search_agent, vision_agent_instance
 
     # Check model reliability for function calling
     from utils.function_call_validator import get_model_reliability
@@ -559,13 +547,8 @@ async def get_orchestrator_for_model(model_id: str, user_id: Optional[int] = Non
                     )
 
                 # Register domain-specific agents
-                new_orchestrator.register_agent("marketing", marketing_agent)
-                new_orchestrator.register_agent("google_workspace", google_workspace_agent)
                 new_orchestrator.register_agent("web_search", web_search_agent)
-                new_orchestrator.register_agent("shopify_mcp_user", shopify_mcp_user_agent)
                 new_orchestrator.register_agent("vision", va)
-                new_orchestrator.register_agent("price_monitor", price_monitor_agent)
-                new_orchestrator.register_agent("graphics_designer", graphics_designer_agent)
 
                 # Return user-specific orchestrator (NOT cached)
                 return new_orchestrator
@@ -601,13 +584,8 @@ async def get_orchestrator_for_model(model_id: str, user_id: Optional[int] = Non
         )
 
     # Register domain-specific agents (same for all orchestrators)
-    new_orchestrator.register_agent("marketing", marketing_agent)
-    new_orchestrator.register_agent("google_workspace", google_workspace_agent)
     new_orchestrator.register_agent("web_search", web_search_agent)
-    new_orchestrator.register_agent("shopify_mcp_user", shopify_mcp_user_agent)
     new_orchestrator.register_agent("vision", va)  # Use locally imported vision_agent
-    new_orchestrator.register_agent("price_monitor", price_monitor_agent)
-    new_orchestrator.register_agent("graphics_designer", graphics_designer_agent)
 
     # Cache for future use
     orchestrator_cache[model_id] = new_orchestrator
@@ -622,7 +600,7 @@ async def lifespan(app: FastAPI):
     Initializes agents and database on startup and cleans up on shutdown.
     Also runs the MCP server's lifespan for proper integration.
     """
-    global orchestrator, orchestrator_cache, marketing_agent, google_workspace_agent, web_search_agent, shopify_mcp_user_agent, vision_agent, price_monitor_agent, graphics_designer_agent
+    global orchestrator, orchestrator_cache, web_search_agent, vision_agent_instance
 
     logger.info("Initializing database...")
 
@@ -633,14 +611,12 @@ async def lifespan(app: FastAPI):
     except asyncio.TimeoutError:
         logger.error("Database initialization timed out after 45 seconds (WSL high-latency network)")
         logger.info("Continuing without database - some features may be limited")
-        logger.info("💡 Consider using a local PostgreSQL database for WSL development")
+        logger.info("Consider using a local PostgreSQL database for WSL development")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         # Continue anyway - we can work without database
 
-    # Database is already initialized above
-
-    logger.info("Initializing EspressoBot agents...")
+    logger.info("Initializing Nifty Strategist agents...")
 
     try:
         # Ensure environment variables are loaded for child processes
@@ -654,47 +630,23 @@ async def lifespan(app: FastAPI):
         if not has_openrouter and not has_openai:
             logger.error("WARNING: No API keys found in environment! Check .env file")
 
-        # Initialize domain-specific agents (these don't change per user)
-        marketing_agent = MarketingAgent()
-        google_workspace_agent = GoogleWorkspaceAgent()
+        # Initialize domain-specific agents
         web_search_agent = WebSearchAgent()
-        shopify_mcp_user_agent = ShopifyMCPUserAgent()
-        price_monitor_agent = PriceMonitorAgent()
-        graphics_designer_agent = GraphicsDesignerAgent()
+        from agents.vision_agent import vision_agent as va
+        vision_agent_instance = va
 
-        # Initialize default orchestrator (Claude Haiku 4.5)
-        # User-specific orchestrators will be created on demand
+        # Initialize default orchestrator
         from config.models import DEFAULT_MODEL_ID
         orchestrator = OrchestratorAgent(model_id=DEFAULT_MODEL_ID)
 
         # Register domain-specific agents with orchestrator
-        orchestrator.register_agent("marketing", marketing_agent)
-        orchestrator.register_agent("google_workspace", google_workspace_agent)
         orchestrator.register_agent("web_search", web_search_agent)
-        orchestrator.register_agent("shopify_mcp_user", shopify_mcp_user_agent)
-        orchestrator.register_agent("vision", vision_agent)
-        orchestrator.register_agent("price_monitor", price_monitor_agent)
-        orchestrator.register_agent("graphics_designer", graphics_designer_agent)
+        orchestrator.register_agent("vision", vision_agent_instance)
 
         # Cache the default orchestrator
         orchestrator_cache[DEFAULT_MODEL_ID] = orchestrator
 
         logger.info("All agents initialized successfully")
-
-        # Check and update Shopify documentation on startup
-        # logger.info("Checking for Shopify documentation updates...")
-        # try:
-        #     from services.doc_updater import check_and_update_docs
-        #     update_result = await check_and_update_docs(force=False)
-        #     if update_result["updated"]:
-        #         logger.info(f"📚 {update_result['message']}")
-        #     elif update_result["checked"]:
-        #         logger.info(f"✅ {update_result['message']}")
-        #     else:
-        #         logger.info(f"ℹ️  {update_result['message']}")
-        # except Exception as e:
-        #     logger.warning(f"Failed to check/update documentation: {e}")
-        #     logger.warning("Application will continue without local Shopify docs")
 
     except Exception as e:
         logger.error(f"Failed to initialize agents: {e}")
@@ -767,8 +719,8 @@ if logfire_enabled:
     instrument_app(app)
 
 # Import and configure conversation router with database
-from api import conversations, dashboard, price_monitor, memories, tools, runs
-from routes import admin_docs, uploads, scratchpad, cms, admin, auth_routes, flock, hitl, voice, mcp_servers, notes, mcp_notes, google_tasks, workflows, inventory_prediction
+from api import conversations, dashboard, memories, tools, runs
+from routes import admin_docs, uploads, scratchpad, cms, admin, auth_routes, hitl, voice, mcp_servers, notes, mcp_notes, workflows
 # Set the database manager in the conversations, memories, runs, and auth_routes modules
 conversations._db_manager = db_manager
 memories._db_manager = db_manager
@@ -780,18 +732,8 @@ app.include_router(conversations.router)
 app.include_router(runs.router)
 # Include memories router
 app.include_router(memories.router)
-# Include dashboard and price monitor routers
-# API routers
-from api import dashboard, price_monitor, stats, bfcm, boxing_week
-
-# ... (rest of imports)
-
-# Include dashboard and price monitor routers
+# Include dashboard router
 app.include_router(dashboard.router, prefix="/api/dashboard")
-app.include_router(bfcm.router, prefix="/api")  # BFCM tracker dashboard
-app.include_router(boxing_week.router, prefix="/api")  # Boxing Week tracker dashboard
-app.include_router(price_monitor.router)
-app.include_router(price_monitor.shopify_sync_safe_router)
 # Include admin docs router
 app.include_router(admin_docs.router)
 # Include uploads router
@@ -806,8 +748,6 @@ app.include_router(cms.router)
 app.include_router(admin.router)
 # Include Auth routes (user info)
 app.include_router(auth_routes.router)
-# Include Flock integration router
-app.include_router(flock.router)
 # Include HITL (Human-in-the-Loop) router
 app.include_router(hitl.router)
 # Include Voice I/O router
@@ -818,12 +758,8 @@ app.include_router(mcp_servers.router)
 app.include_router(tools.router)
 # Include Notes router (Second Brain)
 app.include_router(notes.router)
-# Include Google Tasks router (AI-enhanced task management)
-app.include_router(google_tasks.router)
 # Include Workflows router (automation workflows)
 app.include_router(workflows.router)
-# Include Inventory Prediction router (Prophet-based forecasting)
-app.include_router(inventory_prediction.router)
 
 # Mount Notes MCP Server (as ASGI app with proper lifespan integration)
 try:
@@ -926,16 +862,14 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "architecture": "documentation-driven",
+        "architecture": "trading-agent",
         "agents": {
             "orchestrator": orchestrator is not None,
-            "marketing": marketing_agent is not None,
-            "google_workspace": google_workspace_agent is not None,
             "web_search": web_search_agent is not None,
-            "vision": vision_agent is not None
+            "vision": vision_agent_instance is not None
         },
         "registered_agents": list(orchestrator.specialized_agents.keys()) if orchestrator else [],
-        "note": "Shopify operations use doc-driven approach (read_docs + spawn_specialist + execute_bash)"
+        "note": "Nifty Strategist v2 - AI Trading Agent for Indian Stock Market"
     }
 
 
@@ -2223,32 +2157,27 @@ async def agent_reject(request: Request):
 async def agent_status():
     """Get status of all agents"""
     return {
-        "architecture": "documentation-driven (2025-10-06)",
+        "architecture": "trading-agent",
         "agents": {
             "orchestrator": {
                 "initialized": orchestrator is not None,
-                "model": "claude-haiku-4-5-20251001",
+                "model": "deepseek/deepseek-chat",
                 "registered_agents": list(orchestrator.specialized_agents.keys()) if orchestrator else []
-            },
-            "google_workspace": {
-                "initialized": google_workspace_agent is not None,
-                "type": "domain-specific (OAuth)"
             },
             "web_search": {
                 "initialized": web_search_agent is not None,
                 "type": "domain-specific (Perplexity API)"
             },
             "vision": {
-                "initialized": vision_agent is not None,
-                "type": "domain-specific (multimodal)",
-                "model": "z-ai/glm-4.6v"
+                "initialized": vision_agent_instance is not None,
+                "type": "domain-specific (multimodal)"
             }
         },
         "tools": {
-            "core": ["read_docs", "spawn_specialist", "execute_bash"],
-            "domain_agents": ["google_workspace", "web_search", "vision"]
+            "trading": ["get_quote", "analyze_symbol", "get_portfolio", "place_order", "watchlist"],
+            "domain_agents": ["web_search", "vision"]
         },
-        "note": "Shopify operations (products, orders, analytics) replaced with doc-driven approach"
+        "note": "Nifty Strategist v2 - AI Trading Agent with HITL approval for trades"
     }
 
 

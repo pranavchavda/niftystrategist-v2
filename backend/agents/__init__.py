@@ -1,19 +1,19 @@
 """
-EspressoBot Agents Module
+Nifty Strategist v2 Agents Module
 
 This module contains all specialized agents built with Pydantic AI.
 
-Architecture (2025-10-06):
-- Documentation-driven approach for Shopify operations
-- Only domain-specific agents (google_workspace, web_search)
-- Generic doc_specialist spawned on-demand
+Architecture:
+- Trading orchestrator for market analysis and trade recommendations
+- Web search for market news
+- Vision for chart analysis
+- Memory extraction for personalization
 """
 
 from .base_agent import IntelligentBaseAgent, AgentConfig
 from .orchestrator import OrchestratorAgent, OrchestratorDeps
-from .doc_specialist import GenericDocSpecialist, SpecialistDeps, create_specialist
-from .google_workspace_agent import GoogleWorkspaceAgent, GoogleWorkspaceDeps
 from .web_search_agent import WebSearchAgent, WebSearchDeps
+from .vision_agent import vision_agent
 from .memory_extractor import MemoryExtractor, get_memory_extractor
 
 __all__ = [
@@ -21,13 +21,9 @@ __all__ = [
     "AgentConfig",
     "OrchestratorAgent",
     "OrchestratorDeps",
-    "GenericDocSpecialist",
-    "SpecialistDeps",
-    "create_specialist",
-    "GoogleWorkspaceAgent",
-    "GoogleWorkspaceDeps",
     "WebSearchAgent",
     "WebSearchDeps",
+    "vision_agent",
     "MemoryExtractor",
     "get_memory_extractor",
 ]

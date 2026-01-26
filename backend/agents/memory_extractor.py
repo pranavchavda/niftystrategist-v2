@@ -53,68 +53,77 @@ class MemoryExtractor:
         )
 
     def _get_extraction_instructions(self) -> str:
-        """Instructions for memory extraction"""
-        return """Analyze this conversation and extract ONLY user-specific, actionable memories.
+        """Instructions for memory extraction - Trading focused"""
+        return """Analyze this conversation and extract ONLY user-specific, actionable memories about their TRADING preferences and style.
 
 **THE GOLDEN RULE: Extract ONLY if you can answer YES to ALL THREE:**
-1. Is this SPECIFIC to this user? (not generic business info)
-2. Is this ACTIONABLE data I'll need? (IDs, credentials, unique preferences)
+1. Is this SPECIFIC to this user's trading style/preferences?
+2. Is this ACTIONABLE data for future trading decisions?
 3. Will I need this in FUTURE conversations? (not just this session)
 
-**Categories:**
-- **fact**: User-specific data (account IDs, API keys, unique URLs, specific contact info)
-- **preference**: User's personal preferences (notification times, preferred tools, workflow styles)
-- **context**: User-specific context (timezone, role, team structure, busy seasons)
-- **task**: Ongoing goals or projects (launch dates, active campaigns, tracked metrics)
+**Trading-Specific Categories:**
+- **risk_tolerance**: User's risk appetite (conservative, moderate, aggressive, max loss per trade)
+- **position_sizing**: Preferred position sizes, max portfolio allocation per stock
+- **sector_preference**: Preferred sectors (IT, banking, pharma, FMCG, etc.)
+- **trading_style**: Day trader, swing trader, positional, long-term investor
+- **avoid_list**: Stocks or sectors user wants to avoid
+- **past_learnings**: Previous trading experiences (wins, losses, lessons learned)
+- **schedule**: When user trades (market open, specific hours, weekends for analysis)
+- **experience_level**: Beginner, intermediate, advanced - affects explanation depth
+- **communication**: Prefers detailed analysis vs quick signals, technical vs simple language
 
 **✅ GOOD EXAMPLES (extract these):**
-- "User's Google Ads customer ID is 522-285-1423"
-- "User's Shopify store URL is mystore.myshopify.com"
-- "User's team lead is John (john@company.com)"
-- "The large homepage banner image is 1609x902 px on iDrinkCoffee.com"
+- "User is conservative, never risks more than 2% per trade"
+- "User prefers IT and banking stocks, avoids commodities"
+- "User lost money on TATAMOTORS, doesn't want to trade it again"
+- "User is a swing trader, typically holds positions for 2-5 days"
+- "User only trades in the first hour of market open"
+- "User is a beginner, needs technical terms explained simply"
+- "User's max position size is 5% of portfolio"
+- "User prefers stocks with RSI below 30 for buying"
 
 **❌ BAD EXAMPLES (DO NOT extract these):**
-- "User employs a marketing agent" → System already knows its own capabilities
-- "System integrates with Google Ads" → System capability, not user data
-- "User's business sells coffee products" → Generic, obvious from context
-- "User's business uses Shopify" → Generic platform info
-- "User can analyze sales data" → System feature, not user-specific
+- "User asked for RELIANCE analysis" → Current session action
+- "RELIANCE RSI is at 45" → Market data, changes constantly
+- "User has ₹10 lakh in paper trading" → System already tracks this
+- "User can analyze stocks" → System capability
+- "NIFTY is at 22000" → Temporary market data
 
 **STRICT FILTER RULES - NEVER extract:**
-1. **System capabilities** - What the system CAN do (agents, APIs, integrations)
-2. **Generic business info** - Industry, platform used, product category (unless VERY specific)
-3. **Current session actions** - What user is doing RIGHT NOW
-4. **Temporary data** - File paths, test values, one-time queries
-5. **Database content** - Products, orders, prices (already in DB)
-6. **Obvious context** - Things you can infer from the conversation every time
+1. **System capabilities** - What the system CAN do
+2. **Current market data** - Prices, indicators (they change constantly)
+3. **Current session queries** - What user is analyzing RIGHT NOW
+4. **Paper trading state** - Portfolio/positions (tracked by system)
+5. **Generic trading facts** - "Stocks can go up or down"
 
 **ONLY extract if it's:**
-- A specific ID, credential, or account number
-- A unique preference or workflow detail
-- A contact, person, or team member
-- A specific goal, project, or tracked item
-- Something you CAN'T infer from context each time
+- A personal risk preference or limit
+- A specific trading style or pattern
+- Stocks/sectors to prefer or avoid (with reason)
+- Past experiences that inform future decisions
+- Timing or schedule preferences
+- Communication/explanation preferences
 
 **Confidence scoring:**
-- 1.0: Explicit statement ("My customer ID is X", "I prefer Y")
+- 1.0: Explicit statement ("I never risk more than 2%", "I'm a swing trader")
 - 0.8-0.9: Strong implication from repeated behavior
 - 0.6-0.7: Weak implication (better to skip these)
 
 **Target: Extract 2-8 memories per conversation, prioritizing QUALITY over quantity.**
-When in doubt, DON'T extract. Better to miss a generic memory than clutter the database.
+When in doubt, DON'T extract. Better to miss a generic memory than clutter with noise.
 
 Also provide a conversation title in the format: **[Relevant Emoji] + 3-4 words**
-Examples: '☕ Coffee Equipment Setup', '💰 Pricing Strategy Discussion', '📧 Email System Check', '🔍 Deepseek Vision Research'
+Examples: '📊 RELIANCE Technical Analysis', '💹 Portfolio Review Session', '🎯 Swing Trade Setup', '📈 Banking Sector Research'
 
 **IMPORTANT: You MUST respond with valid JSON matching this exact schema:**
 ```json
 {
   "memories": [
     {
-      "fact": "string - the extracted user-specific fact",
-      "category": "fact|preference|context|task",
+      "fact": "string - the extracted trading preference/style",
+      "category": "risk_tolerance|position_sizing|sector_preference|trading_style|avoid_list|past_learnings|schedule|experience_level|communication",
       "confidence": 0.0-1.0,
-      "reasoning": "string - why this specific user data is important",
+      "reasoning": "string - why this is important for future trading advice",
       "is_ephemeral": false
     }
   ],
@@ -136,7 +145,7 @@ Examples: '☕ Coffee Equipment Setup', '💰 Pricing Strategy Discussion', '�
             # Format role
             role_label = {
                 'user': 'User',
-                'assistant': 'EspressoBot',
+                'assistant': 'Nifty Strategist',
                 'tool': 'Tool'
             }.get(role, role.capitalize())
 

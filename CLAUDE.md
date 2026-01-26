@@ -1,5 +1,7 @@
 # Nifty Strategist v2 - AI Trading Agent
 
+> **Quick Start**: See [PROJECT_STATUS.md](./PROJECT_STATUS.md) for current status, what's done, and next steps.
+
 ## Project Overview
 
 An AI-powered trading assistant for the Indian stock market (NSE/BSE) that helps users analyze stocks, understand market opportunities, and execute trades with human-in-the-loop approval.
@@ -89,37 +91,44 @@ This codebase is forked from **EspressoBot** (`/home/pranav/apydanticebot/`), a 
 
 ## Current Implementation Status
 
-### Phase 1: Fork & Strip - IN PROGRESS
+### Phase 1: Fork & Strip - COMPLETED
 - [x] Fork EspressoBot codebase
 - [x] Remove Shopify tools and agents
 - [x] Remove Google Workspace integration
-- [ ] Remove e-commerce database tables (BFCM, analytics, etc.)
-- [ ] Simplify User model (remove Google OAuth fields)
+- [x] Remove e-commerce database tables (BFCM, analytics, etc.)
+- [x] Simplify User model (remove Google OAuth, add Upstox fields)
+- [x] Add trading-specific models (Trade, AgentDecision, WatchlistItem)
+- [x] Fix broken imports in main.py and agents/__init__.py
+- [x] Set up Supabase connection (22 tables created, 37 old tables dropped)
 - [ ] Update pyproject.toml dependencies
-- [ ] Set up Supabase connection
 - [ ] Test basic auth flow
 
-### Phase 2: Port Trading Core - TODO
-- [ ] Port `upstox_client.py` from `/home/pranav/tradingagent/backend/services/`
-- [ ] Port `technical_analysis.py`
-- [ ] Port trading models (TradeProposal, MarketAnalysis, RiskValidation)
-- [ ] Create `tools/trading/market_data.py`
-- [ ] Create `tools/trading/analysis.py`
-- [ ] Create `tools/trading/portfolio.py`
-- [ ] Create `tools/trading/orders.py` (with HITL)
-- [ ] Create `tools/trading/watchlist.py`
-- [ ] Add trades, agent_decisions, watchlist tables
+### Phase 2: Port Trading Core - COMPLETED
+- [x] Port `upstox_client.py` → `services/upstox_client.py` (50 stocks supported)
+- [x] Port `technical_analysis.py` → `services/technical_analysis.py`
+- [x] Port Pydantic models → `models/analysis.py`, `models/trading.py`
+- [x] Add trading SQLAlchemy models (Trade, AgentDecision, WatchlistItem) in database/models.py
+- [x] Create `tools/trading/market_data.py` (get_stock_quote, get_historical_data, list_supported_stocks)
+- [x] Create `tools/trading/analysis.py` (analyze_stock, compare_stocks)
+- [x] Create `tools/trading/portfolio.py` (get_portfolio, get_position, calculate_position_size)
+- [x] Create `tools/trading/orders.py` with HITL (place_order, cancel_order, get_open_orders, get_order_history)
+- [x] Create `tools/trading/watchlist.py` (add_to_watchlist, get_watchlist, remove_from_watchlist, update_watchlist, check_watchlist_alerts)
 
-### Phase 3: Wire Up Orchestrator - TODO
-- [ ] Adapt orchestrator prompt for trading
-- [ ] Configure HITL for place_order tool
-- [ ] Adapt memory categories for trading
-- [ ] Test end-to-end flow
+### Phase 3: Wire Up Orchestrator - COMPLETED
+- [x] Adapt orchestrator prompt for trading (Nifty Strategist persona, trading tools documentation)
+- [x] Register trading tools with orchestrator (register_all_trading_tools)
+- [x] Configure HITL for place_order and cancel_order tools (@requires_approval decorator)
+- [x] Adapt memory categories for trading (risk_tolerance, position_sizing, sector_preference, trading_style, etc.)
+- [x] Test end-to-end flow (paper trading verified with ₹10 lakh starting capital)
 
-### Phase 4: Frontend Adaptation - TODO
-- [ ] Strip e-commerce dashboard components
-- [ ] Add trading dashboard
-- [ ] Update branding
+### Phase 4: Frontend Adaptation - COMPLETED
+- [x] Strip e-commerce dashboard components (removed BFCM, Boxing Week, Price Monitor, CMS, Flock routes)
+- [x] Add trading dashboard (Dashboard.jsx with portfolio stats, positions table, P&L tracking)
+- [x] Update branding (Nifty Strategist, trading-focused copy, ArrowTrendingUpIcon logo)
+- [x] Update manifest.json for PWA
+- [x] Update login.tsx (trading messaging, paper trading notice)
+- [x] Update _index.tsx landing page (trading-focused applications grid)
+- [x] Create dev.sh script (backend + frontend startup with nvm)
 
 ---
 
@@ -140,34 +149,27 @@ backend/
 │   ├── ag_ui_wrapper.py      # AG-UI streaming
 │   └── hitl_streamer.py      # Human-in-the-loop
 └── agents/
-    ├── orchestrator.py       # Main agent (NEEDS TRADING ADAPTATION)
-    └── memory_extractor.py   # Memory extraction (NEEDS CATEGORY ADAPTATION)
+    ├── orchestrator.py       # Main agent (ADAPTED for trading)
+    └── memory_extractor.py   # Memory extraction (needs category adaptation)
 ```
 
-### To Be Created (Trading-specific)
+### Trading-Specific Files (CREATED)
 ```
 backend/
 ├── services/
-│   ├── upstox_client.py      # Upstox SDK wrapper (PORT FROM WIP)
-│   └── technical_analysis.py # Indicators (PORT FROM WIP)
+│   ├── upstox_client.py      # Upstox SDK wrapper (50 Nifty stocks, paper trading)
+│   └── technical_analysis.py # RSI, MACD, SMA, EMA, ATR indicators
 ├── models/
-│   └── trading.py            # TradeProposal, MarketAnalysis (PORT FROM WIP)
+│   ├── analysis.py           # OHLCVData, TechnicalIndicators, MarketAnalysis
+│   └── trading.py            # TradeProposal, RiskValidation, Portfolio, TradeResult
 └── tools/
     └── trading/
-        ├── market_data.py    # get_quote, get_historical
-        ├── analysis.py       # analyze_symbol
-        ├── portfolio.py      # get_portfolio, get_positions
-        ├── orders.py         # place_order (HITL)
-        └── watchlist.py      # watchlist management
-```
-
-### Reference Files (from original WIP)
-```
-/home/pranav/tradingagent/backend/
-├── services/upstox_client.py      # Working Upstox SDK integration
-├── services/technical_analysis.py # RSI, MACD, support/resistance
-├── models/trading.py              # TradeProposal, MarketAnalysis
-└── agents/orchestrator.py         # Trading prompt (extract relevant parts)
+        ├── __init__.py       # register_all_trading_tools
+        ├── market_data.py    # get_stock_quote, get_historical_data, list_supported_stocks
+        ├── analysis.py       # analyze_stock, compare_stocks
+        ├── portfolio.py      # get_portfolio, get_position, calculate_position_size
+        ├── orders.py         # place_order (HITL), cancel_order (HITL), get_open_orders, get_order_history
+        └── watchlist.py      # add_to_watchlist, get_watchlist, remove_from_watchlist, update_watchlist, check_watchlist_alerts
 ```
 
 ---
@@ -272,18 +274,36 @@ ENCRYPTION_KEY=your-32-byte-key
 ## Development Commands
 
 ```bash
+# Quick start (recommended) - starts both backend and frontend
+./dev.sh
+
+# Start only backend
+./dev.sh --backend-only
+
+# Start only frontend
+./dev.sh --frontend-only
+
+# Start CLI interface
+./dev.sh --cli
+
+# Verbose mode (show logs in terminal)
+./dev.sh --verbose
+
+# Manual startup (if dev.sh doesn't work)
+
 # Backend
 cd backend
-python -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 
-# Frontend
+# Frontend (requires Node 22+)
 cd frontend-v2
+nvm use 22
 npm install
 npm run dev
 ```
+
+**Note**: The frontend requires Node.js 22+. The `dev.sh` script automatically handles this via nvm.
 
 ---
 

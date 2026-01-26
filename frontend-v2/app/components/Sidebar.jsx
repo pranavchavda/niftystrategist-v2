@@ -27,6 +27,7 @@ import {
   Zap,
   MenuIcon,
 } from "lucide-react";
+// TODO: Replace with trading logo
 import logo from "../assets/eblogo-notext.webp";
 import { hasPermission, PERMISSIONS } from "../utils/permissions";
 import {
@@ -381,7 +382,7 @@ export default function Sidebar({
               <Link to="/" className="flex h-10 w-10 items-center justify-center rounded-xl shadow-lg shadow-amber-500/25 ring-2 ring-amber-500/10 hover:scale-105 transition-transform">
                 <img
                   src={logo}
-                  alt="EspressoBot"
+                  alt="Nifty Strategist"
                   className="h-8 w-8 rounded-lg object-contain"
                 />
               </Link>
@@ -391,7 +392,7 @@ export default function Sidebar({
                   <Link to="/">
                     <img
                       src={logo}
-                      alt="EspressoBot"
+                      alt="Nifty Strategist"
                       className="h-8 w-8 rounded-lg object-contain"
                     />
                   </Link>
@@ -478,18 +479,6 @@ export default function Sidebar({
                       <DropdownLabel>Notes</DropdownLabel>
                     </DropdownItem>
                   )}
-                  {hasPermission(user, PERMISSIONS.PRICE_MONITOR_ACCESS) && (
-                    <DropdownItem href="/price-monitor">
-                      <DollarSign data-slot="icon" />
-                      <DropdownLabel>Price Monitor</DropdownLabel>
-                    </DropdownItem>
-                  )}
-                  {hasPermission(user, PERMISSIONS.CMS_ACCESS) && (
-                    <DropdownItem href="/cms">
-                      <FileEdit data-slot="icon" />
-                      <DropdownLabel>CMS</DropdownLabel>
-                    </DropdownItem>
-                  )}
                 </DropdownMenu>
               </Dropdown>
             ) : (
@@ -534,34 +523,6 @@ export default function Sidebar({
                     }
                   >
                     <BookOpen className="w-4 h-4" />
-                  </NavLink>
-                )}
-                {hasPermission(user, PERMISSIONS.PRICE_MONITOR_ACCESS) && (
-                  <NavLink
-                    to="/price-monitor"
-                    title="Price Monitor"
-                    className={({ isActive }) =>
-                      `p-2 rounded-lg transition-colors ${isActive
-                        ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
-                        : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                      }`
-                    }
-                  >
-                    <DollarSign className="w-4 h-4" />
-                  </NavLink>
-                )}
-                {hasPermission(user, PERMISSIONS.CMS_ACCESS) && (
-                  <NavLink
-                    to="/cms"
-                    title="CMS"
-                    className={({ isActive }) =>
-                      `p-2 rounded-lg transition-colors ${isActive
-                        ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
-                        : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                      }`
-                    }
-                  >
-                    <FileEdit className="w-4 h-4" />
                   </NavLink>
                 )}
               </div>

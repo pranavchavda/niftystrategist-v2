@@ -1,16 +1,16 @@
 {
-  "name": "EspressoBot - iDrinkCoffee.com's AI Assistant",
-  "short_name": "EspressoBot",
-  "description": "AI-powered assistant for managing Shopify stores with specialized agents for products, analytics, and content management.",
+  "name": "Nifty Strategist - AI Trading Assistant",
+  "short_name": "Nifty Strategist",
+  "description": "AI-powered trading assistant for the Indian stock market (NSE/BSE). Analyze stocks, track portfolios, and execute trades with intelligent recommendations.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#1f2937",
   "orientation": "portrait-primary",
   "categories": [
+    "finance",
     "productivity",
-    "business",
-    "utilities"
+    "business"
   ],
   "icons": [
     {
@@ -78,7 +78,7 @@
     {
       "name": "Dashboard",
       "short_name": "Dashboard",
-      "description": "View analytics dashboard",
+      "description": "View trading dashboard and portfolio",
       "url": "/dashboard",
       "icons": [
         {
@@ -88,21 +88,9 @@
       ]
     },
     {
-      "name": "CMS",
-      "short_name": "CMS",
-      "description": "Content Management System",
-      "url": "/cms",
-      "icons": [
-        {
-          "src": "/icons/shortcut-cms.png",
-          "sizes": "192x192"
-        }
-      ]
-    },
-    {
       "name": "Tasks",
       "short_name": "Tasks",
-      "description": "Google Tasks UI",
+      "description": "Task management",
       "url": "/tasks",
       "icons": [
         {

@@ -21,12 +21,6 @@ export default [
     // Dashboard
     route('dashboard', './routes/dashboard.tsx'),
 
-    // BFCM Tracker Dashboard
-    route('bfcm', './routes/bfcm.tsx'),
-
-    // Boxing Week Tracker Dashboard
-    route('boxing-week', './routes/boxing-week.tsx'),
-
     // Memory Management
     route('memory', './routes/memory.tsx'),
 
@@ -48,19 +42,6 @@ export default [
     route('user', './routes/user.tsx', [
       route('profile', './routes/user.profile.tsx'),
     ]),
-
-    // Price Monitor - handles its own internal routing
-    // Using splat route to capture all sub-paths
-    route('price-monitor/*', './routes/price-monitor.tsx'),
-
-    // Inventory Prediction - Prophet-based forecasting
-    route('inventory/*', './routes/inventory.tsx'),
-
-    // Content CMS - metaobject editor
-    route('cms/*', './routes/cms.tsx'),
-
-    // Flock Digest - actionable extraction from Flock messages
-    route('flock/*', './routes/flock.tsx'),
 
     // Admin Documentation Editor
     route('admin/docs', './routes/admin.docs.tsx'),

@@ -1,5 +1,5 @@
 """
-Database package for conversation persistence and price monitoring
+Database package for Nifty Strategist v2
 """
 
 from .models import (
@@ -10,9 +10,21 @@ from .models import (
     UserPreference,
     DatabaseManager,
     User,
-    DailyAnalyticsCache,
-    HourlyAnalyticsCache,
-    AnalyticsSyncStatus
+    Run,
+    AIModel,
+    Permission,
+    Role,
+    DocChunk,
+    UserMCPServer,
+    UserMCPOAuthToken,
+    Note,
+    PublishedNote,
+    # Trading models
+    Trade,
+    AgentDecision,
+    WatchlistItem,
+    TradeStatus,
+    TradeDirection,
 )
 
 from .operations import (
@@ -20,34 +32,6 @@ from .operations import (
     MessageOps,
     MemoryOps,
     UserPreferenceOps
-)
-
-# Import price monitor models
-from .price_monitor_models import (
-    Competitor,
-    CompetitorProduct,
-    ScrapeJob,
-    IdcProduct,
-    MonitoredBrand,
-    MonitoredCollection,
-    ProductMatch,
-    PriceAlert,
-    PriceHistory,
-    ViolationHistory,
-    RejectedMatch
-)
-
-# Import Flock models
-from .flock_models import (
-    FlockChannel,
-    FlockMessage,
-    FlockActionable,
-    FlockDigest,
-    FlockWebhook,
-    FlockChannelType,
-    ActionableType,
-    ActionablePriority,
-    ActionableStatus
 )
 
 __all__ = [
@@ -59,37 +43,26 @@ __all__ = [
     'UserPreference',
     'DatabaseManager',
     'User',
+    'Run',
+    'AIModel',
+    'Permission',
+    'Role',
+    'DocChunk',
+    'UserMCPServer',
+    'UserMCPOAuthToken',
+    'Note',
+    'PublishedNote',
+
+    # Trading Models
+    'Trade',
+    'AgentDecision',
+    'WatchlistItem',
+    'TradeStatus',
+    'TradeDirection',
 
     # Operations
     'ConversationOps',
     'MessageOps',
     'MemoryOps',
     'UserPreferenceOps',
-
-    # Price Monitor Models
-    'Competitor',
-    'CompetitorProduct',
-    'ScrapeJob',
-    'IdcProduct',
-    'MonitoredBrand',
-    'MonitoredCollection',
-    'ProductMatch',
-    'PriceAlert',
-    'PriceHistory',
-    'ViolationHistory',
-    'RejectedMatch',
-    'DailyAnalyticsCache',
-    'HourlyAnalyticsCache',
-    'AnalyticsSyncStatus',
-
-    # Flock Models
-    'FlockChannel',
-    'FlockMessage',
-    'FlockActionable',
-    'FlockDigest',
-    'FlockWebhook',
-    'FlockChannelType',
-    'ActionableType',
-    'ActionablePriority',
-    'ActionableStatus'
 ]

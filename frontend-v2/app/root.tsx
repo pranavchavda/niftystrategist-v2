@@ -18,7 +18,7 @@ import './tailwind-fixes.css';
 const themeScript = `
 (function() {
   try {
-    var theme = localStorage.getItem('espressobot-theme') || 'system';
+    var theme = localStorage.getItem('nifty-strategist-theme') || 'system';
     var isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     if (isDark) {
       document.documentElement.classList.add('dark');
@@ -55,11 +55,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
         {/* PWA Meta Tags */}
         <meta name="theme-color" content="#1f2937" />
-        <meta name="description" content="AI-powered assistant for managing Shopify stores with specialized agents for products, analytics, and content management." />
+        <meta name="description" content="AI-powered trading assistant for the Indian stock market (NSE/BSE). Analyze stocks, track portfolios, and execute trades with intelligent recommendations." />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="EspressoBot" />
+        <meta name="apple-mobile-web-app-title" content="Nifty Strategist" />
 
         <Meta />
         <Links />

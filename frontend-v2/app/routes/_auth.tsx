@@ -159,27 +159,21 @@ export default function AuthLayout() {
   // Derive current view from URL path (must be before useEffect that uses it)
   const currentView = location.pathname.startsWith('/dashboard')
     ? 'dashboard'
-    : location.pathname.startsWith('/price-monitor')
-      ? 'price-monitor'
-      : location.pathname.startsWith('/settings')
-        ? 'settings'
-        : location.pathname.startsWith('/memory')
-          ? 'memory'
-          : location.pathname.startsWith('/notes')
-            ? 'notes'
-            : location.pathname.startsWith('/tasks')
-              ? 'tasks'
-              : location.pathname.startsWith('/cms')
-                ? 'cms'
-                : location.pathname.startsWith('/flock')
-                  ? 'flock'
-                  : location.pathname.startsWith('/admin/docs')
-                    ? 'admin-docs'
-                    : location.pathname.startsWith('/admin/users')
-                      ? 'admin-users'
-                      : location.pathname.startsWith('/admin/models')
-                        ? 'admin-models'
-                        : 'chat';
+    : location.pathname.startsWith('/settings')
+      ? 'settings'
+      : location.pathname.startsWith('/memory')
+        ? 'memory'
+        : location.pathname.startsWith('/notes')
+          ? 'notes'
+          : location.pathname.startsWith('/tasks')
+            ? 'tasks'
+            : location.pathname.startsWith('/admin/docs')
+              ? 'admin-docs'
+              : location.pathname.startsWith('/admin/users')
+                ? 'admin-users'
+                : location.pathname.startsWith('/admin/models')
+                  ? 'admin-models'
+                  : 'chat';
 
   // Apply dark mode to document
   useEffect(() => {
@@ -189,21 +183,18 @@ export default function AuthLayout() {
 
   // Update page title based on current view
   useEffect(() => {
-    const titleMap = {
-      'chat': 'EspressoBot',
-      'dashboard': 'Dashboard - EspressoBot',
-      'price-monitor': 'Price Monitor - EspressoBot',
-      'settings': 'Settings - EspressoBot',
-      'memory': 'Memory Management - EspressoBot',
-      'notes': 'Notes - Second Brain - EspressoBot',
-      'tasks': 'Tasks - EspressoBot',
-      'cms': 'Content CMS - EspressoBot',
-      'flock': 'Flock Digest - EspressoBot',
-      'admin-docs': 'Documentation Admin - EspressoBot',
-      'admin-users': 'User & Role Management - EspressoBot',
-      'admin-models': 'AI Model Management - EspressoBot',
+    const titleMap: Record<string, string> = {
+      'chat': 'Nifty Strategist',
+      'dashboard': 'Dashboard - Nifty Strategist',
+      'settings': 'Settings - Nifty Strategist',
+      'memory': 'Memory - Nifty Strategist',
+      'notes': 'Notes - Nifty Strategist',
+      'tasks': 'Tasks - Nifty Strategist',
+      'admin-docs': 'Documentation Admin - Nifty Strategist',
+      'admin-users': 'User Management - Nifty Strategist',
+      'admin-models': 'AI Model Management - Nifty Strategist',
     };
-    document.title = titleMap[currentView] || 'EspressoBot';
+    document.title = titleMap[currentView] || 'Nifty Strategist';
   }, [currentView]);
 
   const handleLogout = useCallback(() => {
