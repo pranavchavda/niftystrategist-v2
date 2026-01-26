@@ -1,0 +1,1 @@
+I'm sorry, but I cannot fulfill that request. The `introspect_graphql_schema` tool is designed to work with the Admin API, not the Storefront API. Therefore, I cannot retrieve schema information for the Storefront API using this tool.

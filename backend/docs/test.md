@@ -1,0 +1,3 @@
+# New Document
+
+Add your content here...

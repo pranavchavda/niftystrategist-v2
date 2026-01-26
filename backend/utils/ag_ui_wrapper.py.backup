@@ -1,0 +1,225 @@
+"""
+Wrapper for AG-UI handler to inject custom SSE events
+"""
+
+import json
+import asyncio
+import logging
+from typing import AsyncIterator
+from datetime import datetime
+from .sse_events import SSEEventEmitter
+
+logger = logging.getLogger(__name__)
+
+
+async def enhanced_ag_ui_stream(original_stream: AsyncIterator[bytes], deps=None, thread_id: str = None) -> AsyncIterator[bytes]:
+    """
+    Enhance AG-UI stream with additional SSE events for better user feedback.
+
+    This wrapper:
+    1. Passes through all original AG-UI events
+    2. Detects certain patterns and injects additional events
+    3. Tracks timing for latency warnings
+    4. Emits TODO updates when todo_write tool is called
+    5. Checks for interruption signals
+
+    Args:
+        original_stream: The original AG-UI event stream
+        deps: OrchestratorDeps containing todo_list
+        thread_id: Thread ID for interrupt checking
+    """
+    from .interrupt_manager import get_interrupt_manager
+
+    start_time = datetime.now()
+    last_event_time = start_time
+    has_started_streaming = False
+    current_tool = None
+    latency_warning_sent = {5: False, 10: False, 15: False}
+    last_todo_state = None
+    partial_response = ""
+
+    # Register stream with interrupt manager
+    interrupt_mgr = get_interrupt_manager() if thread_id else None
+    signal = interrupt_mgr.register_stream(thread_id) if interrupt_mgr and thread_id else None
+
+    # Send initial routing event
+    yield SSEEventEmitter.agent_routing().encode()
+
+    try:
+        async for chunk in original_stream:
+            # Check for interruption
+            if signal and signal.is_set():
+                logger.info(f"[Interrupt] Stream interrupted for {thread_id}: {signal.reason}")
+
+                # Send interruption event to UI
+                interrupt_event = {
+                    "type": "INTERRUPTED",
+                    "reason": signal.reason or "User requested stop",
+                    "partial_response": partial_response
+                }
+                yield f"data: {json.dumps(interrupt_event)}\n\n".encode()
+
+                # Save partial response to conversation state
+                if deps and hasattr(deps, 'state'):
+                    deps.state.partial_response = partial_response
+                    deps.state.is_interrupted = True
+                    deps.state.interrupted_at = datetime.now()
+
+                # Stop streaming
+                break
+
+            try:
+                # Pass through original chunk
+                yield chunk
+
+                # Try to parse the chunk to understand what's happening
+                chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
+
+                # Check if it's an SSE data line
+                if chunk_str.startswith('data: '):
+                    try:
+                        data_str = chunk_str[6:].strip()
+                        if data_str and data_str != '[DONE]':
+                            event = json.loads(data_str)
+
+                            # Track text content for partial response
+                            if event.get('type') == 'TEXT_MESSAGE_CONTENT':
+                                content = event.get('content', '')
+                                partial_response += content
+
+                            # Inject custom events based on AG-UI events
+                            event_type = event.get('type', '')
+
+                            if event_type == 'TOOL_CALL_START':
+                                tool_name = event.get('toolCallName', 'unknown')
+                                current_tool = tool_name
+                                logger.info(f"[TOOL] Tool call started: {tool_name}")
+
+                                # Inject thinking event before tool
+                                yield SSEEventEmitter.thinking(f"Preparing to use {tool_name}").encode()
+
+                                # Inject specific event based on tool type
+                                if 'search' in tool_name.lower():
+                                    yield SSEEventEmitter.searching(
+                                        query=event.get('toolCallArguments', {}).get('query', ''),
+                                        source="Shopify API"
+                                    ).encode()
+                                elif 'analyze' in tool_name.lower():
+                                    yield SSEEventEmitter.analyzing("data").encode()
+
+                            elif event_type == 'TOOL_CALL_END':
+                            logger.info(f"[TOOL] Tool call ended: {current_tool}")
+                            if current_tool:
+                                yield SSEEventEmitter.tool_progress(
+                                    current_tool,
+                                    1.0,
+                                    "Completed"
+                                ).encode()
+
+                                # If this was a todo_write tool, emit TODO update event
+                                logger.info(f"[TOOL] Checking if todo_write: {current_tool} == 'todo_write' ? {current_tool == 'todo_write'}")
+                                if current_tool == 'todo_write':
+                                    logger.info(f"[TODO] Detected todo_write tool completion, deps present: {deps is not None}")
+                                    if deps and hasattr(deps, 'todo_list'):
+                                        todo_list = deps.todo_list
+                                        logger.info(f"[TODO] Found todo_list with {len(todo_list.todos)} todos")
+
+                                        # Convert TodoList to dict
+                                        todos_dict = [
+                                            {
+                                                "content": todo.content,
+                                                "status": todo.status,
+                                                "activeForm": todo.activeForm,
+                                                "id": i
+                                            }
+                                            for i, todo in enumerate(todo_list.todos)
+                                        ]
+
+                                        # Emit TODO update event
+                                        todo_event = {
+                                            "type": "TODO_UPDATE",
+                                            "todos": todos_dict
+                                        }
+                                        event_json = json.dumps(todo_event)
+                                        logger.info(f"[TODO] Emitting TODO_UPDATE event: {event_json}")
+                                        yield f"data: {event_json}\n\n".encode()
+                                        last_todo_state = todos_dict
+                                    else:
+                                        logger.warning(f"[TODO] Could not emit TODO event - deps: {deps}, has todo_list: {hasattr(deps, 'todo_list') if deps else False}")
+
+                                current_tool = None
+
+                        elif event_type == 'TEXT_MESSAGE_START':
+                            has_started_streaming = True
+                            yield SSEEventEmitter.writing().encode()
+
+                        elif event_type == 'TEXT_MESSAGE_CONTENT':
+                            has_started_streaming = True
+
+                        elif event_type == 'MODEL_RESPONSE_START':
+                            # Agent is thinking
+                            yield SSEEventEmitter.thinking("Processing your request with AI").encode()
+
+                        last_event_time = datetime.now()
+
+                except json.JSONDecodeError:
+                    # Not valid JSON, ignore
+                    pass
+                except Exception as e:
+                    logger.debug(f"Error parsing SSE event: {e}")
+
+            # Check for latency warnings
+            elapsed = (datetime.now() - start_time).total_seconds()
+
+            if not has_started_streaming:
+                if elapsed > 5 and not latency_warning_sent[5]:
+                    yield SSEEventEmitter.latency_warning(5).encode()
+                    latency_warning_sent[5] = True
+                elif elapsed > 10 and not latency_warning_sent[10]:
+                    yield SSEEventEmitter.latency_warning(10).encode()
+                    latency_warning_sent[10] = True
+                elif elapsed > 15 and not latency_warning_sent[15]:
+                    yield SSEEventEmitter.latency_warning(15).encode()
+                    latency_warning_sent[15] = True
+
+        except Exception as e:
+            logger.error(f"Error in enhanced AG-UI stream: {e}")
+            # Pass through the original chunk even if we can't enhance it
+            yield chunk
+
+
+async def enhanced_handle_ag_ui_request(
+    agent,
+    request,
+    deps=None,
+    model_settings=None
+):
+    """
+    Enhanced AG-UI handler that adds custom SSE events.
+
+    This wraps the original handle_ag_ui_request and enhances the stream.
+    """
+    from pydantic_ai.ag_ui import handle_ag_ui_request
+
+    # Get the original response
+    response = await handle_ag_ui_request(
+        agent,
+        request,
+        deps=deps,
+        model_settings=model_settings
+    )
+
+    # If it's a StreamingResponse, enhance it
+    if hasattr(response, 'body_iterator'):
+        # Create enhanced stream with deps for TODO tracking
+        enhanced_stream = enhanced_ag_ui_stream(response.body_iterator, deps=deps)
+
+        # Create new StreamingResponse with enhanced stream
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            enhanced_stream,
+            media_type=response.media_type,
+            headers=dict(response.headers) if hasattr(response, 'headers') else None
+        )
+
+    return response

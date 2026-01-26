@@ -1,0 +1,11 @@
+SKU,Product Name,Vendor,Type,Research Status,Specs Complete %,Primary Source,Last Updated,Notes
+PRO500PID,Profitec Pro 500 PID,Profitec,Espresso Machine,Complete,85%,Clive Coffee,2024-01-17,Missing cord length and certifications
+PRO500PIDFC,Profitec Pro 500 PID + Flow Control,Profitec,Espresso Machine,Complete,80%,Clive Coffee,2024-01-17,Missing flow rate specs
+PRO600,Profitec Pro 600 Dual Boiler,Profitec,Espresso Machine,Complete,90%,Clive Coffee,2024-01-17,Most comprehensive specs found
+PRO600FC,Profitec Pro 600 + Flow Control,Profitec,Espresso Machine,Complete,75%,Clive Coffee,2024-01-17,Missing some dimensional details
+PRO800,Profitec Pro 800,Profitec,Espresso Machine,Complete,88%,Clive Coffee,2024-01-17,Unique lever machine
+GO-BLACK,Profitec GO Black,Profitec,Espresso Machine,Complete,100%,Profitec Official,2024-01-17,All specs found
+GO-RED,Profitec GO Red,Profitec,Espresso Machine,Complete,100%,Profitec Official,2024-01-17,Shares specs with GO Black
+GO-YELLOW,Profitec GO Yellow,Profitec,Espresso Machine,Complete,100%,Profitec Official,2024-01-17,Shares specs with GO Black
+GO-BLUE,Profitec GO Blue,Profitec,Espresso Machine,Complete,100%,Profitec Official,2024-01-17,Shares specs with GO Black
+PRO400,Profitec Pro 400,Profitec,Espresso Machine,Complete,100%,Profitec Official,2024-01-17,All specs found from manufacturer

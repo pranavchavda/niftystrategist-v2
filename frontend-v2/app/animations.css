@@ -1,0 +1,383 @@
+/**
+ * Animation Utilities for EspressoBot V2
+ * Based on DESIGN_VISION_V2.md specifications
+ * Modern, performant animations using Tailwind v4
+ */
+
+/* ===================================
+   KEYFRAME ANIMATIONS
+   =================================== */
+
+/* Slide In from Bottom - Message entrance */
+@keyframes slideInBottom {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Fade In - Subtle appearance */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Pulse - Loading and attention */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Shimmer - Loading skeleton effect */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Scale In - Modal/Dropdown entrance */
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Slide In from Right - Sidebar entrance */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Slide In from Left - Navigation entrance */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Breathing - Subtle pulsing for live indicators */
+@keyframes breathe {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.9;
+  }
+}
+
+/* Gentle Bounce - Attention indicator */
+@keyframes gentleBounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* Typing Indicator - Three dots animation */
+@keyframes typing {
+  0%, 80%, 100% {
+    opacity: 0.3;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+/* Gradient Shift - Animated backgrounds */
+@keyframes gradientShift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* Spin - Loading spinner */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Progress Bar - Loading indicator */
+@keyframes progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* ===================================
+   ANIMATION UTILITY CLASSES
+   =================================== */
+
+/* Entrance Animations */
+.animate-slide-in-bottom {
+  animation: slideInBottom 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.animate-fade-in {
+  animation: fadeIn 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.animate-scale-in {
+  animation: scaleIn 150ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.animate-slide-in-left {
+  animation: slideInLeft 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* Loading Animations */
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite linear;
+  background-size: 200% 100%;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+.animate-progress {
+  animation: progress 1.5s ease-in-out infinite;
+}
+
+/* Status Indicators */
+.animate-breathe {
+  animation: breathe 3s ease-in-out infinite;
+}
+
+.animate-gentle-bounce {
+  animation: gentleBounce 2s ease-in-out infinite;
+}
+
+.animate-typing {
+  animation: typing 1.5s infinite;
+}
+
+/* Background Animations */
+.animate-gradient-shift {
+  animation: gradientShift 6s ease-in-out infinite;
+  background-size: 200% 200%;
+}
+
+/* ===================================
+   ANIMATION DELAYS
+   =================================== */
+
+.animation-delay-75 {
+  animation-delay: 75ms;
+}
+
+.animation-delay-100 {
+  animation-delay: 100ms;
+}
+
+.animation-delay-150 {
+  animation-delay: 150ms;
+}
+
+.animation-delay-200 {
+  animation-delay: 200ms;
+}
+
+.animation-delay-300 {
+  animation-delay: 300ms;
+}
+
+.animation-delay-400 {
+  animation-delay: 400ms;
+}
+
+.animation-delay-500 {
+  animation-delay: 500ms;
+}
+
+/* ===================================
+   TRANSITION UTILITIES
+   =================================== */
+
+/* Button transitions */
+.transition-button {
+  transition-property: all;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* Sidebar collapse/expand */
+.transition-sidebar {
+  transition-property: all;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Color/background transitions */
+.transition-colors-fast {
+  transition-property: color, background-color, border-color;
+  transition-duration: 100ms;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
+}
+
+.transition-colors-smooth {
+  transition-property: color, background-color, border-color;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Transform transitions */
+.transition-transform-fast {
+  transition-property: transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
+}
+
+.transition-transform-smooth {
+  transition-property: transform;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Opacity transitions */
+.transition-opacity-fast {
+  transition-property: opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
+}
+
+.transition-opacity-smooth {
+  transition-property: opacity;
+  transition-duration: 300ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===================================
+   REDUCED MOTION SUPPORT
+   =================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  /* Disable specific animations */
+  .animate-slide-in-bottom,
+  .animate-fade-in,
+  .animate-scale-in,
+  .animate-slide-in-right,
+  .animate-slide-in-left,
+  .animate-breathe,
+  .animate-gentle-bounce,
+  .animate-gradient-shift {
+    animation: none !important;
+  }
+
+  /* Keep essential loading indicators */
+  .animate-pulse,
+  .animate-shimmer,
+  .animate-spin,
+  .animate-typing {
+    animation-duration: 1s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* ===================================
+   COMPOSABLE ANIMATION PATTERNS
+   =================================== */
+
+/* Message entrance with stagger */
+.message-entrance {
+  animation: slideInBottom 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.message-entrance:nth-child(1) { animation-delay: 0ms; }
+.message-entrance:nth-child(2) { animation-delay: 75ms; }
+.message-entrance:nth-child(3) { animation-delay: 150ms; }
+.message-entrance:nth-child(4) { animation-delay: 225ms; }
+.message-entrance:nth-child(5) { animation-delay: 300ms; }
+
+/* Tool call animation */
+.tool-call-entrance {
+  animation: scaleIn 150ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* Modal entrance */
+.modal-entrance {
+  animation: scaleIn 150ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* Sidebar item entrance with stagger */
+.sidebar-item-entrance {
+  animation: fadeIn 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.sidebar-item-entrance:nth-child(1) { animation-delay: 0ms; }
+.sidebar-item-entrance:nth-child(2) { animation-delay: 50ms; }
+.sidebar-item-entrance:nth-child(3) { animation-delay: 100ms; }
+.sidebar-item-entrance:nth-child(4) { animation-delay: 150ms; }
+.sidebar-item-entrance:nth-child(5) { animation-delay: 200ms; }
+
+/* Loading state transitions */
+.loading-enter {
+  animation: fadeIn 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.loading-exit {
+  transition-property: opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  opacity: 0;
+}

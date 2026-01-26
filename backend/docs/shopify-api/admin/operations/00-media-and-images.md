@@ -1,0 +1,7 @@
+The `media` object in Liquid is an abstract object that can represent different types of media, including `image`, `model`, `video`, and `external_video`. It has properties like `alt`, `id`, `media_type`, `position`, and `preview_image`. You can use the `media_type` property with the `where` filter to filter media of a specific type from the `product.media` array.
+
+The `image` object in Liquid represents an image and has properties such as `alt`, `aspect_ratio`, `attached_to_variant?`, `height`, `id`, `media_type`, `position`, `presentation`, `preview_image`, `product_id`, `src`, `variants`, and `width`. You can use the `image_url` and `image_tag` filters to display images on the storefront.
+
+The documentation also provides information on Polaris web components for Admin Extensions and App Home, categorized into Actions, Feedback, Forms, Media, Overlays, Structure, and Titles and text. These components include `Button`, `ButtonGroup`, `Checkbox`, `TextField`, `Image`, `Spinner`, `Modal`, `Tooltip`, `Grid`, `Table`, `Heading`, and `Paragraph`, among others.
+
+Finally, there's documentation on product media for themes, which explains how merchants can upload 3D models and videos, and attach YouTube or Vimeo videos as product media. It also lists Liquid objects and filters that can be used to display media in a theme, such as `external_video`, `video`, `video_source`, `model`, `model_source`, and `media filters`.
