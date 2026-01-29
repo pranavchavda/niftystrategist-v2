@@ -27,6 +27,7 @@ import {
   Zap,
   MenuIcon,
 } from "lucide-react";
+import TradingModeToggle from "./TradingModeToggle";
 // TODO: Replace with trading logo
 import logo from "../assets/eblogo-notext.webp";
 import { hasPermission, PERMISSIONS } from "../utils/permissions";
@@ -711,11 +712,14 @@ export default function Sidebar({
           )}
         </SidebarBody>
 
-        {/* Footer - User Dropdown */}
+        {/* Footer - Trading Mode Toggle & User Dropdown */}
         <SidebarFooter className="pt-2 pb-3">
           <SidebarDivider className="bg-zinc-200 dark:bg-zinc-800 mb-3 mx-4" />
 
+          {/* Trading Mode Toggle */}
+          <TradingModeToggle authToken={authToken} isCollapsed={isCollapsed} />
 
+          <SidebarDivider className="bg-zinc-200 dark:bg-zinc-800 my-2 mx-4" />
 
           <SidebarSection className={isCollapsed ? 'px-2' : 'px-3'}>
             <Dropdown

@@ -94,6 +94,7 @@ class UpstoxClient:
         redirect_uri: str | None = None,
         access_token: str | None = None,
         paper_trading: bool = True,
+        user_id: int = 1,
     ):
         """
         Initialize the Upstox client.
@@ -104,11 +105,13 @@ class UpstoxClient:
             redirect_uri: OAuth redirect URI (or from UPSTOX_REDIRECT_URI env var)
             access_token: Pre-existing access token (or from UPSTOX_ACCESS_TOKEN env var)
             paper_trading: If True, simulate orders instead of placing real ones
+            user_id: User ID for paper trading (default: 1)
         """
         self.api_key = api_key or os.getenv("UPSTOX_API_KEY")
         self.api_secret = api_secret or os.getenv("UPSTOX_API_SECRET")
-        self.redirect_uri = redirect_uri or os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:3000/callback")
+        self.redirect_uri = redirect_uri or os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:5173/auth/upstox/callback")
         self.paper_trading = paper_trading
+        self.user_id = user_id
         self.access_token: str | None = access_token or os.getenv("UPSTOX_ACCESS_TOKEN")
 
         # Configure SDK
@@ -119,18 +122,52 @@ class UpstoxClient:
         else:
             logger.warning("No Upstox access token - API calls will fail until token is set")
 
-        # Paper trading state
-        self._paper_portfolio = Portfolio(
-            total_value=1000000.0,  # 10 lakh starting capital
-            available_cash=1000000.0,
-            invested_value=0.0,
-            day_pnl=0.0,
-            day_pnl_percentage=0.0,
-            total_pnl=0.0,
-            total_pnl_percentage=0.0,
-            positions=[],
-        )
+        # Paper trading state (will be loaded from DB)
+        self._paper_portfolio: Portfolio | None = None
         self._paper_order_id = 1000
+        self._portfolio_loaded = False
+
+    async def _ensure_portfolio_loaded(self) -> None:
+        """Load portfolio from database if not already loaded."""
+        if self._portfolio_loaded and self._paper_portfolio:
+            return
+
+        try:
+            from services.trade_persistence import get_trade_persistence
+            persistence = get_trade_persistence()
+
+            if persistence:
+                self._paper_portfolio = await persistence.get_portfolio_for_user(self.user_id)
+                self._portfolio_loaded = True
+                logger.info(f"[UpstoxClient] Loaded portfolio from DB for user {self.user_id}")
+            else:
+                # Fallback to default portfolio if persistence not initialized
+                self._paper_portfolio = Portfolio(
+                    total_value=1000000.0,
+                    available_cash=1000000.0,
+                    invested_value=0.0,
+                    day_pnl=0.0,
+                    day_pnl_percentage=0.0,
+                    total_pnl=0.0,
+                    total_pnl_percentage=0.0,
+                    positions=[],
+                )
+                self._portfolio_loaded = True
+                logger.warning("[UpstoxClient] Trade persistence not available, using default portfolio")
+        except Exception as e:
+            logger.error(f"[UpstoxClient] Failed to load portfolio from DB: {e}")
+            # Fallback to default
+            self._paper_portfolio = Portfolio(
+                total_value=1000000.0,
+                available_cash=1000000.0,
+                invested_value=0.0,
+                day_pnl=0.0,
+                day_pnl_percentage=0.0,
+                total_pnl=0.0,
+                total_pnl_percentage=0.0,
+                positions=[],
+            )
+            self._portfolio_loaded = True
 
     async def close(self) -> None:
         """Close any resources (SDK handles cleanup automatically)."""
@@ -348,9 +385,12 @@ class UpstoxClient:
                 product="D",  # Delivery
                 validity="DAY",
                 price=price if order_type == "LIMIT" else 0,
+                trigger_price=0,  # No stop-loss trigger
                 instrument_token=instrument_key,
                 order_type=order_type,
                 transaction_type=transaction_type,
+                disclosed_quantity=0,  # Show full quantity (no iceberg)
+                is_amo=False,  # Not after-market order
             )
 
             response = order_api.place_order(body)
@@ -383,8 +423,11 @@ class UpstoxClient:
         price: float,
         order_type: Literal["MARKET", "LIMIT"],
     ) -> TradeResult:
-        """Simulate order placement for paper trading."""
+        """Simulate order placement for paper trading with database persistence."""
         import random
+
+        # Ensure portfolio is loaded from DB
+        await self._ensure_portfolio_loaded()
 
         # Simulate execution with small slippage
         executed_price = price * (1 + random.uniform(-0.001, 0.001))
@@ -393,6 +436,7 @@ class UpstoxClient:
 
         total_value = executed_price * quantity
 
+        # Validate the trade before persisting
         if transaction_type == "BUY":
             if total_value > self._paper_portfolio.available_cash:
                 return TradeResult(
@@ -400,11 +444,69 @@ class UpstoxClient:
                     status="REJECTED",
                     message=f"Insufficient funds. Required: ₹{total_value:.2f}, Available: ₹{self._paper_portfolio.available_cash:.2f}",
                 )
+        else:  # SELL
+            existing = next(
+                (p for p in self._paper_portfolio.positions if p.symbol == symbol), None
+            )
+            if not existing or existing.quantity < quantity:
+                return TradeResult(
+                    success=False,
+                    status="REJECTED",
+                    message=f"Insufficient shares. Have: {existing.quantity if existing else 0}, Need: {quantity}",
+                )
 
+        # Save to database
+        try:
+            from services.trade_persistence import get_trade_persistence
+            persistence = get_trade_persistence()
+
+            if persistence:
+                await persistence.save_trade(
+                    user_id=self.user_id,
+                    symbol=symbol,
+                    direction=transaction_type,
+                    quantity=quantity,
+                    executed_price=executed_price,
+                    order_type=order_type,
+                    order_id=order_id,
+                )
+                logger.info(f"[UpstoxClient] Persisted paper trade to DB: {transaction_type} {quantity} {symbol}")
+
+                # Reload portfolio from DB to reflect the new trade
+                self._paper_portfolio = await persistence.get_portfolio_for_user(self.user_id)
+            else:
+                # Fallback: update in-memory portfolio (old behavior)
+                logger.warning("[UpstoxClient] Trade persistence not available, updating in-memory only")
+                self._update_portfolio_in_memory(symbol, transaction_type, quantity, executed_price)
+
+        except Exception as e:
+            logger.error(f"[UpstoxClient] Failed to persist trade: {e}")
+            # Still update in-memory as fallback
+            self._update_portfolio_in_memory(symbol, transaction_type, quantity, executed_price)
+
+        return TradeResult(
+            success=True,
+            order_id=order_id,
+            status="COMPLETE",
+            executed_price=executed_price,
+            executed_quantity=quantity,
+            message=f"Paper trade executed: {transaction_type} {quantity} {symbol} @ ₹{executed_price:.2f}",
+        )
+
+    def _update_portfolio_in_memory(
+        self,
+        symbol: str,
+        transaction_type: str,
+        quantity: int,
+        executed_price: float,
+    ) -> None:
+        """Update portfolio in memory (fallback when DB not available)."""
+        total_value = executed_price * quantity
+
+        if transaction_type == "BUY":
             self._paper_portfolio.available_cash -= total_value
             self._paper_portfolio.invested_value += total_value
 
-            # Add or update position
             existing = next(
                 (p for p in self._paper_portfolio.positions if p.symbol == symbol), None
             )
@@ -432,38 +534,24 @@ class UpstoxClient:
             existing = next(
                 (p for p in self._paper_portfolio.positions if p.symbol == symbol), None
             )
-            if not existing or existing.quantity < quantity:
-                return TradeResult(
-                    success=False,
-                    status="REJECTED",
-                    message=f"Insufficient shares. Have: {existing.quantity if existing else 0}, Need: {quantity}",
-                )
+            if existing:
+                pnl = (executed_price - existing.average_price) * quantity
+                self._paper_portfolio.available_cash += total_value
+                self._paper_portfolio.invested_value -= existing.average_price * quantity
+                self._paper_portfolio.total_pnl += pnl
 
-            pnl = (executed_price - existing.average_price) * quantity
-            self._paper_portfolio.available_cash += total_value
-            self._paper_portfolio.invested_value -= existing.average_price * quantity
-            self._paper_portfolio.total_pnl += pnl
-
-            existing.quantity -= quantity
-            if existing.quantity == 0:
-                self._paper_portfolio.positions.remove(existing)
+                existing.quantity -= quantity
+                if existing.quantity == 0:
+                    self._paper_portfolio.positions.remove(existing)
 
         self._paper_portfolio.total_value = (
             self._paper_portfolio.available_cash + self._paper_portfolio.invested_value
         )
 
-        return TradeResult(
-            success=True,
-            order_id=order_id,
-            status="COMPLETE",
-            executed_price=executed_price,
-            executed_quantity=quantity,
-            message=f"Paper trade executed: {transaction_type} {quantity} {symbol} @ ₹{executed_price:.2f}",
-        )
-
     async def get_portfolio(self) -> Portfolio:
         """Get current portfolio."""
         if self.paper_trading:
+            await self._ensure_portfolio_loaded()
             return self._paper_portfolio
 
         if not self.access_token:

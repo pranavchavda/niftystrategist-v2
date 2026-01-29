@@ -1,13 +1,69 @@
 """Order execution tools with Human-in-the-Loop approval."""
 
 import logging
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic_ai import RunContext
+from sqlalchemy import select
 
 from utils.hitl_decorator import requires_approval
 
 logger = logging.getLogger(__name__)
+
+
+async def get_trading_client_for_user(user_email: str):
+    """
+    Get the appropriate UpstoxClient for a user based on their trading mode.
+
+    Returns:
+        Tuple of (client, is_live_trading)
+    """
+    from database.session import get_db_session
+    from database.models import User as DBUser
+    from services.upstox_client import UpstoxClient
+    from api.upstox_oauth import get_user_upstox_token
+    from utils.encryption import decrypt_token
+    from datetime import datetime, timezone
+
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser).where(DBUser.email == user_email)
+        )
+        db_user = result.scalar_one_or_none()
+
+        if not db_user:
+            # Fallback to shared paper trading client
+            from main import shared_upstox_client
+            return shared_upstox_client, False
+
+        # Check if user wants live trading
+        if db_user.trading_mode == "live":
+            # Verify Upstox connection is valid (use naive datetime for DB compatibility)
+            if (db_user.upstox_access_token and
+                db_user.upstox_token_expiry and
+                db_user.upstox_token_expiry > datetime.utcnow()):
+
+                # Decrypt token and create live client
+                access_token = decrypt_token(db_user.upstox_access_token)
+                if access_token:
+                    logger.info(f"Creating live trading client for user {db_user.id}")
+                    client = UpstoxClient(
+                        access_token=access_token,
+                        paper_trading=False,
+                        user_id=db_user.id,
+                    )
+                    return client, True
+                else:
+                    logger.warning(f"Failed to decrypt token for user {db_user.id}")
+            else:
+                logger.warning(f"User {db_user.id} has live mode but invalid/expired Upstox token")
+
+        # Fallback to paper trading with user's ID
+        from main import shared_upstox_client
+
+        # Update user_id on shared client for proper trade tracking
+        shared_upstox_client.user_id = db_user.id
+        return shared_upstox_client, False
 
 
 def register_order_tools(agent, deps_type):
@@ -40,7 +96,7 @@ def register_order_tools(agent, deps_type):
             lines.append(f"**Target:** ₹{target:,.2f}")
 
         lines.append("")
-        lines.append("⚠️ This will execute a real trade. Please confirm.")
+        lines.append("⚠️ Please confirm to execute this trade.")
 
         return "\n".join(lines)
 
@@ -77,17 +133,16 @@ def register_order_tools(agent, deps_type):
         Returns:
             Order confirmation with order ID and details
         """
-        from services.upstox_client import UpstoxClient
-
         try:
             # Validate limit order has a price
             if order_type == "LIMIT" and not limit_price:
                 return "❌ Limit orders require a limit_price. Please specify the price."
 
-            # Get or create client
-            client = getattr(ctx.deps, 'upstox_client', None)
-            if not client:
-                client = UpstoxClient(paper_trading=True)
+            # Get user email from context
+            user_email = ctx.deps.state.user_id
+
+            # Get the appropriate client based on user's trading mode
+            client, is_live = await get_trading_client_for_user(user_email)
 
             # Execute the order
             order_result = await client.place_order(
@@ -104,8 +159,10 @@ def register_order_tools(agent, deps_type):
 
             # Format success response
             emoji = "🟢" if action == "BUY" else "🔴"
+            mode_indicator = "🔴 LIVE" if is_live else "📝 Paper"
+
             result_lines = [
-                f"{emoji} **Order Placed Successfully**",
+                f"{emoji} **Order Placed Successfully** [{mode_indicator}]",
                 "",
                 f"**Order ID:** {order_result.order_id}",
                 f"**Symbol:** {symbol.upper()}",
@@ -128,8 +185,11 @@ def register_order_tools(agent, deps_type):
             if target:
                 result_lines.append(f"🎯 **Target:** ₹{target:,.2f}")
 
-            # Add note about paper trading
-            if client.paper_trading:
+            # Add note about trading mode
+            if is_live:
+                result_lines.append("")
+                result_lines.append("⚠️ *Live trading - real money at risk*")
+            else:
                 result_lines.append("")
                 result_lines.append("📝 *Paper trading mode - no real money at risk*")
 
@@ -151,12 +211,9 @@ def register_order_tools(agent, deps_type):
         Returns:
             List of open orders with their status
         """
-        from services.upstox_client import UpstoxClient
-
         try:
-            client = getattr(ctx.deps, 'upstox_client', None)
-            if not client:
-                client = UpstoxClient(paper_trading=True)
+            user_email = ctx.deps.state.user_id
+            client, is_live = await get_trading_client_for_user(user_email)
 
             orders = await client.get_orders()
 
@@ -169,7 +226,8 @@ def register_order_tools(agent, deps_type):
             if not open_orders:
                 return "📭 No open orders. All orders have been executed or cancelled."
 
-            result = ["📋 **Open Orders:**\n"]
+            mode_indicator = "🔴 LIVE" if is_live else "📝 Paper"
+            result = [f"📋 **Open Orders** [{mode_indicator}]\n"]
             result.append("| Order ID | Symbol | Action | Qty | Type | Price | Status |")
             result.append("|----------|--------|--------|-----|------|-------|--------|")
 
@@ -201,12 +259,9 @@ def register_order_tools(agent, deps_type):
         Returns:
             List of recent orders with their status
         """
-        from services.upstox_client import UpstoxClient
-
         try:
-            client = getattr(ctx.deps, 'upstox_client', None)
-            if not client:
-                client = UpstoxClient(paper_trading=True)
+            user_email = ctx.deps.state.user_id
+            client, is_live = await get_trading_client_for_user(user_email)
 
             orders = await client.get_orders()
 
@@ -216,7 +271,8 @@ def register_order_tools(agent, deps_type):
             # Sort by timestamp if available, take most recent
             recent_orders = orders[:limit]
 
-            result = ["📋 **Order History:**\n"]
+            mode_indicator = "🔴 LIVE" if is_live else "📝 Paper"
+            result = [f"📋 **Order History** [{mode_indicator}]\n"]
             result.append("| Time | Symbol | Action | Qty | Price | Status |")
             result.append("|------|--------|--------|-----|-------|--------|")
 
@@ -262,17 +318,15 @@ def register_order_tools(agent, deps_type):
         Returns:
             Confirmation of cancellation
         """
-        from services.upstox_client import UpstoxClient
-
         try:
-            client = getattr(ctx.deps, 'upstox_client', None)
-            if not client:
-                client = UpstoxClient(paper_trading=True)
+            user_email = ctx.deps.state.user_id
+            client, is_live = await get_trading_client_for_user(user_email)
 
             result = await client.cancel_order(order_id)
 
+            mode_indicator = "🔴 LIVE" if is_live else "📝 Paper"
             if result.get('success'):
-                return f"✅ Order {order_id} has been cancelled."
+                return f"✅ Order {order_id} has been cancelled. [{mode_indicator}]"
             else:
                 return f"❌ Failed to cancel order: {result.get('message', 'Unknown error')}"
 

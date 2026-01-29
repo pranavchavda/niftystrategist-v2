@@ -25,6 +25,9 @@ type Pages = {
       "publicId": string;
     };
   };
+  "/auth/upstox/callback": {
+    params: {};
+  };
   "/chat/:threadId": {
     params: {
       "threadId": string;
@@ -76,7 +79,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -93,6 +96,10 @@ type RouteFiles = {
   "./routes/public.notes.$publicId.tsx": {
     id: "routes/public.notes.$publicId";
     page: "/public/notes/:publicId";
+  };
+  "./routes/auth.upstox.callback.tsx": {
+    id: "routes/auth.upstox.callback";
+    page: "/auth/upstox/callback";
   };
   "./routes/_auth.tsx": {
     id: "routes/_auth";
@@ -162,6 +169,7 @@ type RouteModules = {
   "routes/login": typeof import("./app/./routes/login.tsx");
   "routes/help": typeof import("./app/./routes/help.tsx");
   "routes/public.notes.$publicId": typeof import("./app/./routes/public.notes.$publicId.tsx");
+  "routes/auth.upstox.callback": typeof import("./app/./routes/auth.upstox.callback.tsx");
   "routes/_auth": typeof import("./app/./routes/_auth.tsx");
   "routes/chat.$threadId": typeof import("./app/./routes/chat.$threadId.tsx");
   "routes/dashboard": typeof import("./app/./routes/dashboard.tsx");

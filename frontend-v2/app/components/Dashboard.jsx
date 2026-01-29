@@ -44,31 +44,45 @@ const Dashboard = ({ authToken }) => {
   const [portfolioData, setPortfolioData] = useState(null);
   const [error, setError] = useState(null);
 
-  // Fetch portfolio data from backend
+  // Fetch portfolio data from backend API
   const fetchPortfolioData = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      // TODO: Connect to actual portfolio API
-      // For now, show placeholder data structure
-      const mockData = {
-        total_value: 1000000,
-        available_cash: 250000,
-        invested_value: 750000,
-        day_pnl: 12500,
-        day_pnl_percentage: 1.25,
-        total_pnl: 45000,
-        total_pnl_percentage: 4.5,
-        positions: [],
-        market_status: 'closed',
-        last_updated: new Date().toISOString()
-      };
+      const response = await fetch('/api/portfolio', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
 
-      setPortfolioData(mockData);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch portfolio: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      setPortfolioData({
+        ...data,
+        last_updated: new Date().toISOString()
+      });
     } catch (err) {
       console.error('Portfolio fetch error:', err);
       setError(err.message);
+      // Set default values on error
+      setPortfolioData({
+        total_value: 1000000,
+        available_cash: 1000000,
+        invested_value: 0,
+        day_pnl: 0,
+        day_pnl_percentage: 0,
+        total_pnl: 0,
+        total_pnl_percentage: 0,
+        positions: [],
+        market_status: 'Paper Trading Mode',
+        paper_trading: true,
+        last_updated: new Date().toISOString()
+      });
     } finally {
       setLoading(false);
     }

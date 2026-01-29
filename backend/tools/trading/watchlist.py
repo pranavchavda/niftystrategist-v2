@@ -304,7 +304,7 @@ def register_watchlist_tools(agent, deps_type):
                 if notes is not None:
                     item.notes = notes
 
-                item.updated_at = datetime.now(timezone.utc)
+                item.updated_at = datetime.utcnow()  # Use naive datetime for DB compatibility
                 await session.commit()
 
                 # Build response

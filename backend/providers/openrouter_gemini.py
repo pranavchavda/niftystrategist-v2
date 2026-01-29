@@ -109,14 +109,17 @@ class OpenRouterGeminiStreamedResponse(OpenAIStreamedResponse):
                          maybe_event.part.provider_name = self.provider_name
                     yield maybe_event
 
-            # The `reasoning_content` field is only present in DeepSeek models.
+            # The `reasoning_content` field is present in DeepSeek, Kimi, and other thinking models
+            # IMPORTANT: Iterate over the events since handle_thinking_delta returns an iterator
             if reasoning_content := getattr(choice.delta, 'reasoning_content', None):
-                yield self._parts_manager.handle_thinking_delta(
+                logger.debug(f"[REASONING-STREAM] Got reasoning_content delta: {len(reasoning_content)} chars")
+                for event in self._parts_manager.handle_thinking_delta(
                     vendor_part_id='reasoning_content',
                     id='reasoning_content',
                     content=reasoning_content,
                     provider_name=self.provider_name,
-                )
+                ):
+                    yield event
 
             for dtc in choice.delta.tool_calls or []:
                 maybe_event = self._parts_manager.handle_tool_call_delta(
@@ -130,9 +133,15 @@ class OpenRouterGeminiStreamedResponse(OpenAIStreamedResponse):
 
 class OpenRouterGeminiModel(OpenAIChatModel):
     """
-    Custom OpenAIChatModel for OpenRouter Gemini models that require
-    preservation of 'reasoning_details' (thinking blocks).
+    Custom OpenAIChatModel for OpenRouter models that require
+    preservation of 'reasoning_details' or 'reasoning_content' (thinking blocks).
+
+    Used for: Gemini (reasoning_details), DeepSeek (reasoning_content), Kimi (reasoning_content)
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        logger.info(f"[OpenRouterGeminiModel] Initialized for model: {self.model_name}")
     
     @asynccontextmanager
     async def request_stream(
@@ -201,64 +210,86 @@ class OpenRouterGeminiModel(OpenAIChatModel):
 
         return model_response
 
-    async def _map_messages(self, messages: list[ModelMessage], model_request_parameters: ModelRequestParameters | None = None) -> list[ChatCompletionMessageParam]:
+    def _map_model_response(self, message: ModelResponse) -> chat.ChatCompletionMessageParam:
         """
-        Map messages to OpenAI format, injecting reasoning_details for Assistant messages.
+        Override to inject reasoning_details/reasoning_content into assistant messages.
+
+        Uses parent's mapping logic, then adds reasoning fields for thinking models.
         """
-        openai_messages: list[ChatCompletionMessageParam] = []
-        
-        for message in messages:
-            if isinstance(message, ModelRequest):
-                # Use parent's logic for user/system messages
-                async for item in self._map_user_message(message):
-                    openai_messages.append(item)
-            
-            elif isinstance(message, ModelResponse):
-                # Custom logic for Assistant messages to include reasoning_details
-                texts: list[str] = []
-                tool_calls: list[chat.ChatCompletionMessageFunctionToolCallParam] = []
-                
-                for item in message.parts:
-                    if isinstance(item, TextPart):
-                        texts.append(item.content)
-                    elif isinstance(item, ThinkingPart):
-                        # We don't send ThinkingPart back as text content for Gemini via OpenRouter
-                        # The reasoning is sent via reasoning_details
-                        pass
-                    elif isinstance(item, ToolCallPart):
-                        tool_calls.append(self._map_tool_call(item))
-                    elif isinstance(item, BuiltinToolCallPart | BuiltinToolReturnPart):
-                        pass
-                    else:
-                        assert_never(item)
-                
-                message_param = chat.ChatCompletionAssistantMessageParam(role='assistant')
-                
-                if texts:
-                    message_param['content'] = '\n\n'.join(texts)
-                else:
-                    message_param['content'] = None
-                
-                if tool_calls:
-                    message_param['tool_calls'] = tool_calls
-                
-                # INJECT REASONING_DETAILS
-                if message.provider_details and "reasoning_details" in message.provider_details:
-                    # We need to cast or ignore type checking because reasoning_details 
-                    # is not in the standard ChatCompletionAssistantMessageParam definition
-                    message_param["reasoning_details"] = message.provider_details["reasoning_details"] # type: ignore
-                
-                openai_messages.append(message_param)
-                
-            else:
-                assert_never(message)
-        
-        # Add system instructions if present (using parent's logic helper if possible, 
-        # but _get_instructions is private, so we replicate it or access it)
-        # Accessing private method _get_instructions from parent
-        if hasattr(self, '_get_instructions'):
-            instructions = self._get_instructions(messages)
-            if instructions:
-                openai_messages.insert(0, chat.ChatCompletionSystemMessageParam(content=instructions, role='system'))
-        
-        return openai_messages
+        # Get the base message from parent's logic
+        message_param = super()._map_model_response(message)
+
+        # INJECT REASONING_DETAILS (for Gemini models)
+        if message.provider_details and "reasoning_details" in message.provider_details:
+            message_param["reasoning_details"] = message.provider_details["reasoning_details"]  # type: ignore
+
+        # INJECT REASONING_CONTENT (for Kimi K2.5, DeepSeek, and other thinking models)
+        # This is REQUIRED when the model has "thinking" enabled and makes tool calls
+        # Without this, we get: "thinking is enabled but reasoning_content is missing"
+        thinking_content: list[str] = []
+        for item in message.parts:
+            if isinstance(item, ThinkingPart) and item.content:
+                thinking_content.append(item.content)
+
+        # Count tool calls to determine if reasoning_content is needed
+        tool_call_count = sum(1 for p in message.parts if isinstance(p, ToolCallPart))
+
+        if thinking_content:
+            message_param["reasoning_content"] = '\n\n'.join(thinking_content)  # type: ignore
+            logger.debug(f"Injected reasoning_content ({len(thinking_content)} parts) for assistant message with {tool_call_count} tool calls")
+        elif tool_call_count > 0:
+            # Thinking models require reasoning_content on ALL assistant messages with tool calls
+            # when thinking is enabled, even if the original thinking was not preserved
+            message_param["reasoning_content"] = ""  # type: ignore
+            logger.debug(f"Injected empty reasoning_content for assistant message with {tool_call_count} tool calls (no ThinkingPart found)")
+
+        return message_param
+
+
+class OpenRouterKimiModel(OpenAIChatModel):
+    """
+    Minimal model class for Kimi/Moonshot models.
+
+    Only overrides _map_model_response to inject reasoning_content for multi-turn
+    conversations. Does NOT use custom streaming response (unlike OpenRouterGeminiModel)
+    to preserve Kimi's native tool calling behavior.
+
+    The issue: Kimi K2.5 has "thinking" enabled by default. When you make tool calls,
+    the assistant message needs reasoning_content in subsequent turns. Without it,
+    the API returns: "thinking is enabled but reasoning_content is missing"
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        logger.info(f"[OpenRouterKimiModel] Initialized for model: {self.model_name}")
+
+    def _map_model_response(self, message: ModelResponse) -> chat.ChatCompletionMessageParam:
+        """
+        Override to inject reasoning_content into assistant messages.
+
+        Uses parent's mapping logic, then adds reasoning_content from ThinkingPart.
+        """
+        # Get the base message from parent's logic
+        message_param = super()._map_model_response(message)
+
+        # INJECT REASONING_CONTENT (for Kimi K2.5 and other thinking models)
+        # This is REQUIRED when the model has "thinking" enabled and makes tool calls
+        # Without this, we get: "thinking is enabled but reasoning_content is missing"
+        thinking_content: list[str] = []
+        for item in message.parts:
+            if isinstance(item, ThinkingPart) and item.content:
+                thinking_content.append(item.content)
+
+        # Count tool calls to determine if reasoning_content is needed
+        tool_call_count = sum(1 for p in message.parts if isinstance(p, ToolCallPart))
+
+        if thinking_content:
+            message_param["reasoning_content"] = '\n\n'.join(thinking_content)  # type: ignore
+            logger.debug(f"[Kimi] Injected reasoning_content ({len(thinking_content)} parts) for assistant message with {tool_call_count} tool calls")
+        elif tool_call_count > 0:
+            # Kimi requires reasoning_content on ALL assistant messages with tool calls
+            # when thinking is enabled, even if the original thinking was not preserved
+            message_param["reasoning_content"] = ""  # type: ignore
+            logger.debug(f"[Kimi] Injected empty reasoning_content for assistant message with {tool_call_count} tool calls (no ThinkingPart found)")
+
+        return message_param

@@ -136,6 +136,9 @@ class User(Base):
     upstox_token_expiry = Column(DateTime, nullable=True)
     upstox_user_id = Column(String(100), nullable=True)  # Upstox user identifier
 
+    # Trading mode: 'paper' or 'live'
+    trading_mode = Column(String(10), default="paper", nullable=False)
+
     # Model preferences
     preferred_model = Column(String(100), default="deepseek/deepseek-chat")
 

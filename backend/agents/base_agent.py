@@ -20,7 +20,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider  # Proper OpenRouter support with reasoning field
 from pydantic_ai.profiles.openai import OpenAIModelProfile
-from providers.openrouter_gemini import OpenRouterGeminiModel
+from providers.openrouter_gemini import OpenRouterGeminiModel, OpenRouterKimiModel
 
 logger = logging.getLogger(__name__)
 
@@ -295,25 +295,40 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
 
         model_settings = ModelSettings(**model_settings_kwargs)
 
+        # Use OpenRouterGeminiModel for models that need reasoning_content/reasoning_details preserved
+        # This includes: Gemini (reasoning_details), DeepSeek/Kimi (reasoning_content)
+        # The custom model class handles injecting these fields back into assistant messages
+        # which is REQUIRED for multi-turn conversations with thinking-enabled models
         if config.use_openrouter and 'gemini' in model_name.lower():
-            logger.info(f"Using custom OpenRouterGeminiModel for {model_name}")
+            logger.info(f"Using custom OpenRouterGeminiModel for {model_name} (reasoning_details support)")
             return OpenRouterGeminiModel(
                 model_name,
                 provider=provider,
                 settings=model_settings
             )
 
-        # DeepSeek models don't support mixing strict and non-strict tools
-        # Must disable strict tool definitions to prevent "Cannot use strict tool
-        # with non-strict tool in the same request" error
-        if 'deepseek' in model_name.lower():
-            logger.info(f"Using custom profile for {model_name} (strict tools disabled)")
+        # DeepSeek models use reasoning_content field and need strict tools disabled
+        # Use OpenRouterGeminiModel to preserve reasoning in multi-turn tool calls
+        if config.use_openrouter and 'deepseek' in model_name.lower():
+            logger.info(f"Using custom OpenRouterGeminiModel for {model_name} (reasoning_content support)")
             profile = OpenAIModelProfile(openai_supports_strict_tool_definition=False)
-            return OpenAIChatModel(
+            logger.info(f"Also using custom profile for {model_name} (strict tools disabled)")
+            return OpenRouterGeminiModel(
                 model_name,
                 provider=provider,
                 settings=model_settings,
                 profile=profile
+            )
+
+        # Kimi/Moonshot models: Use minimal OpenRouterKimiModel
+        # Only injects reasoning_content for multi-turn, doesn't change streaming
+        # This preserves Kimi's native tool calling while fixing the multi-turn error
+        if config.use_openrouter and ('kimi' in model_name.lower() or 'moonshot' in model_name.lower()):
+            logger.info(f"Using OpenRouterKimiModel for {model_name} (reasoning_content injection only)")
+            return OpenRouterKimiModel(
+                model_name,
+                provider=provider,
+                settings=model_settings
             )
 
         return OpenAIChatModel(

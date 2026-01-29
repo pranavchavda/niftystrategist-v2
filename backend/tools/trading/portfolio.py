@@ -20,12 +20,13 @@ def register_portfolio_tools(agent, deps_type):
         Returns:
             Portfolio summary with total value, available cash, positions, and P&L
         """
-        from services.upstox_client import UpstoxClient
-
         try:
+            # Use shared client from deps or import the global one
             client = getattr(ctx.deps, 'upstox_client', None)
             if not client:
-                client = UpstoxClient(paper_trading=True)
+                # Import the shared global client
+                from main import shared_upstox_client
+                client = shared_upstox_client
 
             portfolio = await client.get_portfolio()
 
@@ -89,12 +90,11 @@ def register_portfolio_tools(agent, deps_type):
         Returns:
             Position details including quantity, average price, current price, and P&L
         """
-        from services.upstox_client import UpstoxClient
-
         try:
             client = getattr(ctx.deps, 'upstox_client', None)
             if not client:
-                client = UpstoxClient(paper_trading=True)
+                from main import shared_upstox_client
+                client = shared_upstox_client
 
             portfolio = await client.get_portfolio()
 
@@ -144,12 +144,11 @@ def register_portfolio_tools(agent, deps_type):
         Returns:
             Recommended quantity and position details
         """
-        from services.upstox_client import UpstoxClient
-
         try:
             client = getattr(ctx.deps, 'upstox_client', None)
             if not client:
-                client = UpstoxClient(paper_trading=True)
+                from main import shared_upstox_client
+                client = shared_upstox_client
 
             # Get current price
             quote = await client.get_quote(symbol.upper())

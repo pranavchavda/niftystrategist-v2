@@ -323,6 +323,96 @@ See `api/conversations.py` fork endpoint - compress old context
 
 ---
 
+## Planned: CLI-Based Trading Tools (Next Phase)
+
+> **Status**: Planned for implementation. This replaces the current Pydantic AI tool-based approach.
+
+### Concept
+
+Instead of registering many trading tools with the orchestrator (which increases token overhead), we use a single `execute_bash` tool and create CLI scripts the agent invokes. This is inspired by EspressoBot's bash tool pattern.
+
+**Benefits:**
+- **Token efficiency** - One tool definition instead of 15+ trading tools with full schemas
+- **Self-documenting** - Agent calls `nf-quote --help` to learn usage on-demand
+- **Composable** - Can chain commands: `nf-quote RELIANCE | nf-analyze --quick`
+- **Easy to extend** - Add new tool = add new script, no agent code changes
+- **Testable** - Debug tools directly from terminal
+- **Discoverable** - Agent reads index, picks the right tool
+
+### Proposed Structure
+
+```
+backend/
+└── cli-tools/
+    ├── index.md              # Tool catalog for agent to read
+    ├── nf-quote              # Get live/historical quotes
+    ├── nf-order              # Place/modify/cancel orders (supports AMO)
+    ├── nf-portfolio          # View holdings, P&L, positions
+    ├── nf-watchlist          # Manage watchlist
+    ├── nf-analyze            # Technical analysis (RSI, MACD, etc.)
+    ├── nf-market-status      # Check market hours, holidays, circuit breakers
+    ├── nf-search             # Search stocks by name/sector/criteria
+    ├── nf-account            # Account info, margins, funds
+    ├── nf-alerts             # Price alerts, notifications
+    └── nf-history            # Trade history, order book
+```
+
+### Tool Conventions
+
+Each tool will:
+- Have `--help` with usage examples
+- Support `--json` flag for structured output (default: human-readable)
+- Read user context from environment (`NF_USER_ID`, `NF_TRADING_MODE`)
+- Use consistent error format: `❌ Error: <message>`
+- Use consistent success format: `✅ <result>`
+- Support `--dry-run` for order tools
+
+### Example Usage
+
+```bash
+# Agent checks what tools are available
+cat cli-tools/index.md
+
+# Agent learns about a specific tool
+nf-order --help
+
+# Get a quote
+nf-quote RELIANCE --json
+
+# Place an AMO (After Market Order)
+nf-order buy INDUSINDBK 1 --type LIMIT --price 898.4 --amo
+
+# Check market status before trading
+nf-market-status
+
+# Analyze a stock
+nf-analyze HDFCBANK --indicators rsi,macd,sma
+
+# View portfolio
+nf-portfolio --json
+```
+
+### Implementation Priority
+
+1. **nf-market-status** - Check if market is open (simple, immediately useful)
+2. **nf-quote** - Get stock quotes (core functionality)
+3. **nf-order** - Place/cancel orders with AMO support
+4. **nf-portfolio** - View holdings and P&L
+5. **nf-analyze** - Technical analysis
+6. **nf-watchlist** - Watchlist management
+7. **nf-search** - Stock discovery
+8. **nf-account** - Account/margin info
+
+### Migration Plan
+
+1. Create `cli-tools/` directory with base framework
+2. Implement tools one by one, starting with market-status
+3. Create `index.md` documenting all tools
+4. Update orchestrator to use `execute_bash` instead of registered tools
+5. Deprecate `tools/trading/` module once CLI tools are complete
+
+---
+
 ## Notes for Development
 
 1. **Supabase Setup**: Create free project at supabase.com, get connection string
@@ -336,7 +426,13 @@ See `api/conversations.py` fork endpoint - compress old context
 ## References
 
 - **EspressoBot (origin)**: `/home/pranav/apydanticebot/`
-- **Original WIP**: `/home/pranav/tradingagent/`
+- **Original WIP on Pranav's WSL dev environment**: `/home/pranav/tradingagent/`
+- If working on desktop dev environment (EndevourOS): `/home/pranav/niftystrategist-v2`
 - **Design Document**: `/home/pranav/tradingagent/docs/plans/2026-01-26-espressobot-fork-design.md`
 - **Upstox SDK Docs**: https://upstox.com/developer/api-documentation/
+- **Upstox API Docs**: available locally at upstox-api-docs.txt
 - **Pydantic AI Docs**: https://ai.pydantic.dev/
+---
+## Notes:
+dev.sh is the way to start the dev server
+the project uses pnpm and not npm

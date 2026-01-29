@@ -13,6 +13,9 @@ export default [
   // Public notes - no auth required
   route('public/notes/:publicId', './routes/public.notes.$publicId.tsx'),
 
+  // Upstox OAuth callback (no auth required - user returns from Upstox)
+  route('auth/upstox/callback', './routes/auth.upstox.callback.tsx'),
+
   // All authenticated routes wrapped in layout
   layout('./routes/_auth.tsx', [
     // Chat routes - only with threadId (no /chat without ID)

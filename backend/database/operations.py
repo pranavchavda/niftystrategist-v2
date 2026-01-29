@@ -3,16 +3,21 @@ Database operations for conversation management
 """
 
 import logging
+import json
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from utils.datetime_utils import utc_now_naive
 from sqlalchemy import select, update, delete, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+import numpy as np
 
 from .models import Conversation, Message, Memory, UserPreference, DocChunk
 
 logger = logging.getLogger(__name__)
+
+# Track whether pgvector is available (set on first query attempt)
+_pgvector_available: Optional[bool] = None
 
 
 class ConversationOps:
@@ -822,26 +827,33 @@ class MemoryOps:
         return memories
 
     @staticmethod
-    async def search_memories_semantic(
+    def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors using numpy."""
+        try:
+            a = np.array(vec1)
+            b = np.array(vec2)
+            norm_a = np.linalg.norm(a)
+            norm_b = np.linalg.norm(b)
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+            return float(np.dot(a, b) / (norm_a * norm_b))
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    async def _search_memories_pgvector(
         session: AsyncSession,
         user_id: str,
         embedding: List[float],
-        limit: int = 10,
-        similarity_threshold: float = 0.7
+        limit: int,
+        similarity_threshold: float
     ) -> List[tuple[Memory, float]]:
-        """
-        Search memories by semantic similarity using pgvector HNSW index.
-
-        Returns list of tuples (Memory, similarity_score) ordered by similarity.
-        """
+        """Search memories using pgvector (fast, database-level)."""
         from sqlalchemy import text
 
         # Convert embedding to halfvec format string
-        # halfvec expects: '[val1,val2,val3,...]'
         halfvec_str = '[' + ','.join(str(v) for v in embedding) + ']'
 
-        # Use pgvector's cosine distance operator (<=>)
-        # cosine_distance = 1 - cosine_similarity, so similarity = 1 - distance
         query_sql = text("""
             SELECT
                 id,
@@ -872,7 +884,6 @@ class MemoryOps:
             }
         )
 
-        # Convert to Memory objects with similarity scores
         rows = result.fetchall()
         memories_with_scores = []
 
@@ -890,6 +901,96 @@ class MemoryOps:
             )
             similarity = float(row[9]) if row[9] is not None else 0.0
             memories_with_scores.append((memory, similarity))
+
+        return memories_with_scores
+
+    @staticmethod
+    async def _search_memories_python_fallback(
+        session: AsyncSession,
+        user_id: str,
+        embedding: List[float],
+        limit: int,
+        similarity_threshold: float
+    ) -> List[tuple[Memory, float]]:
+        """
+        Fallback semantic search using Python when pgvector is not available.
+        Fetches all memories with embeddings and calculates similarity in Python.
+        """
+        # Fetch all memories for this user that have embeddings
+        query = select(Memory).where(
+            and_(
+                Memory.user_id == user_id,
+                Memory.embedding.isnot(None)
+            )
+        )
+        result = await session.execute(query)
+        all_memories = result.scalars().all()
+
+        memories_with_scores = []
+        for memory in all_memories:
+            # Parse embedding from JSON if stored as string
+            mem_embedding = memory.embedding
+            if isinstance(mem_embedding, str):
+                try:
+                    mem_embedding = json.loads(mem_embedding)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not mem_embedding:
+                continue
+
+            # Calculate similarity
+            similarity = MemoryOps._cosine_similarity(embedding, mem_embedding)
+            if similarity >= similarity_threshold:
+                memories_with_scores.append((memory, similarity))
+
+        # Sort by similarity (descending) and limit
+        memories_with_scores.sort(key=lambda x: x[1], reverse=True)
+        return memories_with_scores[:limit]
+
+    @staticmethod
+    async def search_memories_semantic(
+        session: AsyncSession,
+        user_id: str,
+        embedding: List[float],
+        limit: int = 10,
+        similarity_threshold: float = 0.7
+    ) -> List[tuple[Memory, float]]:
+        """
+        Search memories by semantic similarity.
+
+        First tries pgvector (fast, database-level search).
+        Falls back to Python-based similarity calculation if pgvector is not available.
+
+        Returns list of tuples (Memory, similarity_score) ordered by similarity.
+        """
+        global _pgvector_available
+
+        # Try pgvector first if we haven't determined it's unavailable
+        if _pgvector_available is not False:
+            try:
+                memories_with_scores = await MemoryOps._search_memories_pgvector(
+                    session, user_id, embedding, limit, similarity_threshold
+                )
+                _pgvector_available = True
+                logger.debug(f"pgvector search returned {len(memories_with_scores)} memories")
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "embedding_halfvec" in error_msg or "halfvec" in error_msg or "pgvector" in error_msg:
+                    _pgvector_available = False
+                    logger.warning(
+                        "pgvector not available, falling back to Python-based similarity search. "
+                        "Consider enabling pgvector in Supabase for better performance."
+                    )
+                else:
+                    # Some other error, re-raise
+                    raise
+
+        # Use Python fallback if pgvector is not available
+        if _pgvector_available is False:
+            memories_with_scores = await MemoryOps._search_memories_python_fallback(
+                session, user_id, embedding, limit, similarity_threshold
+            )
+            logger.debug(f"Python fallback search returned {len(memories_with_scores)} memories")
 
         # Update access count for retrieved memories
         if memories_with_scores:
@@ -951,6 +1052,20 @@ class DocsOps:
     """Operations for managing documentation chunks"""
 
     @staticmethod
+    def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors using numpy."""
+        try:
+            a = np.array(vec1)
+            b = np.array(vec2)
+            norm_a = np.linalg.norm(a)
+            norm_b = np.linalg.norm(b)
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+            return float(np.dot(a, b) / (norm_a * norm_b))
+        except Exception:
+            return 0.0
+
+    @staticmethod
     async def search_docs_semantic(
         session: AsyncSession,
         embedding: List[float],
@@ -958,7 +1073,10 @@ class DocsOps:
         similarity_threshold: float = 0.35
     ) -> List[tuple[DocChunk, float]]:
         """
-        Search documentation chunks by semantic similarity using pgvector cosine distance.
+        Search documentation chunks by semantic similarity.
+
+        First tries pgvector (fast, database-level search).
+        Falls back to Python-based similarity calculation if pgvector is not available.
 
         Args:
             session: Database session
@@ -969,8 +1087,38 @@ class DocsOps:
         Returns:
             List of tuples (DocChunk, similarity_score) ordered by similarity.
         """
-        import json
+        global _pgvector_available
 
+        # Try pgvector first if we haven't determined it's unavailable
+        if _pgvector_available is not False:
+            try:
+                return await DocsOps._search_docs_pgvector(
+                    session, embedding, limit, similarity_threshold
+                )
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "embedding_halfvec" in error_msg or "halfvec" in error_msg or "pgvector" in error_msg:
+                    _pgvector_available = False
+                    logger.warning(
+                        "pgvector not available for doc search, falling back to Python-based similarity. "
+                        "Consider enabling pgvector in Supabase for better performance."
+                    )
+                else:
+                    raise
+
+        # Use Python fallback
+        return await DocsOps._search_docs_python_fallback(
+            session, embedding, limit, similarity_threshold
+        )
+
+    @staticmethod
+    async def _search_docs_pgvector(
+        session: AsyncSession,
+        embedding: List[float],
+        limit: int,
+        similarity_threshold: float
+    ) -> List[tuple[DocChunk, float]]:
+        """Search docs using pgvector (fast, database-level)."""
         # Convert embedding to halfvec string format
         halfvec_str = '[' + ','.join(str(v) for v in embedding) + ']'
 
@@ -979,7 +1127,6 @@ class DocsOps:
         raw_conn = await conn.get_raw_connection()
 
         # pgvector query using <=> operator (cosine distance)
-        # cosine_distance = 1 - cosine_similarity, so similarity = 1 - distance
         query_sql = """
             SELECT
                 dc.*,
@@ -1020,3 +1167,45 @@ class DocsOps:
             logger.debug(f"Top result: {chunks_with_scores[0][0].file_path} (similarity: {chunks_with_scores[0][1]:.3f})")
 
         return chunks_with_scores
+
+    @staticmethod
+    async def _search_docs_python_fallback(
+        session: AsyncSession,
+        embedding: List[float],
+        limit: int,
+        similarity_threshold: float
+    ) -> List[tuple[DocChunk, float]]:
+        """
+        Fallback semantic search for docs using Python when pgvector is not available.
+        """
+        # Fetch all doc chunks with embeddings
+        query = select(DocChunk).where(DocChunk.embedding.isnot(None))
+        result = await session.execute(query)
+        all_chunks = result.scalars().all()
+
+        chunks_with_scores = []
+        for chunk in all_chunks:
+            # Parse embedding from JSON if stored as string
+            chunk_embedding = chunk.embedding
+            if isinstance(chunk_embedding, str):
+                try:
+                    chunk_embedding = json.loads(chunk_embedding)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not chunk_embedding:
+                continue
+
+            # Calculate similarity
+            similarity = DocsOps._cosine_similarity(embedding, chunk_embedding)
+            if similarity >= similarity_threshold:
+                chunks_with_scores.append((chunk, similarity))
+
+        # Sort by similarity (descending) and limit
+        chunks_with_scores.sort(key=lambda x: x[1], reverse=True)
+        result_chunks = chunks_with_scores[:limit]
+
+        logger.info(f"Python fallback found {len(result_chunks)} documentation chunks with similarity >= {similarity_threshold}")
+        if result_chunks:
+            logger.debug(f"Top result: {result_chunks[0][0].file_path} (similarity: {result_chunks[0][1]:.3f})")
+
+        return result_chunks

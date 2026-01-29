@@ -402,9 +402,15 @@ logger.info(f"Logfire observability: {'enabled' if logfire_enabled else 'disable
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/espressobot')
 db_manager = DatabaseManager(DATABASE_URL)
 
-# Initialize Google OAuth AFTER loading environment variables
-from google_auth import init_google_oauth
-init_google_oauth()
+# Initialize trade persistence service (for paper trading history)
+from services.trade_persistence import init_trade_persistence
+trade_persistence = init_trade_persistence(db_manager.async_session)
+logger.info("Trade persistence service initialized")
+
+# Shared Upstox client for paper trading (loads portfolio from DB)
+from services.upstox_client import UpstoxClient
+shared_upstox_client = UpstoxClient(paper_trading=True, user_id=1)
+logger.info(f"Upstox client initialized (paper_trading={shared_upstox_client.paper_trading})")
 
 # Try to import AG-UI for better streaming support
 try:
@@ -652,46 +658,11 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize agents: {e}")
         raise
 
-    # Initialize workflow scheduler
-    workflow_scheduler = None
-    try:
-        from services.scheduler import init_scheduler, get_scheduler
-        from database.session import get_async_session
-
-        logger.info("Initializing workflow scheduler...")
-        workflow_scheduler = init_scheduler(get_async_session)
-        await workflow_scheduler.start()
-        logger.info("Workflow scheduler initialized successfully")
-    except Exception as e:
-        logger.warning(f"Failed to initialize workflow scheduler: {e}")
-        logger.warning("Scheduled workflows will not run, but manual execution still works")
-
-    # Initialize MCP server lifespan if available
-    try:
-        from routes import mcp_notes
-        if hasattr(mcp_notes, 'notes_mcp_app') and mcp_notes.notes_mcp_app:
-            logger.info("Initializing Notes MCP Server lifespan...")
-            # Get the MCP app's lifespan and run it within our lifespan
-            mcp_lifespan = mcp_notes.notes_mcp_app.router.lifespan_context
-            async with mcp_lifespan(mcp_notes.notes_mcp_app):
-                logger.info("✅ Notes MCP Server lifespan initialized")
-                yield
-        else:
-            logger.warning("⚠️ Notes MCP Server not available - skipping MCP lifespan")
-            yield
-    except Exception as e:
-        logger.error(f"Failed to initialize MCP lifespan: {e}")
-        yield
+    # Yield to allow app to run
+    yield
 
     # Cleanup on shutdown
-    logger.info("Shutting down EspressoBot...")
-
-    # Shutdown workflow scheduler
-    if workflow_scheduler:
-        try:
-            await workflow_scheduler.shutdown()
-        except Exception as e:
-            logger.error(f"Error shutting down workflow scheduler: {e}")
+    logger.info("Shutting down Nifty Strategist...")
 
     # Close database connections gracefully
     try:
@@ -702,9 +673,9 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="EspressoBot API",
-    description="AI-powered e-commerce management platform using Pydantic AI",
-    version="2.0.0",
+    title="Nifty Strategist API",
+    description="AI-powered trading assistant for the Indian stock market",
+    version="1.0.0",
     lifespan=lifespan
 )
 
@@ -719,8 +690,8 @@ if logfire_enabled:
     instrument_app(app)
 
 # Import and configure conversation router with database
-from api import conversations, dashboard, memories, tools, runs
-from routes import admin_docs, uploads, scratchpad, cms, admin, auth_routes, hitl, voice, mcp_servers, notes, mcp_notes, workflows
+from api import conversations, dashboard, memories, tools, runs, upstox_oauth
+from routes import admin_docs, uploads, admin, auth_routes, hitl, mcp_servers
 # Set the database manager in the conversations, memories, runs, and auth_routes modules
 conversations._db_manager = db_manager
 memories._db_manager = db_manager
@@ -738,53 +709,20 @@ app.include_router(dashboard.router, prefix="/api/dashboard")
 app.include_router(admin_docs.router)
 # Include uploads router
 app.include_router(uploads.router)
-# Include scratchpad router
-app.include_router(scratchpad.router)
 # Include stats router
 app.include_router(stats.router)
-# Include CMS router
-app.include_router(cms.router)
 # Include Admin router (RBAC management + AI Model management)
 app.include_router(admin.router)
 # Include Auth routes (user info)
 app.include_router(auth_routes.router)
-# Include HITL (Human-in-the-Loop) router
+# Include HITL (Human-in-the-Loop) router - for trade approvals
 app.include_router(hitl.router)
-# Include Voice I/O router
-app.include_router(voice.router)
 # Include MCP Server Management router
 app.include_router(mcp_servers.router)
 # Include Tools information router
 app.include_router(tools.router)
-# Include Notes router (Second Brain)
-app.include_router(notes.router)
-# Include Workflows router (automation workflows)
-app.include_router(workflows.router)
-
-# Mount Notes MCP Server (as ASGI app with proper lifespan integration)
-try:
-    from routes import mcp_notes
-    if hasattr(mcp_notes, 'notes_mcp_app') and mcp_notes.notes_mcp_app:
-        # Add CORS middleware to MCP app
-        from starlette.middleware.cors import CORSMiddleware as StarletteCORS
-        mcp_app_with_cors = StarletteCORS(
-            mcp_notes.notes_mcp_app,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-        # Mount the MCP app at /mcp/notes
-        app.mount("/mcp/notes", mcp_app_with_cors)
-        logger.info("✅ Notes MCP Server mounted at /mcp/notes/mcp")
-
-        # Also include the info endpoint from the router
-        app.include_router(mcp_notes.router, prefix="/mcp/notes")
-    else:
-        logger.warning("⚠️ Notes MCP Server not available - MCP routes not registered")
-except Exception as e:
-    logger.error(f"Failed to mount Notes MCP Server: {e}")
+# Include Upstox OAuth router
+app.include_router(upstox_oauth.router)
 
 # Configure CORS for frontend
 app.add_middleware(
@@ -1182,57 +1120,170 @@ async def chat_legacy(request: ChatRequest):
 
 
 # Authentication endpoints
-@app.get("/api/auth/google")
-async def auth_google_redirect(request: Request):
+class LoginRequest(BaseModel):
+    """Login request model"""
+    email: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    """Registration request model"""
+    email: str
+    password: str
+    name: str
+
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest):
     """
-    Google OAuth redirect endpoint.
-    Uses real Google OAuth per CLAUDE.md requirements (no mocks).
+    Email/password login endpoint.
+    Returns JWT token on successful authentication.
     """
-    # Check if Google OAuth is configured
-    if not os.getenv("GOOGLE_CLIENT_ID") or not os.getenv("GOOGLE_CLIENT_SECRET"):
-        logger.warning("Google OAuth not configured, using development fallback")
-        # Fallback for development if OAuth not configured
-        mock_user = GoogleOAuthMock.generate_mock_user("dev@example.com")
-        token = create_access_token(mock_user.model_dump())
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-        redirect_url = f"{frontend_url}/?token={token}"
-        return RedirectResponse(url=redirect_url, status_code=302)
+    from database.models import User as DBUser, Role, Permission
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    import bcrypt
 
-    # Use real Google OAuth
-    return await GoogleAuth.login(request)
+    async with db_manager.async_session() as db:
+        # Find user by email with roles and permissions eagerly loaded
+        stmt = (
+            select(DBUser)
+            .where(DBUser.email == request.email)
+            .options(
+                selectinload(DBUser.roles).selectinload(Role.permissions)
+            )
+        )
+        result = await db.execute(stmt)
+        db_user = result.scalar_one_or_none()
+
+        if not db_user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        # Verify password
+        if not db_user.password_hash:
+            raise HTTPException(status_code=401, detail="Password not set for this account")
+
+        if not bcrypt.checkpw(request.password.encode(), db_user.password_hash.encode()):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        # Get user permissions from roles (already loaded)
+        permissions = []
+        for role in db_user.roles:
+            for perm in role.permissions:
+                if perm.name not in permissions:
+                    permissions.append(perm.name)
+
+        # Create JWT token
+        user_data = {
+            "id": db_user.id,
+            "email": db_user.email,
+            "name": db_user.name or db_user.email.split("@")[0],
+            "permissions": permissions
+        }
+        token = create_access_token(user_data)
+
+        logger.info(f"[Auth] User {db_user.email} logged in successfully with permissions: {permissions}")
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": user_data
+        }
 
 
-@app.get("/api/auth/google/callback")
-async def auth_google_callback(request: Request):
+@app.post("/api/auth/register")
+async def register(request: RegisterRequest):
     """
-    Google OAuth callback endpoint.
-    Handles the OAuth code exchange and returns JWT token.
+    User registration endpoint.
+    Creates new user and returns JWT token.
     """
-    logger.info("[Main] Google OAuth callback hit!")
-    logger.info(f"[Main] Query params: {dict(request.query_params)}")
+    from database.models import User as DBUser, Role, Permission
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    import bcrypt
 
-    # Check if Google OAuth is configured
-    if not os.getenv("GOOGLE_CLIENT_ID") or not os.getenv("GOOGLE_CLIENT_SECRET"):
-        logger.warning("Google OAuth callback - not configured, using fallback")
-        # Fallback for development
-        mock_user = GoogleOAuthMock.generate_mock_user("dev@example.com")
-        token = create_access_token(mock_user.model_dump())
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-        redirect_url = f"{frontend_url}/?token={token}"
-        return RedirectResponse(url=redirect_url, status_code=302)
+    async with db_manager.async_session() as db:
+        # Check if user already exists
+        stmt = select(DBUser).where(DBUser.email == request.email)
+        result = await db.execute(stmt)
+        existing_user = result.scalar_one_or_none()
 
-    # Use real Google OAuth callback
-    try:
-        logger.info("[Main] Calling GoogleAuth.callback...")
-        redirect_url = await GoogleAuth.callback(request)
-        logger.info(f"[Main] OAuth callback succeeded, redirecting to: {redirect_url[:50]}...")
-        return RedirectResponse(url=redirect_url, status_code=302)
-    except HTTPException as e:
-        logger.error(f"[Main] OAuth callback failed: {e.detail}")
-        # If OAuth fails, redirect to login page with error
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-        error_url = f"{frontend_url}/login?error={e.detail}"
-        return RedirectResponse(url=error_url, status_code=302)
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+        # Hash password
+        password_hash = bcrypt.hashpw(request.password.encode(), bcrypt.gensalt()).decode()
+
+        # Create new user
+        new_user = DBUser(
+            email=request.email,
+            name=request.name,
+            password_hash=password_hash,
+            is_active=True
+        )
+        db.add(new_user)
+
+        # Assign default 'user' role if it exists (with permissions eagerly loaded)
+        role_stmt = select(Role).where(Role.name == "user").options(selectinload(Role.permissions))
+        role_result = await db.execute(role_stmt)
+        user_role = role_result.scalar_one_or_none()
+
+        permissions = []
+        if user_role:
+            new_user.roles.append(user_role)
+            # Get permissions while role is still attached to session
+            for perm in user_role.permissions:
+                permissions.append(perm.name)
+
+        await db.commit()
+        await db.refresh(new_user)
+
+        # Create JWT token
+        user_data = {
+            "id": new_user.id,
+            "email": new_user.email,
+            "name": new_user.name,
+            "permissions": permissions
+        }
+        token = create_access_token(user_data)
+
+        logger.info(f"[Auth] New user registered: {new_user.email} with permissions: {permissions}")
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": user_data
+        }
+
+
+@app.get("/api/auth/dev-login")
+async def dev_login():
+    """
+    Development login endpoint - creates a dev token without password.
+    Only works when ENVIRONMENT=development.
+    """
+    if os.getenv("ENVIRONMENT") != "development":
+        raise HTTPException(status_code=403, detail="Dev login only available in development mode")
+
+    # Create dev user token
+    user_data = {
+        "id": 999,
+        "email": "dev@localhost",
+        "name": "Dev User",
+        "permissions": [
+            "chat.access",
+            "dashboard.access",
+            "memory.access",
+            "settings.access",
+        ]
+    }
+    token = create_access_token(user_data)
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": user_data
+    }
 
 
 @app.get("/api/auth/me")
@@ -1291,6 +1342,94 @@ async def get_me(user: User = Depends(get_current_user_optional)):
 async def logout():
     """Logout endpoint (client should clear token)"""
     return {"status": "success", "message": "Logged out successfully"}
+
+
+# Trading API endpoints
+@app.get("/api/portfolio")
+async def get_portfolio(user: User = Depends(get_current_user)):
+    """
+    Get the current portfolio summary for the dashboard.
+    Returns portfolio value, positions, and P&L.
+    """
+    try:
+        portfolio = await shared_upstox_client.get_portfolio()
+
+        return {
+            "total_value": portfolio.total_value,
+            "available_cash": portfolio.available_cash,
+            "invested_value": portfolio.invested_value,
+            "day_pnl": portfolio.day_pnl,
+            "day_pnl_percentage": portfolio.day_pnl_percentage,
+            "total_pnl": portfolio.total_pnl,
+            "total_pnl_percentage": portfolio.total_pnl_percentage,
+            "positions": [
+                {
+                    "symbol": pos.symbol,
+                    "quantity": pos.quantity,
+                    "average_price": pos.average_price,
+                    "current_price": pos.current_price,
+                    "pnl": pos.pnl,
+                    "pnl_percentage": pos.pnl_percentage,
+                    "day_change": pos.day_change,
+                    "day_change_percentage": pos.day_change_percentage,
+                }
+                for pos in portfolio.positions
+            ],
+            "paper_trading": shared_upstox_client.paper_trading,
+            "market_status": "Paper Trading Mode" if shared_upstox_client.paper_trading else "Live",
+        }
+    except Exception as e:
+        logger.error(f"Error fetching portfolio: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/portfolio/positions")
+async def get_positions(user: User = Depends(get_current_user)):
+    """Get all open positions."""
+    try:
+        portfolio = await shared_upstox_client.get_portfolio()
+        return {
+            "positions": [
+                {
+                    "symbol": pos.symbol,
+                    "quantity": pos.quantity,
+                    "average_price": pos.average_price,
+                    "current_price": pos.current_price,
+                    "pnl": pos.pnl,
+                    "pnl_percentage": pos.pnl_percentage,
+                }
+                for pos in portfolio.positions
+            ],
+            "count": len(portfolio.positions),
+        }
+    except Exception as e:
+        logger.error(f"Error fetching positions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/portfolio/trades")
+async def get_trade_history(
+    limit: int = 50,
+    user: User = Depends(get_current_user)
+):
+    """Get trade history for the current user."""
+    try:
+        from services.trade_persistence import get_trade_persistence
+        persistence = get_trade_persistence()
+
+        if not persistence:
+            raise HTTPException(status_code=500, detail="Trade persistence not initialized")
+
+        trades = await persistence.get_trade_history(user.id, limit=limit)
+        return {
+            "trades": trades,
+            "count": len(trades),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching trade history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/admin/clear-model-cache")

@@ -1,11 +1,10 @@
 """
-Authentication module for EspressoBot
-Provides Google OAuth and JWT token authentication
+Authentication module for Nifty Strategist
+Provides JWT token authentication for the trading platform
 """
 
 import os
 import jwt
-import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from fastapi import HTTPException, Security, Request, Depends
@@ -31,7 +30,7 @@ class User(BaseModel):
     name: str
     bio: Optional[str] = None
     picture: Optional[str] = None
-    permissions: List[str] = []  # List of permission names (e.g., ["chat.access", "cms.access"])
+    permissions: List[str] = []
 
 
 class TokenData(BaseModel):
@@ -49,9 +48,9 @@ def create_access_token(user_data: Dict[str, Any]) -> str:
         "sub": str(user_data.get("id", 1)),
         "email": user_data.get("email"),
         "name": user_data.get("name"),
-        "picture": user_data.get("picture"),  # Include profile picture
-        "bio": user_data.get("bio"),  # Include bio if present
-        "permissions": user_data.get("permissions", []),  # Include permissions array
+        "picture": user_data.get("picture"),
+        "bio": user_data.get("bio"),
+        "permissions": user_data.get("permissions", []),
         "exp": expire
     }
 
@@ -67,7 +66,6 @@ def verify_token(credentials: HTTPAuthorizationCredentials) -> User:
     token = credentials.credentials
 
     # Handle dev tokens (not JWT format)
-    # Map to dev user for local development with all permissions
     if token.startswith("dev-token-"):
         return User(
             id=999,
@@ -75,14 +73,11 @@ def verify_token(credentials: HTTPAuthorizationCredentials) -> User:
             name="Dev User",
             permissions=[
                 "chat.access",
-                "cms.access",
                 "dashboard.access",
-                "price_monitor.access",
+                "trading.access",
+                "portfolio.access",
                 "memory.access",
-                "notes.access",
                 "settings.access",
-                "admin.manage_users",
-                "admin.manage_roles",
             ]
         )
 
@@ -93,9 +88,9 @@ def verify_token(credentials: HTTPAuthorizationCredentials) -> User:
             id=int(payload.get("sub", 1)),
             email=payload.get("email", ""),
             name=payload.get("name", ""),
-            picture=payload.get("picture"),  # Extract profile picture
-            bio=payload.get("bio"),  # Extract bio if present
-            permissions=payload.get("permissions", [])  # Extract permissions
+            picture=payload.get("picture"),
+            bio=payload.get("bio"),
+            permissions=payload.get("permissions", [])
         )
 
         return user
@@ -104,7 +99,6 @@ def verify_token(credentials: HTTPAuthorizationCredentials) -> User:
         raise HTTPException(status_code=401, detail="Token has expired")
     except (jwt.InvalidSignatureError, jwt.DecodeError, jwt.PyJWTError) as e:
         logger.error(f"JWT verification failed: {e}")
-        logger.error(f"Token received: {credentials.credentials[:20]}..." if len(credentials.credentials) > 20 else credentials.credentials)
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 
@@ -118,23 +112,19 @@ async def get_current_user(
     """
 
     # Check for development mode bypass
-    if os.getenv("NODE_ENV") == "development" or os.getenv("ALLOW_UNAUTHENTICATED") == "true":
+    if os.getenv("ENVIRONMENT") == "development" or os.getenv("ALLOW_UNAUTHENTICATED") == "true":
         if not credentials:
-            # Return dev user for local development with all permissions
             return User(
                 id=999,
                 email="dev@localhost",
                 name="Dev User",
                 permissions=[
                     "chat.access",
-                    "cms.access",
                     "dashboard.access",
-                    "price_monitor.access",
+                    "trading.access",
+                    "portfolio.access",
                     "memory.access",
-                    "notes.access",
                     "settings.access",
-                    "admin.manage_users",
-                    "admin.manage_roles",
                 ]
             )
 
@@ -147,7 +137,7 @@ async def get_current_user(
             id=2,
             email="terminal@localhost",
             name="Terminal User",
-            permissions=["chat.access", "dashboard.access"]  # Limited permissions for terminal
+            permissions=["chat.access", "dashboard.access", "trading.access"]
         )
 
     # Verify JWT token
@@ -174,16 +164,7 @@ async def get_current_user_optional(
 
 
 def check_permission(user: User, permission: str) -> bool:
-    """
-    Check if user has a specific permission.
-
-    Args:
-        user: User object with permissions list
-        permission: Permission name (e.g., "chat.access")
-
-    Returns:
-        True if user has the permission, False otherwise
-    """
+    """Check if user has a specific permission."""
     return permission in user.permissions
 
 
@@ -192,15 +173,9 @@ def requires_permission(permission: str):
     Dependency to check if user has required permission.
 
     Usage:
-        @router.get("/api/cms/...", dependencies=[Depends(requires_permission("cms.access"))])
-        async def cms_endpoint():
+        @router.get("/api/trading/...", dependencies=[Depends(requires_permission("trading.access"))])
+        async def trading_endpoint():
             ...
-
-    Args:
-        permission: Permission name required (e.g., "cms.access")
-
-    Raises:
-        HTTPException 403 if user doesn't have permission
     """
     async def permission_checker(user: User = Depends(get_current_user)):
         if not check_permission(user, permission):
@@ -214,19 +189,14 @@ def requires_permission(permission: str):
     return permission_checker
 
 
-# Google OAuth mock implementation for development
+# Keep for backward compatibility but not used
 class GoogleOAuthMock:
-    """Mock Google OAuth for development/testing"""
-
+    """Deprecated - kept for import compatibility"""
     @staticmethod
     def generate_mock_user(email: str = None) -> User:
-        """Generate a mock authenticated user"""
-        if not email:
-            email = f"user_{secrets.token_hex(4)}@example.com"
-
         return User(
-            id=hash(email) % 1000000,  # Generate consistent ID from email
-            email=email,
-            name=email.split("@")[0].replace("_", " ").title(),
-            picture=f"https://ui-avatars.com/api/?name={email.split('@')[0]}"
+            id=999,
+            email=email or "dev@localhost",
+            name="Dev User",
+            permissions=["chat.access", "dashboard.access", "trading.access"]
         )
