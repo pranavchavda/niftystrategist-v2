@@ -1,0 +1,711 @@
+# UPSTOX API DOCUMENTATION - Complete Developer Reference
+# Generated: January 29, 2026
+# Source: https://upstox.com/developer/api-documentation/open-api
+
+================================================================================
+OVERVIEW
+================================================================================
+
+The Upstox Developer API provides REST APIs and WebSocket feeds for building
+comprehensive investment and trading platforms.
+
+Base URLs:
+- Standard API: https://api.upstox.com/v2
+- HFT Orders: https://api-hft.upstox.com/v2
+- WebSocket v2: wss://api.upstox.com/v2/feed/market-data-feed/authorize
+- WebSocket v3: wss://api.upstox.com/v3/feed/market-data-feed/authorize
+
+Key Features:
+- Real-time order execution
+- Portfolio management
+- Live market data streaming
+- Historical data access
+- Market quotes and depth
+- Options analytics
+
+================================================================================
+AUTHENTICATION (OAuth 2.0)
+================================================================================
+
+Upstox uses OAuth 2.0 for authentication. All logins handled by upstox.com.
+
+STEP 1: Authorization Request
+------------------------------
+URL: https://api.upstox.com/v2/login/authorization/dialog
+
+Parameters:
+- client_id: Your API key
+- redirect_uri: Your callback URL
+- response_type: "code"
+- state: Optional state parameter
+
+STEP 2: Receive Authorization Code
+-----------------------------------
+Callback: https://<redirect_uri>?code=<auth_code>&state=<state>
+
+STEP 3: Exchange for Access Token
+----------------------------------
+Endpoint: POST https://api.upstox.com/v2/login/authorization/token
+Content-Type: application/x-www-form-urlencoded
+
+Body Parameters:
+- code: Authorization code
+- client_id: API key
+- client_secret: API secret
+- redirect_uri: Callback URL
+- grant_type: "authorization_code"
+
+Response:
+{
+  "access_token": "...",
+  "token_type": "Bearer",
+  "expires_in": 86400
+}
+
+Token Usage:
+Authorization: Bearer <access_token>
+
+Manual Token Generation:
+1. Go to Upstox Developer Apps
+2. Select your app
+3. Click "Generate" for new token
+4. Copy and use immediately
+
+================================================================================
+API REQUEST STRUCTURE
+================================================================================
+
+Standard Format:
+curl -X [METHOD] 'https://api.upstox.com/v2/[ENDPOINT]' \
+  -H 'accept: application/json' \
+  -H 'Authorization: Bearer [TOKEN]' \
+  -H 'Content-Type: application/json' \
+  -d '[JSON_BODY]'
+
+URL Encoding Required:
+- Use standard URL encoding
+- Space → %20, / → %2F
+
+Response Format:
+{
+  "status": "success",
+  "data": { ... }
+}
+
+Error Format:
+{
+  "status": "error",
+  "errors": [{
+    "errorCode": "CODE",
+    "message": "Description",
+    "propertyPath": "field"
+  }]
+}
+
+HTTP Status Codes:
+- 200: Success
+- 400: Bad Request
+- 401: Unauthorized
+- 403: Forbidden
+- 404: Not Found
+- 429: Rate Limit Exceeded
+- 500: Internal Server Error
+================================================================================
+ORDER MANAGEMENT APIS
+================================================================================
+
+## Place Order
+Endpoint: POST /order/place
+Recommended: https://api-hft.upstox.com/v2/order/place (for better performance)
+
+Request Body:
+{
+  "quantity": 1,
+  "product": "D",              // D=Delivery, I=Intraday, M=MTF
+  "validity": "DAY",           // DAY or IOC
+  "price": 0,
+  "tag": "optional_tag",
+  "instrument_token": "NSE_EQ|INE669E01016",
+  "order_type": "MARKET",      // MARKET, LIMIT, SL, SL-M
+  "transaction_type": "BUY",   // BUY or SELL
+  "disclosed_quantity": 0,
+  "trigger_price": 0,
+  "is_amo": false
+}
+
+Product Types:
+- D: Delivery (CNC) - Cash and Carry
+- I: Intraday (MIS) - Margin Intraday Square-off
+- M: MTF - Margin Trading Facility
+
+Order Types:
+- MARKET: Best available price
+- LIMIT: Specified price or better
+- SL: Stop Loss Limit
+- SL-M: Stop Loss Market
+
+## Modify Order
+Endpoint: PUT /order/modify
+
+Request Body:
+{
+  "order_id": "240129000000001",
+  "quantity": 1,
+  "validity": "DAY",
+  "price": 0,
+  "order_type": "LIMIT",
+  "disclosed_quantity": 0,
+  "trigger_price": 0
+}
+
+## Cancel Order
+Endpoint: DELETE /order/cancel?order_id={order_id}
+
+## Get Order Book
+Endpoint: GET /order/retrieve-all
+Returns: All orders for the day with status, filled qty, avg price
+
+## Get Order History
+Endpoint: GET /order/history?order_id={order_id}
+Returns: Order status changes and modifications
+
+## Get Order Details
+Endpoint: GET /order/details?order_id={order_id}
+
+## Get Trades
+Endpoint: GET /order/trades/get-trades-for-day
+Returns: All executed trades
+
+================================================================================
+MARKET DATA APIS
+================================================================================
+
+## Get Full Market Quote
+Endpoint: GET /market-quote/quotes?instrument_key={keys}
+
+Returns:
+- LTP (Last Traded Price)
+- OHLC (Open, High, Low, Close)
+- Volume
+- Open Interest (derivatives)
+- Bid/Ask prices and quantities
+- Circuit limits
+- 52-week high/low
+- VWAP
+
+## Get OHLC
+Endpoint: GET /market-quote/ohlc?instrument_key={keys}
+Returns: Open, High, Low, Close data
+
+## Get LTP
+Endpoint: GET /market-quote/ltp?instrument_key={keys}
+Returns: Last Traded Price only (lightweight)
+
+## Get Market Depth
+Endpoint: GET /market-quote/depth?instrument_key={key}
+Returns: Top 5 bid/ask levels with quantities
+
+## Get Option Greeks
+Endpoint: GET /option/greeks?instrument_key={key}
+Returns: Delta, Gamma, Theta, Vega, IV
+
+## Historical Candle Data
+Endpoint: GET /historical-candle/intraday/{instrument_key}/{interval}
+Endpoint: GET /historical-candle/{instrument_key}/{interval}/{to_date}
+
+Intervals: 1minute, 30minute, day, week, month
+
+Response Format:
+[timestamp, open, high, low, close, volume, OI]
+
+================================================================================
+PORTFOLIO APIS
+================================================================================
+
+## Get Holdings
+Endpoint: GET /portfolio/long-term-holdings
+
+Returns:
+- Instrument details
+- Quantity
+- Average price
+- Current price
+- P&L
+- Day change percentage
+
+## Get Positions
+Endpoint: GET /portfolio/short-term-positions
+
+Returns:
+- Net quantity
+- Day buy/sell quantity and value
+- Overnight quantity
+- Realized and unrealized P&L
+- Day P&L
+
+## Convert Position
+Endpoint: PUT /portfolio/convert-position
+
+Convert between:
+- Intraday to Delivery
+- Delivery to Intraday (if allowed)
+
+Request Body:
+{
+  "instrument_token": "NSE_EQ|INE669E01016",
+  "product": "D",
+  "transaction_type": "BUY",
+  "quantity": 1,
+  "old_product": "I"
+}
+
+================================================================================
+USER APIS
+================================================================================
+
+## Get User Profile
+Endpoint: GET /user/profile
+
+Returns:
+- User ID, name, email
+- PAN, mobile
+- Account status
+- Enabled exchanges and products
+
+## Get Funds and Margin
+Endpoint: GET /user/get-funds-and-margin
+
+Returns:
+- Available margin
+- Used margin
+- Net available margin by segment
+- Opening balance, payin, payout
+- Span margin, adhoc margin
+- Collateral
+
+================================================================================
+INSTRUMENTS
+================================================================================
+
+## Get Instruments
+Endpoint: GET /instruments/{exchange}
+
+Parameters:
+- exchange: NSE, BSE, NFO, MCX, etc.
+
+Returns CSV file with:
+- Instrument key
+- Exchange segment
+- Trading symbol
+- ISIN
+- Lot size
+- Tick size
+- Instrument type
+- Expiry date (derivatives)
+- Strike price (options)
+
+Exchange Codes:
+- NSE: National Stock Exchange (Equities)
+- BSE: Bombay Stock Exchange (Equities)
+- NFO: NSE Futures & Options
+- BFO: BSE Futures & Options
+- MCX: Multi Commodity Exchange
+- CDS: Currency Derivatives
+- NSE_INDEX: NSE Indices
+- BSE_INDEX: BSE Indices
+================================================================================
+WEBSOCKET APIS
+================================================================================
+
+## Market Data Feed V2
+Endpoint: wss://api.upstox.com/v2/feed/market-data-feed/authorize
+
+Authorization: Bearer token in header
+
+Connection Steps:
+1. Connect with wss: protocol
+2. Client auto-redirects (302) to authorized endpoint
+3. Enable followRedirects in WebSocket client
+4. Subscribe after connection established
+
+Request Structure:
+{
+  "guid": "unique-identifier",
+  "method": "sub",
+  "data": {
+    "mode": "full",
+    "instrumentKeys": ["NSE_INDEX|Nifty Bank"]
+  }
+}
+
+Methods:
+- "sub": Subscribe to instruments
+- "unsub": Unsubscribe
+- "change": Change subscription mode
+
+Modes:
+- "ltpc": Last Traded Price + timestamp (lightweight)
+- "full": Complete market data (OHLC, volume, OI, depth)
+- "option_greeks": Greeks for options
+
+## Market Data Feed V3 (Enhanced)
+Endpoint: wss://api.upstox.com/v3/feed/market-data-feed/authorize
+
+Connection Limits:
+┌─────────────────┬──────────────┬────────────┬──────────┐
+│ Type            │ Category     │ Individual │ Combined │
+├─────────────────┼──────────────┼────────────┼──────────┤
+│ Connections     │ Per user     │ 2          │ N/A      │
+│ Subscriptions   │ LTPC         │ 5000       │ 2000     │
+│                 │ Opt Greeks   │ 3000       │ 2000     │
+│                 │ Full         │ 2000       │ 1500     │
+└─────────────────┴──────────────┴────────────┴──────────┘
+
+Response Formats:
+
+LTPC Mode:
+{
+  "type": "ltpc",
+  "key": "NSE_EQ|INE669E01016",
+  "ltp": 150.75,
+  "ltt": "2024-01-29T14:30:00+05:30"
+}
+
+Full Mode includes:
+- Last traded price, time, quantity
+- OHLC values
+- Volume
+- Best bid/ask with quantities
+- Total buy/sell quantities
+- Open interest
+- Circuit limits
+- 52-week high/low
+- VWAP
+
+Candle Intervals:
+- 1d: Previous day candle
+- I1: Current + previous 1-minute
+- I30: Current + previous 30-minute
+
+================================================================================
+GTT ORDERS (Good Till Triggered)
+================================================================================
+
+GTT orders remain active until triggered or cancelled.
+
+## Create GTT Order
+Endpoint: POST /gtt/create-gtt
+Create single or OCO (One Cancels Other) GTT orders
+
+## Modify GTT Order
+Endpoint: PUT /gtt/modify-gtt
+Modify existing GTT order parameters
+
+## Cancel GTT Order
+Endpoint: DELETE /gtt/cancel-gtt
+Cancel active GTT order
+
+## Get GTT Orders
+Endpoint: GET /gtt/retrieve-all
+Retrieve all active and historical GTT orders
+
+================================================================================
+TRADE PROFIT & LOSS
+================================================================================
+
+## Get Trade-wise P&L
+Endpoint: GET /trade/profit-loss/data
+
+Query Parameters:
+- segment: NSE, BSE, NFO, etc.
+- financial_year: FY year
+- from_date: Start date (YYYY-MM-DD)
+- to_date: End date (YYYY-MM-DD)
+
+Returns detailed trade-level P&L
+
+## Get Charge Details
+Endpoint: GET /trade/profit-loss/charges
+
+Breakdown includes:
+- Brokerage
+- STT (Securities Transaction Tax)
+- Exchange charges
+- GST
+- SEBI charges
+- Stamp duty
+
+## Get P&L Metadata
+Endpoint: GET /trade/profit-loss/metadata
+Returns metadata and financial year info
+
+================================================================================
+MARKET INFORMATION
+================================================================================
+
+## Get Market Status
+Endpoint: GET /market/status/{exchange}
+
+Returns:
+- Market status (open, closed, pre-open, post-market)
+- Market timings
+- Current time
+- Next session info
+
+Status Values:
+- "MARKET_OPEN": Regular trading active
+- "MARKET_CLOSED": Market closed
+- "PRE_MARKET": Pre-market session
+- "POST_MARKET": Post-market session
+- "HOLIDAY": Market holiday
+
+## Get Exchange Timings
+Endpoint: GET /market/timings
+Returns trading hours for all exchanges
+
+## Get Holiday Calendar
+Endpoint: GET /market/holidays?date={date}
+Returns market holidays list
+
+================================================================================
+OPTION CHAIN
+================================================================================
+
+## Get Option Chain
+Endpoint: GET /option/chain
+
+Query Parameters:
+- instrument_key: Underlying instrument
+- expiry_date: Option expiry date
+
+Returns:
+- Strike prices
+- Call option data (OI, volume, LTP, IV)
+- Put option data (OI, volume, LTP, IV)
+- PCR (Put-Call Ratio)
+
+## Get Option Contracts
+Endpoint: GET /option/contract
+
+Query Parameters:
+- instrument_key: Underlying instrument
+- expiry_date: Expiry date
+
+Returns available option contracts
+
+================================================================================
+WEBHOOK INTEGRATION
+================================================================================
+
+Webhooks provide real-time HTTP POST notifications for order updates.
+
+Setup: Configure endpoint during app creation in "My Apps"
+
+Events:
+- Order placed
+- Order modified
+- Order executed
+- Order cancelled
+- Order rejected
+
+Payload includes complete order details, status, filled quantity, avg price.
+
+Security:
+- Implement signature verification
+- Use HTTPS endpoint only
+- Handle idempotency (duplicate notifications)
+
+================================================================================
+APPENDIX
+================================================================================
+
+## Order Status Values
+┌────────────────────┬──────────────────────────────────────┐
+│ Status             │ Description                          │
+├────────────────────┼──────────────────────────────────────┤
+│ PUT ORDER REQ      │ Order placement request received    │
+│  RECEIVED          │                                      │
+│ VALIDATION PENDING │ Order being validated               │
+│ OPEN PENDING       │ Order pending at exchange           │
+│ OPEN               │ Order active                        │
+│ TRIGGER PENDING    │ Stop loss waiting for trigger       │
+│ COMPLETE           │ Order fully executed                │
+│ CANCELLED          │ Order cancelled                     │
+│ REJECTED           │ Order rejected                      │
+│ MODIFY PENDING     │ Modification pending                │
+│ CANCEL PENDING     │ Cancellation pending                │
+└────────────────────┴──────────────────────────────────────┘
+
+## Instrument Key Format
+{EXCHANGE}_{SEGMENT}|{TOKEN}
+
+Examples:
+- NSE_EQ|INE669E01016 (NSE Equity)
+- NSE_FO|47000 (NSE Futures & Options)
+- NSE_INDEX|Nifty 50 (Index)
+- BSE_EQ|INE669E01016 (BSE Equity)
+
+## Date/Time Formats
+- Date: YYYY-MM-DD
+- DateTime: ISO 8601 with timezone
+  Example: 2024-01-29T14:30:00+05:30
+
+## Product Type Codes
+┌──────┬────────────┬─────────────────────────────────┐
+│ Code │ Name       │ Description                     │
+├──────┼────────────┼─────────────────────────────────┤
+│ D    │ Delivery   │ Cash and Carry (CNC)           │
+│ I    │ Intraday   │ Margin Intraday Squareoff(MIS) │
+│ M    │ MTF        │ Margin Trading Facility         │
+│ CO   │ Cover Order│ Intraday with SL (legacy)      │
+│ OCO  │ OCO        │ One Cancels Other              │
+└──────┴────────────┴─────────────────────────────────┘
+
+## Validity Types
+- DAY: Valid for trading day
+- IOC: Immediate or Cancel
+- GTT: Good Till Triggered
+
+## Transaction Types
+- BUY: Buy transaction
+- SELL: Sell transaction
+
+================================================================================
+CODE EXAMPLES
+================================================================================
+
+## Python - Place Order
+```python
+import upstox_client
+
+configuration = upstox_client.Configuration()
+configuration.access_token = 'YOUR_TOKEN'
+
+api = upstox_client.OrderApi(upstox_client.ApiClient(configuration))
+
+order = upstox_client.PlaceOrderRequest(
+    quantity=1,
+    product="D",
+    validity="DAY",
+    price=0,
+    instrument_token="NSE_EQ|INE669E01016",
+    order_type="MARKET",
+    transaction_type="BUY"
+)
+
+response = api.place_order(order)
+print("Order ID:", response.data.order_id)
+```
+
+## JavaScript - Get Market Quote
+```javascript
+const axios = require('axios');
+
+const getQuote = async (instrument, token) => {
+  const response = await axios.get(
+    'https://api.upstox.com/v2/market-quote/quotes',
+    {
+      params: { instrument_key: instrument },
+      headers: { 'Authorization': `Bearer ${token}` }
+    }
+  );
+  return response.data;
+};
+```
+
+## WebSocket - Subscribe to Feed
+```javascript
+const WebSocket = require('ws');
+
+const ws = new WebSocket(
+  'wss://api.upstox.com/v2/feed/market-data-feed/authorize',
+  {
+    headers: { 'Authorization': `Bearer ${token}` },
+    followRedirects: true
+  }
+);
+
+ws.on('open', () => {
+  ws.send(JSON.stringify({
+    guid: 'unique-id',
+    method: 'sub',
+    data: {
+      mode: 'full',
+      instrumentKeys: ['NSE_EQ|INE669E01016']
+    }
+  }));
+});
+
+ws.on('message', (data) => {
+  console.log('Update:', JSON.parse(data));
+});
+```
+
+## Error Handling Pattern
+```python
+from upstox_client.rest import ApiException
+
+try:
+    response = api.place_order(order)
+except ApiException as e:
+    if e.status == 401:
+        print("Unauthorized - Check token")
+    elif e.status == 429:
+        print("Rate limit exceeded")
+    elif e.status == 400:
+        print("Bad request:", e.body)
+    else:
+        print(f"Error {e.status}: {e.body}")
+```
+
+## Rate Limit Retry
+```python
+import time
+
+def retry_with_backoff(func, max_retries=3):
+    for i in range(max_retries):
+        try:
+            return func()
+        except ApiException as e:
+            if e.status == 429 and i < max_retries - 1:
+                wait = 2 ** i
+                print(f"Rate limited. Waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+```
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+Base URLs:
+- API: https://api.upstox.com/v2
+- HFT: https://api-hft.upstox.com/v2
+
+Auth Header:
+Authorization: Bearer <token>
+
+Common Endpoints:
+- Place Order: POST /order/place
+- Get Orders: GET /order/retrieve-all
+- Get Holdings: GET /portfolio/long-term-holdings
+- Get Positions: GET /portfolio/short-term-positions
+- Market Quote: GET /market-quote/quotes
+- Historical Data: GET /historical-candle/intraday/{key}/{interval}
+- User Profile: GET /user/profile
+
+WebSocket:
+wss://api.upstox.com/v2/feed/market-data-feed/authorize
+
+Rate Limits:
+Enforced per endpoint - use exponential backoff on 429 errors
+
+Support:
+- Portal: https://upstox.com/developer
+- Docs: https://upstox.com/developer/api-documentation
+- Community: https://community.upstox.com
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================

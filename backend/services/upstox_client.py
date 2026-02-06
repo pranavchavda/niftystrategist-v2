@@ -127,6 +127,43 @@ class UpstoxClient:
         self._paper_order_id = 1000
         self._portfolio_loaded = False
 
+    async def _ensure_valid_token(self) -> None:
+        """
+        Ensure we have a valid access token.
+        If current token is missing or expired, try to load a fresh one from the DB.
+        """
+        if self.access_token:
+            return  # Already have a token (may be expired but let API tell us)
+
+        # Try to get a valid token from any authenticated user in the DB
+        try:
+            from database.session import get_db_session
+            from database.models import User as DBUser
+            from utils.encryption import decrypt_token
+            from sqlalchemy import select
+
+            async with get_db_session() as session:
+                result = await session.execute(
+                    select(DBUser)
+                    .where(DBUser.upstox_access_token.isnot(None))
+                    .where(DBUser.upstox_token_expiry > datetime.utcnow())
+                    .order_by(DBUser.upstox_token_expiry.desc())
+                    .limit(1)
+                )
+                db_user = result.scalar_one_or_none()
+
+                if db_user:
+                    token = decrypt_token(db_user.upstox_access_token)
+                    if token:
+                        self.access_token = token
+                        self._configuration.access_token = token
+                        logger.info(f"Loaded valid Upstox token from user {db_user.id}")
+                        return
+
+            logger.warning("No valid Upstox token found in DB")
+        except Exception as e:
+            logger.error(f"Failed to load token from DB: {e}")
+
     async def _ensure_portfolio_loaded(self) -> None:
         """Load portfolio from database if not already loaded."""
         if self._portfolio_loaded and self._paper_portfolio:
@@ -255,10 +292,10 @@ class UpstoxClient:
         Raises:
             ValueError: If no access token, no ISIN mapping, or API error
         """
+        await self._ensure_valid_token()
         if not self.access_token:
             raise ValueError(
-                f"No Upstox access token configured. Cannot fetch data for {symbol}. "
-                "Complete OAuth flow first."
+                f"No Upstox access token configured. Please connect your Upstox account in Settings."
             )
 
         instrument_key = self._get_instrument_key(symbol)
@@ -310,8 +347,9 @@ class UpstoxClient:
 
     async def get_quote(self, symbol: str) -> dict:
         """Get current quote for a symbol using SDK."""
+        await self._ensure_valid_token()
         if not self.access_token:
-            raise ValueError(f"No Upstox access token configured. Cannot fetch quote for {symbol}.")
+            raise ValueError(f"No Upstox access token configured. Please connect your Upstox account in Settings.")
 
         instrument_key = self._get_instrument_key(symbol)
 
