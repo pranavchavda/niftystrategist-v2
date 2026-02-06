@@ -433,11 +433,15 @@ class UpstoxClient:
 
             response = order_api.place_order(body)
 
+            # V3 API returns order_ids (list), not order_id
+            order_ids = response.data.order_ids if response.data else []
+            order_id = order_ids[0] if order_ids else None
+
             return TradeResult(
                 success=True,
-                order_id=response.data.order_id if response.data else None,
+                order_id=order_id,
                 status="PENDING",
-                message="Order placed successfully",
+                message=f"Order placed successfully (ID: {order_id})",
             )
 
         except ApiException as e:
@@ -656,9 +660,10 @@ class UpstoxClient:
 
         try:
             api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
+            # Order book is on v2 OrderApi, not OrderApiV3
+            order_api = upstox_client.OrderApi(api_client)
 
-            response = order_api.get_order_book()
+            response = order_api.get_order_book(api_version="v2")
             orders_data = response.data if response.data else []
 
             orders = []

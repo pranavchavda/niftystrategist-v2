@@ -2011,7 +2011,8 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
             user_bio=user.bio if user else None,
             hitl_enabled=hitl_enabled,
             use_todo=use_todo,
-            interrupt_signal=interrupt_signal
+            interrupt_signal=interrupt_signal,
+            upstox_access_token=getattr(user, 'upstox_access_token', None) if user else None,
         )
         logger.info(f"[TODO] Created OrchestratorDeps with use_todo={deps.use_todo}")
 

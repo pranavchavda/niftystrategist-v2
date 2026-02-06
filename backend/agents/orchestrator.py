@@ -255,6 +255,7 @@ class OrchestratorDeps(BaseModel):
     pending_a2ui_surfaces: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # A2UI surfaces to render (cleared after emission)
+    upstox_access_token: Optional[str] = None  # Injected as NF_ACCESS_TOKEN for CLI tools
 
 
 class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
@@ -397,7 +398,7 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
                 return result
 
             # 4. Use fast LLM to check for fabricated claims
-            # Using gpt-oss-safeguard-20b - a safety-optimized model for content classification
+            # Using gpt-oss-safeguard-20b via OpenRouter (Groq provider puts output in reasoning field)
 
             validation_prompt = f"""You are a strict validator checking if an AI assistant fabricated tool results.
 
@@ -438,9 +439,9 @@ OUTPUT ONLY ONE OF:
                             "Content-Type": "application/json",
                         },
                         json={
-                            "model": "openai/gpt-oss-safeguard-20b",  # Safety-optimized model
+                            "model": "openai/gpt-oss-safeguard-20b",
                             "messages": [{"role": "user", "content": validation_prompt}],
-                            "max_tokens": 100,
+                            "max_tokens": 1000,  # Reasoning model needs headroom for CoT + answer
                             "temperature": 0,
                         },
                         timeout=10.0,
@@ -448,7 +449,9 @@ OUTPUT ONLY ONE OF:
                     response.raise_for_status()
                     data = response.json()
 
-                judgment = data["choices"][0]["message"]["content"].strip()
+                msg = data["choices"][0]["message"]
+                # Groq provider returns output in reasoning field, others in content
+                judgment = (msg.get("content") or msg.get("reasoning") or "").strip()
                 logger.info(f"[VALIDATOR] Tool claim check result: {judgment[:100]}")
 
                 if judgment.startswith("FAKE:"):
@@ -1140,11 +1143,6 @@ You are **Nifty Strategist**, an AI-powered trading assistant for the Indian sto
 
 ## Available Tools
 
-### Market Data Tools
-- **get_stock_quote(symbol)**: Get current price, open, high, low, close, volume
-- **get_historical_data(symbol, interval, days)**: Get OHLCV candlestick data
-- **list_supported_stocks()**: List all 50 Nifty stocks we support
-
 ### Technical Analysis Tools
 - **analyze_stock(symbol, interval)**: Full technical analysis with RSI, MACD, moving averages, signals
 - **compare_stocks(symbols)**: Compare technical signals across multiple stocks
@@ -1166,6 +1164,20 @@ You are **Nifty Strategist**, an AI-powered trading assistant for the Indian sto
 - **remove_from_watchlist(symbol)**: Stop tracking a stock
 - **update_watchlist(symbol, notes, target_buy_price, target_sell_price)**: Update alerts
 - **check_watchlist_alerts()**: Check for triggered price alerts
+
+### Market Data (CLI tools via execute_bash)
+
+Use these CLI tools for all market data. Run them with execute_bash:
+
+- **nf-market-status**: Check if NSE market is open/closed. No token needed.
+  `python cli-tools/nf-market-status` or `python cli-tools/nf-market-status --json`
+- **nf-quote**: Get live quotes, historical OHLCV data, or list supported symbols.
+  `python cli-tools/nf-quote RELIANCE` or `python cli-tools/nf-quote RELIANCE TCS --json`
+  `python cli-tools/nf-quote HDFCBANK --historical --days 5`
+  `python cli-tools/nf-quote --list` to see all 50 supported Nifty stocks
+
+For full documentation: `cat cli-tools/INDEX.md`
+For any tool's help: `python cli-tools/nf-quote --help`
 
 ### Utility Tools
 - **execute_bash(command)**: Run system commands
@@ -1356,19 +1368,23 @@ Currently operating in **paper trading mode**:
                 # Log the command being executed
                 logger.info(f"Executing bash command: {command}")
 
-                # AUTO-HELP INJECTION: Detect bash-tools scripts and provide help on first use
+                # AUTO-HELP INJECTION: Detect bash-tools or cli-tools scripts and provide help on first use
                 help_text = None
                 script_name = None
 
-                # Check if command is running a Python script from bash-tools/
+                # Check if command is running a script from bash-tools/ or cli-tools/
                 import re
 
                 bash_tools_match = re.search(
                     r"python3?\s+.*?bash-tools/([^\s]+\.py)", command
                 )
+                cli_tools_match = re.search(
+                    r"(?:python3?\s+)?(?:\./)?\s*cli-tools/(nf-[^\s]+)", command
+                )
                 docs_warning = None
-                if bash_tools_match:
-                    script_name = bash_tools_match.group(1)
+                script_match = bash_tools_match or cli_tools_match
+                if script_match:
+                    script_name = script_match.group(1)
 
                     # ENFORCEMENT: Check if docs were looked up before execution
                     docs_checked = script_name in ctx.deps.docs_checked_scripts
@@ -1391,19 +1407,25 @@ Currently operating in **paper trading mode**:
                         logger.info(f"First use of {script_name} - fetching help text")
 
                         # Extract the full path to the script
-                        script_path_match = re.search(
-                            r"(.*?bash-tools/[^\s]+\.py)", command
-                        )
-                        if script_path_match:
-                            script_path = script_path_match.group(1)
+                        if bash_tools_match:
+                            script_path_match = re.search(
+                                r"(.*?bash-tools/[^\s]+\.py)", command
+                            )
+                            help_cmd = f"python3 {script_path_match.group(1)} --help" if script_path_match else None
+                        else:
+                            script_path_match = re.search(
+                                r"((?:\./)?\s*cli-tools/nf-[^\s]+)", command
+                            )
+                            help_cmd = f"python3 {script_path_match.group(1)} --help" if script_path_match else None
 
+                        if help_cmd:
                             # Run --help to get usage information
                             try:
                                 help_process = await asyncio.create_subprocess_shell(
-                                    f"python3 {script_path} --help",
+                                    help_cmd,
                                     stdout=asyncio.subprocess.PIPE,
                                     stderr=asyncio.subprocess.PIPE,
-                                    shell=True,
+                                    cwd=str(Path(__file__).parent.parent),
                                 )
                                 help_stdout, help_stderr = await asyncio.wait_for(
                                     help_process.communicate(), timeout=5
@@ -1432,12 +1454,20 @@ Currently operating in **paper trading mode**:
                     )
                 )
 
+                # Build subprocess env — inject NF_ACCESS_TOKEN for CLI tools
+                import os as _os
+                subprocess_env = _os.environ.copy()
+                if ctx.deps.upstox_access_token:
+                    subprocess_env["NF_ACCESS_TOKEN"] = ctx.deps.upstox_access_token
+
                 # Run the command with asyncio, streaming output
+                # cwd=backend/ so cli-tools/ and bash-tools/ resolve correctly
                 process = await asyncio.create_subprocess_shell(
                     command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    shell=True,
+                    cwd=str(Path(__file__).parent.parent),
+                    env=subprocess_env,
                 )
 
                 # Collect all output

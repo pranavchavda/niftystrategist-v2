@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Fetch stock quotes and historical data from Upstox."""
+
+import argparse
+import sys
+import os
+
+# Add backend/ to path
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import (  # noqa: E402
+    SYMBOLS,
+    format_change,
+    format_inr,
+    format_volume,
+    init_client,
+    print_error,
+    print_json,
+    run_async,
+)
+
+
+def fetch_quotes(symbols: list[str], as_json: bool):
+    """Fetch live quotes for one or more symbols."""
+    client = init_client()
+
+    results = []
+    errors = []
+
+    for symbol in symbols:
+        sym = symbol.upper()
+        if sym not in SYMBOLS:
+            errors.append(f"{sym}: Unknown symbol. Use --list to see supported stocks.")
+            continue
+        try:
+            quote = run_async(client.get_quote(sym))
+            results.append(quote)
+        except Exception as e:
+            errors.append(f"{sym}: {e}")
+
+    if as_json:
+        output = {"quotes": results}
+        if errors:
+            output["errors"] = errors
+        print_json(output)
+        return
+
+    # Human-readable table
+    for q in results:
+        ltp = q.get("ltp")
+        close = q.get("close")
+        if ltp is not None and close is not None and close != 0:
+            change_pct = ((ltp - close) / close) * 100
+        else:
+            change_pct = None
+
+        sym_display = q["symbol"].ljust(12)
+        price = format_inr(ltp)
+        change = format_change(change_pct)
+        high = format_inr(q.get("high"))
+        low = format_inr(q.get("low"))
+        vol = format_volume(q.get("volume"))
+
+        print(f"{sym_display} {price}  {change}  H: {high}  L: {low}  Vol: {vol}")
+
+    for err in errors:
+        print(f"❌ {err}", file=sys.stderr)
+
+    if errors and not results:
+        sys.exit(1)
+
+
+def fetch_historical(symbol: str, interval: str, days: int, as_json: bool):
+    """Fetch historical OHLCV data."""
+    sym = symbol.upper()
+    if sym not in SYMBOLS:
+        print_error(f"Unknown symbol: {sym}. Use --list to see supported stocks.")
+
+    client = init_client()
+    try:
+        candles = run_async(client.get_historical_data(sym, interval=interval, days=days))
+    except Exception as e:
+        print_error(f"Failed to fetch historical data: {e}")
+
+    if as_json:
+        print_json([c.model_dump() for c in candles])
+        return
+
+    # Human-readable table
+    print(f"\n{sym} — {interval} candles, last {days} days ({len(candles)} candles)\n")
+    print(f"{'Date/Time':<22} {'Open':>10} {'High':>10} {'Low':>10} {'Close':>10} {'Volume':>10}")
+    print("-" * 76)
+
+    # Show last 20 candles max in human mode
+    display = candles[-20:] if len(candles) > 20 else candles
+    if len(candles) > 20:
+        print(f"  ... ({len(candles) - 20} earlier candles omitted, use --json for all)")
+
+    for c in display:
+        ts = c.timestamp[:19] if len(c.timestamp) > 19 else c.timestamp
+        print(
+            f"{ts:<22} {c.open:>10.2f} {c.high:>10.2f} {c.low:>10.2f} {c.close:>10.2f} {format_volume(c.volume):>10}"
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-quote",
+        description="Get stock quotes and historical data from Upstox",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Examples:
+  nf-quote RELIANCE                   Live quote for Reliance
+  nf-quote RELIANCE TCS INFY          Multiple quotes
+  nf-quote RELIANCE --json            JSON output
+  nf-quote RELIANCE --historical      Daily OHLCV (last 30 days)
+  nf-quote TCS --historical --interval 15minute --days 5
+  nf-quote --list                     Show all supported symbols
+
+Supported intervals: 1minute, 5minute, 15minute, 30minute, day
+
+Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
+""",
+    )
+    parser.add_argument("symbols", nargs="*", help="Stock symbol(s) (e.g., RELIANCE, TCS)")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--list", action="store_true", help="List all supported stock symbols")
+    parser.add_argument("--historical", action="store_true", help="Fetch historical OHLCV data")
+    parser.add_argument(
+        "--interval",
+        default="day",
+        choices=["1minute", "5minute", "15minute", "30minute", "day"],
+        help="Candle interval for historical data (default: day)",
+    )
+    parser.add_argument("--days", type=int, default=30, help="Number of days for historical data (default: 30)")
+
+    args = parser.parse_args()
+
+    if args.list:
+        if args.json:
+            print_json(SYMBOLS)
+        else:
+            print(f"Supported stocks ({len(SYMBOLS)}):\n")
+            # Print in 4 columns
+            cols = 4
+            for i in range(0, len(SYMBOLS), cols):
+                row = SYMBOLS[i : i + cols]
+                print("  ".join(s.ljust(14) for s in row))
+        return
+
+    if not args.symbols:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.historical:
+        if len(args.symbols) > 1:
+            print_error("Historical mode supports one symbol at a time.")
+        fetch_historical(args.symbols[0], args.interval, args.days, args.json)
+    else:
+        fetch_quotes(args.symbols, args.json)
+
+
+if __name__ == "__main__":
+    main()
