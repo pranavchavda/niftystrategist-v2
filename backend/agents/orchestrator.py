@@ -256,6 +256,7 @@ class OrchestratorDeps(BaseModel):
         default_factory=list
     )  # A2UI surfaces to render (cleared after emission)
     upstox_access_token: Optional[str] = None  # Injected as NF_ACCESS_TOKEN for CLI tools
+    user_id: Optional[int] = None  # Numeric DB user ID, injected as NF_USER_ID for CLI tools
 
 
 class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
@@ -1143,44 +1144,43 @@ You are **Nifty Strategist**, an AI-powered trading assistant for the Indian sto
 
 ## Available Tools
 
-### Technical Analysis Tools
-- **analyze_stock(symbol, interval)**: Full technical analysis with RSI, MACD, moving averages, signals
-- **compare_stocks(symbols)**: Compare technical signals across multiple stocks
+### Trading CLI Tools (via execute_bash)
 
-### Portfolio Tools
-- **get_portfolio()**: View current holdings, P&L, available cash
-- **get_position(symbol)**: View details for a specific position
-- **calculate_position_size(symbol, risk_amount, stop_loss_percent)**: Calculate safe position size
+All trading operations use CLI tools in `cli-tools/`. Run them with execute_bash.
+Use `--json` for structured output. Use `--help` for any tool's full syntax.
 
-### Order Execution Tools (REQUIRE APPROVAL)
-- **place_order(symbol, action, quantity, order_type, limit_price, stop_loss, target)**: Execute a trade
-- **cancel_order(order_id)**: Cancel an open order
-- **get_open_orders()**: View pending orders
-- **get_order_history(limit)**: View recent executed/cancelled orders
+**Market Data:**
+- `python cli-tools/nf-market-status [--json]` — Check if market is open/closed (no token needed)
+- `python cli-tools/nf-quote SYMBOL [SYMBOL2 ...] [--json]` — Live quotes
+- `python cli-tools/nf-quote SYMBOL --historical [--interval day] [--days 30]` — OHLCV candles
+- `python cli-tools/nf-quote --list` — Show all 50 supported Nifty stocks
 
-### Watchlist Tools
-- **add_to_watchlist(symbol, notes, target_buy_price, target_sell_price)**: Track a stock
-- **get_watchlist()**: View watchlist with current prices
-- **remove_from_watchlist(symbol)**: Stop tracking a stock
-- **update_watchlist(symbol, notes, target_buy_price, target_sell_price)**: Update alerts
-- **check_watchlist_alerts()**: Check for triggered price alerts
+**Technical Analysis:**
+- `python cli-tools/nf-analyze SYMBOL [--interval 15minute|30minute|day] [--json]` — Full analysis
+- `python cli-tools/nf-analyze SYMBOL1 SYMBOL2 --compare [--json]` — Compare signals
 
-### Market Data (CLI tools via execute_bash)
+**Portfolio:**
+- `python cli-tools/nf-portfolio [--json]` — Portfolio summary with all positions
+- `python cli-tools/nf-portfolio --position SYMBOL [--json]` — Single position details
+- `python cli-tools/nf-portfolio --calc-size SYMBOL --risk 5000 --sl 2 [--json]` — Position size calculator
 
-Use these CLI tools for all market data. Run them with execute_bash:
+**Orders (HITL-protected — orchestrator will request user approval):**
+- `python cli-tools/nf-order buy SYMBOL QTY [--type LIMIT --price P] [--dry-run] [--json]`
+- `python cli-tools/nf-order sell SYMBOL QTY [--type LIMIT --price P] [--json]`
+- `python cli-tools/nf-order list [--all] [--json]` — View open/all orders
+- `python cli-tools/nf-order cancel ORDER_ID [--json]`
 
-- **nf-market-status**: Check if NSE market is open/closed. No token needed.
-  `python cli-tools/nf-market-status` or `python cli-tools/nf-market-status --json`
-- **nf-quote**: Get live quotes, historical OHLCV data, or list supported symbols.
-  `python cli-tools/nf-quote RELIANCE` or `python cli-tools/nf-quote RELIANCE TCS --json`
-  `python cli-tools/nf-quote HDFCBANK --historical --days 5`
-  `python cli-tools/nf-quote --list` to see all 50 supported Nifty stocks
+**Watchlist:**
+- `python cli-tools/nf-watchlist [--json]` — View watchlist with live prices
+- `python cli-tools/nf-watchlist add SYMBOL [--buy P] [--sell P] [--notes "..."]`
+- `python cli-tools/nf-watchlist remove SYMBOL`
+- `python cli-tools/nf-watchlist update SYMBOL [--buy P] [--sell P]`
+- `python cli-tools/nf-watchlist alerts [--json]` — Check triggered price alerts
 
 For full documentation: `cat cli-tools/INDEX.md`
-For any tool's help: `python cli-tools/nf-quote --help`
 
 ### Utility Tools
-- **execute_bash(command)**: Run system commands
+- **execute_bash(command)**: Run system commands and CLI tools
 - **read_file(path)**: Read file contents
 - **write_file(path, content)**: Write to files
 - **todo_write(tasks)**: Track multi-step tasks
@@ -1459,6 +1459,8 @@ Currently operating in **paper trading mode**:
                 subprocess_env = _os.environ.copy()
                 if ctx.deps.upstox_access_token:
                     subprocess_env["NF_ACCESS_TOKEN"] = ctx.deps.upstox_access_token
+                if ctx.deps.user_id:
+                    subprocess_env["NF_USER_ID"] = str(ctx.deps.user_id)
 
                 # Run the command with asyncio, streaming output
                 # cwd=backend/ so cli-tools/ and bash-tools/ resolve correctly

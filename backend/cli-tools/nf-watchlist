@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""Manage stock watchlist with price alerts.
+
+Requires NF_USER_ID env var (injected by orchestrator) for DB operations.
+"""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import SYMBOLS, format_inr, init_client, print_error, print_json, print_success, run_async  # noqa: E402
+
+
+def _get_user_id() -> int:
+    """Get user ID from environment."""
+    uid = os.environ.get("NF_USER_ID")
+    if not uid:
+        print_error("NF_USER_ID not set. This tool requires user context.")
+    return int(uid)
+
+
+def _get_session():
+    """Get async DB session."""
+    from database.session import AsyncSessionLocal
+    return AsyncSessionLocal()
+
+
+def show_watchlist(as_json: bool):
+    """Show current watchlist with live prices."""
+    from database.models import WatchlistItem
+    from sqlalchemy import select
+
+    user_id = _get_user_id()
+    client = init_client()
+
+    async def _fetch():
+        async with _get_session() as session:
+            result = await session.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.user_id == user_id
+                ).order_by(WatchlistItem.created_at.desc())
+            )
+            return result.scalars().all()
+
+    items = run_async(_fetch())
+
+    if not items:
+        if as_json:
+            print_json({"watchlist": [], "alerts": []})
+        else:
+            print("📭 Watchlist is empty. Use: nf-watchlist add SYMBOL")
+        return
+
+    entries = []
+    alerts = []
+
+    for item in items:
+        entry = {
+            "symbol": item.symbol,
+            "added_price": item.added_price,
+            "target_buy_price": item.target_buy_price,
+            "target_sell_price": item.target_sell_price,
+            "notes": item.notes,
+        }
+
+        try:
+            quote = run_async(client.get_quote(item.symbol))
+            current = quote["ltp"]
+            entry["current_price"] = current
+
+            if item.added_price and item.added_price > 0:
+                change = current - item.added_price
+                entry["change_pct"] = (change / item.added_price) * 100
+            else:
+                entry["change_pct"] = None
+
+            # Check alerts
+            if item.target_buy_price and current <= item.target_buy_price:
+                alerts.append({"symbol": item.symbol, "type": "BUY", "current": current, "target": item.target_buy_price})
+            if item.target_sell_price and current >= item.target_sell_price:
+                alerts.append({"symbol": item.symbol, "type": "SELL", "current": current, "target": item.target_sell_price})
+
+        except Exception:
+            entry["current_price"] = None
+            entry["change_pct"] = None
+
+        entries.append(entry)
+
+    if as_json:
+        print_json({"watchlist": entries, "alerts": alerts})
+        return
+
+    print("📋 Watchlist\n")
+    for e in entries:
+        if e["current_price"] is not None:
+            pct = e.get("change_pct")
+            change_str = f"({pct:+.2f}%)" if pct is not None else ""
+            arrow = "▲" if (pct or 0) >= 0 else "▼"
+            print(f"  {e['symbol']:<12} {format_inr(e['current_price']):>12} {arrow} {change_str}")
+        else:
+            print(f"  {e['symbol']:<12} {'price unavailable':>12}")
+
+        targets = []
+        if e["target_buy_price"]:
+            targets.append(f"Buy: {format_inr(e['target_buy_price'])}")
+        if e["target_sell_price"]:
+            targets.append(f"Sell: {format_inr(e['target_sell_price'])}")
+        if targets:
+            print(f"  {'':12} Targets: {' | '.join(targets)}")
+        if e["notes"]:
+            print(f"  {'':12} Notes: {e['notes']}")
+
+    if alerts:
+        print(f"\n🚨 ALERTS:")
+        for a in alerts:
+            emoji = "🟢" if a["type"] == "BUY" else "🔴"
+            print(f"  {emoji} {a['symbol']} hit {a['type']} target! {format_inr(a['current'])} → target {format_inr(a['target'])}")
+
+
+def add_to_watchlist(symbol: str, notes: str | None, buy_target: float | None,
+                     sell_target: float | None, as_json: bool):
+    """Add a stock to the watchlist."""
+    from database.models import WatchlistItem
+    from sqlalchemy import select
+
+    sym = symbol.upper()
+    if sym not in SYMBOLS:
+        print_error(f"Unknown symbol: {sym}")
+
+    user_id = _get_user_id()
+    client = init_client()
+
+    try:
+        quote = run_async(client.get_quote(sym))
+        current_price = quote["ltp"]
+    except Exception as e:
+        print_error(f"Failed to get quote for {sym}: {e}")
+
+    async def _add():
+        async with _get_session() as session:
+            existing = await session.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.user_id == user_id,
+                    WatchlistItem.symbol == sym,
+                )
+            )
+            if existing.scalar_one_or_none():
+                return None  # Already exists
+
+            item = WatchlistItem(
+                user_id=user_id,
+                symbol=sym,
+                notes=notes,
+                target_buy_price=buy_target,
+                target_sell_price=sell_target,
+                added_price=current_price,
+            )
+            session.add(item)
+            await session.commit()
+            return item
+
+    result = run_async(_add())
+    if result is None:
+        print_error(f"{sym} is already in your watchlist. Use: nf-watchlist update {sym}")
+
+    if as_json:
+        print_json({"added": sym, "current_price": current_price, "target_buy": buy_target, "target_sell": sell_target})
+    else:
+        print_success(f"Added {sym} to watchlist (price: {format_inr(current_price)})")
+        if buy_target:
+            print(f"  Target Buy:  {format_inr(buy_target)}")
+        if sell_target:
+            print(f"  Target Sell: {format_inr(sell_target)}")
+
+
+def remove_from_watchlist(symbol: str, as_json: bool):
+    """Remove a stock from the watchlist."""
+    from database.models import WatchlistItem
+    from sqlalchemy import select, delete
+
+    sym = symbol.upper()
+    user_id = _get_user_id()
+
+    async def _remove():
+        async with _get_session() as session:
+            existing = await session.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.user_id == user_id,
+                    WatchlistItem.symbol == sym,
+                )
+            )
+            if not existing.scalar_one_or_none():
+                return False
+            await session.execute(
+                delete(WatchlistItem).where(
+                    WatchlistItem.user_id == user_id,
+                    WatchlistItem.symbol == sym,
+                )
+            )
+            await session.commit()
+            return True
+
+    removed = run_async(_remove())
+    if not removed:
+        print_error(f"{sym} is not in your watchlist.")
+
+    if as_json:
+        print_json({"removed": sym})
+    else:
+        print_success(f"Removed {sym} from watchlist.")
+
+
+def update_watchlist(symbol: str, notes: str | None, buy_target: float | None,
+                     sell_target: float | None, clear_targets: bool, as_json: bool):
+    """Update a watchlist entry."""
+    from database.models import WatchlistItem
+    from datetime import datetime
+    from sqlalchemy import select
+
+    sym = symbol.upper()
+    user_id = _get_user_id()
+
+    async def _update():
+        async with _get_session() as session:
+            result = await session.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.user_id == user_id,
+                    WatchlistItem.symbol == sym,
+                )
+            )
+            item = result.scalar_one_or_none()
+            if not item:
+                return None
+
+            if clear_targets:
+                item.target_buy_price = None
+                item.target_sell_price = None
+            else:
+                if buy_target is not None:
+                    item.target_buy_price = buy_target
+                if sell_target is not None:
+                    item.target_sell_price = sell_target
+
+            if notes is not None:
+                item.notes = notes
+
+            item.updated_at = datetime.utcnow()
+            await session.commit()
+            return {
+                "symbol": sym,
+                "target_buy_price": item.target_buy_price,
+                "target_sell_price": item.target_sell_price,
+                "notes": item.notes,
+            }
+
+    result = run_async(_update())
+    if result is None:
+        print_error(f"{sym} is not in your watchlist. Use: nf-watchlist add {sym}")
+
+    if as_json:
+        print_json(result)
+    else:
+        print_success(f"Updated {sym} watchlist entry.")
+        if result.get("target_buy_price"):
+            print(f"  Target Buy:  {format_inr(result['target_buy_price'])}")
+        if result.get("target_sell_price"):
+            print(f"  Target Sell: {format_inr(result['target_sell_price'])}")
+        if result.get("notes"):
+            print(f"  Notes: {result['notes']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-watchlist",
+        description="Manage stock watchlist with price alerts",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-watchlist                                      Show watchlist with prices
+  nf-watchlist add RELIANCE                         Add to watchlist
+  nf-watchlist add RELIANCE --buy 1400 --sell 1600  Add with price targets
+  nf-watchlist add TCS --notes "Wait for earnings"  Add with notes
+  nf-watchlist remove RELIANCE                      Remove from watchlist
+  nf-watchlist update RELIANCE --buy 1380           Update buy target
+  nf-watchlist update TCS --clear-targets            Clear all targets
+  nf-watchlist alerts                               Check triggered alerts only
+  nf-watchlist --json                               JSON output
+""",
+    )
+
+    sub = parser.add_subparsers(dest="command")
+
+    # show (default — no subcommand)
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # add
+    p_add = sub.add_parser("add", help="Add stock to watchlist")
+    p_add.add_argument("symbol", help="Stock symbol")
+    p_add.add_argument("--buy", type=float, dest="buy_target", help="Target buy price")
+    p_add.add_argument("--sell", type=float, dest="sell_target", help="Target sell price")
+    p_add.add_argument("--notes", help="Notes about this stock")
+    p_add.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # remove
+    p_remove = sub.add_parser("remove", help="Remove stock from watchlist")
+    p_remove.add_argument("symbol", help="Stock symbol")
+    p_remove.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # update
+    p_update = sub.add_parser("update", help="Update watchlist entry")
+    p_update.add_argument("symbol", help="Stock symbol")
+    p_update.add_argument("--buy", type=float, dest="buy_target", help="New buy target")
+    p_update.add_argument("--sell", type=float, dest="sell_target", help="New sell target")
+    p_update.add_argument("--notes", help="New notes")
+    p_update.add_argument("--clear-targets", action="store_true", help="Clear all targets")
+    p_update.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # alerts
+    p_alerts = sub.add_parser("alerts", help="Check triggered price alerts")
+    p_alerts.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if args.command is None or args.command == "alerts" and not hasattr(args, 'command'):
+        show_watchlist(args.json)
+    elif args.command == "add":
+        add_to_watchlist(args.symbol, args.notes, args.buy_target, args.sell_target, args.json)
+    elif args.command == "remove":
+        remove_from_watchlist(args.symbol, args.json)
+    elif args.command == "update":
+        update_watchlist(args.symbol, args.notes, args.buy_target, args.sell_target, args.clear_targets, args.json)
+    elif args.command == "alerts":
+        show_watchlist(args.json)  # show_watchlist already includes alerts
+
+
+if __name__ == "__main__":
+    main()

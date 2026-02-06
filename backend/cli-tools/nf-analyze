@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Technical analysis with RSI, MACD, moving averages, and trading signals."""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import SYMBOLS, format_inr, init_client, print_error, print_json, run_async  # noqa: E402
+
+
+def analyze_single(symbol: str, interval: str, as_json: bool):
+    """Run full technical analysis on a single stock."""
+    from services.technical_analysis import TechnicalAnalysisService
+
+    sym = symbol.upper()
+    if sym not in SYMBOLS:
+        print_error(f"Unknown symbol: {sym}. Use nf-quote --list to see supported stocks.")
+
+    client = init_client()
+    try:
+        candles = run_async(client.get_historical_data(sym, interval=interval, days=60))
+    except Exception as e:
+        print_error(f"Failed to fetch data for {sym}: {e}")
+
+    if len(candles) < 50:
+        print_error(f"Insufficient data for {sym}: got {len(candles)} candles, need at least 50.")
+
+    ta = TechnicalAnalysisService()
+    analysis = ta.analyze(sym, candles)
+    ind = analysis.indicators
+
+    if as_json:
+        print_json({
+            "symbol": analysis.symbol,
+            "current_price": analysis.current_price,
+            "overall_signal": analysis.overall_signal,
+            "confidence": analysis.confidence,
+            "rsi_14": ind.rsi_14,
+            "rsi_signal": analysis.rsi_signal,
+            "macd_value": ind.macd_value,
+            "macd_signal_line": ind.macd_signal,
+            "macd_trend": analysis.macd_trend,
+            "price_trend": analysis.price_trend,
+            "volume_signal": analysis.volume_signal,
+            "sma_20": ind.sma_20,
+            "sma_50": ind.sma_50,
+            "ema_12": ind.ema_12,
+            "ema_26": ind.ema_26,
+            "atr_14": ind.atr_14,
+            "support_level": analysis.support_level,
+            "resistance_level": analysis.resistance_level,
+            "reasoning": analysis.reasoning,
+        })
+        return
+
+    signal_emoji = {
+        "strong_buy": "🟢🟢", "buy": "🟢", "hold": "🟡",
+        "sell": "🔴", "strong_sell": "🔴🔴",
+    }
+
+    emoji = signal_emoji.get(analysis.overall_signal, "")
+    print(f"📊 Technical Analysis: {analysis.symbol}")
+    print(f"   Price: {format_inr(analysis.current_price)}")
+    print(f"   Signal: {emoji} {analysis.overall_signal.upper().replace('_', ' ')} (confidence: {analysis.confidence:.0%})")
+    print()
+    print("   Indicators:")
+    print(f"     RSI (14):  {ind.rsi_14:.1f} → {analysis.rsi_signal.upper()}")
+    print(f"     MACD:      {ind.macd_value:.2f} (signal: {ind.macd_signal:.2f}) → {analysis.macd_trend.upper()}")
+    print(f"     Trend:     {analysis.price_trend.upper()}")
+    print(f"     Volume:    {analysis.volume_signal.upper()} ({ind.current_volume:,.0f} vs avg {ind.volume_avg_20:,.0f})")
+    print()
+    print("   Moving Averages:")
+    print(f"     SMA 20: {format_inr(ind.sma_20)}  |  SMA 50: {format_inr(ind.sma_50)}")
+    print(f"     EMA 12: {format_inr(ind.ema_12)}  |  EMA 26: {format_inr(ind.ema_26)}")
+    print()
+    print(f"   ATR (14): {format_inr(ind.atr_14)}")
+
+    if analysis.support_level or analysis.resistance_level:
+        print()
+        print("   Key Levels:")
+        if analysis.support_level:
+            print(f"     Support:    {format_inr(analysis.support_level)}")
+        if analysis.resistance_level:
+            print(f"     Resistance: {format_inr(analysis.resistance_level)}")
+
+    print(f"\n   Analysis: {analysis.reasoning}")
+
+
+def compare_stocks(symbols: list[str], as_json: bool):
+    """Compare technical signals across multiple stocks."""
+    from services.technical_analysis import TechnicalAnalysisService
+
+    if len(symbols) < 2:
+        print_error("Need at least 2 symbols to compare.")
+    if len(symbols) > 5:
+        print_error("Maximum 5 symbols can be compared at once.")
+
+    client = init_client()
+    ta = TechnicalAnalysisService()
+    results = []
+
+    for sym in symbols:
+        sym = sym.upper()
+        if sym not in SYMBOLS:
+            results.append({"symbol": sym, "error": f"Unknown symbol"})
+            continue
+        try:
+            candles = run_async(client.get_historical_data(sym, interval="15minute", days=60))
+            if len(candles) >= 50:
+                analysis = ta.analyze(sym, candles)
+                results.append({
+                    "symbol": sym,
+                    "price": analysis.current_price,
+                    "signal": analysis.overall_signal,
+                    "confidence": analysis.confidence,
+                    "rsi": analysis.indicators.rsi_14,
+                    "trend": analysis.price_trend,
+                })
+            else:
+                results.append({"symbol": sym, "error": "Insufficient data"})
+        except Exception as e:
+            results.append({"symbol": sym, "error": str(e)})
+
+    if as_json:
+        print_json(results)
+        return
+
+    signal_emoji = {
+        "strong_buy": "🟢🟢", "buy": "🟢", "hold": "🟡",
+        "sell": "🔴", "strong_sell": "🔴🔴",
+    }
+
+    print(f"📊 Stock Comparison\n")
+    print(f"{'Symbol':<12} {'Price':>12} {'Signal':<14} {'Confidence':>10} {'RSI':>6} {'Trend':<10}")
+    print("-" * 68)
+    for r in results:
+        if "error" in r:
+            print(f"{r['symbol']:<12} {'❌ ' + r['error']}")
+        else:
+            emoji = signal_emoji.get(r["signal"], "")
+            print(
+                f"{r['symbol']:<12} {format_inr(r['price']):>12} {emoji + ' ' + r['signal'].upper():<14} "
+                f"{r['confidence']:>9.0%} {r['rsi']:>6.1f} {r['trend']:<10}"
+            )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-analyze",
+        description="Technical analysis with RSI, MACD, moving averages, signals",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-analyze RELIANCE                          Full analysis (15min candles)
+  nf-analyze HDFCBANK --interval day           Daily timeframe analysis
+  nf-analyze RELIANCE TCS INFY --compare       Compare signals across stocks
+  nf-analyze RELIANCE --json                   JSON output
+""",
+    )
+    parser.add_argument("symbols", nargs="+", help="Stock symbol(s)")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--compare", action="store_true", help="Compare mode (multiple symbols)")
+    parser.add_argument(
+        "--interval", default="15minute",
+        choices=["15minute", "30minute", "day"],
+        help="Analysis timeframe (default: 15minute)",
+    )
+
+    args = parser.parse_args()
+
+    if args.compare or len(args.symbols) > 1:
+        compare_stocks(args.symbols, args.json)
+    else:
+        analyze_single(args.symbols[0], args.interval, args.json)
+
+
+if __name__ == "__main__":
+    main()
