@@ -276,7 +276,7 @@ export default function AuthLayout() {
       </header>
 
       {/* Content */}
-      <main className={`flex flex-1 flex-col pb-2 lg:min-w-0 min-h-0 h-full lg:pt-2 ${isScratchpadCollapsed ? 'lg:pr-14' : 'xl:pr-[21rem]'} ${isSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64'} transition-all duration-300`}>
+      <main className={`flex flex-1 flex-col pb-2 lg:min-w-0 min-h-0 h-full lg:pt-2 ${currentView === 'dashboard' ? 'lg:pr-2' : isScratchpadCollapsed ? 'lg:pr-14' : 'xl:pr-[21rem]'} ${isSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64'} transition-all duration-300`}>
         <div className="grow flex max-lg:flex-col lg:rounded-lg lg:bg-white lg:shadow-xs lg:ring-1 lg:ring-zinc-950/5 dark:lg:bg-zinc-900 dark:lg:ring-white/10">
           {/* Main content area with chat */}
           <div className="flex-1 flex flex-col min-h-0 h-full">
@@ -323,8 +323,8 @@ export default function AuthLayout() {
         </>
       )}
 
-      {/* Scratchpad Sidebar - Fixed Right (Hidden on mobile/tablet, visible on xl+) */}
-      <div className={`z-20 hidden xl:block fixed inset-y-0 right-0 transition-all duration-300 ${isScratchpadCollapsed ? 'w-12' : 'w-80'} border-l border-zinc-200 dark:border-zinc-800 overflow-hidden bg-white dark:bg-zinc-900`}>
+      {/* Scratchpad Sidebar - Fixed Right (Hidden on mobile/tablet, visible on xl+, hidden on dashboard) */}
+      <div className={`z-20 hidden ${currentView === 'dashboard' ? '' : 'xl:block'} fixed inset-y-0 right-0 transition-all duration-300 ${isScratchpadCollapsed ? 'w-12' : 'w-80'} border-l border-zinc-200 dark:border-zinc-800 overflow-hidden bg-white dark:bg-zinc-900`}>
         {isScratchpadCollapsed ? (
           /* Collapsed State - Show expand button */
           <button

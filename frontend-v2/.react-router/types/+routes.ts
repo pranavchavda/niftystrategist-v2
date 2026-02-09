@@ -6,7 +6,6 @@ declare module "react-router" {
   interface Register {
     pages: Pages
     routeFiles: RouteFiles
-    routeModules: RouteModules
   }
 }
 
@@ -161,28 +160,4 @@ type RouteFiles = {
     id: "routes/admin.models";
     page: "/admin/models";
   };
-};
-
-type RouteModules = {
-  "root": typeof import("./app/root.tsx");
-  "routes/_index": typeof import("./app/./routes/_index.tsx");
-  "routes/login": typeof import("./app/./routes/login.tsx");
-  "routes/help": typeof import("./app/./routes/help.tsx");
-  "routes/public.notes.$publicId": typeof import("./app/./routes/public.notes.$publicId.tsx");
-  "routes/auth.upstox.callback": typeof import("./app/./routes/auth.upstox.callback.tsx");
-  "routes/_auth": typeof import("./app/./routes/_auth.tsx");
-  "routes/chat.$threadId": typeof import("./app/./routes/chat.$threadId.tsx");
-  "routes/dashboard": typeof import("./app/./routes/dashboard.tsx");
-  "routes/memory": typeof import("./app/./routes/memory.tsx");
-  "routes/notes": typeof import("./app/./routes/notes.tsx");
-  "routes/notes.$noteId": typeof import("./app/./routes/notes.$noteId.tsx");
-  "routes/tasks": typeof import("./app/./routes/tasks.tsx");
-  "routes/settings": typeof import("./app/./routes/settings.tsx");
-  "routes/settings.mcp": typeof import("./app/./routes/settings.mcp.tsx");
-  "routes/automations": typeof import("./app/./routes/automations.tsx");
-  "routes/user": typeof import("./app/./routes/user.tsx");
-  "routes/user.profile": typeof import("./app/./routes/user.profile.tsx");
-  "routes/admin.docs": typeof import("./app/./routes/admin.docs.tsx");
-  "routes/admin.users": typeof import("./app/./routes/admin.users.tsx");
-  "routes/admin.models": typeof import("./app/./routes/admin.models.tsx");
 };

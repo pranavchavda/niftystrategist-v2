@@ -130,6 +130,34 @@ This codebase is forked from **EspressoBot** (`/home/pranav/apydanticebot/`), a 
 - [x] Update _index.tsx landing page (trading-focused applications grid)
 - [x] Create dev.sh script (backend + frontend startup with nvm)
 
+### Phase 5: CLI Tools Migration - COMPLETED
+- [x] Create `cli-tools/base.py` (shared utilities, init_client, formatters)
+- [x] Create `nf-market-status` (pure time calc, IST, holidays, pre-open)
+- [x] Create `nf-quote` (live quotes, historical OHLCV, symbol listing)
+- [x] Create `nf-analyze` (technical analysis, stock comparison)
+- [x] Create `nf-portfolio` (portfolio summary, position details, position size calc)
+- [x] Create `nf-order` (buy/sell/list/cancel with --dry-run)
+- [x] Create `nf-watchlist` (add/remove/update/alerts with DB persistence)
+- [x] Create `INDEX.md` tool catalog
+- [x] Unregister all 15 Pydantic AI trading tools (kept code for reference)
+- [x] Update orchestrator system prompt to document CLI tools exclusively
+- [x] Inject `NF_ACCESS_TOKEN` and `NF_USER_ID` env vars into subprocesses
+- [x] Set `cwd=backend/` for subprocess execution
+- [x] Extend auto-help regex to detect `cli-tools/nf-*` scripts
+- [x] Fix anti-hallucination validator (`gpt-oss-safeguard-20b` needed `max_tokens: 1000` for reasoning model, plus `content or reasoning` field fallback)
+
+### Phase 6: Cockpit Dashboard - COMPLETED
+> Full status doc: [`docs/plans/2026-02-08-cockpit-dashboard-status.md`](./docs/plans/2026-02-08-cockpit-dashboard-status.md)
+
+- [x] 8 cockpit components with mock data (TopStrip, MarketPulse, WatchlistPanel, PriceChart, PositionsTable, DailyScorecard, CockpitChat, mock-data)
+- [x] Three-zone layout: left watchlist panel + center chart/table + right chat panel
+- [x] Responsive layout with drawer-based side panels (Headless UI Dialog)
+  - 2xl+: both panels inline
+  - xl-2xl: left inline, right as drawer via FAB
+  - <xl: both panels as drawers via FABs
+- [x] TopStrip overflow handling, PositionsTable column hiding, DailyScorecard responsive grid
+- [ ] **Next: Phase 2 — Wire to live Upstox data** (backend API endpoints, SSE streaming, daily thread system)
+
 ---
 
 ## Key Files
@@ -153,7 +181,7 @@ backend/
     └── memory_extractor.py   # Memory extraction (needs category adaptation)
 ```
 
-### Trading-Specific Files (CREATED)
+### Trading-Specific Files
 ```
 backend/
 ├── services/
@@ -162,14 +190,23 @@ backend/
 ├── models/
 │   ├── analysis.py           # OHLCVData, TechnicalIndicators, MarketAnalysis
 │   └── trading.py            # TradeProposal, RiskValidation, Portfolio, TradeResult
+├── cli-tools/                # CLI tools invoked by orchestrator via execute_bash
+│   ├── base.py               # Shared utilities (init_client, formatters, SYMBOLS)
+│   ├── INDEX.md              # Tool catalog — agent reads this to discover tools
+│   ├── nf-market-status      # Check market open/closed (no token needed)
+│   ├── nf-quote              # Live quotes, historical OHLCV, list symbols
+│   ├── nf-analyze            # Technical analysis, stock comparison
+│   ├── nf-portfolio          # Holdings, positions, position size calculator
+│   ├── nf-order              # Place/cancel/list orders (--dry-run supported)
+│   └── nf-watchlist          # Watchlist CRUD with price alerts
 └── tools/
-    └── trading/
-        ├── __init__.py       # register_all_trading_tools
-        ├── market_data.py    # get_stock_quote, get_historical_data, list_supported_stocks
-        ├── analysis.py       # analyze_stock, compare_stocks
-        ├── portfolio.py      # get_portfolio, get_position, calculate_position_size
-        ├── orders.py         # place_order (HITL), cancel_order (HITL), get_open_orders, get_order_history
-        └── watchlist.py      # add_to_watchlist, get_watchlist, remove_from_watchlist, update_watchlist, check_watchlist_alerts
+    └── trading/              # Legacy Pydantic AI tools (DEPRECATED — kept for reference)
+        ├── __init__.py       # All tools unregistered, replaced by cli-tools/
+        ├── market_data.py    # → nf-quote, nf-market-status
+        ├── analysis.py       # → nf-analyze
+        ├── portfolio.py      # → nf-portfolio
+        ├── orders.py         # → nf-order
+        └── watchlist.py      # → nf-watchlist
 ```
 
 ---
@@ -323,93 +360,44 @@ See `api/conversations.py` fork endpoint - compress old context
 
 ---
 
-## Planned: CLI-Based Trading Tools (Next Phase)
+## CLI-Based Trading Tools — IMPLEMENTED
 
-> **Status**: Planned for implementation. This replaces the current Pydantic AI tool-based approach.
+All trading operations use CLI tools in `backend/cli-tools/`, invoked by the orchestrator via `execute_bash`. This replaced the 15+ registered Pydantic AI tools, eliminating ~3-4K tokens of schema overhead per request.
 
-### Concept
+### How It Works
 
-Instead of registering many trading tools with the orchestrator (which increases token overhead), we use a single `execute_bash` tool and create CLI scripts the agent invokes. This is inspired by EspressoBot's bash tool pattern.
+1. Orchestrator's system prompt documents CLI tool usage (not registered tool schemas)
+2. Agent calls `execute_bash("python cli-tools/nf-quote RELIANCE --json")`
+3. Subprocess runs with injected env vars: `NF_ACCESS_TOKEN`, `NF_USER_ID`
+4. Auto-help injection: first use of any tool automatically runs `--help`
+5. `cwd` is set to `backend/` so relative paths work
 
-**Benefits:**
-- **Token efficiency** - One tool definition instead of 15+ trading tools with full schemas
-- **Self-documenting** - Agent calls `nf-quote --help` to learn usage on-demand
-- **Composable** - Can chain commands: `nf-quote RELIANCE | nf-analyze --quick`
-- **Easy to extend** - Add new tool = add new script, no agent code changes
-- **Testable** - Debug tools directly from terminal
-- **Discoverable** - Agent reads index, picks the right tool
+### Conventions
 
-### Proposed Structure
+- `--help` on every tool with usage examples
+- `--json` for structured output (default: human-readable)
+- `--dry-run` for order tools
+- Env vars: `NF_ACCESS_TOKEN` (Upstox token), `NF_USER_ID` (numeric DB ID)
+- Error format: `❌ message` with exit code 1
+- Success format: `✅ message`
 
-```
-backend/
-└── cli-tools/
-    ├── index.md              # Tool catalog for agent to read
-    ├── nf-quote              # Get live/historical quotes
-    ├── nf-order              # Place/modify/cancel orders (supports AMO)
-    ├── nf-portfolio          # View holdings, P&L, positions
-    ├── nf-watchlist          # Manage watchlist
-    ├── nf-analyze            # Technical analysis (RSI, MACD, etc.)
-    ├── nf-market-status      # Check market hours, holidays, circuit breakers
-    ├── nf-search             # Search stocks by name/sector/criteria
-    ├── nf-account            # Account info, margins, funds
-    ├── nf-alerts             # Price alerts, notifications
-    └── nf-history            # Trade history, order book
-```
+### Available Tools
 
-### Tool Conventions
+| Tool | Description |
+|------|-------------|
+| `nf-market-status` | NSE market open/closed, time to next event (no token needed) |
+| `nf-quote` | Live quotes, historical OHLCV, list supported symbols |
+| `nf-analyze` | Technical analysis (RSI, MACD, signals), stock comparison |
+| `nf-portfolio` | Portfolio summary, single position, position size calculator |
+| `nf-order` | Place/cancel/list orders with dry-run support |
+| `nf-watchlist` | Watchlist CRUD with price target alerts |
 
-Each tool will:
-- Have `--help` with usage examples
-- Support `--json` flag for structured output (default: human-readable)
-- Read user context from environment (`NF_USER_ID`, `NF_TRADING_MODE`)
-- Use consistent error format: `❌ Error: <message>`
-- Use consistent success format: `✅ <result>`
-- Support `--dry-run` for order tools
+See `backend/cli-tools/INDEX.md` for full documentation.
 
-### Example Usage
+### Future Tools (not yet implemented)
 
-```bash
-# Agent checks what tools are available
-cat cli-tools/index.md
-
-# Agent learns about a specific tool
-nf-order --help
-
-# Get a quote
-nf-quote RELIANCE --json
-
-# Place an AMO (After Market Order)
-nf-order buy INDUSINDBK 1 --type LIMIT --price 898.4 --amo
-
-# Check market status before trading
-nf-market-status
-
-# Analyze a stock
-nf-analyze HDFCBANK --indicators rsi,macd,sma
-
-# View portfolio
-nf-portfolio --json
-```
-
-### Implementation Priority
-
-1. **nf-market-status** - Check if market is open (simple, immediately useful)
-2. **nf-quote** - Get stock quotes (core functionality)
-3. **nf-order** - Place/cancel orders with AMO support
-4. **nf-portfolio** - View holdings and P&L
-5. **nf-analyze** - Technical analysis
-6. **nf-watchlist** - Watchlist management
-7. **nf-search** - Stock discovery
-8. **nf-account** - Account/margin info
-
-### Migration Plan
-
-1. Create `cli-tools/` directory with base framework
-2. Implement tools one by one, starting with market-status
-3. Create `index.md` documenting all tools
-4. Update orchestrator to use `execute_bash` instead of registered tools
-5. Deprecate `tools/trading/` module once CLI tools are complete
+- **nf-search** — Search stocks by name/sector/criteria
+- **nf-account** — Account info, margins, funds
 
 ---
 

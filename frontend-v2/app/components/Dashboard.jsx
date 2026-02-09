@@ -1,359 +1,263 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import * as Headless from '@headlessui/react';
 import {
-  TrendingUpIcon,
-  TrendingDownIcon,
-  WalletIcon,
-  BarChart3Icon,
-  ActivityIcon,
-  RefreshCwIcon,
-  Loader2Icon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+  ListIcon,
   MessageSquareIcon,
-  PieChartIcon,
-  IndianRupeeIcon,
-  ArrowUpIcon,
-  ArrowDownIcon,
+  XIcon,
 } from 'lucide-react';
-import { Card, StatCard } from './Card';
-import { Button } from './catalyst/button';
-import { useNavigate } from 'react-router';
+import TopStrip from './cockpit/TopStrip';
+import MarketPulse from './cockpit/MarketPulse';
+import WatchlistPanel from './cockpit/WatchlistPanel';
+import PriceChart from './cockpit/PriceChart';
+import PositionsTable from './cockpit/PositionsTable';
+import DailyScorecard from './cockpit/DailyScorecard';
+import CockpitChat from './cockpit/CockpitChat';
+import {
+  mockPortfolio,
+  mockPositions,
+  mockHoldings,
+  mockWatchlists,
+  mockIndices,
+  mockScorecard,
+  mockChatMessages,
+  generateMockOHLCV,
+} from './cockpit/mock-data';
 
-// Utility functions
-const formatCurrency = (amount) => {
-  if (!amount && amount !== 0) return '₹0';
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 0
-  }).format(amount);
-};
-
-const formatNumber = (num) => {
-  if (!num && num !== 0) return '0';
-  return new Intl.NumberFormat('en-IN').format(num);
-};
-
-const formatPercent = (num) => {
-  if (!num && num !== 0) return '0%';
-  return `${num >= 0 ? '+' : ''}${num.toFixed(2)}%`;
-};
-
-// Trading Dashboard Component
 const Dashboard = ({ authToken }) => {
-  const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
-  const [portfolioData, setPortfolioData] = useState(null);
-  const [error, setError] = useState(null);
+  // Panel collapse states (for inline panels)
+  const [leftCollapsed, setLeftCollapsed] = useState(() => {
+    const saved = localStorage.getItem('cockpit-left-collapsed');
+    return saved === 'true';
+  });
+  const [rightCollapsed, setRightCollapsed] = useState(() => {
+    const saved = localStorage.getItem('cockpit-right-collapsed');
+    return saved === 'true';
+  });
 
-  // Fetch portfolio data from backend API
-  const fetchPortfolioData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  // Drawer states (for responsive breakpoints)
+  const [showWatchlistDrawer, setShowWatchlistDrawer] = useState(false);
+  const [showChatDrawer, setShowChatDrawer] = useState(false);
 
-    try {
-      const response = await fetch('/api/portfolio', {
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': 'application/json',
-        },
-      });
+  // Active symbol for chart
+  const [activeSymbol, setActiveSymbol] = useState('RELIANCE');
+  const [chartData, setChartData] = useState(() => generateMockOHLCV(90));
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch portfolio: ${response.statusText}`);
-      }
+  // Chat context
+  const [chatContext, setChatContext] = useState(null);
 
-      const data = await response.json();
-      setPortfolioData({
-        ...data,
-        last_updated: new Date().toISOString()
-      });
-    } catch (err) {
-      console.error('Portfolio fetch error:', err);
-      setError(err.message);
-      // Set default values on error
-      setPortfolioData({
-        total_value: 1000000,
-        available_cash: 1000000,
-        invested_value: 0,
-        day_pnl: 0,
-        day_pnl_percentage: 0,
-        total_pnl: 0,
-        total_pnl_percentage: 0,
-        positions: [],
-        market_status: 'Paper Trading Mode',
-        paper_trading: true,
-        last_updated: new Date().toISOString()
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [authToken]);
+  // Market status (mock)
+  const [marketOpen, setMarketOpen] = useState(true);
+
+  // Persist collapse states
+  useEffect(() => {
+    localStorage.setItem('cockpit-left-collapsed', String(leftCollapsed));
+  }, [leftCollapsed]);
 
   useEffect(() => {
-    fetchPortfolioData();
-  }, [fetchPortfolioData]);
+    localStorage.setItem('cockpit-right-collapsed', String(rightCollapsed));
+  }, [rightCollapsed]);
 
-  const isProfitable = (value) => value >= 0;
+  // Generate new chart data when symbol changes
+  useEffect(() => {
+    setChartData(generateMockOHLCV(90));
+  }, [activeSymbol]);
+
+  const handleSymbolSelect = useCallback((symbol) => {
+    setActiveSymbol(symbol);
+  }, []);
+
+  const handleAskAI = useCallback((symbol, context) => {
+    setChatContext(`[CONTEXT: ${context.type}] About ${symbol}: ${JSON.stringify(context.data)}\n\n`);
+    // At narrow widths, open the chat drawer instead of the inline panel
+    if (window.innerWidth < 1536) {
+      setShowChatDrawer(true);
+    } else {
+      if (rightCollapsed) setRightCollapsed(false);
+    }
+  }, [rightCollapsed]);
+
+  const handleRefresh = useCallback(() => {
+    // In Phase 2+, this will hit the real API
+    console.log('Refreshing cockpit data...');
+  }, []);
+
+  // Shared watchlist content for both inline panel and drawer
+  const watchlistContent = (
+    <>
+      {/* Market Pulse */}
+      <div className="flex-shrink-0 mb-3">
+        <MarketPulse indices={mockIndices} />
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-zinc-200/40 dark:border-zinc-800/40 my-1 flex-shrink-0" />
+
+      {/* Watchlist */}
+      <div className="flex-1 min-h-0">
+        <WatchlistPanel
+          watchlists={mockWatchlists}
+          onSymbolSelect={(symbol) => {
+            handleSymbolSelect(symbol);
+            setShowWatchlistDrawer(false);
+          }}
+          onAskAI={handleAskAI}
+        />
+      </div>
+    </>
+  );
 
   return (
-    <div className="mx-auto p-4 sm:p-6 lg:p-8 max-w-7xl min-h-screen">
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6 sm:mb-8">
-        <div>
-          <h1 className="flex items-center gap-3 text-3xl font-bold text-zinc-900 dark:text-zinc-100">
-            <BarChart3Icon className="h-8 w-8 text-blue-600 dark:text-blue-500" />
-            Trading Dashboard
-          </h1>
-          <p className="text-zinc-600 dark:text-zinc-400 mt-2">
-            Portfolio overview and market insights
-          </p>
+    <div className="flex flex-col h-full min-h-0 bg-zinc-50/50 dark:bg-zinc-950/50">
+      {/* Top Strip - Portfolio Summary */}
+      <TopStrip
+        portfolio={mockPortfolio}
+        marketOpen={marketOpen}
+        onRefresh={handleRefresh}
+      />
+
+      {/* Watchlist Drawer (slides from left, visible below xl) */}
+      <Headless.Dialog open={showWatchlistDrawer} onClose={() => setShowWatchlistDrawer(false)} className="xl:hidden">
+        <Headless.DialogBackdrop
+          transition
+          className="fixed inset-0 bg-black/30 transition data-[closed]:opacity-0 data-[enter]:duration-300 data-[enter]:ease-out data-[leave]:duration-200 data-[leave]:ease-in z-40"
+        />
+        <Headless.DialogPanel
+          transition
+          className="fixed inset-y-0 left-0 w-[300px] max-w-[85vw] bg-white dark:bg-zinc-900 shadow-xl transition duration-300 ease-in-out data-[closed]:-translate-x-full z-50"
+        >
+          <div className="flex flex-col h-full min-h-0 p-2">
+            <div className="flex items-center justify-between mb-1 flex-shrink-0">
+              <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 tracking-wide uppercase px-1">Watchlist</span>
+              <button
+                onClick={() => setShowWatchlistDrawer(false)}
+                className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              >
+                <XIcon className="h-4 w-4" />
+              </button>
+            </div>
+            {watchlistContent}
+          </div>
+        </Headless.DialogPanel>
+      </Headless.Dialog>
+
+      {/* Chat Drawer (slides from right, visible below 2xl) */}
+      <Headless.Dialog open={showChatDrawer} onClose={() => setShowChatDrawer(false)} className="2xl:hidden">
+        <Headless.DialogBackdrop
+          transition
+          className="fixed inset-0 bg-black/30 transition data-[closed]:opacity-0 data-[enter]:duration-300 data-[enter]:ease-out data-[leave]:duration-200 data-[leave]:ease-in z-40"
+        />
+        <Headless.DialogPanel
+          transition
+          className="fixed inset-y-0 right-0 w-[340px] max-w-[85vw] bg-white dark:bg-zinc-900 shadow-xl transition duration-300 ease-in-out data-[closed]:translate-x-full z-50"
+        >
+          <CockpitChat
+            messages={mockChatMessages}
+            isCollapsed={false}
+            onToggleCollapse={() => setShowChatDrawer(false)}
+            contextPrefix={chatContext}
+            onClearContext={() => setChatContext(null)}
+            isDrawer
+            onClose={() => setShowChatDrawer(false)}
+          />
+        </Headless.DialogPanel>
+      </Headless.Dialog>
+
+      {/* Main Three-Zone Layout */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* LEFT PANEL - Watchlist + Market Pulse (inline at xl+) */}
+        <div
+          className={`hidden xl:block flex-shrink-0 border-r border-zinc-200/50 dark:border-zinc-800/50 bg-white/50 dark:bg-zinc-900/50 transition-all duration-300 ${
+            leftCollapsed ? 'w-10' : 'w-[280px]'
+          }`}
+        >
+          {leftCollapsed ? (
+            <div className="flex flex-col items-center pt-2">
+              <button
+                onClick={() => setLeftCollapsed(false)}
+                className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                title="Expand Watchlist"
+              >
+                <PanelLeftOpenIcon className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col h-full min-h-0 p-2">
+              {/* Collapse Button */}
+              <div className="flex justify-end mb-1 flex-shrink-0">
+                <button
+                  onClick={() => setLeftCollapsed(true)}
+                  className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                  title="Collapse Watchlist"
+                >
+                  <PanelLeftCloseIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {watchlistContent}
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button
-            onClick={fetchPortfolioData}
-            disabled={loading}
-            color="blue"
-            className="gap-2"
-          >
-            {loading ? (
-              <Loader2Icon data-slot="icon" className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCwIcon data-slot="icon" className="h-4 w-4" />
-            )}
-            {loading ? 'Refreshing...' : 'Refresh'}
-          </Button>
+        {/* CENTER PANEL - Chart + Positions + Scorecard */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+          {/* Chart Area (55% height) */}
+          <div className="flex-[55] min-h-0 border-b border-zinc-200/50 dark:border-zinc-800/50">
+            <PriceChart
+              symbol={activeSymbol}
+              data={chartData}
+            />
+          </div>
+
+          {/* Positions Table (flexible) */}
+          <div className="flex-[45] min-h-0">
+            <PositionsTable
+              positions={mockPositions}
+              holdings={mockHoldings}
+              onSymbolSelect={handleSymbolSelect}
+              onAskAI={handleAskAI}
+            />
+          </div>
+
+          {/* Daily Scorecard (auto height) */}
+          <DailyScorecard scorecard={mockScorecard} />
+        </div>
+
+        {/* RIGHT PANEL - Cockpit Chat (inline at 2xl+) */}
+        <div
+          className={`hidden 2xl:block flex-shrink-0 border-l border-zinc-200/50 dark:border-zinc-800/50 bg-white/30 dark:bg-zinc-900/30 transition-all duration-300 ${
+            rightCollapsed ? 'w-10' : 'w-[320px]'
+          }`}
+        >
+          <CockpitChat
+            messages={mockChatMessages}
+            isCollapsed={rightCollapsed}
+            onToggleCollapse={() => setRightCollapsed(!rightCollapsed)}
+            contextPrefix={chatContext}
+            onClearContext={() => setChatContext(null)}
+          />
         </div>
       </div>
 
-      {/* Error State */}
-      {error && (
-        <Card className="mb-6 border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/20">
-          <div className="p-4">
-            <p className="text-red-800 dark:text-red-200 font-medium">Error Loading Portfolio</p>
-            <p className="text-red-600 dark:text-red-300 text-sm mt-1">{error}</p>
-            <Button
-              onClick={fetchPortfolioData}
-              color="red"
-              outline
-              className="mt-3"
-            >
-              Try Again
-            </Button>
-          </div>
-        </Card>
-      )}
+      {/* FAB - Watchlist (visible below xl) */}
+      <button
+        onClick={() => setShowWatchlistDrawer(true)}
+        className="xl:hidden fixed bottom-6 left-6 z-30 p-3 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-full shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 active:scale-95"
+        aria-label="Open Watchlist"
+        title="Open Watchlist"
+      >
+        <ListIcon className="h-5 w-5" />
+      </button>
 
-      {/* Loading State */}
-      {loading && !portfolioData && (
-        <div className="flex flex-col items-center justify-center py-12">
-          <Loader2Icon className="h-12 w-12 animate-spin text-blue-600 mb-4" />
-          <h3 className="text-xl font-semibold text-zinc-600 dark:text-zinc-400">Loading Portfolio...</h3>
-        </div>
-      )}
-
-      {/* Dashboard Content */}
-      {portfolioData && !loading && (
-        <div className="space-y-6 lg:space-y-8">
-          {/* Quick Stats Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6">
-            <StatCard
-              title="Portfolio Value"
-              value={formatCurrency(portfolioData.total_value)}
-              description="Total portfolio worth"
-              icon={
-                <div className="p-3 bg-blue-100 dark:bg-blue-500/20 rounded-full">
-                  <WalletIcon className="h-6 w-6 text-blue-600 dark:text-blue-400" />
-                </div>
-              }
-            />
-
-            <StatCard
-              title="Available Cash"
-              value={formatCurrency(portfolioData.available_cash)}
-              description="Ready to invest"
-              icon={
-                <div className="p-3 bg-green-100 dark:bg-green-500/20 rounded-full">
-                  <IndianRupeeIcon className="h-6 w-6 text-green-600 dark:text-green-400" />
-                </div>
-              }
-            />
-
-            <StatCard
-              title={
-                <div className="flex items-center gap-2">
-                  <span>Today's P&L</span>
-                  {isProfitable(portfolioData.day_pnl) ? (
-                    <ArrowUpIcon className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <ArrowDownIcon className="h-4 w-4 text-red-500" />
-                  )}
-                </div>
-              }
-              value={
-                <span className={isProfitable(portfolioData.day_pnl) ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
-                  {formatCurrency(portfolioData.day_pnl)}
-                </span>
-              }
-              description={formatPercent(portfolioData.day_pnl_percentage)}
-              icon={
-                <div className={`p-3 rounded-full ${isProfitable(portfolioData.day_pnl) ? 'bg-green-100 dark:bg-green-500/20' : 'bg-red-100 dark:bg-red-500/20'}`}>
-                  {isProfitable(portfolioData.day_pnl) ? (
-                    <TrendingUpIcon className="h-6 w-6 text-green-600 dark:text-green-400" />
-                  ) : (
-                    <TrendingDownIcon className="h-6 w-6 text-red-600 dark:text-red-400" />
-                  )}
-                </div>
-              }
-            />
-
-            <StatCard
-              title={
-                <div className="flex items-center gap-2">
-                  <span>Total P&L</span>
-                  {isProfitable(portfolioData.total_pnl) ? (
-                    <ArrowUpIcon className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <ArrowDownIcon className="h-4 w-4 text-red-500" />
-                  )}
-                </div>
-              }
-              value={
-                <span className={isProfitable(portfolioData.total_pnl) ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
-                  {formatCurrency(portfolioData.total_pnl)}
-                </span>
-              }
-              description={formatPercent(portfolioData.total_pnl_percentage)}
-              icon={
-                <div className={`p-3 rounded-full ${isProfitable(portfolioData.total_pnl) ? 'bg-green-100 dark:bg-green-500/20' : 'bg-red-100 dark:bg-red-500/20'}`}>
-                  <ActivityIcon className={`h-6 w-6 ${isProfitable(portfolioData.total_pnl) ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`} />
-                </div>
-              }
-            />
-          </div>
-
-          {/* Main Content Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Positions Section */}
-            <Card className="lg:col-span-2 overflow-hidden">
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 px-6 py-4 border-b border-zinc-200 dark:border-zinc-700/50">
-                <h3 className="text-zinc-900 dark:text-zinc-100 flex items-center gap-2 text-lg font-semibold">
-                  <PieChartIcon className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                  Open Positions
-                </h3>
-              </div>
-              <div className="p-6">
-                {portfolioData.positions && portfolioData.positions.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b border-zinc-200 dark:border-zinc-700">
-                          <th className="text-left py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400">Symbol</th>
-                          <th className="text-right py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400">Qty</th>
-                          <th className="text-right py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400">Avg Price</th>
-                          <th className="text-right py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400">LTP</th>
-                          <th className="text-right py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400">P&L</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {portfolioData.positions.map((pos, index) => (
-                          <tr key={index} className="border-b border-zinc-100 dark:border-zinc-800">
-                            <td className="py-3 font-medium text-zinc-900 dark:text-zinc-100">{pos.symbol}</td>
-                            <td className="py-3 text-right text-zinc-700 dark:text-zinc-300">{pos.quantity}</td>
-                            <td className="py-3 text-right text-zinc-700 dark:text-zinc-300">{formatCurrency(pos.average_price)}</td>
-                            <td className="py-3 text-right text-zinc-700 dark:text-zinc-300">{formatCurrency(pos.current_price)}</td>
-                            <td className={`py-3 text-right font-medium ${pos.pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                              {formatCurrency(pos.pnl)} ({formatPercent(pos.pnl_percentage)})
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="text-center py-8">
-                    <PieChartIcon className="h-12 w-12 text-zinc-300 dark:text-zinc-600 mx-auto mb-3" />
-                    <p className="text-zinc-500 dark:text-zinc-400">No open positions</p>
-                    <p className="text-sm text-zinc-400 dark:text-zinc-500 mt-1">
-                      Start a chat to analyze stocks and place trades
-                    </p>
-                  </div>
-                )}
-              </div>
-            </Card>
-
-            {/* Quick Actions */}
-            <Card className="overflow-hidden">
-              <div className="bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 px-6 py-4 border-b border-zinc-200 dark:border-zinc-700/50">
-                <h3 className="text-zinc-900 dark:text-zinc-100 flex items-center gap-2 text-lg font-semibold">
-                  <ActivityIcon className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
-                  Quick Actions
-                </h3>
-              </div>
-              <div className="p-6 space-y-3">
-                <Button
-                  outline
-                  className="w-full justify-start gap-2"
-                  onClick={() => {
-                    const newThreadId = `thread_${Date.now()}`;
-                    navigate(`/chat/${newThreadId}`);
-                  }}
-                >
-                  <MessageSquareIcon className="h-4 w-4" />
-                  Ask Nifty Strategist
-                </Button>
-                <Button
-                  outline
-                  className="w-full justify-start gap-2"
-                  onClick={fetchPortfolioData}
-                  disabled={loading}
-                >
-                  <RefreshCwIcon className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                  Refresh Portfolio
-                </Button>
-                <div className="pt-4 border-t border-zinc-200 dark:border-zinc-700">
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2">Market Status</p>
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${portfolioData.market_status === 'open' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                    <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 capitalize">
-                      {portfolioData.market_status || 'Unknown'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          </div>
-
-          {/* Paper Trading Notice */}
-          <Card className="border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/20">
-            <div className="p-4 flex items-start gap-4">
-              <div className="p-2 bg-amber-100 dark:bg-amber-800/30 rounded-full">
-                <WalletIcon className="h-5 w-5 text-amber-600 dark:text-amber-400" />
-              </div>
-              <div>
-                <p className="text-amber-800 dark:text-amber-200 font-medium">Paper Trading Mode</p>
-                <p className="text-amber-700 dark:text-amber-300 text-sm mt-1">
-                  You are using simulated paper trading with virtual funds. No real money is at risk.
-                  Connect your Upstox account in Settings to enable live trading.
-                </p>
-              </div>
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* Empty State */}
-      {!portfolioData && !loading && !error && (
-        <div className="text-center py-12">
-          <BarChart3Icon className="h-16 w-16 text-zinc-300 dark:text-zinc-600 mx-auto mb-4" />
-          <h3 className="text-xl font-semibold text-zinc-600 dark:text-zinc-400 mb-2">No Portfolio Data</h3>
-          <p className="text-zinc-500 dark:text-zinc-500 mb-4">
-            Click "Refresh" to load your portfolio data.
-          </p>
-          <Button onClick={fetchPortfolioData} color="blue">
-            Load Portfolio
-          </Button>
-        </div>
-      )}
+      {/* FAB - Chat (visible below 2xl) */}
+      <button
+        onClick={() => setShowChatDrawer(true)}
+        className="2xl:hidden fixed bottom-6 right-6 z-30 p-3 bg-amber-500 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 active:scale-95"
+        aria-label="Open Chat"
+        title="Open Chat"
+      >
+        <MessageSquareIcon className="h-5 w-5" />
+      </button>
     </div>
   );
 };
