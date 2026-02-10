@@ -77,6 +77,67 @@ class UpstoxClient:
         "UPL": "INE628A01036",
     }
 
+    # Index instrument keys (not ISIN-based)
+    INDEX_KEYS = {
+        "NIFTY 50": "NSE_INDEX|Nifty 50",
+        "BANK NIFTY": "NSE_INDEX|Nifty Bank",
+        "INDIA VIX": "NSE_INDEX|INDIA VIX",
+    }
+
+    # Symbol to company name mapping (Nifty 50)
+    SYMBOL_TO_COMPANY = {
+        "RELIANCE": "Reliance Industries",
+        "TCS": "Tata Consultancy Services",
+        "INFY": "Infosys",
+        "HDFCBANK": "HDFC Bank",
+        "ICICIBANK": "ICICI Bank",
+        "SBIN": "State Bank of India",
+        "BHARTIARTL": "Bharti Airtel",
+        "ITC": "ITC",
+        "KOTAKBANK": "Kotak Mahindra Bank",
+        "LT": "Larsen & Toubro",
+        "HINDUNILVR": "Hindustan Unilever",
+        "AXISBANK": "Axis Bank",
+        "BAJFINANCE": "Bajaj Finance",
+        "MARUTI": "Maruti Suzuki",
+        "WIPRO": "Wipro",
+        "TATAMOTORS": "Tata Motors",
+        "TATASTEEL": "Tata Steel",
+        "SUNPHARMA": "Sun Pharma",
+        "ONGC": "ONGC",
+        "NTPC": "NTPC",
+        "ADANIENT": "Adani Enterprises",
+        "ADANIPORTS": "Adani Ports",
+        "ASIANPAINT": "Asian Paints",
+        "BAJAJ-AUTO": "Bajaj Auto",
+        "BAJAJFINSV": "Bajaj Finserv",
+        "BPCL": "Bharat Petroleum",
+        "BRITANNIA": "Britannia Industries",
+        "CIPLA": "Cipla",
+        "COALINDIA": "Coal India",
+        "DIVISLAB": "Divi's Laboratories",
+        "DRREDDY": "Dr. Reddy's Laboratories",
+        "EICHERMOT": "Eicher Motors",
+        "GRASIM": "Grasim Industries",
+        "HCLTECH": "HCL Technologies",
+        "HDFC": "HDFC",
+        "HDFCLIFE": "HDFC Life Insurance",
+        "HEROMOTOCO": "Hero MotoCorp",
+        "HINDALCO": "Hindalco Industries",
+        "INDUSINDBK": "IndusInd Bank",
+        "JSWSTEEL": "JSW Steel",
+        "M&M": "Mahindra & Mahindra",
+        "NESTLEIND": "Nestle India",
+        "POWERGRID": "Power Grid Corp",
+        "SBILIFE": "SBI Life Insurance",
+        "SHREECEM": "Shree Cement",
+        "TATACONSUM": "Tata Consumer Products",
+        "TECHM": "Tech Mahindra",
+        "TITAN": "Titan Company",
+        "ULTRACEMCO": "UltraTech Cement",
+        "UPL": "UPL",
+    }
+
     # SDK interval mapping: our interval -> (unit, interval_value)
     INTERVAL_MAP = {
         "1minute": ("minutes", 1),
@@ -126,6 +187,9 @@ class UpstoxClient:
         self._paper_portfolio: Portfolio | None = None
         self._paper_order_id = 1000
         self._portfolio_loaded = False
+
+        # Dynamic symbol→instrument_key cache (populated from holdings/positions)
+        self._dynamic_symbols: dict[str, str] = {}
 
     async def _ensure_valid_token(self) -> None:
         """
@@ -211,14 +275,24 @@ class UpstoxClient:
         pass
 
     def _get_instrument_key(self, symbol: str) -> str:
-        """Get the instrument key for a symbol."""
-        isin = self.SYMBOL_TO_ISIN.get(symbol.upper())
-        if not isin:
-            raise ValueError(
-                f"No ISIN mapping for symbol '{symbol}'. "
-                f"Known symbols: {', '.join(sorted(self.SYMBOL_TO_ISIN.keys()))}"
-            )
-        return f"NSE_EQ|{isin}"
+        """Get the instrument key for a symbol.
+
+        Checks the hardcoded Nifty 50 map first, then falls back to the
+        dynamic cache populated from live holdings/positions.
+        """
+        sym = symbol.upper()
+        isin = self.SYMBOL_TO_ISIN.get(sym)
+        if isin:
+            return f"NSE_EQ|{isin}"
+
+        # Fallback: dynamic cache from holdings
+        if sym in self._dynamic_symbols:
+            return self._dynamic_symbols[sym]
+
+        raise ValueError(
+            f"No instrument mapping for symbol '{symbol}'. "
+            f"Known symbols: {', '.join(sorted(self.SYMBOL_TO_ISIN.keys()))}"
+        )
 
     def set_access_token(self, token: str) -> None:
         """Set the access token directly."""
@@ -388,6 +462,55 @@ class UpstoxClient:
         except Exception as e:
             raise ValueError(f"Failed to fetch quote for {symbol}: {e}")
 
+    async def get_index_quotes(self) -> list[dict]:
+        """Get quotes for NIFTY 50, BANK NIFTY, and INDIA VIX."""
+        await self._ensure_valid_token()
+        if not self.access_token:
+            return []
+
+        instrument_keys = ",".join(self.INDEX_KEYS.values())
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            quote_api = upstox_client.MarketQuoteApi(api_client)
+
+            response = quote_api.get_full_market_quote(
+                symbol=instrument_keys,
+                api_version="v2",
+            )
+
+            results = []
+            if response.data:
+                for name, key in self.INDEX_KEYS.items():
+                    # Response keys use colon separator: "NSE_INDEX:Nifty 50"
+                    response_key = key.replace("|", ":")
+                    quote = response.data.get(response_key)
+                    if not quote:
+                        continue
+
+                    ltp = quote.last_price
+                    net_change = getattr(quote, 'net_change', None) or 0
+                    close = quote.ohlc.close if quote.ohlc else ltp
+                    # Prefer API's net_change; fall back to ltp - close
+                    change = net_change if net_change else (ltp - close if close else 0)
+                    change_pct = (change / (ltp - change) * 100) if (ltp - change) else 0
+
+                    results.append({
+                        "name": name,
+                        "value": ltp,
+                        "change": round(change, 2),
+                        "changePct": round(change_pct, 2),
+                    })
+
+            return results
+
+        except ApiException as e:
+            logger.error(f"Upstox API error for index quotes: {e.status} - {e.reason}")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to fetch index quotes: {e}")
+            return []
+
     # Order Execution
 
     async def place_order(
@@ -445,10 +568,22 @@ class UpstoxClient:
             )
 
         except ApiException as e:
+            # Extract detailed error from response body
+            detail = ""
+            if e.body:
+                try:
+                    import json as _json
+                    body = _json.loads(e.body) if isinstance(e.body, str) else e.body
+                    detail = body.get("message", "") or body.get("errors", "")
+                except Exception:
+                    detail = str(e.body)[:200]
+            msg = f"Order rejected: {e.status} - {e.reason}"
+            if detail:
+                msg += f" ({detail})"
             return TradeResult(
                 success=False,
                 status="REJECTED",
-                message=f"Order rejected: {e.status} - {e.reason}",
+                message=msg,
             )
         except Exception as e:
             return TradeResult(
@@ -603,33 +738,58 @@ class UpstoxClient:
             api_client = upstox_client.ApiClient(self._configuration)
             portfolio_api = upstox_client.PortfolioApi(api_client)
 
-            response = portfolio_api.get_holdings()
+            response = portfolio_api.get_holdings(api_version="v2")
             holdings = response.data if response.data else []
 
             positions = []
             for holding in holdings:
+                # Cache instrument_token so chart/quote can look up any holding
+                tsym = holding.tradingsymbol or holding.trading_symbol
+                inst_token = getattr(holding, 'instrument_token', None)
+                if tsym and inst_token:
+                    self._dynamic_symbols[tsym.upper()] = inst_token
+
+                # Upstox day_change may be None/0 on non-trading days;
+                # fall back to last_price - close_price for last session's change
+                raw_day_change = getattr(holding, 'day_change', None)
+                close_price = getattr(holding, 'close_price', None) or 0
+                last_price = holding.last_price or 0
+
+                if raw_day_change:
+                    day_chg = float(raw_day_change)
+                    day_chg_pct = float(getattr(holding, 'day_change_percentage', 0) or 0)
+                elif close_price and last_price:
+                    day_chg = last_price - close_price
+                    day_chg_pct = (day_chg / close_price * 100) if close_price else 0
+                else:
+                    day_chg = 0.0
+                    day_chg_pct = 0.0
+
                 positions.append(
                     PortfolioPosition(
-                        symbol=holding.tradingsymbol,
+                        symbol=tsym,
                         quantity=holding.quantity,
                         average_price=holding.average_price,
-                        current_price=holding.last_price,
+                        current_price=last_price,
                         pnl=holding.pnl,
                         pnl_percentage=(holding.pnl / (holding.average_price * holding.quantity)) * 100 if holding.quantity > 0 else 0,
-                        day_change=getattr(holding, 'day_change', 0) or 0,
-                        day_change_percentage=getattr(holding, 'day_change_percentage', 0) or 0,
+                        day_change=day_chg,
+                        day_change_percentage=day_chg_pct,
                     )
                 )
 
             invested = sum(p.average_price * p.quantity for p in positions)
             current = sum(p.current_price * p.quantity for p in positions)
+            day_pnl = sum(p.day_change * p.quantity for p in positions)
+            # Previous close total = current value minus today's change
+            prev_close_total = current - day_pnl
 
             return Portfolio(
                 total_value=current,
                 available_cash=0,  # Would need funds API
                 invested_value=invested,
-                day_pnl=sum(p.day_change * p.quantity for p in positions),
-                day_pnl_percentage=0,
+                day_pnl=day_pnl,
+                day_pnl_percentage=(day_pnl / prev_close_total * 100) if prev_close_total else 0,
                 total_pnl=current - invested,
                 total_pnl_percentage=((current - invested) / invested * 100) if invested > 0 else 0,
                 positions=positions,

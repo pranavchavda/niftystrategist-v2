@@ -14,55 +14,47 @@ import PriceChart from './cockpit/PriceChart';
 import PositionsTable from './cockpit/PositionsTable';
 import DailyScorecard from './cockpit/DailyScorecard';
 import CockpitChat from './cockpit/CockpitChat';
-import {
-  mockPortfolio,
-  mockPositions,
-  mockHoldings,
-  mockWatchlists,
-  mockIndices,
-  mockScorecard,
-  mockChatMessages,
-  generateMockOHLCV,
-} from './cockpit/mock-data';
+import { useCockpitData } from '../hooks/useCockpitData';
+import { useChartData } from '../hooks/useChartData';
 
 const Dashboard = ({ authToken }) => {
-  // Panel collapse states (for inline panels)
+  // Left panel collapse state
   const [leftCollapsed, setLeftCollapsed] = useState(() => {
     const saved = localStorage.getItem('cockpit-left-collapsed');
     return saved === 'true';
   });
-  const [rightCollapsed, setRightCollapsed] = useState(() => {
-    const saved = localStorage.getItem('cockpit-right-collapsed');
-    return saved === 'true';
-  });
-
-  // Drawer states (for responsive breakpoints)
+  // Drawer states
   const [showWatchlistDrawer, setShowWatchlistDrawer] = useState(false);
   const [showChatDrawer, setShowChatDrawer] = useState(false);
 
   // Active symbol for chart
   const [activeSymbol, setActiveSymbol] = useState('RELIANCE');
-  const [chartData, setChartData] = useState(() => generateMockOHLCV(90));
 
   // Chat context
   const [chatContext, setChatContext] = useState(null);
 
-  // Market status (mock)
-  const [marketOpen, setMarketOpen] = useState(true);
+  // Auto-refresh toggle (persisted to localStorage)
+  const [autoRefresh, setAutoRefresh] = useState(() => {
+    const saved = localStorage.getItem('cockpit-auto-refresh');
+    return saved !== 'false'; // default true
+  });
+
+  // Live data hooks
+  const cockpitData = useCockpitData(authToken, autoRefresh);
+  const chartResult = useChartData(authToken, activeSymbol, 90);
+
+  // Derive market open status from live data
+  const marketOpen = cockpitData.marketStatus?.status === 'open' || cockpitData.marketStatus?.status === 'pre_open';
 
   // Persist collapse states
   useEffect(() => {
     localStorage.setItem('cockpit-left-collapsed', String(leftCollapsed));
   }, [leftCollapsed]);
 
+  // Persist auto-refresh
   useEffect(() => {
-    localStorage.setItem('cockpit-right-collapsed', String(rightCollapsed));
-  }, [rightCollapsed]);
-
-  // Generate new chart data when symbol changes
-  useEffect(() => {
-    setChartData(generateMockOHLCV(90));
-  }, [activeSymbol]);
+    localStorage.setItem('cockpit-auto-refresh', String(autoRefresh));
+  }, [autoRefresh]);
 
   const handleSymbolSelect = useCallback((symbol) => {
     setActiveSymbol(symbol);
@@ -70,17 +62,7 @@ const Dashboard = ({ authToken }) => {
 
   const handleAskAI = useCallback((symbol, context) => {
     setChatContext(`[CONTEXT: ${context.type}] About ${symbol}: ${JSON.stringify(context.data)}\n\n`);
-    // At narrow widths, open the chat drawer instead of the inline panel
-    if (window.innerWidth < 1536) {
-      setShowChatDrawer(true);
-    } else {
-      if (rightCollapsed) setRightCollapsed(false);
-    }
-  }, [rightCollapsed]);
-
-  const handleRefresh = useCallback(() => {
-    // In Phase 2+, this will hit the real API
-    console.log('Refreshing cockpit data...');
+    setShowChatDrawer(true);
   }, []);
 
   // Shared watchlist content for both inline panel and drawer
@@ -88,7 +70,7 @@ const Dashboard = ({ authToken }) => {
     <>
       {/* Market Pulse */}
       <div className="flex-shrink-0 mb-3">
-        <MarketPulse indices={mockIndices} />
+        <MarketPulse indices={cockpitData.indices} />
       </div>
 
       {/* Divider */}
@@ -97,7 +79,7 @@ const Dashboard = ({ authToken }) => {
       {/* Watchlist */}
       <div className="flex-1 min-h-0">
         <WatchlistPanel
-          watchlists={mockWatchlists}
+          watchlists={cockpitData.watchlists}
           onSymbolSelect={(symbol) => {
             handleSymbolSelect(symbol);
             setShowWatchlistDrawer(false);
@@ -112,10 +94,21 @@ const Dashboard = ({ authToken }) => {
     <div className="flex flex-col h-full min-h-0 bg-zinc-50/50 dark:bg-zinc-950/50">
       {/* Top Strip - Portfolio Summary */}
       <TopStrip
-        portfolio={mockPortfolio}
+        portfolio={cockpitData.portfolio}
         marketOpen={marketOpen}
-        onRefresh={handleRefresh}
+        onRefresh={cockpitData.refresh}
+        autoRefresh={autoRefresh}
+        onToggleAutoRefresh={() => setAutoRefresh(prev => !prev)}
+        lastUpdated={cockpitData.lastUpdated}
+        isLoading={cockpitData.isLoading}
       />
+
+      {/* Error banner */}
+      {cockpitData.error && (
+        <div className="px-3 py-1.5 bg-red-50 dark:bg-red-900/20 border-b border-red-200/50 dark:border-red-800/50 text-xs text-red-600 dark:text-red-400">
+          {cockpitData.error}
+        </div>
+      )}
 
       {/* Watchlist Drawer (slides from left, visible below xl) */}
       <Headless.Dialog open={showWatchlistDrawer} onClose={() => setShowWatchlistDrawer(false)} className="xl:hidden">
@@ -142,8 +135,8 @@ const Dashboard = ({ authToken }) => {
         </Headless.DialogPanel>
       </Headless.Dialog>
 
-      {/* Chat Drawer (slides from right, visible below 2xl) */}
-      <Headless.Dialog open={showChatDrawer} onClose={() => setShowChatDrawer(false)} className="2xl:hidden">
+      {/* Chat Drawer (slides from right) */}
+      <Headless.Dialog open={showChatDrawer} onClose={() => setShowChatDrawer(false)}>
         <Headless.DialogBackdrop
           transition
           className="fixed inset-0 bg-black/30 transition data-[closed]:opacity-0 data-[enter]:duration-300 data-[enter]:ease-out data-[leave]:duration-200 data-[leave]:ease-in z-40"
@@ -153,12 +146,9 @@ const Dashboard = ({ authToken }) => {
           className="fixed inset-y-0 right-0 w-[340px] max-w-[85vw] bg-white dark:bg-zinc-900 shadow-xl transition duration-300 ease-in-out data-[closed]:translate-x-full z-50"
         >
           <CockpitChat
-            messages={mockChatMessages}
-            isCollapsed={false}
-            onToggleCollapse={() => setShowChatDrawer(false)}
+            authToken={authToken}
             contextPrefix={chatContext}
             onClearContext={() => setChatContext(null)}
-            isDrawer
             onClose={() => setShowChatDrawer(false)}
           />
         </Headless.DialogPanel>
@@ -200,43 +190,29 @@ const Dashboard = ({ authToken }) => {
         </div>
 
         {/* CENTER PANEL - Chart + Positions + Scorecard */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0">
-          {/* Chart Area (55% height) */}
-          <div className="flex-[55] min-h-0 border-b border-zinc-200/50 dark:border-zinc-800/50">
+        <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+          {/* Chart Area — fixed vh height, won't grow or shrink */}
+          <div className="h-[50vh] flex-shrink-0 overflow-hidden border-b border-zinc-200/50 dark:border-zinc-800/50">
             <PriceChart
               symbol={activeSymbol}
-              data={chartData}
+              data={chartResult.data}
             />
           </div>
 
-          {/* Positions Table (flexible) */}
-          <div className="flex-[45] min-h-0">
+          {/* Positions Table — fills remaining space, scrolls internally */}
+          <div className="flex-1 min-h-0 overflow-hidden">
             <PositionsTable
-              positions={mockPositions}
-              holdings={mockHoldings}
+              positions={cockpitData.positions}
+              holdings={cockpitData.holdings}
               onSymbolSelect={handleSymbolSelect}
               onAskAI={handleAskAI}
             />
           </div>
 
-          {/* Daily Scorecard (auto height) */}
-          <DailyScorecard scorecard={mockScorecard} />
+          {/* Daily Scorecard (pinned to bottom) */}
+          {cockpitData.scorecard && <div className="flex-shrink-0"><DailyScorecard scorecard={cockpitData.scorecard} /></div>}
         </div>
 
-        {/* RIGHT PANEL - Cockpit Chat (inline at 2xl+) */}
-        <div
-          className={`hidden 2xl:block flex-shrink-0 border-l border-zinc-200/50 dark:border-zinc-800/50 bg-white/30 dark:bg-zinc-900/30 transition-all duration-300 ${
-            rightCollapsed ? 'w-10' : 'w-[320px]'
-          }`}
-        >
-          <CockpitChat
-            messages={mockChatMessages}
-            isCollapsed={rightCollapsed}
-            onToggleCollapse={() => setRightCollapsed(!rightCollapsed)}
-            contextPrefix={chatContext}
-            onClearContext={() => setChatContext(null)}
-          />
-        </div>
       </div>
 
       {/* FAB - Watchlist (visible below xl) */}
@@ -249,10 +225,10 @@ const Dashboard = ({ authToken }) => {
         <ListIcon className="h-5 w-5" />
       </button>
 
-      {/* FAB - Chat (visible below 2xl) */}
+      {/* FAB - Chat */}
       <button
         onClick={() => setShowChatDrawer(true)}
-        className="2xl:hidden fixed bottom-6 right-6 z-30 p-3 bg-amber-500 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 active:scale-95"
+        className="fixed bottom-6 right-6 z-30 p-3 bg-amber-500 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 active:scale-95"
         aria-label="Open Chat"
         title="Open Chat"
       >

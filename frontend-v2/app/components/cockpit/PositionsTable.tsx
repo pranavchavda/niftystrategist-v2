@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import {
   ChevronDownIcon,
   ChevronUpIcon,
@@ -137,67 +137,48 @@ export default function PositionsTable({ positions, holdings, onSymbolSelect, on
                   : 'hover:bg-red-50/30 dark:hover:bg-red-950/10';
 
                 return (
-                  <tr key={pos.symbol} className="group">
-                    <td colSpan={10} className="p-0">
-                      {/* Main Row */}
-                      <div className={`flex items-center border-b border-zinc-100 dark:border-zinc-800/50 transition-colors ${rowBg}`}>
-                        {/* Expand Toggle */}
-                        <div className="w-8 px-3 py-2.5 flex-shrink-0">
-                          <button
-                            onClick={() => setExpandedRow(isExpanded ? null : pos.symbol)}
-                            className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
-                          >
-                            <ChevronRightIcon className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-                          </button>
-                        </div>
-
-                        {/* Symbol */}
-                        <div
-                          className="flex-1 px-2 py-2.5 cursor-pointer min-w-[90px]"
-                          onClick={() => onSymbolSelect(pos.symbol)}
+                  <React.Fragment key={pos.symbol}>
+                    {/* Main Row */}
+                    <tr className={`group border-b border-zinc-100 dark:border-zinc-800/50 transition-colors ${rowBg}`}>
+                      <td className="py-2.5 px-3 w-8">
+                        <button
+                          onClick={() => setExpandedRow(isExpanded ? null : pos.symbol)}
+                          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
                         >
-                          <span className="font-bold text-zinc-800 dark:text-zinc-200 hover:text-amber-600 dark:hover:text-amber-400 transition-colors">
-                            {pos.symbol}
-                          </span>
-                        </div>
-
-                        {/* Qty */}
-                        <div className="hidden lg:block px-2 py-2.5 text-right text-zinc-600 dark:text-zinc-400 tabular-nums min-w-[40px]">
-                          {pos.qty}
-                        </div>
-
-                        {/* Avg Price */}
-                        <div className="hidden xl:block px-2 py-2.5 text-right text-zinc-600 dark:text-zinc-400 tabular-nums min-w-[70px]">
-                          {fmtDecimal(pos.avgPrice)}
-                        </div>
-
-                        {/* LTP */}
-                        <div className="px-2 py-2.5 text-right font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums min-w-[70px]">
-                          {fmtDecimal(pos.ltp)}
-                        </div>
-
-                        {/* P&L */}
-                        <div className={`px-2 py-2.5 text-right font-bold tabular-nums min-w-[70px] ${pos.pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                          {pos.pnl >= 0 ? '+' : ''}{fmt(pos.pnl)}
-                        </div>
-
-                        {/* P&L % */}
-                        <div className={`px-2 py-2.5 text-right font-semibold tabular-nums min-w-[55px] ${pos.pnlPct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                          {pos.pnlPct >= 0 ? '+' : ''}{pos.pnlPct.toFixed(2)}%
-                        </div>
-
-                        {/* Day Change */}
-                        <div className={`hidden xl:block px-2 py-2.5 text-right tabular-nums min-w-[55px] ${pos.dayChangePct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                          {pos.dayChangePct >= 0 ? '+' : ''}{pos.dayChangePct.toFixed(2)}%
-                        </div>
-
-                        {/* Hold Days */}
-                        <div className="hidden xl:block px-2 py-2.5 text-right text-zinc-500 tabular-nums min-w-[35px]">
-                          {pos.holdDays}d
-                        </div>
-
-                        {/* Actions */}
-                        <div className="px-3 py-2.5 text-right flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity min-w-[60px]">
+                          <ChevronRightIcon className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                        </button>
+                      </td>
+                      <td
+                        className="py-2.5 px-2 cursor-pointer"
+                        onClick={() => onSymbolSelect(pos.symbol)}
+                      >
+                        <span className="font-bold text-zinc-800 dark:text-zinc-200 hover:text-amber-600 dark:hover:text-amber-400 transition-colors">
+                          {pos.symbol}
+                        </span>
+                      </td>
+                      <td className="hidden lg:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">
+                        {pos.qty}
+                      </td>
+                      <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">
+                        {fmtDecimal(pos.avgPrice)}
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums">
+                        {fmtDecimal(pos.ltp)}
+                      </td>
+                      <td className={`py-2.5 px-2 text-right font-bold tabular-nums ${pos.pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                        {pos.pnl >= 0 ? '+' : ''}{fmt(pos.pnl)}
+                      </td>
+                      <td className={`py-2.5 px-2 text-right font-semibold tabular-nums ${pos.pnlPct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                        {pos.pnlPct >= 0 ? '+' : ''}{pos.pnlPct.toFixed(2)}%
+                      </td>
+                      <td className={`hidden xl:table-cell py-2.5 px-2 text-right tabular-nums ${pos.dayChangePct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {pos.dayChangePct >= 0 ? '+' : ''}{pos.dayChangePct.toFixed(2)}%
+                      </td>
+                      <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-500 tabular-nums">
+                        {pos.holdDays}d
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             onClick={() => onAskAI(pos.symbol, { type: 'position', data: pos })}
                             className="p-1 rounded hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors"
@@ -214,11 +195,13 @@ export default function PositionsTable({ positions, holdings, onSymbolSelect, on
                             </button>
                           )}
                         </div>
-                      </div>
+                      </td>
+                    </tr>
 
-                      {/* Expanded Detail */}
-                      {isExpanded && (
-                        <div className="px-8 py-2.5 bg-zinc-50/50 dark:bg-zinc-800/20 border-b border-zinc-200/50 dark:border-zinc-800/50 animate-slide-in-bottom">
+                    {/* Expanded Detail */}
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={10} className="px-8 py-2.5 bg-zinc-50/50 dark:bg-zinc-800/20 border-b border-zinc-200/50 dark:border-zinc-800/50 animate-slide-in-bottom">
                           <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px]">
                             <span className="text-zinc-500">Company: <span className="text-zinc-700 dark:text-zinc-300 font-medium">{pos.company}</span></span>
                             {pos.stopLoss && (
@@ -236,10 +219,10 @@ export default function PositionsTable({ positions, holdings, onSymbolSelect, on
                               </span>
                             )}
                           </div>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
             </tbody>

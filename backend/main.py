@@ -690,13 +690,15 @@ if logfire_enabled:
     instrument_app(app)
 
 # Import and configure conversation router with database
-from api import conversations, dashboard, memories, tools, runs, upstox_oauth
+from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit
 from routes import admin_docs, uploads, admin, auth_routes, hitl, mcp_servers
-# Set the database manager in the conversations, memories, runs, and auth_routes modules
+# Set the database manager in the conversations, memories, runs, auth_routes, and cockpit modules
 conversations._db_manager = db_manager
 memories._db_manager = db_manager
 runs._db_manager = db_manager
 auth_routes._db_manager = db_manager
+cockpit._db_manager = db_manager
+cockpit._upstox_client = shared_upstox_client
 # Include conversation router
 app.include_router(conversations.router)
 # Include runs router (async run completion)
@@ -705,6 +707,8 @@ app.include_router(runs.router)
 app.include_router(memories.router)
 # Include dashboard router
 app.include_router(dashboard.router, prefix="/api/dashboard")
+# Include cockpit router (live trading dashboard)
+app.include_router(cockpit.router, prefix="/api/cockpit", tags=["cockpit"])
 # Include admin docs router
 app.include_router(admin_docs.router)
 # Include uploads router
@@ -1867,12 +1871,25 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
         from config.models import DEFAULT_MODEL_ID
 
         preferred_model = DEFAULT_MODEL_ID
+        user_upstox_token = None  # Decrypted live token for CLI tools
         if user:
             async with db_manager.async_session() as db:
                 db_user = await db.get(DBUser, user.id)
-                if db_user and db_user.preferred_model:
-                    preferred_model = db_user.preferred_model
-                    logger.info(f"Using user's preferred model: {preferred_model}")
+                if db_user:
+                    if db_user.preferred_model:
+                        preferred_model = db_user.preferred_model
+                        logger.info(f"Using user's preferred model: {preferred_model}")
+                    # Resolve live Upstox token if user is in live trading mode
+                    if (db_user.trading_mode == "live"
+                            and db_user.upstox_access_token
+                            and db_user.upstox_token_expiry
+                            and db_user.upstox_token_expiry > datetime.utcnow()):
+                        from utils.encryption import decrypt_token
+                        user_upstox_token = decrypt_token(db_user.upstox_access_token)
+                        if user_upstox_token:
+                            logger.info(f"Chat: live Upstox token resolved for user {user.id}")
+                        else:
+                            logger.warning(f"Chat: token decrypt failed for user {user.id}")
 
         # Get orchestrator for this model (creates if not cached, loads user MCP servers if configured)
         user_orchestrator = await get_orchestrator_for_model(preferred_model, user_id=user.id if user else None)
@@ -2012,8 +2029,8 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
             hitl_enabled=hitl_enabled,
             use_todo=use_todo,
             interrupt_signal=interrupt_signal,
-            upstox_access_token=getattr(user, 'upstox_access_token', None) if user else None,
-            user_id=getattr(user, 'id', None) if user else None,
+            upstox_access_token=user_upstox_token,
+            user_id=user.id if user else None,
         )
         logger.info(f"[TODO] Created OrchestratorDeps with use_todo={deps.use_todo}")
 

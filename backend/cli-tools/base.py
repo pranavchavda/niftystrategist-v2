@@ -21,9 +21,16 @@ def init_client() -> UpstoxClient:
 
     The orchestrator injects this env var when spawning CLI tool subprocesses.
     Falls back to UPSTOX_ACCESS_TOKEN for direct terminal usage.
+    When NF_ACCESS_TOKEN is set (live user token), paper_trading is disabled.
     """
-    token = os.environ.get("NF_ACCESS_TOKEN") or os.environ.get("UPSTOX_ACCESS_TOKEN")
-    return UpstoxClient(access_token=token)
+    live_token = os.environ.get("NF_ACCESS_TOKEN")
+    token = live_token or os.environ.get("UPSTOX_ACCESS_TOKEN")
+    user_id = int(os.environ.get("NF_USER_ID", "1"))
+    return UpstoxClient(
+        access_token=token,
+        paper_trading=not live_token,
+        user_id=user_id,
+    )
 
 
 def run_async(coro):
