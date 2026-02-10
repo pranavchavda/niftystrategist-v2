@@ -360,51 +360,51 @@ export default function CockpitChat({ authToken, contextPrefix, onClearContext, 
     }
   }, [contextPrefix]);
 
-  // Initialize cockpit thread on mount
+  // Initialize cockpit thread on mount — uses dedicated backend endpoint
+  // that creates/finds the daily thread with proper [Cockpit] title
   useEffect(() => {
     if (!authToken || threadInitRef.current) return;
     threadInitRef.current = true;
 
     (async () => {
       try {
-        const res = await fetch('/api/conversations?limit=50', {
-          headers: { Authorization: `Bearer ${authToken}` },
+        const res = await fetch('/api/cockpit/daily-thread', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            'Content-Type': 'application/json',
+          },
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn('[CockpitChat] daily-thread endpoint failed:', res.status);
+          setThreadId(`cockpit_fallback_${Date.now()}`);
+          return;
+        }
 
-        const convos = await res.json();
-        const today = new Date().toISOString().slice(0, 10);
-        const cockpitThread = convos.find(
-          (c: any) =>
-            c.title?.startsWith('[Cockpit]') &&
-            c.created_at?.slice(0, 10) === today
-        );
+        const data = await res.json();
+        setThreadId(data.threadId);
 
-        if (cockpitThread) {
-          setThreadId(cockpitThread.id);
-          // Load existing messages
-          const msgRes = await fetch(`/api/conversations/${cockpitThread.id}/messages`, {
-            headers: { Authorization: `Bearer ${authToken}` },
-          });
-          if (msgRes.ok) {
-            const msgData = await msgRes.json();
-            const loaded: ChatMessage[] = (msgData.messages || msgData || []).map((m: any) => ({
-              id: m.message_id || m.id || `msg_${Date.now()}_${Math.random()}`,
+        if (data.compacted) {
+          console.info('[CockpitChat] Thread was auto-compacted');
+        }
+
+        // Load messages from response
+        if (data.messages?.length) {
+          const loaded: ChatMessage[] = data.messages
+            .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+            .map((m: any) => ({
+              id: m.id || `msg_${Date.now()}_${Math.random()}`,
               role: m.role as 'user' | 'assistant',
               content: m.content,
               timestamp: m.timestamp
                 ? new Date(m.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
                 : '',
-            })).filter((m: ChatMessage) => m.role === 'user' || m.role === 'assistant');
-            setMessages(loaded);
-          }
-        } else {
-          const newThreadId = `cockpit_${today}_${Date.now()}`;
-          setThreadId(newThreadId);
+            }));
+          setMessages(loaded);
         }
       } catch (err) {
         console.warn('[CockpitChat] Thread init error:', err);
-        setThreadId(`cockpit_${Date.now()}`);
+        setThreadId(`cockpit_fallback_${Date.now()}`);
       }
     })();
   }, [authToken]);

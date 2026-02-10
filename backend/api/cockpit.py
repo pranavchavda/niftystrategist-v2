@@ -1,6 +1,7 @@
 """Cockpit dashboard API endpoints — live data for the trading cockpit UI."""
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -9,7 +10,10 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import User, get_current_user
-from database.models import Trade, WatchlistItem as WatchlistItemDB, User as DBUser, utc_now
+from database.models import (
+    Trade, WatchlistItem as WatchlistItemDB, User as DBUser,
+    Conversation, Message, utc_now,
+)
 from services.upstox_client import UpstoxClient
 from utils.market_status import get_market_status
 from utils.encryption import decrypt_token
@@ -376,3 +380,201 @@ async def cockpit_scorecard(
     except Exception as e:
         logger.error(f"Error computing scorecard: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# POST /daily-thread  — Get or create today's cockpit thread
+# ---------------------------------------------------------------------------
+COCKPIT_COMPACT_THRESHOLD = 60   # message count that triggers compaction
+COCKPIT_KEEP_RECENT = 20         # recent messages to keep after compaction
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def _ist_today_start_utc() -> datetime:
+    """Return naive-UTC datetime corresponding to midnight IST today."""
+    now_utc = utc_now()
+    now_ist = now_utc + IST_OFFSET          # approximate IST (naive)
+    midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight_ist - IST_OFFSET         # back to naive UTC
+
+
+def _ist_today_label() -> str:
+    """Return a human label like 'Tue, Feb 10' in IST."""
+    now_ist = utc_now() + IST_OFFSET
+    return now_ist.strftime("%a, %b %d")
+
+
+def _format_msg(m: Message) -> dict:
+    """Serialise a Message row for the frontend."""
+    return {
+        "id": m.message_id,
+        "role": m.role,
+        "content": m.content,
+        "timestamp": m.timestamp.isoformat() + "Z" if m.timestamp else None,
+        "tool_calls": m.tool_calls or [],
+        "reasoning": m.reasoning,
+    }
+
+
+@router.post("/daily-thread")
+async def get_or_create_daily_thread(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(_get_db),
+):
+    """Get or create today's cockpit daily thread.
+
+    If a ``[Cockpit]`` conversation already exists for today (IST), it is
+    returned with its messages.  If the message count exceeds
+    ``COCKPIT_COMPACT_THRESHOLD``, the old thread is archived and a fresh
+    thread is created with a summary of the archived messages plus the most
+    recent messages copied over.
+    """
+    today_start = _ist_today_start_utc()
+    today_label = _ist_today_label()
+
+    # ── Find existing cockpit thread for today ──────────────────────────
+    result = await db.execute(
+        select(Conversation)
+        .where(
+            and_(
+                Conversation.user_id == user.email,
+                Conversation.title.like("[Cockpit]%"),
+                Conversation.created_at >= today_start,
+                Conversation.is_archived == False,  # noqa: E712
+            )
+        )
+        .order_by(Conversation.created_at.desc())
+        .limit(1)
+    )
+    existing = result.scalar_one_or_none()
+
+    if existing:
+        # Load messages
+        msg_result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == existing.id)
+            .order_by(Message.timestamp)
+        )
+        messages = msg_result.scalars().all()
+
+        # ── Compaction check ────────────────────────────────────────────
+        if len(messages) > COCKPIT_COMPACT_THRESHOLD:
+            return await _compact_daily_thread(
+                db, user, existing, messages, today_label
+            )
+
+        return {
+            "threadId": existing.id,
+            "messages": [_format_msg(m) for m in messages],
+            "isNew": False,
+            "compacted": False,
+        }
+
+    # ── Create new cockpit thread ───────────────────────────────────────
+    thread_id = f"cockpit_{(utc_now() + IST_OFFSET).strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
+    conv = Conversation(
+        id=thread_id,
+        user_id=user.email,
+        title=f"[Cockpit] {today_label}",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    db.add(conv)
+    await db.commit()
+
+    logger.info(f"Created cockpit daily thread {thread_id} for {user.email}")
+
+    return {
+        "threadId": thread_id,
+        "messages": [],
+        "isNew": True,
+        "compacted": False,
+    }
+
+
+async def _compact_daily_thread(
+    db: AsyncSession,
+    user: User,
+    old_conv: Conversation,
+    messages: list[Message],
+    today_label: str,
+) -> dict:
+    """Archive the old thread, create a fresh one with a summary + recent messages."""
+    logger.info(
+        f"Compacting cockpit thread {old_conv.id} ({len(messages)} messages) for {user.email}"
+    )
+
+    # ── 1. Build summary of old messages ────────────────────────────────
+    old_messages = messages[: -COCKPIT_KEEP_RECENT]
+    recent_messages = messages[-COCKPIT_KEEP_RECENT:]
+
+    summary_parts = [
+        f"**Cockpit session compacted** — {len(old_messages)} earlier messages archived.",
+        "",
+        "Key topics discussed:",
+    ]
+
+    # Extract user messages for topic summary
+    user_msgs = [m for m in old_messages if m.role == "user"]
+    for m in user_msgs[-10:]:  # last 10 user messages from the archived portion
+        snippet = m.content[:80].replace("\n", " ")
+        summary_parts.append(f"- {snippet}")
+
+    summary_text = "\n".join(summary_parts)
+
+    # ── 2. Archive old thread ───────────────────────────────────────────
+    old_conv.title = f"[Cockpit-Archive] {today_label}"
+    old_conv.is_archived = True
+    old_conv.updated_at = utc_now()
+
+    # ── 3. Create new thread ────────────────────────────────────────────
+    new_thread_id = f"cockpit_{(utc_now() + IST_OFFSET).strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
+    new_conv = Conversation(
+        id=new_thread_id,
+        user_id=user.email,
+        title=f"[Cockpit] {today_label}",
+        forked_from_id=old_conv.id,
+        fork_summary=summary_text,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    db.add(new_conv)
+
+    # ── 4. Add summary as first system message ──────────────────────────
+    summary_msg = Message(
+        conversation_id=new_thread_id,
+        message_id=f"msg_{uuid.uuid4().hex[:12]}",
+        role="system",
+        content=summary_text,
+        timestamp=utc_now(),
+    )
+    db.add(summary_msg)
+
+    # ── 5. Copy recent messages to new thread ───────────────────────────
+    new_messages_out = [_format_msg(summary_msg)]
+    for m in recent_messages:
+        new_msg = Message(
+            conversation_id=new_thread_id,
+            message_id=f"msg_{uuid.uuid4().hex[:12]}",
+            role=m.role,
+            content=m.content,
+            timestamp=m.timestamp,
+            tool_calls=m.tool_calls,
+            reasoning=m.reasoning,
+        )
+        db.add(new_msg)
+        new_messages_out.append(_format_msg(new_msg))
+
+    await db.commit()
+
+    logger.info(
+        f"Compacted: archived {old_conv.id}, new thread {new_thread_id} "
+        f"({len(new_messages_out)} messages including summary)"
+    )
+
+    return {
+        "threadId": new_thread_id,
+        "messages": new_messages_out,
+        "isNew": False,
+        "compacted": True,
+    }
