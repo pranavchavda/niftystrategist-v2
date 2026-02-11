@@ -14,18 +14,15 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import SYMBOLS, format_inr, init_client, print_error, print_json, print_success, run_async  # noqa: E402
+from base import SYMBOLS, format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
 def place_order(symbol: str, action: str, quantity: int, order_type: str,
                 price: float | None, stop_loss: float | None, target: float | None,
                 dry_run: bool, as_json: bool):
     """Place a buy or sell order."""
-    sym = symbol.upper()
+    sym = validate_symbol(symbol)
     act = action.upper()
-
-    if sym not in SYMBOLS:
-        print_error(f"Unknown symbol: {sym}. Use nf-quote --list to see supported stocks.")
     if act not in ("BUY", "SELL"):
         print_error(f"Action must be BUY or SELL, got: {act}")
     if order_type == "LIMIT" and price is None:

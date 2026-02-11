@@ -19,7 +19,7 @@ import {
  * TradingModeToggle - Toggle between paper and live trading
  * Shows in sidebar, handles Upstox connection and confirmation
  */
-export default function TradingModeToggle({ authToken, isCollapsed }) {
+export default function TradingModeToggle({ authToken, isCollapsed, onModeChange }) {
   const [tradingMode, setTradingMode] = useState('paper');
   const [upstoxConnected, setUpstoxConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -102,6 +102,7 @@ export default function TradingModeToggle({ authToken, isCollapsed }) {
         const data = await response.json();
         setTradingMode(data.trading_mode);
         setShowConfirmDialog(false);
+        onModeChange?.(data.trading_mode);
       } else {
         const error = await response.json();
         alert(error.detail || 'Failed to switch trading mode');

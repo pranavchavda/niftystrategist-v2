@@ -5,7 +5,7 @@ Admin API routes for user and role management (RBAC)
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -39,8 +39,13 @@ class RoleResponse(BaseModel):
     id: int
     name: str
     description: Optional[str]
-    is_system: bool
+    is_system: bool = False
     permissions: List[PermissionResponse]
+
+    @field_validator('is_system', mode='before')
+    @classmethod
+    def coerce_is_system(cls, v):
+        return bool(v) if v is not None else False
 
 
 class UserResponse(BaseModel):

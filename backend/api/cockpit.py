@@ -15,6 +15,7 @@ from database.models import (
     Conversation, Message, utc_now,
 )
 from services.upstox_client import UpstoxClient
+from services.instruments_cache import get_company_name as cache_get_company_name
 from utils.market_status import get_market_status
 from utils.encryption import decrypt_token
 
@@ -83,6 +84,11 @@ async def _get_client_for_user(user: User) -> UpstoxClient:
     return _get_upstox_client()
 
 
+def invalidate_client_cache(user_id: int) -> None:
+    """Remove cached live client for a user (e.g. after trading mode switch)."""
+    _live_clients.pop(user_id, None)
+
+
 async def _get_db() -> AsyncSession:
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="Database not initialized")
@@ -143,9 +149,10 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
         holdings = []
 
         for pos in portfolio.positions:
+            company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
             item = {
                 "symbol": pos.symbol,
-                "company": company_map.get(pos.symbol, pos.symbol),
+                "company": company,
                 "qty": pos.quantity,
                 "avgPrice": pos.average_price,
                 "ltp": pos.current_price,
@@ -214,7 +221,7 @@ async def cockpit_watchlist(
             if wl_name not in grouped:
                 grouped[wl_name] = []
 
-            company = item.company_name or UpstoxClient.SYMBOL_TO_COMPANY.get(item.symbol, item.symbol)
+            company = item.company_name or UpstoxClient.SYMBOL_TO_COMPANY.get(item.symbol) or cache_get_company_name(item.symbol) or item.symbol
 
             # Fetch live quote
             quote_data = {"ltp": 0, "volume": 0, "close": 0}
@@ -578,3 +585,18 @@ async def _compact_daily_thread(
         "isNew": False,
         "compacted": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /invalidate-client  — Clear cached Upstox client after mode switch
+# ---------------------------------------------------------------------------
+@router.post("/invalidate-client")
+async def invalidate_client(user: User = Depends(get_current_user)):
+    """Clear cached Upstox client for the current user.
+
+    Call this after switching trading mode so the next cockpit request
+    picks up the correct client (paper vs live).
+    """
+    invalidate_client_cache(user.id)
+    logger.info(f"Invalidated cockpit client cache for user {user.id}")
+    return {"status": "ok"}

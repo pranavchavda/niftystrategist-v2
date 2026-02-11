@@ -14,6 +14,7 @@ import PriceChart from './cockpit/PriceChart';
 import PositionsTable from './cockpit/PositionsTable';
 import DailyScorecard from './cockpit/DailyScorecard';
 import CockpitChat from './cockpit/CockpitChat';
+import TradingModeToggle from './TradingModeToggle';
 import { useCockpitData } from '../hooks/useCockpitData';
 import { useChartData } from '../hooks/useChartData';
 
@@ -27,8 +28,9 @@ const Dashboard = ({ authToken }) => {
   const [showWatchlistDrawer, setShowWatchlistDrawer] = useState(false);
   const [showChatDrawer, setShowChatDrawer] = useState(false);
 
-  // Active symbol for chart
+  // Active symbol + timeframe for chart
   const [activeSymbol, setActiveSymbol] = useState('RELIANCE');
+  const [chartDays, setChartDays] = useState(90);
 
   // Chat context
   const [chatContext, setChatContext] = useState(null);
@@ -41,7 +43,10 @@ const Dashboard = ({ authToken }) => {
 
   // Live data hooks
   const cockpitData = useCockpitData(authToken, autoRefresh);
-  const chartResult = useChartData(authToken, activeSymbol, 90);
+  const chartResult = useChartData(authToken, activeSymbol, chartDays);
+
+  // Map timeframe labels to days for the chart hook
+  const TIMEFRAME_TO_DAYS = { '1W': 7, '1M': 30, '3M': 90, '6M': 180, '1Y': 365 };
 
   // Derive market open status from live data
   const marketOpen = cockpitData.marketStatus?.status === 'open' || cockpitData.marketStatus?.status === 'pre_open';
@@ -64,6 +69,19 @@ const Dashboard = ({ authToken }) => {
     setChatContext(`[CONTEXT: ${context.type}] About ${symbol}: ${JSON.stringify(context.data)}\n\n`);
     setShowChatDrawer(true);
   }, []);
+
+  const handleTradingModeChange = useCallback(async () => {
+    // Invalidate cached Upstox client so cockpit picks up the new mode
+    try {
+      await fetch('/api/cockpit/invalidate-client', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+    } catch (e) {
+      console.warn('Failed to invalidate client cache:', e);
+    }
+    cockpitData.refresh();
+  }, [authToken, cockpitData]);
 
   // Shared watchlist content for both inline panel and drawer
   const watchlistContent = (
@@ -130,6 +148,12 @@ const Dashboard = ({ authToken }) => {
                 <XIcon className="h-4 w-4" />
               </button>
             </div>
+
+            {/* Trading Mode Toggle (mobile drawer) */}
+            <div className="flex-shrink-0 mb-2">
+              <TradingModeToggle authToken={authToken} onModeChange={handleTradingModeChange} />
+            </div>
+
             {watchlistContent}
           </div>
         </Headless.DialogPanel>
@@ -163,7 +187,7 @@ const Dashboard = ({ authToken }) => {
           }`}
         >
           {leftCollapsed ? (
-            <div className="flex flex-col items-center pt-2">
+            <div className="flex flex-col items-center pt-2 gap-1">
               <button
                 onClick={() => setLeftCollapsed(false)}
                 className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
@@ -171,6 +195,7 @@ const Dashboard = ({ authToken }) => {
               >
                 <PanelLeftOpenIcon className="h-4 w-4" />
               </button>
+              <TradingModeToggle authToken={authToken} isCollapsed onModeChange={handleTradingModeChange} />
             </div>
           ) : (
             <div className="flex flex-col h-full min-h-0 p-2">
@@ -184,6 +209,12 @@ const Dashboard = ({ authToken }) => {
                   <PanelLeftCloseIcon className="h-3.5 w-3.5" />
                 </button>
               </div>
+
+              {/* Trading Mode Toggle */}
+              <div className="flex-shrink-0 mb-2">
+                <TradingModeToggle authToken={authToken} onModeChange={handleTradingModeChange} />
+              </div>
+
               {watchlistContent}
             </div>
           )}
@@ -196,6 +227,7 @@ const Dashboard = ({ authToken }) => {
             <PriceChart
               symbol={activeSymbol}
               data={chartResult.data}
+              onTimeframeChange={(tf) => setChartDays(TIMEFRAME_TO_DAYS[tf] || 90)}
             />
           </div>
 

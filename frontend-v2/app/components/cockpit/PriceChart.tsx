@@ -5,15 +5,18 @@ interface PriceChartProps {
   symbol: string;
   data: { time: string; open: number; high: number; low: number; close: number }[];
   className?: string;
+  activeTimeframe?: string;
+  onTimeframeChange?: (tf: string) => void;
 }
 
-const TIMEFRAMES = ['1D', '1W', '1M', '3M', '6M', '1Y'] as const;
+const TIMEFRAMES = ['1W', '1M', '3M', '6M', '1Y'] as const;
 
-export default function PriceChart({ symbol, data, className = '' }: PriceChartProps) {
+export default function PriceChart({ symbol, data, className = '', activeTimeframe: controlledTf, onTimeframeChange }: PriceChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const [activeTimeframe, setActiveTimeframe] = useState<typeof TIMEFRAMES[number]>('3M');
+  const [internalTf, setInternalTf] = useState<typeof TIMEFRAMES[number]>('3M');
+  const activeTimeframe = controlledTf || internalTf;
   const [isDark, setIsDark] = useState(false);
 
   // Detect dark mode
@@ -142,7 +145,7 @@ export default function PriceChart({ symbol, data, className = '' }: PriceChartP
           {TIMEFRAMES.map((tf) => (
             <button
               key={tf}
-              onClick={() => setActiveTimeframe(tf)}
+              onClick={() => { setInternalTf(tf); onTimeframeChange?.(tf); }}
               className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${
                 activeTimeframe === tf
                   ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm'

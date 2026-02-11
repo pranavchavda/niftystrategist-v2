@@ -45,17 +45,23 @@ Get live stock quotes or historical OHLCV candlestick data.
 ```
 python cli-tools/nf-quote SYMBOL [SYMBOL2 ...] [--json] [--historical --interval INTERVAL --days N]
 python cli-tools/nf-quote --list
+python cli-tools/nf-quote --search TERM
 ```
 
 **Examples:**
 ```bash
 python cli-tools/nf-quote RELIANCE                          # Live quote
+python cli-tools/nf-quote GOLDBEES --json                   # Any NSE symbol (ETF, etc.)
 python cli-tools/nf-quote RELIANCE TCS INFY --json          # Multiple quotes, JSON
 python cli-tools/nf-quote HDFCBANK --historical --days 5    # Daily OHLCV
 python cli-tools/nf-quote TCS --historical --interval 15minute --days 5
-python cli-tools/nf-quote --list                            # All 50 supported symbols
+python cli-tools/nf-quote --list                            # Nifty 50 symbols
+python cli-tools/nf-quote --search GOLD                     # Search any NSE stock
+python cli-tools/nf-quote --search "HDFC"                   # Find all HDFC variants
 ```
 
+- Supports all 8000+ NSE symbols (not just Nifty 50)
+- Non-Nifty 50 symbols show an info note
 - Intervals: `1minute`, `5minute`, `15minute`, `30minute`, `day`
 
 ---

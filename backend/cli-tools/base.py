@@ -11,8 +11,17 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from services.upstox_client import UpstoxClient  # noqa: E402
+from services.instruments_cache import (  # noqa: E402
+    ensure_loaded as _ensure_instruments,
+    symbol_exists as _symbol_exists,
+    is_nifty50 as _is_nifty50,
+    get_company_name as _get_company_name,
+    search_symbols,
+    symbol_count,
+    NIFTY_50_SYMBOLS,
+)
 
-# Re-export symbol list for tools that need it
+# Re-export symbol list for backward compat (Nifty 50 only)
 SYMBOLS = sorted(UpstoxClient.SYMBOL_TO_ISIN.keys())
 
 
@@ -52,6 +61,27 @@ def print_error(msg: str):
     """Print an error message and exit with code 1."""
     print(f"❌ {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def validate_symbol(symbol: str) -> str:
+    """Validate a stock symbol against the NSE instruments cache.
+
+    Returns the uppercased symbol if valid.
+    Prints an info note to stderr if the symbol is not a Nifty 50 constituent.
+    Exits with error if the symbol doesn't exist at all.
+    """
+    sym = symbol.upper()
+    _ensure_instruments()
+
+    if not _symbol_exists(sym):
+        print_error(f"Unknown symbol: {sym}. Use nf-quote --search to find valid NSE symbols.")
+
+    if not _is_nifty50(sym):
+        name = _get_company_name(sym)
+        label = f" ({name})" if name else ""
+        print(f"ℹ️  {sym}{label} is not a Nifty 50 stock.", file=sys.stderr)
+
+    return sym
 
 
 def format_inr(amount: float | int | None) -> str:

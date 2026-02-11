@@ -1227,8 +1227,8 @@ async def register(request: RegisterRequest):
         )
         db.add(new_user)
 
-        # Assign default 'user' role if it exists (with permissions eagerly loaded)
-        role_stmt = select(Role).where(Role.name == "user").options(selectinload(Role.permissions))
+        # Assign default 'new_user' role (pending activation, no permissions)
+        role_stmt = select(Role).where(Role.name == "new_user").options(selectinload(Role.permissions))
         role_result = await db.execute(role_stmt)
         user_role = role_result.scalar_one_or_none()
 

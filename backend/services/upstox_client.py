@@ -277,8 +277,10 @@ class UpstoxClient:
     def _get_instrument_key(self, symbol: str) -> str:
         """Get the instrument key for a symbol.
 
-        Checks the hardcoded Nifty 50 map first, then falls back to the
-        dynamic cache populated from live holdings/positions.
+        Resolution order:
+        1. Hardcoded Nifty 50 map (instant)
+        2. Dynamic cache from live holdings/positions
+        3. NSE instruments cache (any NSE symbol)
         """
         sym = symbol.upper()
         isin = self.SYMBOL_TO_ISIN.get(sym)
@@ -289,9 +291,15 @@ class UpstoxClient:
         if sym in self._dynamic_symbols:
             return self._dynamic_symbols[sym]
 
+        # Fallback: instruments cache (covers all NSE symbols)
+        from services.instruments_cache import get_instrument_key as cache_get_key
+        cached_key = cache_get_key(sym)
+        if cached_key:
+            return cached_key
+
         raise ValueError(
             f"No instrument mapping for symbol '{symbol}'. "
-            f"Known symbols: {', '.join(sorted(self.SYMBOL_TO_ISIN.keys()))}"
+            f"Use nf-quote --search to find valid NSE symbols."
         )
 
     def set_access_token(self, token: str) -> None:
@@ -385,11 +393,12 @@ class UpstoxClient:
             api_client = upstox_client.ApiClient(self._configuration)
             history_api = upstox_client.HistoryV3Api(api_client)
 
-            response = history_api.get_historical_candle_data(
+            response = history_api.get_historical_candle_data1(
                 instrument_key=instrument_key,
                 unit=unit,
                 interval=interval_value,
                 to_date=to_date,
+                from_date=from_date,
             )
 
             candles_data = response.data.candles if response.data else []
@@ -801,7 +810,12 @@ class UpstoxClient:
             raise ValueError(f"Failed to fetch portfolio: {e}")
 
     def get_known_symbols(self) -> list[str]:
-        """Get list of supported stock symbols."""
+        """Get list of supported stock symbols (all NSE symbols if cache available)."""
+        from services.instruments_cache import get_all_symbols, ensure_loaded
+        ensure_loaded()
+        all_syms = get_all_symbols()
+        if all_syms:
+            return all_syms
         return sorted(self.SYMBOL_TO_ISIN.keys())
 
     async def get_orders(self) -> list[dict]:

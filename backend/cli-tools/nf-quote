@@ -12,6 +12,7 @@ if _backend_dir not in sys.path:
 
 from base import (  # noqa: E402
     SYMBOLS,
+    NIFTY_50_SYMBOLS,
     format_change,
     format_inr,
     format_volume,
@@ -19,6 +20,8 @@ from base import (  # noqa: E402
     print_error,
     print_json,
     run_async,
+    search_symbols,
+    validate_symbol,
 )
 
 
@@ -29,11 +32,18 @@ def fetch_quotes(symbols: list[str], as_json: bool):
     results = []
     errors = []
 
+    from services.instruments_cache import ensure_loaded, symbol_exists, is_nifty50, get_company_name
+    ensure_loaded()
+
     for symbol in symbols:
         sym = symbol.upper()
-        if sym not in SYMBOLS:
-            errors.append(f"{sym}: Unknown symbol. Use --list to see supported stocks.")
+        if not symbol_exists(sym):
+            errors.append(f"{sym}: Unknown symbol. Use --search to find valid NSE symbols.")
             continue
+        if not is_nifty50(sym):
+            name = get_company_name(sym)
+            label = f" ({name})" if name else ""
+            print(f"ℹ️  {sym}{label} is not a Nifty 50 stock.", file=sys.stderr)
         try:
             quote = run_async(client.get_quote(sym))
             results.append(quote)
@@ -74,9 +84,7 @@ def fetch_quotes(symbols: list[str], as_json: bool):
 
 def fetch_historical(symbol: str, interval: str, days: int, as_json: bool):
     """Fetch historical OHLCV data."""
-    sym = symbol.upper()
-    if sym not in SYMBOLS:
-        print_error(f"Unknown symbol: {sym}. Use --list to see supported stocks.")
+    sym = validate_symbol(symbol)
 
     client = init_client()
     try:
@@ -114,10 +122,11 @@ def main():
 Examples:
   nf-quote RELIANCE                   Live quote for Reliance
   nf-quote RELIANCE TCS INFY          Multiple quotes
-  nf-quote RELIANCE --json            JSON output
+  nf-quote GOLDBEES --json            Any NSE symbol (not just Nifty 50)
   nf-quote RELIANCE --historical      Daily OHLCV (last 30 days)
   nf-quote TCS --historical --interval 15minute --days 5
-  nf-quote --list                     Show all supported symbols
+  nf-quote --list                     Show Nifty 50 symbols
+  nf-quote --search GOLD              Search any NSE stock by name/symbol
 
 Supported intervals: 1minute, 5minute, 15minute, 30minute, day
 
@@ -126,7 +135,8 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     )
     parser.add_argument("symbols", nargs="*", help="Stock symbol(s) (e.g., RELIANCE, TCS)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
-    parser.add_argument("--list", action="store_true", help="List all supported stock symbols")
+    parser.add_argument("--list", action="store_true", help="List Nifty 50 stock symbols")
+    parser.add_argument("--search", metavar="TERM", help="Search any NSE stock by name or symbol")
     parser.add_argument("--historical", action="store_true", help="Fetch historical OHLCV data")
     parser.add_argument(
         "--interval",
@@ -138,16 +148,33 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
 
     args = parser.parse_args()
 
+    if args.search:
+        results = search_symbols(args.search)
+        if args.json:
+            print_json(results)
+        else:
+            if not results:
+                print(f"No symbols matching '{args.search}'.")
+            else:
+                print(f"NSE symbols matching '{args.search}' ({len(results)} results):\n")
+                print(f"{'Symbol':<14} {'Name':<40} {'Nifty 50'}")
+                print("-" * 62)
+                for r in results:
+                    n50 = "Yes" if r["nifty50"] else ""
+                    print(f"{r['symbol']:<14} {r['name'][:38]:<40} {n50}")
+        return
+
     if args.list:
         if args.json:
             print_json(SYMBOLS)
         else:
-            print(f"Supported stocks ({len(SYMBOLS)}):\n")
+            print(f"Nifty 50 stocks ({len(SYMBOLS)}):\n")
             # Print in 4 columns
             cols = 4
             for i in range(0, len(SYMBOLS), cols):
                 row = SYMBOLS[i : i + cols]
                 print("  ".join(s.ljust(14) for s in row))
+            print(f"\nTip: Use --search TERM to find any NSE stock (8000+ available)")
         return
 
     if not args.symbols:

@@ -48,9 +48,9 @@ async def get_landing_stats(db: AsyncSession = Depends(get_db)):
             if f.name not in ("__init__.py",) and not f.name.startswith("test_")
         ]
 
-        # Count supported stocks from upstox_client
-        from services.upstox_client import UpstoxClient
-        supported_stocks = len(UpstoxClient.SYMBOL_TO_ISIN)
+        # Count supported stocks from instruments cache
+        from services.instruments_cache import symbol_count
+        supported_stocks = symbol_count()
 
         return {
             "toolsCount": len(tool_files),

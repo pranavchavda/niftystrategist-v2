@@ -120,6 +120,7 @@ export default function Index() {
   }, [userPermissions]);
 
   const isLoggedIn = userPermissions !== null;
+  const isPendingActivation = isLoggedIn && visibleSections.length === 0 && !userPermissions.includes('chat.access');
 
   useEffect(() => {
     // Fetch stats
@@ -218,112 +219,133 @@ export default function Index() {
                 <h1 className="text-3xl sm:text-4xl font-bold tracking-tight bg-gradient-to-t from-zinc-900 to-zinc-500 dark:from-white dark:to-zinc-400 bg-clip-text text-transparent mb-2">
                   {greeting}, {userName}.
                 </h1>
-                <p className="mt-2 text-lg text-zinc-500 dark:text-zinc-400">
-                  What would you like to analyze today?
-                </p>
+                {!isPendingActivation && (
+                  <p className="mt-2 text-lg text-zinc-500 dark:text-zinc-400">
+                    What would you like to analyze today?
+                  </p>
+                )}
               </div>
             </div>
 
-            {/* Main Action Bar */}
-            {userPermissions.includes('chat.access') && (
-              <div className="flex flex-col gap-4">
-                {/* Attachment Previews */}
-                {(attachedFiles.length > 0 || attachedImages.length > 0) && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                    {attachedImages.map((image, index) => (
-                      <div key={`image-${index}`} className="flex items-center justify-between p-3 bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
-                        <div className="flex items-center space-x-3 truncate">
-                          <div className="p-2 rounded-lg bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 flex-shrink-0">
-                            <PhotoIcon className="w-4 h-4" />
+            {isPendingActivation ? (
+              /* Pending Activation Banner */
+              <div className="p-6 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <div className="flex items-start gap-4">
+                  <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg flex-shrink-0">
+                    <ArrowTrendingUpIcon className="w-6 h-6 text-slate-500 dark:text-slate-400" />
+                  </div>
+                  <div>
+                    <p className="text-base font-semibold text-slate-800 dark:text-slate-200">Your account is pending activation.</p>
+                    <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+                      Contact Pranav to enable your account.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Main Action Bar */}
+                {userPermissions.includes('chat.access') && (
+                  <div className="flex flex-col gap-4">
+                    {/* Attachment Previews */}
+                    {(attachedFiles.length > 0 || attachedImages.length > 0) && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        {attachedImages.map((image, index) => (
+                          <div key={`image-${index}`} className="flex items-center justify-between p-3 bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
+                            <div className="flex items-center space-x-3 truncate">
+                              <div className="p-2 rounded-lg bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 flex-shrink-0">
+                                <PhotoIcon className="w-4 h-4" />
+                              </div>
+                              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate">
+                                {image.name}
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== index))}
+                              className="p-1 text-zinc-400 hover:text-red-500 transition-colors"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
                           </div>
-                          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate">
-                            {image.name}
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== index))}
-                          className="p-1 text-zinc-400 hover:text-red-500 transition-colors"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                    {attachedFiles.map((file, index) => (
-                      <div key={`file-${index}`} className="flex items-center justify-between p-3 bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
-                        <div className="flex items-center space-x-3 truncate">
-                          <div className="p-2 rounded-lg bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex-shrink-0">
-                            <PaperClipIcon className="w-4 h-4" />
+                        ))}
+                        {attachedFiles.map((file, index) => (
+                          <div key={`file-${index}`} className="flex items-center justify-between p-3 bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
+                            <div className="flex items-center space-x-3 truncate">
+                              <div className="p-2 rounded-lg bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex-shrink-0">
+                                <PaperClipIcon className="w-4 h-4" />
+                              </div>
+                              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate">
+                                {file.name}
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => setAttachedFiles(prev => prev.filter((_, i) => i !== index))}
+                              className="p-1 text-zinc-400 hover:text-red-500 transition-colors"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
                           </div>
-                          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate">
-                            {file.name}
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => setAttachedFiles(prev => prev.filter((_, i) => i !== index))}
-                          className="p-1 text-zinc-400 hover:text-red-500 transition-colors"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
+                        ))}
                       </div>
-                    ))}
+                    )}
+
+                    <ChatInputAny
+                      ref={newTaskInputRef}
+                      value={initialMessage}
+                      onChange={setInitialMessage}
+                      onSubmit={() => handleNewTask(initialMessage, attachedFiles, attachedImages)}
+                      onFileAttach={(files: File[]) => {
+                        const images = files.filter((f: File) => f.type.startsWith('image/'));
+                        const docs = files.filter((f: File) => !f.type.startsWith('image/'));
+                        setAttachedImages(prev => [...prev, ...images]);
+                        setAttachedFiles(prev => [...prev, ...docs]);
+                      }}
+                      placeholder="Analyze RELIANCE, check my portfolio, find swing trades..."
+                      authToken={localStorage.getItem('auth_token')}
+                    />
                   </div>
                 )}
 
-                <ChatInputAny
-                  ref={newTaskInputRef}
-                  value={initialMessage}
-                  onChange={setInitialMessage}
-                  onSubmit={() => handleNewTask(initialMessage, attachedFiles, attachedImages)}
-                  onFileAttach={(files: File[]) => {
-                    const images = files.filter((f: File) => f.type.startsWith('image/'));
-                    const docs = files.filter((f: File) => !f.type.startsWith('image/'));
-                    setAttachedImages(prev => [...prev, ...images]);
-                    setAttachedFiles(prev => [...prev, ...docs]);
-                  }}
-                  placeholder="Analyze RELIANCE, check my portfolio, find swing trades..."
-                  authToken={localStorage.getItem('auth_token')}
-                />
-              </div>
-            )}
+                {/* Applications Grid */}
+                {visibleSections.length > 0 && (
+                  <div className="pt-4">
+                    <h2 className="text-sm font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-5">Applications</h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+                      {visibleSections.map((section) => (
+                        <button
+                          key={section.href}
+                          onClick={() => navigate(section.href)}
+                          className="group flex flex-col items-start p-5 h-full bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700 hover:shadow-md transition-all duration-200 text-left cursor-pointer"
+                        >
+                          <div className="mb-3 p-2 bg-zinc-50 dark:bg-zinc-800 rounded-lg text-zinc-500 dark:text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 group-hover:bg-zinc-100 dark:group-hover:bg-zinc-700/50 transition-colors">
+                            <section.icon className="w-6 h-6" />
+                          </div>
+                          <h3 className="font-semibold text-zinc-900 dark:text-zinc-100 mb-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                            {section.title}
+                          </h3>
+                          <p className="text-xs text-zinc-500 dark:text-zinc-500 line-clamp-2">
+                            {section.description}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-            {/* Applications Grid */}
-            {visibleSections.length > 0 && (
-              <div className="pt-4">
-                <h2 className="text-sm font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-5">Applications</h2>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                  {visibleSections.map((section) => (
-                    <button
-                      key={section.href}
-                      onClick={() => navigate(section.href)}
-                      className="group flex flex-col items-start p-5 h-full bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700 hover:shadow-md transition-all duration-200 text-left cursor-pointer"
-                    >
-                      <div className="mb-3 p-2 bg-zinc-50 dark:bg-zinc-800 rounded-lg text-zinc-500 dark:text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 group-hover:bg-zinc-100 dark:group-hover:bg-zinc-700/50 transition-colors">
-                        <section.icon className="w-6 h-6" />
-                      </div>
-                      <h3 className="font-semibold text-zinc-900 dark:text-zinc-100 mb-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                        {section.title}
-                      </h3>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-500 line-clamp-2">
-                        {section.description}
+                {/* Paper Trading Notice */}
+                <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800/50">
+                  <div className="flex items-start gap-3">
+                    <WalletIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Paper Trading Mode</p>
+                      <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">
+                        You're using simulated trading with virtual funds. Connect Upstox in Settings for live trading.
                       </p>
-                    </button>
-                  ))}
+                    </div>
+                  </div>
                 </div>
-              </div>
+              </>
             )}
-
-            {/* Paper Trading Notice */}
-            <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800/50">
-              <div className="flex items-start gap-3">
-                <WalletIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Paper Trading Mode</p>
-                  <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">
-                    You're using simulated trading with virtual funds. Connect Upstox in Settings for live trading.
-                  </p>
-                </div>
-              </div>
-            </div>
           </div>
         ) : (
           <div className=" md:py-10 flex flex-col items-center justify-center text-center">

@@ -1153,7 +1153,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-market-status [--json]` — Check if market is open/closed (no token needed)
 - `python cli-tools/nf-quote SYMBOL [SYMBOL2 ...] [--json]` — Live quotes
 - `python cli-tools/nf-quote SYMBOL --historical [--interval day] [--days 30]` — OHLCV candles
-- `python cli-tools/nf-quote --list` — Show all 50 supported Nifty stocks
+- `python cli-tools/nf-quote --list` — Nifty 50 stocks (curated)
+- `python cli-tools/nf-quote --search TERM` — Search any NSE stock by name/symbol (8000+ available)
 
 **Technical Analysis:**
 - `python cli-tools/nf-analyze SYMBOL [--interval 15minute|30minute|day] [--json]` — Full analysis

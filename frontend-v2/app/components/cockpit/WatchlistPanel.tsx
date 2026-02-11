@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   SearchIcon,
   SparklesIcon,
@@ -48,6 +48,14 @@ export default function WatchlistPanel({ watchlists, onSymbolSelect, onAskAI }: 
   const listNames = Object.keys(watchlists);
   const [activeList, setActiveList] = useState(listNames[0] || '');
   const [search, setSearch] = useState('');
+
+  // Sync activeList when watchlists load/change (initial mount has empty watchlists)
+  useEffect(() => {
+    if (listNames.length > 0 && !listNames.includes(activeList)) {
+      setActiveList(listNames[0]);
+    }
+  }, [listNames.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [hoveredSymbol, setHoveredSymbol] = useState<string | null>(null);
 
   const items = (watchlists[activeList] || []).filter(

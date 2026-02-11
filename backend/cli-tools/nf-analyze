@@ -9,16 +9,14 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import SYMBOLS, format_inr, init_client, print_error, print_json, run_async  # noqa: E402
+from base import SYMBOLS, format_inr, init_client, print_error, print_json, run_async, validate_symbol  # noqa: E402
 
 
 def analyze_single(symbol: str, interval: str, as_json: bool):
     """Run full technical analysis on a single stock."""
     from services.technical_analysis import TechnicalAnalysisService
 
-    sym = symbol.upper()
-    if sym not in SYMBOLS:
-        print_error(f"Unknown symbol: {sym}. Use nf-quote --list to see supported stocks.")
+    sym = validate_symbol(symbol)
 
     client = init_client()
     try:
@@ -103,10 +101,13 @@ def compare_stocks(symbols: list[str], as_json: bool):
     ta = TechnicalAnalysisService()
     results = []
 
+    from services.instruments_cache import ensure_loaded, symbol_exists
+    ensure_loaded()
+
     for sym in symbols:
         sym = sym.upper()
-        if sym not in SYMBOLS:
-            results.append({"symbol": sym, "error": f"Unknown symbol"})
+        if not symbol_exists(sym):
+            results.append({"symbol": sym, "error": "Unknown symbol"})
             continue
         try:
             candles = run_async(client.get_historical_data(sym, interval="15minute", days=60))

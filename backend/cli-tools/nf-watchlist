@@ -12,7 +12,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import SYMBOLS, format_inr, init_client, print_error, print_json, print_success, run_async  # noqa: E402
+from base import SYMBOLS, format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
 def _get_user_id() -> int:
@@ -61,9 +61,8 @@ def show_watchlist(as_json: bool):
     for item in items:
         entry = {
             "symbol": item.symbol,
-            "added_price": item.added_price,
-            "target_buy_price": item.target_buy_price,
-            "target_sell_price": item.target_sell_price,
+            "target_buy_price": item.alert_below,
+            "target_sell_price": item.alert_above,
             "notes": item.notes,
         }
 
@@ -72,21 +71,14 @@ def show_watchlist(as_json: bool):
             current = quote["ltp"]
             entry["current_price"] = current
 
-            if item.added_price and item.added_price > 0:
-                change = current - item.added_price
-                entry["change_pct"] = (change / item.added_price) * 100
-            else:
-                entry["change_pct"] = None
-
             # Check alerts
-            if item.target_buy_price and current <= item.target_buy_price:
-                alerts.append({"symbol": item.symbol, "type": "BUY", "current": current, "target": item.target_buy_price})
-            if item.target_sell_price and current >= item.target_sell_price:
-                alerts.append({"symbol": item.symbol, "type": "SELL", "current": current, "target": item.target_sell_price})
+            if item.alert_below and current <= item.alert_below:
+                alerts.append({"symbol": item.symbol, "type": "BUY", "current": current, "target": item.alert_below})
+            if item.alert_above and current >= item.alert_above:
+                alerts.append({"symbol": item.symbol, "type": "SELL", "current": current, "target": item.alert_above})
 
         except Exception:
             entry["current_price"] = None
-            entry["change_pct"] = None
 
         entries.append(entry)
 
@@ -97,10 +89,7 @@ def show_watchlist(as_json: bool):
     print("📋 Watchlist\n")
     for e in entries:
         if e["current_price"] is not None:
-            pct = e.get("change_pct")
-            change_str = f"({pct:+.2f}%)" if pct is not None else ""
-            arrow = "▲" if (pct or 0) >= 0 else "▼"
-            print(f"  {e['symbol']:<12} {format_inr(e['current_price']):>12} {arrow} {change_str}")
+            print(f"  {e['symbol']:<12} {format_inr(e['current_price']):>12}")
         else:
             print(f"  {e['symbol']:<12} {'price unavailable':>12}")
 
@@ -127,10 +116,7 @@ def add_to_watchlist(symbol: str, notes: str | None, buy_target: float | None,
     from database.models import WatchlistItem
     from sqlalchemy import select
 
-    sym = symbol.upper()
-    if sym not in SYMBOLS:
-        print_error(f"Unknown symbol: {sym}")
-
+    sym = validate_symbol(symbol)
     user_id = _get_user_id()
     client = init_client()
 
@@ -155,9 +141,8 @@ def add_to_watchlist(symbol: str, notes: str | None, buy_target: float | None,
                 user_id=user_id,
                 symbol=sym,
                 notes=notes,
-                target_buy_price=buy_target,
-                target_sell_price=sell_target,
-                added_price=current_price,
+                alert_below=buy_target,
+                alert_above=sell_target,
             )
             session.add(item)
             await session.commit()
@@ -237,13 +222,13 @@ def update_watchlist(symbol: str, notes: str | None, buy_target: float | None,
                 return None
 
             if clear_targets:
-                item.target_buy_price = None
-                item.target_sell_price = None
+                item.alert_below = None
+                item.alert_above = None
             else:
                 if buy_target is not None:
-                    item.target_buy_price = buy_target
+                    item.alert_below = buy_target
                 if sell_target is not None:
-                    item.target_sell_price = sell_target
+                    item.alert_above = sell_target
 
             if notes is not None:
                 item.notes = notes
@@ -252,8 +237,8 @@ def update_watchlist(symbol: str, notes: str | None, buy_target: float | None,
             await session.commit()
             return {
                 "symbol": sym,
-                "target_buy_price": item.target_buy_price,
-                "target_sell_price": item.target_sell_price,
+                "target_buy_price": item.alert_below,
+                "target_sell_price": item.alert_above,
                 "notes": item.notes,
             }
 
