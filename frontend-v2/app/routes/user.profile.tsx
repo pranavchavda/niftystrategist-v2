@@ -326,7 +326,7 @@ export default function UserProfile() {
         <h3 className="font-semibold text-zinc-900 dark:text-zinc-100 mb-4">About Your Profile</h3>
         <div className="space-y-3 text-sm text-zinc-600 dark:text-zinc-400">
           <p>
-            <strong>Personalization:</strong> Your profile information helps EspressoBot provide more relevant and personalized responses based on your background and preferences.
+            <strong>Personalization:</strong> Your profile information helps Nifty Strategist provide more relevant and personalized responses based on your background and preferences.
           </p>
           <p>
             <strong>Context:</strong> Your name and bio are included in conversation context to help the AI understand who you are and tailor responses accordingly.

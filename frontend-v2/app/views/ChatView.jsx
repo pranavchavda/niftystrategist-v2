@@ -19,7 +19,7 @@ import ModelSelector from "../components/ModelSelector";
 import HITLToggle from "../components/HITLToggle";
 import ApprovalDialog from "../components/ApprovalDialog";
 import ActionsDropdown from "../components/ActionsDropdown";
-import logo from "../assets/eblogo.webp";
+import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
 import {
   PhotoIcon,
   PaperClipIcon,
@@ -1675,12 +1675,8 @@ function ChatView({ authToken, onConversationChange }) {
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full min-h-[calc(100vh-16rem)] px-4 animate-fade-in">
             <div className="flex flex-col items-center text-center space-y-6 max-w-2xl mx-auto">
-              <div className="w-48 h-48 rounded-2xl bg-white dark:bg-zinc-900 shadow-sm border border-zinc-200 dark:border-zinc-800 flex items-center justify-center p-3">
-                <img
-                  src={logo}
-                  alt="EspressoBot"
-                  className="w-full h-full object-contain"
-                />
+              <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-sm flex items-center justify-center">
+                <ArrowTrendingUpIcon className="w-12 h-12 text-white" />
               </div>
 
               <div className="space-y-2">
@@ -1769,7 +1765,7 @@ function ChatView({ authToken, onConversationChange }) {
           <div className="py-6 px-4 bg-zinc-50/50 dark:bg-zinc-900/50 animate-slide-in-bottom">
             <div className="max-w-3xl mx-auto">
               <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 mb-2 px-1">
-                EspressoBot
+                Nifty Strategist
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-zinc-400 dark:bg-zinc-600 rounded-full animate-pulse"></div>
@@ -1891,7 +1887,7 @@ function ChatView({ authToken, onConversationChange }) {
             onCancel={handleCancel}
             disabled={isLoading}
             isLoading={isLoading}
-            placeholder="Message EspressoBot..."
+            placeholder="Message Nifty Strategist..."
             attachedFile={attachedFiles[0]}
             attachedImage={attachedImages[0]}
             onRemoveAttachment={handleRemoveFirstAttachment}

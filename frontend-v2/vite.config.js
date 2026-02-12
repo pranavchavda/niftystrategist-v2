@@ -11,13 +11,13 @@ export default defineConfig({
     VitePWA({
       strategies: "generateSW",
       registerType: "autoUpdate",
-      includeAssets: ["eblogo-notext.webp", "icons/*.png", "manifest.json"],
+      includeAssets: ["icons/*.png", "manifest.json"],
       injectRegister: "auto",
       manifest: {
-        name: "EspressoBot - AI Assistant for Shopify",
-        short_name: "EspressoBot",
+        name: "Nifty Strategist - AI Trading Assistant",
+        short_name: "Nifty Strategist",
         description:
-          "AI-powered assistant for managing Shopify stores with specialized agents for products, analytics, and content management.",
+          "AI-powered trading assistant for Indian stock markets (NSE/BSE). Analyze stocks, track portfolios, and execute trades.",
         start_url: "/",
         display: "standalone",
         background_color: "#ffffff",

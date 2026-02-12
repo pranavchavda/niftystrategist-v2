@@ -78,23 +78,23 @@ function ProcessingStatus({ status, details, startTime }) {
 
     switch (status) {
       case 'routing':
-        return 'Using GPT-5 to intelligently route your request';
+        return 'Analyzing your request';
       case 'calling_agent':
-        if (details?.agentName === 'products') {
-          return 'Accessing product catalog and inventory systems';
-        } else if (details?.agentName === 'orders') {
-          return 'Retrieving sales and order information';
-        } else if (details?.agentName === 'analytics') {
-          return 'Analyzing website traffic and conversions';
+        if (details?.agentName === 'market_data') {
+          return 'Fetching market data from Upstox';
+        } else if (details?.agentName === 'analysis') {
+          return 'Running technical analysis';
+        } else if (details?.agentName === 'portfolio') {
+          return 'Checking portfolio and positions';
         }
-        return 'Connecting to specialized systems';
+        return 'Connecting to trading systems';
       case 'executing_tool':
-        if (details?.toolName?.includes('search')) {
-          return 'Querying Shopify API for matching products';
-        } else if (details?.toolName?.includes('create')) {
-          return 'Creating new resources in your store';
-        } else if (details?.toolName?.includes('update')) {
-          return 'Updating existing data';
+        if (details?.toolName?.includes('quote')) {
+          return 'Fetching live stock quotes';
+        } else if (details?.toolName?.includes('analyze')) {
+          return 'Computing technical indicators';
+        } else if (details?.toolName?.includes('order')) {
+          return 'Processing order request';
         }
         return 'Executing operation';
       default:
@@ -106,7 +106,7 @@ function ProcessingStatus({ status, details, startTime }) {
     <div className="py-6 px-4 bg-zinc-50/50 dark:bg-zinc-900/50 animate-slide-in-bottom">
       <div className="max-w-3xl mx-auto">
         <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 mb-2 px-1">
-          EspressoBot
+          Nifty Strategist
         </div>
         <div className="flex items-start gap-3">
           <div className="flex-shrink-0 mt-0.5">

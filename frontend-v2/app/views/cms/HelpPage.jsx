@@ -61,7 +61,7 @@ This help guide covers Category Landing Pages. Additional content types (Home Ba
         },
         {
           title: 'Accessing the CMS',
-          content: `1. Navigate to EspressoBot (https://node.idrinkcoffee.info)
+          content: `1. Navigate to Nifty Strategist
 2. Log in with your Google account
 3. From the landing page, click "CMS" or navigate to /cms
 4. Select the "Category Pages" tab`,
@@ -460,7 +460,7 @@ SEO Description (150-160 chars):
           <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center">
             Need more help?{' '}
             <a href="#" className="text-blue-600 dark:text-blue-400 hover:underline">
-              Contact the EspressoBot team
+              Contact Pranav
             </a>{' '}
             or post in{' '}
             <span className="font-mono bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">

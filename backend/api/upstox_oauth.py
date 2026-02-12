@@ -278,12 +278,10 @@ async def oauth_callback(
 
     logger.info(f"Upstox OAuth successful for user {user_id}")
 
-    # Return JSON response (frontend will handle the redirect)
-    return {
-        "status": "success",
-        "message": "Upstox connected successfully",
-        "upstox_user_id": upstox_user_id,
-    }
+    # Redirect to frontend settings page with success status
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"{frontend_url}/settings?upstox=connected")
 
 
 @router.post("/disconnect")

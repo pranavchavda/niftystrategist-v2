@@ -1,5 +1,5 @@
 """
-Voice I/O endpoints for EspressoBot
+Voice I/O endpoints for Nifty Strategist
 - Speech-to-text (STT) transcription using gpt-4o-mini-transcribe
 - Text-to-speech (TTS) synthesis using gpt-4o-mini-tts
 """
@@ -160,8 +160,8 @@ async def synthesize_speech(request: TTSRequest):
             model="gpt-4o-mini-tts",  # Use gpt-4o-tts for faster/cheaper, tts-1-hd for higher quality
             voice=request.voice,
             input=chunk_text,
-            instructions="Sexy, flirtatious, and seductive tone. Bandra west / South Bombay accent. Express any emojis in the text.",
-            speed=1.12
+            instructions="Clear, professional tone. Indian English accent. Read financial numbers and stock tickers clearly.",
+            speed=request.speed or 1.25
         )
 
         # Stream the audio response

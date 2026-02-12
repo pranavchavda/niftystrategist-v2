@@ -32,7 +32,7 @@ const themeScript = `
 `;
 
 export const links: LinksFunction = () => [
-  { rel: 'icon', href: '/eblogo-notext.webp', type: 'image/webp' },
+  { rel: 'icon', href: '/icons/icon-96x96.png', type: 'image/png' },
   { rel: 'manifest', href: '/manifest.json' },
   { rel: 'apple-touch-icon', href: '/icons/icon-192x192.png' },
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },

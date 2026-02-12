@@ -68,10 +68,10 @@ export function TopBar({
         {/* Logo Badge */}
         <div className="flex items-center gap-2">
           <div className="flex items-center justify-center size-7 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 text-white font-bold text-sm shadow-sm">
-            EB
+            NS
           </div>
           <span className="text-sm font-semibold text-zinc-900 dark:text-white">
-            EspressoBot
+            Nifty Strategist
           </span>
         </div>
 

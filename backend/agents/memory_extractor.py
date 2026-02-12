@@ -1,5 +1,5 @@
 """
-Memory Extraction Agent - Uses Grok 4 Fast for memory extraction
+Memory Extraction Agent - Extracts trading memories via OpenRouter
 
 This agent:
 1. Reviews entire conversation history
@@ -7,10 +7,11 @@ This agent:
 3. Categorizes memories appropriately
 4. Returns structured memory objects with embeddings
 
-Uses Grok 4 Fast (2M context) via OpenRouter for fast, smart extraction.
+Uses OpenRouter for LLM access. Model configurable via MEMORY_EXTRACTION_MODEL env var.
 """
 
 import os
+import re
 import json
 import logging
 from typing import List, Dict, Any
@@ -18,6 +19,10 @@ from pydantic import BaseModel, Field, ValidationError
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+# Default model for memory extraction - cheap, fast, good at JSON
+# Override with MEMORY_EXTRACTION_MODEL env var
+DEFAULT_MEMORY_MODEL = "x-ai/grok-4.1-fast"
 
 
 class ExtractedMemory(BaseModel):
@@ -35,22 +40,36 @@ class MemoryExtractionResult(BaseModel):
     summary: str = Field(description="Conversation title in format: [Emoji] + 3-4 words (e.g., '☕ Coffee Equipment Setup', '📧 Email System Check')")
 
 
+def _extract_json_from_response(text: str) -> str:
+    """Extract JSON from a response that may be wrapped in markdown fences."""
+    if not text:
+        return text
+    # Try to extract from ```json ... ``` or ``` ... ``` fences
+    fence_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    if fence_match:
+        return fence_match.group(1).strip()
+    return text.strip()
+
+
 class MemoryExtractor:
     """
-    Agent that extracts memories from conversation history using Grok 4 Fast
+    Agent that extracts memories from conversation history via OpenRouter.
 
-    Uses Grok 4.1 Fast (2M context, fast inference) via OpenRouter.
-    Leverages JSON mode with Pydantic parsing for structured extraction.
+    Uses json_object response format (broadly supported) with Pydantic parsing.
+    Model is configurable via MEMORY_EXTRACTION_MODEL env var.
     """
 
     def __init__(self):
         """Initialize memory extraction agent"""
-        # Use Grok 4.1 Fast for extraction (fast, smart, 2M context)
-        self.model_name = "x-ai/grok-4.1-fast"
+        self.model_name = os.environ.get('MEMORY_EXTRACTION_MODEL', DEFAULT_MEMORY_MODEL)
+        api_key = os.environ.get('OPENROUTER_API_KEY')
+        if not api_key:
+            logger.error("OPENROUTER_API_KEY not set - memory extraction will fail")
         self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key=os.environ.get('OPENROUTER_API_KEY')
+            api_key=api_key
         )
+        logger.info(f"MemoryExtractor initialized with model: {self.model_name}")
 
     def _get_extraction_instructions(self) -> str:
         """Instructions for memory extraction - Trading focused"""
@@ -160,7 +179,7 @@ Examples: '📊 RELIANCE Technical Analysis', '💹 Portfolio Review Session', '
         conversation_id: str
     ) -> MemoryExtractionResult:
         """
-        Extract memories from conversation history using LangExtract
+        Extract memories from conversation history via OpenRouter.
 
         Args:
             conversation_history: List of messages with 'role' and 'content'
@@ -173,21 +192,10 @@ Examples: '📊 RELIANCE Technical Analysis', '💹 Portfolio Review Session', '
             # Format conversation for analysis
             formatted_conversation = self._format_conversation(conversation_history)
 
-            # Build extraction prompt with instructions
-            full_prompt = f"""{self._get_extraction_instructions()}
+            logger.info(f"Extracting memories from conversation {conversation_id} using {self.model_name}")
 
----
-
-**Conversation to analyze:**
-
-{formatted_conversation}"""
-
-            logger.info(f"Extracting memories from conversation {conversation_id} using Grok 4 Fast")
-
-            # Get Pydantic schema as JSON schema
-            schema = MemoryExtractionResult.model_json_schema()
-
-            # Use Grok 4 Fast with structured outputs via OpenRouter
+            # Use json_object response format (broadly supported across OpenRouter models)
+            # Unlike json_schema with strict:True, this works with most providers
             completion = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
@@ -200,20 +208,15 @@ Examples: '📊 RELIANCE Technical Analysis', '💹 Portfolio Review Session', '
                         "content": f"Analyze this conversation and extract memories:\n\n{formatted_conversation}"
                     }
                 ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "memory_extraction",
-                        "strict": True,
-                        "schema": schema
-                    }
-                },
-                temperature=0.3  # Lower temperature for more consistent extraction
+                response_format={"type": "json_object"},
+                temperature=0.3
             )
 
-            # Parse JSON response into Pydantic model
-            json_response = completion.choices[0].message.content
-            result = MemoryExtractionResult.model_validate_json(json_response)
+            # Parse JSON response - handle markdown fences some models add
+            raw_response = completion.choices[0].message.content
+            logger.info(f"Memory extraction raw response for {conversation_id}: {raw_response[:500]}")
+            json_text = _extract_json_from_response(raw_response)
+            result = MemoryExtractionResult.model_validate_json(json_text)
 
             logger.info(
                 f"Extracted {len(result.memories)} memories from conversation {conversation_id}"
@@ -221,6 +224,12 @@ Examples: '📊 RELIANCE Technical Analysis', '💹 Portfolio Review Session', '
 
             return result
 
+        except ValidationError as e:
+            logger.error(f"Memory extraction JSON parsing failed for {conversation_id}: {e}")
+            return MemoryExtractionResult(
+                memories=[],
+                summary="Error parsing extraction result"
+            )
         except Exception as e:
             logger.error(f"Memory extraction failed for conversation {conversation_id}: {e}")
             # Return empty result on error
@@ -239,3 +248,9 @@ def get_memory_extractor() -> MemoryExtractor:
     if _memory_extractor_instance is None:
         _memory_extractor_instance = MemoryExtractor()
     return _memory_extractor_instance
+
+
+def reset_memory_extractor() -> None:
+    """Reset singleton (useful when env vars change)"""
+    global _memory_extractor_instance
+    _memory_extractor_instance = None

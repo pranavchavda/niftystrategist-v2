@@ -5,7 +5,7 @@ import { CheckIcon, ClipboardIcon, ArrowPathRoundedSquareIcon, PencilIcon, Trash
 import { Volume2, VolumeX, Pause, Play } from 'lucide-react';
 import A2UIRenderer from './a2ui/A2UIRenderer';
 import { Avatar } from './catalyst/avatar';
-import logo from "../assets/eblogo-notext.webp";
+// Logo import removed - using initials avatar instead
 // import ReasoningDisplay from './ReasoningDisplay';
 
 function MessageBubble({
@@ -380,8 +380,8 @@ function MessageBubble({
             <div className="shrink-0">
               <Avatar
                 className="size-10 bg-gradient-to-b from-zinc-50 to-zinc-100 dark:from-zinc-900 dark:to-zinc-800"
-                alt="EspressoBot"
-                initials="EB"
+                alt="Nifty Strategist"
+                initials="NS"
                 square
               />
             </div>
@@ -392,7 +392,7 @@ function MessageBubble({
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
-                  {isUser ? 'You' : 'EspressoBot'}
+                  {isUser ? 'You' : 'Nifty Strategist'}
                 </div>
                 {/* Show "edited" indicator */}
                 {message.edited_at && (

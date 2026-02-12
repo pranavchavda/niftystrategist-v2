@@ -691,7 +691,7 @@ if logfire_enabled:
 
 # Import and configure conversation router with database
 from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit
-from routes import admin_docs, uploads, admin, auth_routes, hitl, mcp_servers
+from routes import admin_docs, uploads, admin, auth_routes, hitl, mcp_servers, scratchpad, voice, notes
 # Set the database manager in the conversations, memories, runs, auth_routes, and cockpit modules
 conversations._db_manager = db_manager
 memories._db_manager = db_manager
@@ -727,14 +727,22 @@ app.include_router(mcp_servers.router)
 app.include_router(tools.router)
 # Include Upstox OAuth router
 app.include_router(upstox_oauth.router)
+# Include Scratchpad router
+app.include_router(scratchpad.router)
+# Include Voice I/O router (STT/TTS)
+app.include_router(voice.router)
+# Include Notes router
+app.include_router(notes.router)
 
 # Configure CORS for frontend
+_cors_env = os.getenv("CORS_ORIGINS", "http://localhost:5173")
+_cors_origins = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
 
 # Add session middleware for OAuth
@@ -1309,12 +1317,10 @@ async def get_me(user: User = Depends(get_current_user_optional)):
     # Fetch fresh user data from database to get latest bio, name, etc.
     from database.models import User as DBUser
 
-    print(f"[DEBUG get_me] Fetching user from DB, user.id={user.id}")
     logger.info(f"[get_me] Fetching user from DB, user.id={user.id}")
     async with db_manager.async_session() as db:
         db_user = await db.get(DBUser, user.id)
-        print(f"[DEBUG get_me] DB query result: db_user={db_user}, bio={db_user.bio if db_user else 'N/A'}")
-        logger.info(f"[get_me] DB query result: db_user={db_user}, bio={db_user.bio if db_user else 'N/A'}")
+        logger.debug(f"[get_me] DB query result: db_user={db_user}, bio={db_user.bio if db_user else 'N/A'}")
         if db_user:
             # Update user object with fresh database data
             user = User(
@@ -1325,8 +1331,7 @@ async def get_me(user: User = Depends(get_current_user_optional)):
                 picture=db_user.profile_picture,
                 permissions=user.permissions  # Keep permissions from JWT
             )
-            print(f"[DEBUG get_me] Updated user object, bio={user.bio}")
-            logger.info(f"[get_me] Updated user object, bio={user.bio}")
+            logger.debug(f"[get_me] Updated user object, bio={user.bio}")
 
     # Check if user is in allowed emails
     allowed_emails = os.getenv("ALLOWED_EMAILS", "").split(",")

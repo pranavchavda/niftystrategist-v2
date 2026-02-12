@@ -11,7 +11,6 @@ import {
   DollarSign,
   Settings as SettingsIcon,
   Brain,
-  BookOpen,
   CheckSquare,
   Loader2,
   LogOut,
@@ -26,10 +25,10 @@ import {
   Plus,
   Zap,
   MenuIcon,
+  StickyNote,
 } from "lucide-react";
 import TradingModeToggle from "./TradingModeToggle";
-// TODO: Replace with trading logo
-import logo from "../assets/eblogo-notext.webp";
+import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
 import { hasPermission, PERMISSIONS } from "../utils/permissions";
 import {
   Sidebar as CatalystSidebar,
@@ -380,24 +379,14 @@ export default function Sidebar({
         <SidebarHeader className="pb-4">
           <div className={`flex items-center ${isCollapsed ? 'justify-center px-2' : 'px-3'} py-3`}>
             {isCollapsed ? (
-              <Link to="/" className="flex h-10 w-10 items-center justify-center rounded-xl shadow-lg shadow-amber-500/25 ring-2 ring-amber-500/10 hover:scale-105 transition-transform">
-                <img
-                  src={logo}
-                  alt="Nifty Strategist"
-                  className="h-8 w-8 rounded-lg object-contain"
-                />
+              <Link to="/" className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/25 ring-2 ring-blue-500/10 hover:scale-105 transition-transform">
+                <ArrowTrendingUpIcon className="h-6 w-6 text-white" />
               </Link>
             ) : (
               <div className="flex items-center gap-3 px-2 w-full">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl">
-                  <Link to="/">
-                    <img
-                      src={logo}
-                      alt="Nifty Strategist"
-                      className="h-8 w-8 rounded-lg object-contain"
-                    />
-                  </Link>
-                </div>
+                <Link to="/" className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600">
+                  <ArrowTrendingUpIcon className="h-5 w-5 text-white" />
+                </Link>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-zinc-500 dark:text-zinc-400 font-medium flex items-center gap-1">
 
@@ -474,12 +463,6 @@ export default function Sidebar({
                       <DropdownLabel>Tasks</DropdownLabel>
                     </DropdownItem>
                   )}
-                  {hasPermission(user, PERMISSIONS.ADMIN_MANAGE_ROLES) && (
-                    <DropdownItem href="/notes">
-                      <BookOpen data-slot="icon" />
-                      <DropdownLabel>Notes</DropdownLabel>
-                    </DropdownItem>
-                  )}
                 </DropdownMenu>
               </Dropdown>
             ) : (
@@ -510,20 +493,6 @@ export default function Sidebar({
                     }
                   >
                     <CheckSquare className="w-4 h-4" />
-                  </NavLink>
-                )}
-                {hasPermission(user, PERMISSIONS.ADMIN_MANAGE_ROLES) && (
-                  <NavLink
-                    to="/notes"
-                    title="Notes"
-                    className={({ isActive }) =>
-                      `p-2 rounded-lg transition-colors ${isActive
-                        ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
-                        : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                      }`
-                    }
-                  >
-                    <BookOpen className="w-4 h-4" />
                   </NavLink>
                 )}
               </div>
@@ -756,6 +725,10 @@ export default function Sidebar({
                     <DropdownLabel>Memory</DropdownLabel>
                   </DropdownItem>
                 )}
+                <DropdownItem href="/notes">
+                  <StickyNote data-slot="icon" />
+                  <DropdownLabel>Notes</DropdownLabel>
+                </DropdownItem>
                 {/* Seasonal trackers removed - BFCM and Boxing Week */}
                 {/* Admin Section */}
                 {(hasPermission(user, PERMISSIONS.ADMIN_MANAGE_USERS) || hasPermission(user, PERMISSIONS.ADMIN_MANAGE_ROLES)) && (

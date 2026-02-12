@@ -1,5 +1,5 @@
 /**
- * EspressoBot Design Tokens
+ * Nifty Strategist Design Tokens
  *
  * Centralized design system constants for consistent styling across the app.
  * Import these in components to ensure visual consistency.

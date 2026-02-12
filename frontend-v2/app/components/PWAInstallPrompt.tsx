@@ -91,9 +91,9 @@ export function PWAInstallPrompt() {
             </svg>
           </div>
           <div className="flex-1">
-            <h3 className="text-white font-semibold text-sm">Install EspressoBot</h3>
+            <h3 className="text-white font-semibold text-sm">Install Nifty Strategist</h3>
             <p className="text-blue-100 text-xs mt-1">
-              Install EspressoBot for quick access and offline functionality
+              Install Nifty Strategist for quick access and offline functionality
             </p>
           </div>
           <button

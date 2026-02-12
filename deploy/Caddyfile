@@ -1,0 +1,38 @@
+niftystrategist.com {
+    # Security headers
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-XSS-Protection "1; mode=block"
+    }
+
+    encode gzip
+
+    # Backend API, OAuth, and streaming routes — handled first
+    handle /api/* {
+        reverse_proxy localhost:8000
+    }
+    handle /auth/* {
+        reverse_proxy localhost:8000
+    }
+    handle /uploads/* {
+        reverse_proxy localhost:8000
+    }
+    handle /mcp/* {
+        reverse_proxy localhost:8000
+    }
+    handle /ws {
+        reverse_proxy localhost:8000
+    }
+    handle /ws/* {
+        reverse_proxy localhost:8000
+    }
+
+    # Frontend SPA — everything else serves static files with index.html fallback
+    handle {
+        root * /opt/niftystrategist/frontend
+        try_files {path} /index.html
+        file_server
+    }
+}

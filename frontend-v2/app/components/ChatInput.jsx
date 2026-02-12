@@ -24,7 +24,7 @@ const ChatInput = forwardRef(({
   onCancel,
   disabled = false,
   isLoading = false,
-  placeholder = "Message EspressoBot...",
+  placeholder = "Message Nifty Strategist...",
   attachedFile = null,
   attachedImage = null,
   onRemoveAttachment,

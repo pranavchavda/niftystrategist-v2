@@ -46,8 +46,8 @@ class ReasoningStreamClient:
         self.headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json',
-            'HTTP-Referer': 'http://localhost:8000',
-            'X-Title': 'EspressoBot'
+            'HTTP-Referer': os.getenv('FRONTEND_URL', 'http://localhost:5173'),
+            'X-Title': 'NiftyStrategist'
         }
 
     async def stream_completion(

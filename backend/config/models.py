@@ -151,6 +151,22 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "intelligence": "high",
         "recommended_for": ["Long documents", "High volume", "Cost optimization"],
     },
+    "glm-5": {
+        "id": "glm-5",
+        "name": "GLM 5",
+        "slug": "z-ai/glm-5",
+        "provider": ModelProvider.OPENROUTER,
+        "description": "Smart and cheap — 200K context, tool calling",
+        "context_window": 202_752,
+        "max_output": 16_000,
+        "cost_input": "$0.80",
+        "cost_output": "$2.56",
+        "supports_thinking": False,
+        "supports_vision": False,
+        "speed": "fast",
+        "intelligence": "very-high",
+        "recommended_for": ["Default orchestrator", "Tool calling", "Cost-effective"],
+    },
     "gpt-5.1": {
         "id": "gpt-5.1",
         "name": "GPT-5.1",
@@ -186,7 +202,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
 }
 
 # Default model
-DEFAULT_MODEL_ID = "claude-haiku-4.5"
+DEFAULT_MODEL_ID = "glm-5"
 
 
 def get_model_info(model_id: str) -> ModelInfo:

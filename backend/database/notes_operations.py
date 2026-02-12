@@ -1,5 +1,6 @@
 """Database operations for Notes system (Second Brain)"""
 import hashlib
+import json
 import re
 import yaml
 from typing import List, Optional, Dict, Any, Tuple
@@ -190,7 +191,7 @@ class NotesOperations:
                     "title": title,
                     "content": content,
                     "category": category,
-                    "tags": all_tags,
+                    "tags": json.dumps(all_tags),
                     "embedding": str(embedding),
                     "obsidian_vault_id": obsidian_vault_id,
                     "obsidian_file_path": obsidian_file_path,
@@ -223,7 +224,7 @@ class NotesOperations:
                     "title": title,
                     "content": content,
                     "category": category,
-                    "tags": all_tags,  # Use merged tags from all sources
+                    "tags": json.dumps(all_tags),  # Use merged tags from all sources
                     "embedding": str(embedding),
                     "obsidian_vault_id": obsidian_vault_id,
                     "obsidian_file_path": obsidian_file_path,
@@ -456,7 +457,7 @@ class NotesOperations:
                 "title": title,
                 "content": content,
                 "category": category,
-                "tags": all_tags,
+                "tags": json.dumps(all_tags),
                 "embedding": str(embedding),
                 "obsidian_vault_id": obsidian_vault_id,
                 "obsidian_file_path": obsidian_file_path,
@@ -548,7 +549,7 @@ class NotesOperations:
                 merged_tags = list(set(existing_tags + inline_tags + frontmatter_tags))
 
                 update_fields.append("tags = :tags")
-                params["tags"] = merged_tags
+                params["tags"] = json.dumps(merged_tags)
                 logger.info(f"Auto-merged tags from content: {len(inline_tags)} inline, {len(frontmatter_tags)} frontmatter")
 
             # Re-generate embedding when content changes
@@ -578,7 +579,7 @@ class NotesOperations:
             # Merge provided tags with inline tags
             merged_tags = list(set(tags + inline_tags))
             update_fields.append("tags = :tags")
-            params["tags"] = merged_tags
+            params["tags"] = json.dumps(merged_tags)
 
         if is_starred is not None:
             update_fields.append("is_starred = :is_starred")

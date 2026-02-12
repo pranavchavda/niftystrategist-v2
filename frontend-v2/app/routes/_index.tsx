@@ -7,7 +7,7 @@ import {
   QuestionMarkCircleIcon,
   ArrowRightStartOnRectangleIcon,
   BookOpenIcon,
-  CheckBadgeIcon,
+  DocumentTextIcon,
   PhotoIcon,
   PaperClipIcon,
   XMarkIcon,
@@ -18,8 +18,7 @@ import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
 import { decodeJWT } from '../utils/route-permissions';
 
-// TODO: Replace with trading logo
-const logo = new URL('../assets/eblogo-notext.webp', import.meta.url).href;
+// Logo handled inline with ArrowTrendingUpIcon
 
 const sections = [
   {
@@ -31,11 +30,11 @@ const sections = [
     permission: 'dashboard.access',
   },
   {
-    title: 'Tasks',
+    title: 'Notes',
     description:
-      'AI-powered task management for trading activities.',
-    icon: CheckBadgeIcon,
-    href: '/tasks',
+      'Second brain for trading ideas, research, and analysis.',
+    icon: DocumentTextIcon,
+    href: '/notes',
     permission: 'notes.access',
   },
   {
@@ -45,14 +44,6 @@ const sections = [
     icon: CpuChipIcon,
     href: '/memory',
     permission: 'memory.access',
-  },
-  {
-    title: 'Notes',
-    description:
-      'Personal knowledge base for trading research and analysis.',
-    icon: BookOpenIcon,
-    href: '/notes',
-    permission: 'notes.access',
   },
   {
     title: 'Settings',

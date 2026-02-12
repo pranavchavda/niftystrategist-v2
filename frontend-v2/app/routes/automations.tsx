@@ -1051,7 +1051,7 @@ export default function AutomationsRoute() {
                   className="w-full bg-zinc-700 border border-zinc-600 rounded-lg px-4 py-2 text-white placeholder-zinc-500 focus:outline-none focus:border-orange-500 resize-none"
                 />
                 <p className="mt-1 text-xs text-zinc-500">
-                  Tip: Write like you're chatting with EspressoBot
+                  Tip: Write like you're chatting with Nifty Strategist
                 </p>
               </div>
 

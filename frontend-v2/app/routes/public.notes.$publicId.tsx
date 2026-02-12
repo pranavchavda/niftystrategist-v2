@@ -29,7 +29,7 @@ export default function PublicNote() {
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [passwordError, setPasswordError] = useState('');
 
-  const logo = new URL('../assets/eblogo-notext.webp', import.meta.url).href;
+  // Logo removed - using icon inline
 
 
   const markdownComponents = useMemo(() => ({
@@ -315,7 +315,7 @@ export default function PublicNote() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {/* Logo */}
-              <img src={logo} alt="EspressoBot" className="w-10" />
+              <span className="text-lg font-bold text-blue-600 dark:text-blue-400">NS</span>
               <PenBoxIcon className="w-6 h-6 text-zinc-600 dark:text-zinc-400" />
               <h1 className="text-xl font-semibold text-zinc-900 dark:text-white">
                 {note.title}
@@ -398,7 +398,7 @@ export default function PublicNote() {
               href="/"
               className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
             >
-              EspressoBot
+              Nifty Strategist
             </a>
           </p>
         </div>

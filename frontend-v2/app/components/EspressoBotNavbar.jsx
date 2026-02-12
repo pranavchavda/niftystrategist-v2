@@ -16,7 +16,7 @@ import {
   ChartBarIcon,
   CurrencyDollarIcon
 } from '@heroicons/react/24/outline';
-import logo from '../assets/eblogo-notext.webp';
+import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
 
 function EspressoBotNavbar({ onLogout, darkMode, onToggleDarkMode }) {
   return (
@@ -24,14 +24,9 @@ function EspressoBotNavbar({ onLogout, darkMode, onToggleDarkMode }) {
       {/* Logo */}
       <NavbarSection>
         <div className="flex items-center gap-3">
-          <img
-            src={logo}
-            alt="EspressoBot"
-            className="h-8 w-auto"
-            draggable="false"
-          />
+          <ArrowTrendingUpIcon className="h-7 w-7 text-blue-600 dark:text-blue-400" />
           <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-            EspressoBot
+            Nifty Strategist
           </div>
         </div>
       </NavbarSection>
