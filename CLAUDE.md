@@ -1,426 +1,120 @@
-# Nifty Strategist v2 - AI Trading Agent
+# CLAUDE.md
 
-> **Quick Start**: See [PROJECT_STATUS.md](./PROJECT_STATUS.md) for current status, what's done, and next steps.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-An AI-powered trading assistant for the Indian stock market (NSE/BSE) that helps users analyze stocks, understand market opportunities, and execute trades with human-in-the-loop approval.
+AI-powered trading assistant for the Indian stock market (NSE/BSE). Forked from EspressoBot (e-commerce AI assistant) — kept core infrastructure (auth, chat, memory, AG-UI streaming), replaced domain tools with trading (Upstox).
 
-**Target Audience**: Non-technical users who want to learn trading while leveraging AI assistance.
-
-**Key Principles**:
-- Maximum agent autonomy for analysis and recommendations
-- HITL approval required ONLY for actual transactions
-- Educational focus: explain reasoning in beginner-friendly language
-- Memory system for personalized experience
-
----
-
-## Origin
-
-This codebase is forked from **EspressoBot** (`/home/pranav/apydanticebot/`), a battle-tested AI assistant for e-commerce. We kept the core infrastructure (auth, chat, memory, streaming) and swapped out the domain-specific tools (Shopify → Upstox trading).
-
-**Reference for patterns**: Check EspressoBot for examples of how things were done.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      React Frontend                              │
-│  ┌──────────────────┐  ┌──────────────────────────────────────┐ │
-│  │  Chat Interface  │  │         Trading Dashboard            │ │
-│  │  - Message list  │  │  ┌──────────┐ ┌──────────┐ ┌───────┐│ │
-│  │  - Input box     │  │  │Watchlist │ │ Pending  │ │ Trade ││ │
-│  │  - Agent status  │  │  │  Panel   │ │Approvals │ │History││ │
-│  └────────┬─────────┘  └──────────────────┬──────────────────┘ │
-│           │         SSE Event Stream       │                    │
-│           └───────────────┬────────────────┘                    │
-└───────────────────────────┼─────────────────────────────────────┘
-                            │
-┌───────────────────────────┴───────────────────────────────────────┐
-│                   FastAPI Backend                                  │
-│                                                                    │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │              Trading Orchestrator Agent                      │  │
-│  │  - Interprets user intent                                    │  │
-│  │  - Uses tools for market data, analysis, trading             │  │
-│  │  - Emits AG-UI events for streaming                          │  │
-│  │  - HITL for trade execution                                  │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│                                                                    │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                    Trading Tools                             │  │
-│  │  market_data | analysis | portfolio | orders | watchlist     │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│                                                                    │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                    Services Layer                            │  │
-│  │  upstox_client | technical_analysis | encryption             │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│                                                                    │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │              Supabase PostgreSQL Database                    │  │
-│  │  users | conversations | messages | memories | trades        │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Tech Stack
-
-### Backend
-- **Python 3.11+**
-- **FastAPI** - Web framework
-- **Pydantic AI** - Agent framework with AG-UI adapter
-- **OpenRouter** - LLM provider (DeepSeek for now, model-agnostic)
-- **Upstox SDK** - Indian stock market data and trading (`upstox-python-sdk`)
-- **PostgreSQL** - Via Supabase (free tier)
-- **SQLAlchemy + asyncpg** - Async ORM
-- **pandas + ta** - Technical indicator calculations
-
-### Frontend
-- **React 18+ with TypeScript**
-- **AG-UI client** - For SSE streaming
-- **Tailwind CSS** - Styling
-- **Zustand** - State management
-
----
-
-## Current Implementation Status
-
-### Phase 1: Fork & Strip - COMPLETED
-- [x] Fork EspressoBot codebase
-- [x] Remove Shopify tools and agents
-- [x] Remove Google Workspace integration
-- [x] Remove e-commerce database tables (BFCM, analytics, etc.)
-- [x] Simplify User model (remove Google OAuth, add Upstox fields)
-- [x] Add trading-specific models (Trade, AgentDecision, WatchlistItem)
-- [x] Fix broken imports in main.py and agents/__init__.py
-- [x] Set up Supabase connection (22 tables created, 37 old tables dropped)
-- [ ] Update pyproject.toml dependencies
-- [ ] Test basic auth flow
-
-### Phase 2: Port Trading Core - COMPLETED
-- [x] Port `upstox_client.py` → `services/upstox_client.py` (50 stocks supported)
-- [x] Port `technical_analysis.py` → `services/technical_analysis.py`
-- [x] Port Pydantic models → `models/analysis.py`, `models/trading.py`
-- [x] Add trading SQLAlchemy models (Trade, AgentDecision, WatchlistItem) in database/models.py
-- [x] Create `tools/trading/market_data.py` (get_stock_quote, get_historical_data, list_supported_stocks)
-- [x] Create `tools/trading/analysis.py` (analyze_stock, compare_stocks)
-- [x] Create `tools/trading/portfolio.py` (get_portfolio, get_position, calculate_position_size)
-- [x] Create `tools/trading/orders.py` with HITL (place_order, cancel_order, get_open_orders, get_order_history)
-- [x] Create `tools/trading/watchlist.py` (add_to_watchlist, get_watchlist, remove_from_watchlist, update_watchlist, check_watchlist_alerts)
-
-### Phase 3: Wire Up Orchestrator - COMPLETED
-- [x] Adapt orchestrator prompt for trading (Nifty Strategist persona, trading tools documentation)
-- [x] Register trading tools with orchestrator (register_all_trading_tools)
-- [x] Configure HITL for place_order and cancel_order tools (@requires_approval decorator)
-- [x] Adapt memory categories for trading (risk_tolerance, position_sizing, sector_preference, trading_style, etc.)
-- [x] Test end-to-end flow (paper trading verified with ₹10 lakh starting capital)
-
-### Phase 4: Frontend Adaptation - COMPLETED
-- [x] Strip e-commerce dashboard components (removed BFCM, Boxing Week, Price Monitor, CMS, Flock routes)
-- [x] Add trading dashboard (Dashboard.jsx with portfolio stats, positions table, P&L tracking)
-- [x] Update branding (Nifty Strategist, trading-focused copy, ArrowTrendingUpIcon logo)
-- [x] Update manifest.json for PWA
-- [x] Update login.tsx (trading messaging, paper trading notice)
-- [x] Update _index.tsx landing page (trading-focused applications grid)
-- [x] Create dev.sh script (backend + frontend startup with nvm)
-
-### Phase 5: CLI Tools Migration - COMPLETED
-- [x] Create `cli-tools/base.py` (shared utilities, init_client, formatters)
-- [x] Create `nf-market-status` (pure time calc, IST, holidays, pre-open)
-- [x] Create `nf-quote` (live quotes, historical OHLCV, symbol listing)
-- [x] Create `nf-analyze` (technical analysis, stock comparison)
-- [x] Create `nf-portfolio` (portfolio summary, position details, position size calc)
-- [x] Create `nf-order` (buy/sell/list/cancel with --dry-run)
-- [x] Create `nf-watchlist` (add/remove/update/alerts with DB persistence)
-- [x] Create `INDEX.md` tool catalog
-- [x] Unregister all 15 Pydantic AI trading tools (kept code for reference)
-- [x] Update orchestrator system prompt to document CLI tools exclusively
-- [x] Inject `NF_ACCESS_TOKEN` and `NF_USER_ID` env vars into subprocesses
-- [x] Set `cwd=backend/` for subprocess execution
-- [x] Extend auto-help regex to detect `cli-tools/nf-*` scripts
-- [x] Fix anti-hallucination validator (`gpt-oss-safeguard-20b` needed `max_tokens: 1000` for reasoning model, plus `content or reasoning` field fallback)
-
-### Phase 6: Cockpit Dashboard - COMPLETED
-> Full status doc: [`docs/plans/2026-02-08-cockpit-dashboard-status.md`](./docs/plans/2026-02-08-cockpit-dashboard-status.md)
-
-- [x] 8 cockpit components with mock data (TopStrip, MarketPulse, WatchlistPanel, PriceChart, PositionsTable, DailyScorecard, CockpitChat, mock-data)
-- [x] Three-zone layout: left watchlist panel + center chart/table + right chat panel
-- [x] Responsive layout with drawer-based side panels (Headless UI Dialog)
-  - 2xl+: both panels inline
-  - xl-2xl: left inline, right as drawer via FAB
-  - <xl: both panels as drawers via FABs
-- [x] TopStrip overflow handling, PositionsTable column hiding, DailyScorecard responsive grid
-- [ ] **Next: Phase 2 — Wire to live Upstox data** (backend API endpoints, SSE streaming, daily thread system)
-
----
-
-## Key Files
-
-### Core Infrastructure (kept from EspressoBot)
-```
-backend/
-├── auth.py                    # JWT auth, User model
-├── main.py                    # FastAPI app
-├── database/
-│   ├── models.py             # SQLAlchemy models
-│   ├── operations.py         # DB operations (ConversationOps, etc.)
-│   └── session.py            # Async PostgreSQL connection
-├── api/
-│   └── conversations.py      # Chat history endpoints
-├── utils/
-│   ├── ag_ui_wrapper.py      # AG-UI streaming
-│   └── hitl_streamer.py      # Human-in-the-loop
-└── agents/
-    ├── orchestrator.py       # Main agent (ADAPTED for trading)
-    └── memory_extractor.py   # Memory extraction (needs category adaptation)
-```
-
-### Trading-Specific Files
-```
-backend/
-├── services/
-│   ├── upstox_client.py      # Upstox SDK wrapper (50 Nifty stocks, paper trading)
-│   └── technical_analysis.py # RSI, MACD, SMA, EMA, ATR indicators
-├── models/
-│   ├── analysis.py           # OHLCVData, TechnicalIndicators, MarketAnalysis
-│   └── trading.py            # TradeProposal, RiskValidation, Portfolio, TradeResult
-├── cli-tools/                # CLI tools invoked by orchestrator via execute_bash
-│   ├── base.py               # Shared utilities (init_client, formatters, SYMBOLS)
-│   ├── INDEX.md              # Tool catalog — agent reads this to discover tools
-│   ├── nf-market-status      # Check market open/closed (no token needed)
-│   ├── nf-quote              # Live quotes, historical OHLCV, list symbols
-│   ├── nf-analyze            # Technical analysis, stock comparison
-│   ├── nf-portfolio          # Holdings, positions, position size calculator
-│   ├── nf-order              # Place/cancel/list orders (--dry-run supported)
-│   └── nf-watchlist          # Watchlist CRUD with price alerts
-└── tools/
-    └── trading/              # Legacy Pydantic AI tools (DEPRECATED — kept for reference)
-        ├── __init__.py       # All tools unregistered, replaced by cli-tools/
-        ├── market_data.py    # → nf-quote, nf-market-status
-        ├── analysis.py       # → nf-analyze
-        ├── portfolio.py      # → nf-portfolio
-        ├── orders.py         # → nf-order
-        └── watchlist.py      # → nf-watchlist
-```
-
----
-
-## Database Schema
-
-### User Model (Simplified from EspressoBot)
-```python
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True)
-    email = Column(String(255), unique=True, nullable=False)
-    name = Column(String(255))
-    password_hash = Column(String)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=utc_now)
-
-    # Upstox OAuth (encrypted)
-    upstox_access_token = Column(Text, nullable=True)
-    upstox_refresh_token = Column(Text, nullable=True)
-    upstox_token_expiry = Column(DateTime, nullable=True)
-
-    # Preferences
-    preferred_model = Column(String(100), default="deepseek/deepseek-chat")
-```
-
-### Tables to KEEP (from EspressoBot)
-- `users` - User accounts (simplified)
-- `conversations` - Chat threads with forking
-- `messages` - Chat messages with tool_calls, reasoning
-- `memories` - Extracted facts with categories
-- `user_preferences` - Settings
-
-### Tables to REMOVE
-- `bfcm_*` - Black Friday analytics
-- `boxing_week_*` - Boxing week analytics
-- `daily_analytics_cache` - E-commerce analytics
-- `hourly_analytics_cache`
-- `analytics_sync_status`
-- `skuvault_*` - Inventory management
-- `workflow_*` - E-commerce workflows
-- `doc_chunks` - Shopify docs
-- `inventory_alerts`
-
-### Tables to ADD (Trading-specific)
-- `trades` - Executed trades
-- `agent_decisions` - Analysis audit trail
-- `watchlist` - User watchlists
-
----
-
-## Memory System
-
-### Categories (Trading-focused)
-```python
-MEMORY_CATEGORIES = [
-    # Trading-specific (primary)
-    "risk_tolerance",      # "User is conservative, max 2% risk per trade"
-    "position_sizing",     # "User prefers small positions, max 5% of portfolio"
-    "sector_preference",   # "User likes IT and banking stocks"
-    "trading_style",       # "User is a swing trader, holds 2-5 days"
-    "avoid_list",          # "User doesn't want to trade Adani stocks"
-    "past_learnings",      # "User lost money on TATAMOTORS, prefers to avoid"
-
-    # General (secondary)
-    "communication",       # "User prefers concise explanations"
-    "experience_level",    # "User is a beginner, explain technical terms"
-    "schedule",            # "User trades only in first hour of market"
-]
-```
-
-### Memory Injection
-- Inject up to 10 semantically matched memories per query
-- Plus structured profile (risk, style, preferences)
-
----
-
-## Environment Variables
-
-```bash
-# Database (Supabase PostgreSQL)
-DATABASE_URL=postgresql://user:pass@db.xxx.supabase.co:5432/postgres
-
-# LLM
-OPENROUTER_API_KEY=sk-or-...
-
-# Upstox (per-user tokens stored encrypted in DB, but need app credentials)
-UPSTOX_API_KEY=...
-UPSTOX_API_SECRET=...
-UPSTOX_REDIRECT_URI=http://localhost:3000/callback
-
-# Auth
-JWT_SECRET=your-secret-key
-
-# Encryption (for Upstox tokens in DB)
-ENCRYPTION_KEY=your-32-byte-key
-```
-
----
+**Key Principles**: Maximum agent autonomy for analysis; HITL approval only for actual transactions; educational tone for non-technical users; memory system for personalization.
 
 ## Development Commands
 
 ```bash
-# Quick start (recommended) - starts both backend and frontend
+# Start both backend + frontend (recommended)
 ./dev.sh
 
-# Start only backend
+# Backend only / frontend only
 ./dev.sh --backend-only
-
-# Start only frontend
 ./dev.sh --frontend-only
 
-# Start CLI interface
-./dev.sh --cli
+# Manual backend start
+cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
 
-# Verbose mode (show logs in terminal)
-./dev.sh --verbose
-
-# Manual startup (if dev.sh doesn't work)
-
-# Backend
-cd backend
-source venv/bin/activate
-uvicorn main:app --reload --port 8000
-
-# Frontend (requires Node 22+)
-cd frontend-v2
-nvm use 22
-npm install
-npm run dev
+# Manual frontend start
+cd frontend-v2 && pnpm install && pnpm run dev
 ```
 
-**Note**: The frontend requires Node.js 22+. The `dev.sh` script automatically handles this via nvm.
+**Frontend uses pnpm, not npm.** Node 22+ required (dev.sh handles via nvm).
 
----
+## Deployment
 
-## Key Patterns (from EspressoBot)
+- **CI/CD**: Push to `main` auto-deploys via GitHub Actions (`.github/workflows/deploy.yml`)
+- **Manual**: `./deploy/deploy.sh <server-ip>` — builds frontend, rsyncs to prod, restarts service
+- **Production server**: `172.105.40.112` — Caddy reverse proxy → uvicorn on port 8000
+- **Service**: `niftystrategist` systemd unit, runs as `deploy` user, root needed for restart
 
-### AG-UI Streaming
-See `utils/ag_ui_wrapper.py` - handles SSE events for real-time chat
+## Architecture
 
-### HITL (Human-in-the-Loop)
-See `utils/hitl_streamer.py` - pause execution for user approval
+```
+Frontend (React Router v7 + Vite + Tailwind)
+    ↕ SSE (AG-UI protocol)
+FastAPI Backend
+    ├── Orchestrator Agent (Pydantic AI)
+    │   ├── execute_bash → CLI tools (nf-quote, nf-analyze, etc.)
+    │   ├── call_agent → web_search, vision
+    │   └── HITL → trade approval
+    ├── 15+ API routers (conversations, cockpit, notes, upstox_oauth, etc.)
+    ├── Services (upstox_client, technical_analysis, encryption)
+    └── Supabase PostgreSQL (asyncpg + SQLAlchemy)
+```
 
-### Memory Extraction
-See `agents/memory_extractor.py` - extract facts from conversations
+### Agent System
 
-### Conversation Forking
-See `api/conversations.py` fork endpoint - compress old context
+- **Orchestrator** (`agents/orchestrator.py`, ~3700 lines): Main agent using Pydantic AI. Interprets user intent, calls CLI tools via `execute_bash`, delegates to sub-agents via `call_agent`. System prompt documents all CLI tools.
+- **Base Agent** (`agents/base_agent.py`): Abstract base class. Supports 4 LLM providers: Anthropic (Claude with 12K thinking budget), OpenRouter (DeepSeek, Gemini, Grok), Gateway (Pydantic AI Gateway), OpenAI (GPT-5).
+- **Sub-agents**: `web_search` and `vision` only. Registered at startup in `main.py`.
+- **Default model**: `glm-5` (configured in `config/models.py`).
 
----
+### CLI Tools (How Trading Works)
 
-## CLI-Based Trading Tools — IMPLEMENTED
+All trading operations use CLI scripts in `backend/cli-tools/`, invoked by the orchestrator via `execute_bash`. This replaced 15+ registered Pydantic AI tools to save ~3-4K tokens of schema overhead per request.
 
-All trading operations use CLI tools in `backend/cli-tools/`, invoked by the orchestrator via `execute_bash`. This replaced the 15+ registered Pydantic AI tools, eliminating ~3-4K tokens of schema overhead per request.
+| Tool | Purpose |
+|------|---------|
+| `nf-market-status` | NSE market open/closed, time to next event |
+| `nf-quote` | Live quotes, historical OHLCV, list symbols |
+| `nf-analyze` | Technical analysis (RSI, MACD, signals), comparison |
+| `nf-portfolio` | Holdings, positions, position size calculator |
+| `nf-order` | Place/cancel/list orders (--dry-run supported) |
+| `nf-watchlist` | Watchlist CRUD with price alerts |
 
-### How It Works
+Conventions: `--json` for structured output, `--help` on every tool, `--dry-run` for orders. Subprocess env vars: `NF_ACCESS_TOKEN`, `NF_USER_ID`. CWD is `backend/`.
 
-1. Orchestrator's system prompt documents CLI tool usage (not registered tool schemas)
-2. Agent calls `execute_bash("python cli-tools/nf-quote RELIANCE --json")`
-3. Subprocess runs with injected env vars: `NF_ACCESS_TOKEN`, `NF_USER_ID`
-4. Auto-help injection: first use of any tool automatically runs `--help`
-5. `cwd` is set to `backend/` so relative paths work
+### Streaming & HITL
 
-### Conventions
+- **AG-UI**: `utils/ag_ui_wrapper.py` — SSE event stream with HITL event merging. The `enhanced_ag_ui_stream()` function merges the Pydantic AI stream with a separate HITL poller task (100ms intervals).
+- **HITL**: `utils/hitl_streamer.py` — pauses agent execution for user approval on `place_order` and `cancel_order`.
 
-- `--help` on every tool with usage examples
-- `--json` for structured output (default: human-readable)
-- `--dry-run` for order tools
-- Env vars: `NF_ACCESS_TOKEN` (Upstox token), `NF_USER_ID` (numeric DB ID)
-- Error format: `❌ message` with exit code 1
-- Success format: `✅ message`
+### Database Patterns
 
-### Available Tools
+**Critical**: All datetime columns are `TIMESTAMP WITHOUT TIME ZONE`. Always use `utc_now()` from `database/models.py` or `datetime.utcnow()`. **Never** use `datetime.now(timezone.utc)`.
 
-| Tool | Description |
-|------|-------------|
-| `nf-market-status` | NSE market open/closed, time to next event (no token needed) |
-| `nf-quote` | Live quotes, historical OHLCV, list supported symbols |
-| `nf-analyze` | Technical analysis (RSI, MACD, signals), stock comparison |
-| `nf-portfolio` | Portfolio summary, single position, position size calculator |
-| `nf-order` | Place/cancel/list orders with dry-run support |
-| `nf-watchlist` | Watchlist CRUD with price target alerts |
+**Session patterns** (in `database/session.py`):
+- FastAPI routes: `Depends(get_db)` — yields session via dependency injection
+- Background tasks / MCP: `async with get_db_context() as session:` — context manager
+- Direct use: `async with get_db_session() as session:` — returns AsyncSessionLocal
 
-See `backend/cli-tools/INDEX.md` for full documentation.
+**Key models** (`database/models.py`): User, Conversation, Message, Memory, Trade, WatchlistItem, AgentDecision, Note, UserMCPServer.
 
-### Future Tools (not yet implemented)
+### Auth
 
-- **nf-search** — Search stocks by name/sector/criteria
-- **nf-account** — Account info, margins, funds
+- JWT-based, 7-day expiry (`auth.py`)
+- **Dev tokens**: Prefix `dev-token-*` returns hardcoded user_id=999
+- **Terminal requests**: `x-terminal-request` header returns user_id=2
+- Permission-based: `requires_permission("chat.access")` decorator for routes
 
----
+### Memory System
 
-## Notes for Development
+Semantic search via OpenAI embeddings. Injects top 10 matched memories per query. Categories: `risk_tolerance`, `position_sizing`, `sector_preference`, `trading_style`, `avoid_list`, `past_learnings`, `communication`, `experience_level`, `schedule`.
 
-1. **Supabase Setup**: Create free project at supabase.com, get connection string
-2. **Upstox App**: Register at https://api.upstox.com/ for API credentials
-3. **Model Selection**: Currently DeepSeek, can switch via OPENROUTER_API_KEY
-4. **Paper Trading**: Implement paper trading mode before live trading
-5. **Token Encryption**: Use Fernet symmetric encryption for Upstox tokens
+## Environment Variables
 
----
+Required in `backend/.env`:
+```
+DATABASE_URL=postgresql://...        # Supabase PostgreSQL
+OPENROUTER_API_KEY=sk-or-...         # LLM provider
+JWT_SECRET=...                       # Auth
+ENCRYPTION_KEY=...                   # Fernet key for Upstox token encryption
+UPSTOX_API_KEY=...                   # Upstox app credentials
+UPSTOX_API_SECRET=...
+UPSTOX_REDIRECT_URI=http://localhost:5173/auth/upstox/callback
+```
 
-## References
+## Key Gotchas
 
-- **EspressoBot (origin)**: `/home/pranav/apydanticebot/`
-- **Original WIP on Pranav's WSL dev environment**: `/home/pranav/tradingagent/`
-- If working on desktop dev environment (EndevourOS): `/home/pranav/niftystrategist-v2`
-- **Design Document**: `/home/pranav/tradingagent/docs/plans/2026-01-26-espressobot-fork-design.md`
-- **Upstox SDK Docs**: https://upstox.com/developer/api-documentation/
-- **Upstox API Docs**: available locally at upstox-api-docs.txt
-- **Pydantic AI Docs**: https://ai.pydantic.dev/
----
-## Notes:
-dev.sh is the way to start the dev server
-the project uses pnpm and not npm
+- **Supabase requires Cloudflare WARP** on this machine (IPv6-only free tier, no public IPv6). Run `warp-cli connect` before starting backend.
+- **Dev auth user_id=999** must exist in the DB for dev tokens to work.
+- **Upstox API quirk**: `PlaceOrderV3Request` requires `disclosed_quantity=0`, `trigger_price=0`, `is_amo=False` even for basic orders.
+- **`tools/trading/`** directory is DEPRECATED — kept for reference only. Active tools are in `cli-tools/`.
+- **Never push to git** without user testing and confirmation first.
