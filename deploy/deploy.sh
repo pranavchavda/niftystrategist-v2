@@ -36,8 +36,8 @@ rsync -avz --delete \
 rsync -avz \
     frontend-v2/package.json ${REMOTE_USER}@${SERVER_IP}:${REMOTE_DIR}/frontend/
 
-# --- Remote: install deps and restart ---
-echo "[4/4] Installing deps and restarting services..."
+# --- Remote: install deps ---
+echo "[4/5] Installing backend deps..."
 ssh ${REMOTE_USER}@${SERVER_IP} << 'ENDSSH'
 set -euo pipefail
 
@@ -49,15 +49,11 @@ if [ ! -d "venv" ]; then
 fi
 source venv/bin/activate
 pip install -q -r requirements.txt 2>/dev/null || pip install -q -r pyproject.toml 2>/dev/null || echo "Install deps manually if needed"
-
-# Frontend deps (for react-router-serve)
-cd /opt/niftystrategist/frontend
-pnpm install --prod 2>/dev/null || npm install --production 2>/dev/null || true
-
-echo "Deploy sync complete. Restart services with:"
-echo "  sudo systemctl restart niftystrategist-backend niftystrategist-frontend"
 ENDSSH
+
+# --- Restart service (as root, since deploy user sudo is restricted) ---
+echo "[5/5] Restarting service..."
+ssh root@${SERVER_IP} "systemctl restart niftystrategist && systemctl status niftystrategist --no-pager"
 
 echo ""
 echo "=== Deploy complete ==="
-echo "SSH in and restart: sudo systemctl restart niftystrategist-backend niftystrategist-frontend"

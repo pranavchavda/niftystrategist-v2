@@ -1,0 +1,75 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Build frontend
+        working-directory: frontend-v2
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Sync backend
+        run: |
+          rsync -avz --delete \
+            --exclude 'venv/' \
+            --exclude '__pycache__/' \
+            --exclude '*.pyc' \
+            --exclude '.env' \
+            --exclude '.pytest_cache/' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            backend/ deploy@${{ secrets.SERVER_IP }}:/opt/niftystrategist/backend/
+
+      - name: Sync frontend build
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            frontend-v2/build/ deploy@${{ secrets.SERVER_IP }}:/opt/niftystrategist/frontend/build/
+
+      - name: Install backend deps
+        run: |
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.SERVER_IP }} << 'EOF'
+          cd /opt/niftystrategist/backend
+          if [ ! -d "venv" ]; then
+            python3.12 -m venv venv
+          fi
+          source venv/bin/activate
+          pip install -q -r requirements.txt
+          EOF
+
+      - name: Restart service
+        run: |
+          ssh -i ~/.ssh/deploy_key root@${{ secrets.SERVER_IP }} \
+            "systemctl restart niftystrategist"
+
+      - name: Health check
+        run: |
+          sleep 5
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.SERVER_IP }} \
+            "curl -sf http://localhost:8000/api/health || echo 'Health check failed'"
