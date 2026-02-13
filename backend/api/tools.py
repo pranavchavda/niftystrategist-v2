@@ -52,22 +52,12 @@ async def get_available_tools(current_user: User = Depends(get_current_user)):
     core_tools = [
         ToolInfo(
             name="execute_bash",
-            description="Execute bash commands and Python scripts",
-            category="core"
-        ),
-        ToolInfo(
-            name="execute_graphql",
-            description="Execute GraphQL queries and mutations",
-            category="core"
-        ),
-        ToolInfo(
-            name="execute_shopifyql",
-            description="Execute Shopify queries for analytics",
+            description="Execute CLI tools and Python scripts (nf-quote, nf-analyze, etc.)",
             category="core"
         ),
         ToolInfo(
             name="call_agent",
-            description="Delegate tasks to specialized agents",
+            description="Delegate tasks to specialized agents (web_search, vision)",
             category="core"
         ),
         ToolInfo(
@@ -129,17 +119,17 @@ async def get_available_tools(current_user: User = Depends(get_current_user)):
     doc_tools = [
         ToolInfo(
             name="read_docs",
-            description="Read documentation files",
+            description="Read local documentation and CLI tool references",
             category="docs"
         ),
         ToolInfo(
             name="search_docs",
-            description="Search documentation by query",
+            description="Search documentation files by keyword",
             category="docs"
         ),
         ToolInfo(
             name="spawn_specialist",
-            description="Create temporary documentation specialist",
+            description="Create temporary specialist for complex doc analysis",
             category="docs"
         ),
     ]

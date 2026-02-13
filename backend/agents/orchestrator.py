@@ -487,28 +487,9 @@ OUTPUT ONLY ONE OF:
         from tools.native.tool_cache import ToolCache
 
         # Map script names to invalidation triggers
-        invalidation_map = {
-            # Product operations
-            "create_full_product.py": ["product_create", "product_search"],
-            "create_product.py": ["product_create", "product_search"],
-            "update_product.py": ["product_update", "product_search"],
-            "delete_product.py": ["product_delete", "product_search"],
-            "bulk_update_products.py": ["product_update", "product_search"],
-            # Order operations
-            "create_order.py": ["order_create", "sales_analytics"],
-            "update_order.py": ["order_update", "sales_analytics"],
-            "cancel_order.py": ["order_update", "sales_analytics"],
-            # Inventory operations
-            "update_inventory.py": ["inventory_update"],
-            "adjust_inventory.py": ["inventory_update"],
-            # CMS/Metaobject operations
-            "create_metaobject.py": ["metaobject_create"],
-            "update_metaobject.py": ["metaobject_update"],
-            "delete_metaobject.py": ["metaobject_delete"],
-            # Price operations
-            "update_price.py": ["price_update", "product_search"],
-            "bulk_price_update.py": ["price_update", "product_search"],
-        }
+        # Trading CLI tools don't currently need cache invalidation,
+        # but the map is kept for future use (e.g., order placement invalidating portfolio cache)
+        invalidation_map: Dict[str, list] = {}
 
         # Extract script name from command
         script_name = None
@@ -558,69 +539,31 @@ OUTPUT ONLY ONE OF:
 
         # Map script patterns to cache metadata
         cache_patterns = {
-            # Product operations
-            "search_products.py": {
-                "tool_name": "search_products",
-                "invalidation_triggers": [
-                    "product_create",
-                    "product_update",
-                    "product_search",
-                ],
-                "summary_template": "Product search results",
-            },
-            "list_products.py": {
-                "tool_name": "list_products",
-                "invalidation_triggers": ["product_create", "product_update"],
-                "summary_template": "Product listing",
-            },
-            "get_product.py": {
-                "tool_name": "get_product",
-                "invalidation_triggers": ["product_update"],
-                "summary_template": "Product details",
-            },
-            # Analytics
-            "analytics.py": {
-                "tool_name": "analytics",
-                "invalidation_triggers": ["order_create", "sales_analytics"],
-                "summary_template": "ShopifyQL analytics query",
-            },
-            # Orders
-            "list_orders.py": {
-                "tool_name": "list_orders",
-                "invalidation_triggers": ["order_create", "order_update"],
-                "summary_template": "Order listing",
-            },
-            "get_order.py": {
-                "tool_name": "get_order",
-                "invalidation_triggers": ["order_update"],
-                "summary_template": "Order details",
-            },
-            # CMS/Metaobjects
-            "list_category_landing_pages.py": {
-                "tool_name": "list_category_pages",
-                "invalidation_triggers": ["metaobject_create", "metaobject_update"],
-                "summary_template": "Category landing pages listing",
-            },
-            "list_metaobjects.py": {
-                "tool_name": "list_metaobjects",
-                "invalidation_triggers": ["metaobject_create", "metaobject_update"],
-                "summary_template": "Metaobject listing",
-            },
-            "get_metaobject.py": {
-                "tool_name": "get_metaobject",
-                "invalidation_triggers": ["metaobject_update"],
-                "summary_template": "Metaobject details",
-            },
-            # Reviews
-            "yotpo_search_reviews.py": {
-                "tool_name": "search_reviews",
+            # Trading CLI tools
+            "nf-quote": {
+                "tool_name": "nf_quote",
                 "invalidation_triggers": [],
-                "summary_template": "Yotpo review search results",
+                "summary_template": "Stock quote data",
             },
-            "yotpo_list_reviews.py": {
-                "tool_name": "list_reviews",
+            "nf-analyze": {
+                "tool_name": "nf_analyze",
                 "invalidation_triggers": [],
-                "summary_template": "Yotpo review listing",
+                "summary_template": "Technical analysis results",
+            },
+            "nf-portfolio": {
+                "tool_name": "nf_portfolio",
+                "invalidation_triggers": ["order_placed"],
+                "summary_template": "Portfolio data",
+            },
+            "nf-watchlist": {
+                "tool_name": "nf_watchlist",
+                "invalidation_triggers": ["watchlist_update"],
+                "summary_template": "Watchlist data",
+            },
+            "nf-order": {
+                "tool_name": "nf_order",
+                "invalidation_triggers": ["order_placed"],
+                "summary_template": "Order data",
             },
         }
 
@@ -710,11 +653,8 @@ OUTPUT ONLY ONE OF:
 
         # Define invalidation triggers for each agent type
         invalidation_map = {
-            "marketing": ["order_create", "sales_analytics"],  # GA4/Ads data may change
-            "google_workspace": [],  # Email/calendar ops rarely invalidate
             "web_search": [],  # External search results, no invalidation
             "vision": [],  # Image analysis doesn't change
-            "price_monitor": ["product_update", "price_update"],  # Prices change
         }
 
         # Generate cache metadata
@@ -905,7 +845,7 @@ OUTPUT ONLY ONE OF:
 
             # Use a fast, cheap model for summarization (Claude Haiku 4.5 or gpt-4.1-mini)
             # Choose gpt-4.1-mini for cost efficiency ($0.10/$0.40 per 1M tokens)
-            summarization_prompt = f"""You are analyzing a conversation between a user and an AI assistant (the EspressoBot orchestrator) that manages a Shopify store.
+            summarization_prompt = f"""You are analyzing a conversation between a user and an AI assistant (the Nifty Strategist orchestrator) for Indian stock market trading and analysis.
 
 Your task: Generate a COMPREHENSIVE - but losslessly concise summary that will be provided to a specialized agent being called to help with this conversation. Focus on capturing all relevant context without omitting important details.
 
@@ -952,7 +892,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
         except Exception as e:
             logger.error(f"Error generating conversation summary: {e}")
             # Return a basic fallback summary
-            return f"Conversation context: The user is working with the orchestrator on Shopify store management tasks. Previous conversation history is available but could not be fully summarized due to an error: {str(e)}"
+            return f"Conversation context: The user is working with the orchestrator on trading and market analysis tasks. Previous conversation history is available but could not be fully summarized due to an error: {str(e)}"
 
     def _register_dynamic_instructions(self):
         """Override base class to inject dynamic context (date, memories, user info, etc.)"""
@@ -1044,7 +984,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                         cache_section += "- After you just created/updated/deleted something\n"
                         cache_section += "- Query is clearly different from cached entries\n"
                         cache_section += "- User is troubleshooting or verifying a change took effect\n"
-                        cache_section += "- Real-time data needed (inventory counts, live orders)\n\n"
+                        cache_section += "- Real-time data needed (live stock prices, portfolio positions)\n\n"
 
                         cache_section += "**Tool execution order:** search_docs (get syntax) → cache_lookup (optional) → execute_bash\n"
 
@@ -1622,378 +1562,24 @@ Currently operating in **paper trading mode**:
                 return f"Error executing command: {str(e)}"
 
         @self.agent.tool
-        async def execute_graphql(
-            ctx: RunContext[OrchestratorDeps],
-            operation: str,
-            variables: Optional[Dict[str, Any]] = None,
-            operation_type: Optional[str] = None,
-        ) -> str:  # pyright: ignore[reportUnusedFunction]
-            """
-            Execute a Shopify Admin API GraphQL query or mutation directly.
-
-            🚨 PRIMARY TOOL FOR SHOPIFY OPERATIONS: Use this instead of individual bash-tools scripts.
-
-            📚 DOCUMENTATION FIRST: Before executing, search docs for the right GraphQL:
-            - read_docs("docs/graphql-operations/INDEX.md") - Overview and patterns
-            - read_docs("docs/graphql-operations/products/*.md") - Product operations
-            - read_docs("docs/graphql-operations/pricing/*.md") - Pricing operations
-            - read_docs("docs/graphql-operations/cms/*.md") - CMS/Metaobject operations
-            - read_docs("docs/graphql-operations/tags/*.md") - Tag operations
-            - read_docs("docs/graphql-operations/analytics/*.md") - Analytics/ShopifyQL
-            - read_docs("docs/graphql-operations/inventory/*.md") - Inventory operations
-            - read_docs("docs/graphql-operations/publishing/*.md") - Publishing operations
-            - read_docs("docs/graphql-operations/utilities/*.md") - Redirects, taxes, etc.
-
-            Args:
-                operation: The GraphQL query or mutation string
-                variables: Optional dictionary of variables for the operation
-                operation_type: Optional hint - "query" or "mutation". Auto-detected if not provided.
-
-            Returns:
-                JSON response from the Shopify Admin API
-
-            Example:
-                # Search products
-                execute_graphql(
-                    operation='query { products(first: 10, query: "tag:sale") { edges { node { id title } } } }'
-                )
-
-                # Update product with variables
-                execute_graphql(
-                    operation='mutation updateProduct($input: ProductInput!) { productUpdate(input: $input) { product { id } userErrors { field message } } }',
-                    variables={"input": {"id": "gid://shopify/Product/123", "title": "New Title"}}
-                )
-            """
-            # Check for interruption
-            self._check_interrupted(ctx)
-
-            # Sanitize operation input
-            operation = operation.lstrip(":").strip()
-            
-            # Check for hallucination
-            if not operation or "nothing to execute" in operation.lower():
-                 return (
-                    f"❌ ERROR: You sent an invalid GraphQL operation: '{operation}'\n"
-                    f"You must send the VALID GraphQL query/mutation string."
-                )
-
-            import json
-            import uuid
-            from datetime import datetime
-
-            from utils.bash_streamer import BashOutputEvent, bash_streamer
-
-            # Auto-detect operation type if not provided
-            if operation_type is None:
-                operation_stripped = operation.strip().lower()
-                if operation_stripped.startswith("mutation"):
-                    operation_type = "mutation"
-                else:
-                    operation_type = "query"
-
-            # Choose the appropriate script
-            script = "graphql_mutation.py" if operation_type == "mutation" else "graphql_query.py"
-            script_path = f"bash-tools/core/{script}"
-
-            # Build the command
-            # Escape the operation for shell
-            escaped_operation = operation.replace("'", "'\\''")
-            command = f"python3 {script_path} '{escaped_operation}'"
-
-            if variables:
-                escaped_vars = json.dumps(variables).replace("'", "'\\''")
-                command += f" --variables '{escaped_vars}'"
-
-            # Generate unique tool call ID
-            tool_call_id = str(uuid.uuid4())
-            thread_id = ctx.deps.state.thread_id
-
-            try:
-                logger.info(f"Executing GraphQL {operation_type}: {operation[:100]}...")
-
-                # Emit command event
-                await bash_streamer.emit(
-                    BashOutputEvent(
-                        thread_id=thread_id,
-                        tool_call_id=tool_call_id,
-                        event_type="command",
-                        content=f"GraphQL {operation_type.upper()}: {operation[:80]}...",
-                        timestamp=datetime.now(),
-                    )
-                )
-
-                # Execute the command
-                process = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(Path(__file__).parent.parent),
-                )
-
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=60
-                )
-
-                output = stdout.decode("utf-8", errors="replace")
-                error_output = stderr.decode("utf-8", errors="replace")
-
-                # Emit result event
-                await bash_streamer.emit(
-                    BashOutputEvent(
-                        thread_id=thread_id,
-                        tool_call_id=tool_call_id,
-                        event_type="complete",
-                        content=output[:500] if output else error_output[:500],
-                        timestamp=datetime.now(),
-                        exit_code=process.returncode,
-                    )
-                )
-
-                if process.returncode != 0:
-                    return f"GraphQL Error:\n{error_output}\n{output}"
-
-                return output
-
-            except asyncio.TimeoutError:
-                return "GraphQL operation timed out after 60 seconds"
-            except Exception as e:
-                logger.error(f"Error executing GraphQL: {e}")
-                return f"Error executing GraphQL: {str(e)}"
-
-        @self.agent.tool
-        async def execute_shopifyql(
-            ctx: RunContext[OrchestratorDeps],
-            query: str,
-            output_format: str = "markdown",
-        ) -> str:  # pyright: ignore[reportUnusedFunction]
-            """
-            Execute a ShopifyQL analytics query for sales and traffic analytics.
-
-            🎯 USE THIS FOR ANALYTICS: ShopifyQL is optimized for commerce analytics.
-
-            📊 SALES DATASET:
-            **Metrics**: total_sales, gross_sales, net_sales, orders, average_order_value, discounts, returns, taxes
-            **Dimensions**: product_title, product_type, product_vendor, billing_country, billing_region, sales_channel, discount_code, day, week, month
-
-            📊 SESSIONS DATASET:
-            **Metrics**: sessions
-            **Dimensions**: referrer_source, referrer_name, landing_page_path, utm_campaign, day, week, month
-
-            🔗 IMPLICIT JOINS: Combine datasets with "FROM sales, sessions" for unified reporting.
-
-            📚 DOCUMENTATION: read_docs("docs/shopifyql/*.md") for full syntax.
-
-            Args:
-                query: ShopifyQL query string (e.g., "FROM sales SHOW total_sales GROUP BY month SINCE -3m")
-                output_format: Output format - "markdown" (table), "json", or "summary" (default: markdown)
-
-            Returns:
-                Formatted analytics results
-
-            Examples:
-                # Monthly sales for last 3 months
-                execute_shopifyql("FROM sales SHOW total_sales GROUP BY month SINCE -3m ORDER BY month")
-
-                # Top 10 products by revenue
-                execute_shopifyql("FROM sales SHOW total_sales, product_title GROUP BY product_title ORDER BY total_sales DESC LIMIT 10 SINCE -30d")
-
-                # Daily sales + traffic combined
-                execute_shopifyql("FROM sales, sessions SHOW total_sales, sessions GROUP BY day SINCE -7d ORDER BY day")
-
-                # Traffic by source
-                execute_shopifyql("FROM sessions SHOW sessions, referrer_source GROUP BY referrer_source ORDER BY sessions DESC SINCE -7d")
-
-                # Top landing pages
-                execute_shopifyql("FROM sessions SHOW sessions, landing_page_path GROUP BY landing_page_path ORDER BY sessions DESC LIMIT 10 SINCE -7d")
-
-                # Sales by discount code
-                execute_shopifyql("FROM sales SHOW total_sales, discount_code GROUP BY discount_code ORDER BY total_sales DESC LIMIT 10 SINCE -30d")
-            """
-            # Check for interruption
-            self._check_interrupted(ctx)
-
-            # Sanitize query input
-            query = query.lstrip(":").strip()
-            
-            # Check for hallucination
-            if not query or "nothing to execute" in query.lower():
-                 return (
-                    f"❌ ERROR: You sent an invalid ShopifyQL query: '{query}'\n"
-                    f"You must send the VALID ShopifyQL query string."
-                )
-
-            import uuid
-            from datetime import datetime
-
-            from utils.bash_streamer import BashOutputEvent, bash_streamer
-
-            # Get credentials from environment
-            shop_url = os.environ.get("SHOPIFY_SHOP_URL", "")
-            access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
-
-            if not shop_url or not access_token:
-                return "Error: SHOPIFY_SHOP_URL and SHOPIFY_ACCESS_TOKEN environment variables required"
-
-            # Extract shop name (remove .myshopify.com if present)
-            shop = shop_url.replace(".myshopify.com", "").replace("https://", "").replace("http://", "")
-
-            # Generate unique tool call ID
-            tool_call_id = str(uuid.uuid4())
-            thread_id = ctx.deps.state.thread_id
-
-            try:
-                logger.info(f"Executing ShopifyQL query: {query[:100]}...")
-
-                # Emit command event
-                await bash_streamer.emit(
-                    BashOutputEvent(
-                        thread_id=thread_id,
-                        tool_call_id=tool_call_id,
-                        event_type="command",
-                        content=f"ShopifyQL: {query[:80]}...",
-                        timestamp=datetime.now(),
-                    )
-                )
-
-                # Execute ShopifyQL via GraphQL API
-                # Note: shopifyql-py library v0.1.2 has a parsing bug (GitHub issue #4)
-                # Using direct GraphQL until the library is fixed
-                import httpx
-
-                graphql_query = """
-                query($shopifyqlQuery: String!) {
-                    shopifyqlQuery(query: $shopifyqlQuery) {
-                        tableData {
-                            columns { name dataType displayName }
-                            rows
-                        }
-                        parseErrors
-                    }
-                }
-                """
-                variables = {"shopifyqlQuery": query}
-
-                # Execute GraphQL request (2025-10 API has shopifyqlQuery)
-                async with httpx.AsyncClient() as http_client:
-                    response = await http_client.post(
-                        f"https://{shop}.myshopify.com/admin/api/2025-10/graphql.json",
-                        json={"query": graphql_query, "variables": variables},
-                        headers={
-                            "X-Shopify-Access-Token": access_token,
-                            "Content-Type": "application/json",
-                        },
-                        timeout=60,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-
-                # Check for parse errors
-                shopifyql_result = data.get("data", {}).get("shopifyqlQuery", {})
-                parse_errors = shopifyql_result.get("parseErrors")
-                if parse_errors:
-                    return f"ShopifyQL Parse Error: {parse_errors}"
-
-                # Extract records
-                table_data = shopifyql_result.get("tableData", {})
-                records = table_data.get("rows", [])
-
-                # Format output based on requested format
-                if output_format == "json":
-                    import json
-                    result = json.dumps(records, indent=2, default=str)
-                elif output_format == "summary":
-                    # Brief summary with key stats
-                    if not records:
-                        result = "No data returned for this query."
-                    else:
-                        result = f"**Query Results**: {len(records)} records returned\n\n"
-                        if records:
-                            # Show first record keys as columns
-                            columns = list(records[0].keys()) if records else []
-                            result += f"**Columns**: {', '.join(columns)}\n\n"
-                            # Show first 3 records as sample
-                            result += "**Sample Data**:\n"
-                            for i, rec in enumerate(records[:3]):
-                                result += f"  {i+1}. {rec}\n"
-                            if len(records) > 3:
-                                result += f"  ... and {len(records) - 3} more records"
-                else:
-                    # Default: markdown table format
-                    if not records:
-                        result = "No data returned for this query."
-                    else:
-                        # Build markdown table
-                        columns = list(records[0].keys())
-                        # Header row
-                        header = "| " + " | ".join(columns) + " |"
-                        separator = "| " + " | ".join(["---"] * len(columns)) + " |"
-                        # Data rows
-                        rows = []
-                        for rec in records:
-                            row_values = [str(rec.get(col, "")) for col in columns]
-                            rows.append("| " + " | ".join(row_values) + " |")
-                        result = f"{header}\n{separator}\n" + "\n".join(rows)
-
-                # Emit result event
-                await bash_streamer.emit(
-                    BashOutputEvent(
-                        thread_id=thread_id,
-                        tool_call_id=tool_call_id,
-                        event_type="complete",
-                        content=f"ShopifyQL returned {len(records) if records else 0} records",
-                        timestamp=datetime.now(),
-                        exit_code=0,
-                    )
-                )
-
-                return result
-
-            except Exception as e:
-                logger.error(f"Error executing ShopifyQL: {e}")
-                # Emit error event
-                await bash_streamer.emit(
-                    BashOutputEvent(
-                        thread_id=thread_id,
-                        tool_call_id=tool_call_id,
-                        event_type="error",
-                        content=str(e),
-                        timestamp=datetime.now(),
-                        exit_code=1,
-                    )
-                )
-                return f"ShopifyQL Error: {str(e)}"
-
-        @self.agent.tool
         async def call_agent(
             ctx: RunContext[OrchestratorDeps],
             agent_name: str,
             task: str,
             context: Optional[Dict[str, Any]] = None,
         ) -> str:  # pyright: ignore[reportUnusedFunction]
-            """Call a domain-specific agent for operations requiring custom OAuth/APIs.
+            """Call a domain-specific agent for specialized operations.
 
             💡 Cache tip: If you've already called this agent for similar data in this conversation,
             consider using cache_lookup() first to avoid redundant API calls. Skip cache if the user
             wants fresh/current data or if the query is clearly different from previous calls.
 
-            NOTE: For Shopify operations, use the appropriate approach:
-            - Product/Order/CMS operations: Doc-driven approach (read_docs → execute_bash)
-            - API documentation/schema: shopify_mcp_user agent (introspection, validation, docs search)
-
-            Available agents (domain-specific only):
-            - shopify_mcp_user: ⭐ Shopify Admin API documentation, schema introspection, and validation
-            - marketing: ⭐ Full marketing analytics and Google Ads management. GA4 analytics, Google Ads read/write
-              access for campaign optimization, bid management, budget optimization, keyword management, negative
-              keywords, PMax campaigns, ROAS/CPA optimization, and search term analysis.
-            - google_workspace: Gmail, Calendar, Drive, and Tasks operations (requires OAuth)
+            Available agents:
             - web_search: Web search using Perplexity API for current information
             - vision: Image analysis, OCR, and visual Q&A
-            - price_monitor: MAP compliance, competitor scraping, violation detection
-            - graphics_designer: Professional graphics generation and editing. Has load_images and generate_image tools.
-              When editing existing images, include the file path(s) in the task - the agent will load them automatically.
 
             Args:
-                agent_name: Name of the agent to call (shopify_mcp_user, marketing, google_workspace, web_search, vision, price_monitor, graphics_designer)
+                agent_name: Name of the agent to call (web_search, vision)
                 task: The task description for the agent
                 context: Optional context dictionary with additional parameters
 
@@ -2009,13 +1595,8 @@ Currently operating in **paper trading mode**:
             
             # Only allow domain-specific agents
             allowed_agents = [
-                "shopify_mcp_user",
-                "marketing",
-                "google_workspace",
                 "web_search",
                 "vision",
-                "price_monitor",
-                "graphics_designer",
             ]
 
             # Robust matching strategy:
@@ -2068,11 +1649,7 @@ Currently operating in **paper trading mode**:
                 # Fallthrough to error if no match found
                 return f"""Agent '{agent_name}' is not available.
 
-For Shopify operations:
-- Product/Order/CMS: Use doc-driven approach (read_docs → execute_bash)
-- API documentation/schema: Use shopify_mcp_user agent (introspection, validation, docs)
-
-Available agents (domain-specific only): {allowed_agents}
+Available agents: {allowed_agents}
 """
 
             if agent_name not in self.specialized_agents:
@@ -2124,132 +1701,8 @@ Available agents (domain-specific only): {allowed_agents}
 
             # Wrap agent call in try-except to catch and format errors
             try:
-                # Handle marketing agent
-                if agent_name == "marketing":
-                    from agents.marketing_agent import MarketingDeps
-
-                    # Get user info from database (GA4 property ID + OAuth tokens)
-                    ga4_property_id = None
-                    google_access_token = None
-                    google_refresh_token = None
-
-                    try:
-                        from database.models import User as DBUser
-                        from database.session import AsyncSessionLocal
-                        from sqlalchemy import select
-
-                        async with AsyncSessionLocal() as db:
-                            result_db = await db.execute(
-                                select(DBUser).where(
-                                    DBUser.email == ctx.deps.state.user_id
-                                )
-                            )
-                            db_user = result_db.scalar_one_or_none()
-
-                            if db_user:
-                                # Get GA4 property ID
-                                if db_user.ga4_property_id:
-                                    ga4_property_id = db_user.ga4_property_id
-                                    logger.info(
-                                        f"Retrieved GA4 property ID for user: {db_user.email}"
-                                    )
-
-                                # Get OAuth tokens for per-user MCP authentication
-                                if (
-                                    db_user.google_access_token
-                                    and db_user.google_refresh_token
-                                ):
-                                    google_access_token = db_user.google_access_token
-                                    google_refresh_token = db_user.google_refresh_token
-                                    logger.info(
-                                        f"Retrieved OAuth tokens for user: {db_user.email}"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"No OAuth tokens found for user: {ctx.deps.state.user_id}, will use system ADC"
-                                    )
-                            else:
-                                logger.info(f"User not found: {ctx.deps.state.user_id}")
-                    except Exception as e:
-                        logger.error(f"Error retrieving user info: {e}")
-
-                    marketing_deps = MarketingDeps(
-                        state=ctx.deps.state,
-                        ga4_property_id=ga4_property_id,
-                        google_ads_customer_id="522-285-1423",  # iDrinkCoffee.com
-                        google_access_token=google_access_token,
-                        google_refresh_token=google_refresh_token,
-                    )
-                    result = await agent.run(enhanced_task, deps=marketing_deps)
-
-                # Handle shopify_mcp_user agent
-                elif agent_name == "shopify_mcp_user":
-                    from agents.shopify_mcp_user_agent import ShopifyMCPDeps
-
-                    shopify_deps = ShopifyMCPDeps(state=ctx.deps.state)
-
-                    # Use streaming to avoid 10-minute timeout from Anthropic API
-                    async with agent.agent.run_stream(
-                        enhanced_task, deps=shopify_deps
-                    ) as stream:
-                        output = await stream.get_output()
-
-                        # Create result-like object
-                        class StreamResult:
-                            def __init__(self, output_val):
-                                self.output = output_val
-
-                        result = StreamResult(output)
-
-                # Handle google_workspace agent
-                elif agent_name == "google_workspace":
-                    from agents.google_workspace_agent import GoogleWorkspaceDeps
-
-                    # Get Google tokens from user session/database
-                    google_access_token = None
-                    google_refresh_token = None
-                    google_token_expiry = None
-
-                    # Try to get Google tokens from current session or user database
-                    try:
-                        from database.models import User as DBUser
-                        from database.session import AsyncSessionLocal
-                        from sqlalchemy import select
-
-                        async with AsyncSessionLocal() as db:
-                            # Get user from database to fetch Google tokens
-                            result_workspace = await db.execute(
-                                select(DBUser).where(
-                                    DBUser.email == ctx.deps.state.user_id
-                                )
-                            )
-                            db_user = result_workspace.scalar_one_or_none()
-
-                            if db_user and db_user.google_access_token:
-                                google_access_token = db_user.google_access_token
-                                google_refresh_token = db_user.google_refresh_token
-                                google_token_expiry = db_user.google_token_expiry
-                                logger.info(
-                                    f"Retrieved Google tokens for user: {db_user.email}"
-                                )
-                            else:
-                                logger.warning(
-                                    f"No Google tokens found for user: {ctx.deps.state.user_id}"
-                                )
-
-                    except Exception as e:
-                        logger.error(f"Error retrieving Google tokens: {e}")
-
-                    workspace_deps = GoogleWorkspaceDeps(
-                        state=ctx.deps.state,
-                        google_access_token=google_access_token,
-                        google_refresh_token=google_refresh_token,
-                        google_token_expiry=google_token_expiry,
-                    )
-                    result = await agent.run(enhanced_task, deps=workspace_deps)
-
                 # Handle web_search agent
-                elif agent_name == "web_search":
+                if agent_name == "web_search":
                     from agents.web_search_agent import WebSearchDeps
 
                     # Get Perplexity API key from environment
@@ -2299,82 +1752,7 @@ Available agents (domain-specific only): {allowed_agents}
                             conversation_id=vision_deps.conversation_id,
                         )
 
-                # Handle price_monitor agent
-                elif agent_name == "price_monitor":
-                    from agents.price_monitor_agent import PriceMonitorDeps
-
-                    price_monitor_deps = PriceMonitorDeps(state=ctx.deps.state)
-
-                    # Use streaming to avoid 10-minute timeout from Anthropic API
-                    async with agent.agent.run_stream(
-                        enhanced_task, deps=price_monitor_deps
-                    ) as stream:
-                        output = await stream.get_output()
-
-                        # Create result-like object
-                        class StreamResult:
-                            def __init__(self, output_val):
-                                self.output = output_val
-
-                        result = StreamResult(output)
-
-                # Handle graphics_designer agent
-                elif agent_name == "graphics_designer":
-                    import re
-                    from pathlib import Path
-                    from agents.graphics_designer_agent import GraphicsDesignerDeps
-
-                    # Log task for debugging
-                    logger.info(
-                        f"[Orchestrator] Graphics designer task (first 500 chars): {task[:500]}"
-                    )
-
-                    # Create deps
-                    graphics_designer_deps = GraphicsDesignerDeps()
-
-                    # Build the full task for graphics designer
-                    # Convert relative upload paths to absolute paths
-                    graphics_task = enhanced_task
-                    original_request = ctx.deps.state.user_request or ""
-
-                    # Convert relative paths to absolute in both task and original_request
-                    backend_dir = Path(__file__).parent.parent
-
-                    def make_absolute(text: str) -> str:
-                        """Convert relative upload paths to absolute paths."""
-                        # Pattern: File path: uploads/... or just uploads/...
-                        def replace_path(match):
-                            rel_path = match.group(1)
-                            abs_path = backend_dir / rel_path
-                            if abs_path.exists():
-                                logger.info(f"[Orchestrator] Converted relative path to absolute: {rel_path} -> {abs_path}")
-                                return f"File path: {abs_path}"
-                            return match.group(0)
-
-                        # Replace "File path: uploads/..." with absolute path
-                        text = re.sub(
-                            r'File path:\s*(uploads/[^\s\n]+)',
-                            replace_path,
-                            text
-                        )
-                        return text
-
-                    # Make paths absolute in both sources
-                    graphics_task = make_absolute(graphics_task)
-                    original_request = make_absolute(original_request)
-
-                    # Append original request if it has file path info
-                    if "File path:" in original_request:
-                        graphics_task = f"{graphics_task}\n\n---\nOriginal request with image:\n{original_request}"
-                        logger.info("[Orchestrator] Appended original user request with File path to graphics task")
-
-                    # Call agent - it will auto-extract image paths from the task
-                    result = await agent.run(
-                        graphics_task,
-                        deps=graphics_designer_deps,
-                    )
-
-                # Handle orders agent and any other future agents
+                # Handle any other future agents
                 else:
                     result = await agent.run(enhanced_task, deps=context)
 
@@ -2408,21 +1786,7 @@ Available agents (domain-specific only): {allowed_agents}
                 retryable = True
 
                 # Check for common error patterns
-                if (
-                    "not a valid dimension" in error_msg.lower()
-                    or "not a valid metric" in error_msg.lower()
-                ):
-                    suggestions.append(
-                        "Check the field names against the API schema documentation"
-                    )
-                    suggestions.append(
-                        "For GA4 Realtime API, use the read_ga4_realtime_reference() tool to get valid fields"
-                    )
-                    suggestions.append(
-                        "Consider using run_report() instead of run_realtime_report() if you need fields not available in realtime"
-                    )
-                    retryable = True
-                elif "unrecognized field" in error_msg.lower():
+                if "unrecognized field" in error_msg.lower():
                     suggestions.append(
                         "The API field name may be incorrect or not exist for this resource"
                     )
@@ -2506,10 +1870,9 @@ Available agents (domain-specific only): {allowed_agents}
                         profile_info = f"""User Profile:
 - Name: {db_user.name or "Not set"}
 - Email: {db_user.email}
-- Bio: {db_user.bio or "No bio provided"}
 - User ID: {db_user.id}
-- Google Workspace: {"Connected" if db_user.google_access_token else "Not connected"}
-- Analytics: {"Enabled" if db_user.ga4_enabled else "Disabled"}"""
+- Trading Mode: {getattr(db_user, 'trading_mode', 'paper')}
+- Upstox: {"Connected" if db_user.upstox_access_token else "Not connected"}"""
 
                         return profile_info
                     else:
@@ -2544,8 +1907,8 @@ Available agents (domain-specific only): {allowed_agents}
 
             Examples:
                 cache_lookup()  # List all cached results
-                cache_lookup("product search")  # Find product search caches
-                cache_lookup("Breville")  # Find caches mentioning Breville
+                cache_lookup("stock quote")  # Find stock quote caches
+                cache_lookup("RELIANCE")  # Find caches mentioning RELIANCE
             """
             try:
                 from tools.native.tool_cache import ToolCache
@@ -2672,22 +2035,22 @@ Available agents (domain-specific only): {allowed_agents}
                 cache_id for future retrieval
 
             Examples:
-                # After product search
+                # After stock quote
                 cache_store(
-                    tool_name="search_products",
-                    parameters={"query": "Breville espresso machines"},
-                    result=<search results>,
-                    summary="List of 15 Breville espresso machines with prices and stock",
-                    invalidation_triggers=["product_create", "product_update"]
+                    tool_name="nf_quote",
+                    parameters={"symbol": "RELIANCE"},
+                    result=<quote data>,
+                    summary="RELIANCE live quote with OHLCV data",
+                    invalidation_triggers=[]
                 )
 
-                # After agent call
+                # After technical analysis
                 cache_store(
-                    tool_name="call_agent",
-                    parameters={"agent_name": "marketing", "task": "Q4 sales analysis"},
+                    tool_name="nf_analyze",
+                    parameters={"symbol": "HDFCBANK"},
                     result=<analysis>,
-                    summary="Q4 2024 sales analysis with YoY comparison",
-                    invalidation_triggers=["order_create"]
+                    summary="HDFCBANK technical analysis with RSI, MACD signals",
+                    invalidation_triggers=[]
                 )
             """
             try:
@@ -2779,20 +2142,6 @@ Available agents (domain-specific only): {allowed_agents}
             except Exception as e:
                 logger.error(f"Error updating TODO list: {e}")
                 return f"Error updating TODO list: {str(e)}"
-
-        # Note: Shopify MCP tools are accessed via the shopify_mcp_user agent
-        # The agent spawns @shopify/dev-mcp on-demand and provides access to:
-        #   - learn_shopify_api - Initialize API context
-        #   - introspect_graphql_schema - Query GraphQL schema
-        #   - search_docs_chunks - Search official Shopify documentation
-        #   - fetch_full_docs - Retrieve complete documentation pages
-        #   - validate_graphql_codeblocks - Validate GraphQL queries/mutations
-        #   - validate_component_codeblocks - Validate Polaris/UI components
-        #   - validate_theme - Validate Liquid theme files
-        #
-        # Use call_agent("shopify_mcp_user", "task description") to access these tools.
-        #
-        # Marketing tools (GA4, Google Ads) are handled by the marketing agent.
 
         @self.agent.tool
         async def write_to_scratchpad(
@@ -3103,11 +2452,11 @@ Available agents (domain-specific only): {allowed_agents}
             - Returns structured command recommendations
 
             Args:
-                role: The specialist role (e.g., "Product Creation Expert", "API Integration Specialist")
+                role: The specialist role (e.g., "Trading Strategy Expert", "Technical Analysis Specialist")
                 docs: List of documentation paths to read (supports glob patterns)
                       Examples:
-                      - ["docs/product-guidelines/*.md"]
-                      - ["docs/product-guidelines/09-new-product-workflow.md", "docs/shopify-api-learnings/*.md"]
+                      - ["docs/trading/*.md"]
+                      - ["cli-tools/INDEX.md"]
                 task_description: Detailed description of what needs to be accomplished
 
             Returns:
@@ -3119,11 +2468,11 @@ Available agents (domain-specific only): {allowed_agents}
 
             Example:
                 result = await spawn_specialist(
-                    role="Product Creation Expert",
-                    docs=["docs/product-guidelines/*.md"],
-                    task_description="Create Breville Bambino Plus espresso machine at $299"
+                    role="Technical Analysis Specialist",
+                    docs=["cli-tools/INDEX.md"],
+                    task_description="Analyze RELIANCE stock for swing trading entry"
                 )
-                # Returns: {command: "python bash-tools/create_full_product.py ...", ...}
+                # Returns: {command: "python cli-tools/nf-analyze RELIANCE ...", ...}
 
             The specialist has access to:
             - read_docs: Local documentation files
@@ -3131,11 +2480,9 @@ Available agents (domain-specific only): {allowed_agents}
             - web_search: Search the web via Perplexity AI (for best practices, tutorials, current info)
 
             Use this for:
-            - Complex product creation with variants
-            - Multi-step workflows requiring current information
+            - Complex multi-step analysis workflows
             - Tasks requiring synthesis of multiple docs + web research
             - When you need expert analysis combining local docs and online resources
-            - Integration tasks that need current API documentation
             """
             # Check for interruption
             self._check_interrupted(ctx)
@@ -3217,10 +2564,6 @@ Available agents (domain-specific only): {allowed_agents}
                         "explanation": "Specialist failed to provide guidance",
                     }
 
-        # DEPRECATED: Local Shopify docs tools removed in favor of shopify_mcp_user agent
-        # Use call_agent("shopify_mcp_user", "search/introspect/validate Shopify API") instead
-        # This provides live, accurate schema introspection and official documentation
-
         @self.agent.tool
         async def read_file(ctx: RunContext[OrchestratorDeps], file_path: str) -> str:
             """
@@ -3274,8 +2617,8 @@ Available agents (domain-specific only): {allowed_agents}
 
             Example:
                 write_file(
-                    "backend/bash-tools/temp_search_reviews.py",
-                    "#!/usr/bin/env python3\\nfrom base import ShopifyClient\\n..."
+                    "backend/cli-tools/temp_helper.py",
+                    "#!/usr/bin/env python3\\nimport json\\n..."
                 )
             """
             # HITL: Request approval before writing file
@@ -3560,8 +2903,8 @@ Available agents (domain-specific only): {allowed_agents}
                 Confirmation message with note ID
 
             Examples:
-                save_note("Coffee Recipe", "My favorite espresso blend:\n- 18g dose\n- 36g output\n- 25 seconds", tags=["coffee", "recipe"])
-                save_note("Meeting Notes", "Discussed Q4 roadmap...", category="work")
+                save_note("Trading Strategy", "Swing trade setup:\n- Entry: support bounce\n- SL: 2% below entry\n- Target: 1:2 RR", tags=["trading", "strategy"])
+                save_note("Market Notes", "Nifty showing weakness near 22000...", category="analysis")
             """
             # Check for interruption
             self._check_interrupted(ctx)
@@ -3633,8 +2976,8 @@ Your note has been added to your second brain and is now searchable."""
                 Formatted list of matching notes with titles, content snippets, and metadata
 
             Examples:
-                search_notes("coffee roasting techniques")
-                search_notes("Q4 planning", category="work")
+                search_notes("swing trading setups")
+                search_notes("RELIANCE analysis", category="analysis")
                 search_notes("project ideas", limit=10)
             """
             # Check for interruption
@@ -3764,7 +3107,7 @@ Try:
                 title: New title (optional)
                 content: New content (optional, supports markdown and [[wikilinks]])
                 category: New category (optional)
-                tags: New tags list (replaces existing) (optional, supports nested tags like 'projects/espressobot')
+                tags: New tags list (replaces existing) (optional, supports nested tags like 'trading/analysis')
                 find_text: Text to find and replace (optional, use with replace_text) - simpler than re-typing whole content
                 replace_text: Text to replace find_text with (optional, use with find_text)
 
@@ -4167,20 +3510,17 @@ The note has been permanently removed from your second brain."""
                 {"type": "Card", "children": [...]}  # Use children for nesting
                 OR simplified: {"type": "Card", "title": "...", "body": "...", "actions": [...]}
 
-            EXAMPLE - Product card (compose from primitives):
+            EXAMPLE - Stock card (compose from primitives):
                 [{"type": "Card", "children": [
-                    {"type": "Row", "gap": 4, "children": [
-                        {"type": "Image", "src": "https://cdn.shopify.com/...", "width": 100, "alt": "Coffee"},
-                        {"type": "Column", "gap": 2, "children": [
-                            {"type": "Text", "content": "Daterra Espresso", "variant": "h3"},
-                            {"type": "Row", "gap": 2, "children": [
-                                {"type": "Badge", "content": "In Stock", "color": "green"},
-                                {"type": "Badge", "content": "15% off", "color": "red"}
-                            ]},
-                            {"type": "Text", "content": "$18.70", "variant": "h2"},
-                            {"type": "Text", "content": "Rich espresso with chocolate notes", "variant": "body"},
-                            {"type": "Button", "label": "View Product", "action": "open_url", "payload": {"url": "https://..."}}
-                        ]}
+                    {"type": "Column", "gap": 2, "children": [
+                        {"type": "Text", "content": "RELIANCE", "variant": "h3"},
+                        {"type": "Row", "gap": 2, "children": [
+                            {"type": "Badge", "content": "NSE", "color": "blue"},
+                            {"type": "Badge", "content": "Buy Signal", "color": "green"}
+                        ]},
+                        {"type": "Text", "content": "₹2,450.75", "variant": "h2"},
+                        {"type": "Text", "content": "RSI: 42.3 | MACD: Bullish crossover", "variant": "body"},
+                        {"type": "Button", "label": "View Analysis", "action": "open_url", "payload": {"url": "https://..."}}
                     ]}
                 ]}]
 
@@ -4246,46 +3586,10 @@ The note has been permanently removed from your second brain."""
             }
 
             # Add agent-specific capabilities based on known agents
-            if name == "marketing":
-                metadata["capabilities"] = [
-                    "ga4_analytics",
-                    "google_ads_management",
-                    "traffic_analysis",
-                    "campaign_optimization",
-                    "bid_management",
-                    "budget_optimization",
-                    "keyword_management",
-                    "negative_keywords",
-                    "pmax_optimization",
-                    "roas_optimization",
-                    "search_term_analysis",
-                ]
-            elif name == "google_workspace":
-                metadata["capabilities"] = ["email", "calendar", "drive", "tasks"]
-            elif name == "web_search":
+            if name == "web_search":
                 metadata["capabilities"] = ["web_search", "current_events", "research"]
             elif name == "vision":
                 metadata["capabilities"] = ["image_analysis", "visual_understanding"]
-            elif name == "price_monitor":
-                metadata["capabilities"] = [
-                    "price_monitoring",
-                    "map_compliance",
-                    "competitor_analysis",
-                ]
-            elif name == "shopify_mcp_user":
-                metadata["capabilities"] = [
-                    "graphql_validation",
-                    "liquid_validation",
-                    "component_validation",
-                    "shopify_docs",
-                ]
-            elif name == "graphics_designer":
-                metadata["capabilities"] = [
-                    "image_generation",
-                    "graphic_design",
-                    "hero_images",
-                    "ad_creatives",
-                ]
 
             agents_metadata.append(metadata)
 

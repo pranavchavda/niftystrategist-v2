@@ -315,6 +315,7 @@ async def disconnect_upstox(user: User = Depends(get_current_user)):
 async def get_upstox_status(user: User = Depends(get_current_user)):
     """
     Check if user has a valid Upstox connection.
+    Validates token against Upstox API if DB thinks it's still valid.
     """
     async with get_db_session() as session:
         result = await session.execute(
@@ -331,9 +332,28 @@ async def get_upstox_status(user: User = Depends(get_current_user)):
         if connected and db_user.upstox_token_expiry:
             # Check if token is expired (use naive datetime for DB compatibility)
             if db_user.upstox_token_expiry < datetime.utcnow():
-                connected = False  # Token expired
+                connected = False  # Token expired per DB
             else:
                 token_expiry = db_user.upstox_token_expiry.isoformat()
+
+        # If DB thinks token is valid, verify against Upstox API
+        # (Upstox tokens expire at end of trading day regardless of expires_in)
+        if connected and db_user.upstox_access_token:
+            try:
+                real_token = decrypt_token(db_user.upstox_access_token)
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        UPSTOX_PROFILE_URL,
+                        headers={"Authorization": f"Bearer {real_token}"},
+                    )
+                    if resp.status_code != 200:
+                        logger.info(f"Upstox token invalid for user {user.id} (API returned {resp.status_code})")
+                        connected = False
+                        token_expiry = None
+            except Exception as e:
+                logger.warning(f"Upstox token validation failed for user {user.id}: {e}")
+                # On network error, trust DB expiry rather than marking disconnected
+                pass
 
         return UpstoxStatusResponse(
             connected=connected,
