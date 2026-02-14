@@ -8,7 +8,6 @@ import {
   BookOpenIcon,
   RocketLaunchIcon,
   LightBulbIcon,
-  CommandLineIcon,
   ClipboardDocumentListIcon,
   ArrowPathIcon,
   MicrophoneIcon,
@@ -16,6 +15,12 @@ import {
   WalletIcon,
   MagnifyingGlassIcon,
   BriefcaseIcon,
+  Cog6ToothIcon,
+  DocumentTextIcon,
+  BoltIcon,
+  PencilSquareIcon,
+  LinkIcon,
+  ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 import { useState } from 'react';
 
@@ -73,9 +78,10 @@ export default function Help() {
                   Welcome to Nifty Strategist!
                 </h2>
                 <p className="mt-2 text-zinc-600 dark:text-zinc-400">
-                  Nifty Strategist is an AI-powered trading assistant for the Indian stock market (NSE/BSE).
-                  It can analyze stocks, track your portfolio, suggest trades based on technical analysis,
-                  and execute orders with your approval -- all through natural language conversations.
+                  Nifty Strategist is your AI-powered trading assistant for the Indian stock market (NSE/BSE).
+                  Analyze stocks, track your portfolio, get trade recommendations with technical analysis,
+                  and execute orders -- all through natural conversation. It starts in paper trading mode so you
+                  can explore safely before connecting your broker.
                 </p>
                 <button
                   onClick={() => navigate('/chat/' + `thread_${Date.now()}`)}
@@ -104,8 +110,8 @@ export default function Help() {
                     1. Start a conversation
                   </h4>
                   <p className="text-sm">
-                    Click the "New Task" button in the sidebar or the input bar on the home page
-                    to start a new conversation. Each conversation gets a unique thread that maintains context.
+                    Click the <strong>"New Task"</strong> button in the sidebar to begin a new conversation.
+                    Each conversation has its own thread that remembers everything you've discussed.
                   </p>
                 </div>
 
@@ -114,33 +120,36 @@ export default function Help() {
                     2. Ask in natural language
                   </h4>
                   <p className="text-sm mb-2">
-                    Nifty Strategist understands natural language. No need for specific commands or syntax. Examples:
+                    Just type what you want. No special commands needed. For example:
                   </p>
                   <ul className="text-sm space-y-1 ml-4 list-disc">
-                    <li>"Analyze RELIANCE for swing trading"</li>
-                    <li>"Compare INFY and TCS technicals"</li>
-                    <li>"Show my portfolio and current positions"</li>
-                    <li>"Find Nifty 50 stocks with bullish RSI divergence"</li>
+                    <li>"What's happening with RELIANCE today?"</li>
+                    <li>"Analyze TCS for swing trading"</li>
+                    <li>"Compare INFY and WIPRO on technicals"</li>
+                    <li>"Show my portfolio"</li>
+                    <li>"How's the market looking?"</li>
                   </ul>
                 </div>
 
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    3. Watch real-time progress
+                    3. Watch it work in real-time
                   </h4>
                   <p className="text-sm">
-                    Nifty Strategist shows you what it's doing in real-time using the TODO panel above the chat input.
-                    You can see tasks as they move from pending to in progress to completed.
+                    As the AI works, you'll see a live progress panel showing what it's doing -- fetching
+                    quotes, running analysis, checking your portfolio. Responses stream in so you can
+                    start reading immediately.
                   </p>
                 </div>
 
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    4. Approve trades before execution
+                    4. Approve trades before they execute
                   </h4>
                   <p className="text-sm">
-                    Before placing any order, Nifty Strategist will ask for your explicit approval.
-                    You always have the final say on trade execution.
+                    Before placing any order, the AI pauses and asks for your explicit approval. You'll see
+                    the full order details -- stock, quantity, price, order type -- and can approve or reject.
+                    You always have the final say.
                   </p>
                 </div>
               </div>
@@ -159,43 +168,49 @@ export default function Help() {
                   icon={MagnifyingGlassIcon}
                   title="Stock Analysis"
                   color="blue"
-                  description="Technical analysis with RSI, MACD, SMA, EMA, and ATR indicators. Analyze individual stocks or compare multiple stocks side by side."
+                  description="Technical analysis with RSI, MACD, SMA, EMA, and ATR indicators. Analyze individual stocks or compare multiple stocks side by side. Get buy/sell/hold signals with clear reasoning."
                 />
                 <Feature
                   icon={ChartBarIcon}
                   title="Market Data"
                   color="purple"
-                  description="Live quotes and historical OHLCV data for Nifty 50 stocks via Upstox API. Check market status and pre-open data."
+                  description="Live quotes and historical OHLCV data for NSE-listed stocks. Check if the market is open or closed, view pre-open data, and get time until the next market event."
                 />
                 <Feature
                   icon={BriefcaseIcon}
                   title="Portfolio Management"
                   color="green"
-                  description="View your holdings, open positions, and P&L. Calculate position sizes based on your risk tolerance and account size."
+                  description="View your holdings, open positions, and P&L. Calculate position sizes based on your risk tolerance, account size, and stop-loss levels."
                 />
                 <Feature
                   icon={WalletIcon}
                   title="Order Execution"
                   color="amber"
-                  description="Place buy/sell orders with human-in-the-loop approval. Supports market and limit orders with dry-run mode for testing."
+                  description="Place buy/sell orders with human-in-the-loop approval. Supports market and limit orders. Use dry-run mode to simulate orders without placing them. After-market orders (AMO) are automatically detected."
                 />
                 <Feature
                   icon={ArrowTrendingUpIcon}
                   title="Watchlist"
                   color="cyan"
-                  description="Maintain a personal watchlist with price target alerts. Get notified when stocks hit your entry or exit levels."
+                  description="Maintain a personal watchlist of stocks you're tracking. Set price alerts and targets so you know when stocks reach your entry or exit levels."
                 />
                 <Feature
                   icon={CpuChipIcon}
                   title="Memory System"
                   color="indigo"
-                  description="Nifty Strategist remembers your risk tolerance, trading style, sector preferences, and past learnings to provide personalized recommendations."
+                  description="The AI remembers your risk tolerance, trading style, sector preferences, and past learnings. Over time, recommendations become more personalized to your approach."
                 />
                 <Feature
                   icon={LightBulbIcon}
-                  title="Educational Focus"
+                  title="Educational Explanations"
                   color="orange"
-                  description="Every recommendation comes with reasoning explained in beginner-friendly language. Learn trading concepts as you go."
+                  description="Every recommendation comes with clear reasoning explained in plain language. You'll learn technical analysis concepts naturally as you use the platform."
+                />
+                <Feature
+                  icon={LinkIcon}
+                  title="Web Search"
+                  color="purple"
+                  description="The AI can search the web for recent news, earnings reports, and market developments to complement its technical analysis with fundamental context."
                 />
               </div>
             </Section>
@@ -211,11 +226,25 @@ export default function Help() {
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
+                    Sidebar & Conversations
+                  </h4>
+                  <p className="text-sm">
+                    The left sidebar shows all your conversations, grouped by date (Today, Yesterday,
+                    Previous 7 Days, Older). You can <strong>search</strong> conversations by title,
+                    <strong> pin</strong> important ones to the top, and <strong>delete</strong> ones you
+                    no longer need. The sidebar can be collapsed to save screen space.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
                     Scratchpad
                   </h4>
                   <p className="text-sm">
-                    Click the notepad icon in the sidebar to open the scratchpad. Use it for tracking trade ideas,
-                    noting support/resistance levels, or storing important information. It auto-saves as you type.
+                    The right panel is your scratchpad -- a quick notepad for jotting down trade ideas,
+                    support/resistance levels, or anything you want to keep handy. It auto-saves as you type
+                    and persists across sessions. On desktop, toggle it with the arrow icon on the right edge.
+                    On mobile, tap the pencil icon in the top-right corner.
                   </p>
                 </div>
 
@@ -224,28 +253,8 @@ export default function Help() {
                     File Uploads
                   </h4>
                   <p className="text-sm">
-                    Click the paperclip icon to upload files (images, spreadsheets, documents). Nifty Strategist can
-                    analyze chart screenshots, extract data from spreadsheets, and process document content.
-                  </p>
-                </div>
-
-                <div>
-                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    Message Formatting
-                  </h4>
-                  <p className="text-sm">
-                    Nifty Strategist renders Markdown formatting, code syntax highlighting, and structured data tables.
-                    Responses stream in real-time so you see progress immediately.
-                  </p>
-                </div>
-
-                <div>
-                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    Conversation History
-                  </h4>
-                  <p className="text-sm">
-                    All conversations are saved in the sidebar. Click on any conversation to resume it.
-                    The full context is preserved so Nifty Strategist remembers your previous interactions.
+                    Click the paperclip icon to upload files. The AI can analyze chart screenshots,
+                    read spreadsheets, and process documents. Great for "what do you see in this chart?" questions.
                   </p>
                 </div>
 
@@ -255,15 +264,36 @@ export default function Help() {
                     Voice Input
                   </h4>
                   <p className="text-sm">
-                    Click the microphone button in the chat input to use voice transcription. Speak your message
-                    and it will be automatically transcribed. The transcribed text is appended
-                    to your current message, allowing you to mix voice and typed input.
+                    Click the microphone button to speak your message instead of typing. The transcribed
+                    text gets appended to your current input, so you can mix voice and typed input freely.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
+                    Stopping & Interrupting
+                  </h4>
+                  <p className="text-sm">
+                    If the AI is mid-response and you want it to stop, click the <strong>Stop</strong> button.
+                    You'll see an amber banner indicating the response was interrupted. You can continue
+                    the conversation normally afterwards.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
+                    Keyboard Shortcuts
+                  </h4>
+                  <p className="text-sm">
+                    <strong>Enter</strong> to send a message, <strong>Shift+Enter</strong> for a new line,
+                    <strong> Esc</strong> to clear the input field. Hover over any message to reveal a
+                    copy button for easy copying of analysis data.
                   </p>
                 </div>
               </div>
             </Section>
 
-            {/* Dashboard */}
+            {/* Cockpit Dashboard */}
             <Section
               id="dashboard"
               title="Cockpit Dashboard"
@@ -273,42 +303,165 @@ export default function Help() {
             >
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <p className="text-sm">
-                  The Cockpit Dashboard provides a real-time trading command center:
+                  Access the Cockpit from the dashboard icon in the sidebar's quick navigation bar.
+                  It provides a real-time trading command center with these panels:
                 </p>
                 <ul className="text-sm space-y-2 ml-4 list-disc">
-                  <li><strong>Market Pulse:</strong> NIFTY 50, SENSEX, BANKNIFTY indices with real-time prices</li>
-                  <li><strong>Watchlist Panel:</strong> Track your favorite stocks with live prices and alerts</li>
-                  <li><strong>Price Chart:</strong> Interactive candlestick charts with multiple timeframes</li>
-                  <li><strong>Positions Table:</strong> Open positions with P&L, quantity, and hold days</li>
-                  <li><strong>Daily Scorecard:</strong> Day's trading performance summary</li>
-                  <li><strong>Cockpit Chat:</strong> Integrated AI chat for quick market queries</li>
+                  <li><strong>Market Pulse:</strong> NIFTY 50, SENSEX, and BANKNIFTY indices with live prices and change percentages</li>
+                  <li><strong>Watchlist Panel:</strong> Your tracked stocks with live prices. Click any stock to see its chart</li>
+                  <li><strong>Price Chart:</strong> Interactive candlestick charts with multiple timeframes (1D, 1W, 1M, etc.)</li>
+                  <li><strong>Positions Table:</strong> Your open positions showing P&L, quantity, average price, and holding days</li>
+                  <li><strong>Daily Scorecard:</strong> Summary of today's trading performance</li>
+                  <li><strong>Cockpit Chat:</strong> A compact AI chat panel for quick market queries without leaving the dashboard</li>
                 </ul>
+                <div className="mt-4 p-4 rounded-lg bg-blue-50/50 dark:bg-blue-500/5 border border-blue-200/50 dark:border-blue-500/20">
+                  <p className="text-sm text-blue-800 dark:text-blue-200">
+                    <strong>Note:</strong> The dashboard requires your Upstox account to be connected for
+                    live data. In paper trading mode, you'll see simulated data.
+                  </p>
+                </div>
+              </div>
+            </Section>
+
+            {/* Notes */}
+            <Section
+              id="notes"
+              title="Notes"
+              icon={DocumentTextIcon}
+              expanded={expandedSection === 'notes'}
+              onToggle={() => toggleSection('notes')}
+            >
+              <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
+                <p className="text-sm">
+                  Notes is a full-featured note-taking system accessible from the user menu in the sidebar footer.
+                  Use it for trade journals, research notes, strategy documentation, or anything you want to keep organized.
+                </p>
+                <ul className="text-sm space-y-2 ml-4 list-disc">
+                  <li><strong>Categories:</strong> Organize notes into Personal, Work, Ideas, or Reference categories</li>
+                  <li><strong>Tags:</strong> Add custom tags to notes and filter by them</li>
+                  <li><strong>Starring:</strong> Star important notes for quick access</li>
+                  <li><strong>Search:</strong> Full-text search across all your notes</li>
+                  <li><strong>Markdown:</strong> Write notes in Markdown with live preview for formatted content</li>
+                  <li><strong>Wiki Links:</strong> Link between notes using <code className="bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded text-xs">[[Note Title]]</code> syntax to build a connected knowledge base</li>
+                  <li><strong>Public Sharing:</strong> Publish any note as a shareable public link, optionally protected with a password and expiration date</li>
+                </ul>
+                <p className="text-sm mt-2">
+                  Notes are different from the Scratchpad -- the scratchpad is a quick temporary notepad
+                  always visible in the chat view, while Notes is a structured system for longer-term content.
+                </p>
+              </div>
+            </Section>
+
+            {/* Automations */}
+            <Section
+              id="automations"
+              title="Automations"
+              icon={BoltIcon}
+              expanded={expandedSection === 'automations'}
+              onToggle={() => toggleSection('automations')}
+            >
+              <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
+                <p className="text-sm">
+                  Automations let you schedule AI-powered workflows that run automatically on a schedule.
+                  Access them from the user menu in the sidebar footer.
+                </p>
+                <ul className="text-sm space-y-2 ml-4 list-disc">
+                  <li><strong>Custom Workflows:</strong> Create your own automations with a custom prompt. For example,
+                    "Scan my watchlist for stocks with RSI below 30 and send me a summary"</li>
+                  <li><strong>Scheduling:</strong> Run workflows on a schedule (daily, weekly) or as a one-time scheduled task</li>
+                  <li><strong>Run History:</strong> View past runs with their results, status, and duration</li>
+                  <li><strong>Manual Trigger:</strong> Run any workflow on-demand with the play button</li>
+                  <li><strong>Notifications:</strong> Get notified when workflows complete or fail</li>
+                </ul>
+              </div>
+            </Section>
+
+            {/* Settings */}
+            <Section
+              id="settings"
+              title="Settings"
+              icon={Cog6ToothIcon}
+              expanded={expandedSection === 'settings'}
+              onToggle={() => toggleSection('settings')}
+            >
+              <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
+                <p className="text-sm">
+                  Access Settings from the user menu in the sidebar footer. Here's what you can configure:
+                </p>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Appearance</h4>
+                  <p className="text-sm">
+                    Choose between Light, Dark, or System theme. System mode automatically matches
+                    your device's settings.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">AI Model</h4>
+                  <p className="text-sm">
+                    Choose which AI model powers your conversations. Different models offer different
+                    tradeoffs between speed and intelligence. Your preference is saved and applies to
+                    all new conversations.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Trade Approval Mode</h4>
+                  <p className="text-sm">
+                    Toggle between <strong>Approval Mode</strong> (the AI asks before placing any order)
+                    and <strong>Auto Mode</strong> (orders execute without confirmation). Approval Mode
+                    is strongly recommended and enabled by default.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Upstox Connection</h4>
+                  <p className="text-sm">
+                    Connect your Upstox demat account to enable live market data and real trading.
+                    Click "Connect Upstox" to authorize via Upstox's secure OAuth flow. You can
+                    disconnect at any time. See the "Paper vs Live Trading" section below for details.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">MCP Servers</h4>
+                  <p className="text-sm">
+                    Advanced feature: Connect external MCP (Model Context Protocol) servers to give the AI
+                    access to additional tools and data sources. Access this from the MCP tab in Settings.
+                  </p>
+                </div>
               </div>
             </Section>
 
             {/* Memory Management */}
             <Section
               id="memory"
-              title="Memory Management"
+              title="Memory System"
               icon={CpuChipIcon}
               expanded={expandedSection === 'memory'}
               onToggle={() => toggleSection('memory')}
             >
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <p className="text-sm">
-                  Nifty Strategist's memory system stores and recalls important information automatically:
+                  The AI automatically builds a profile of your trading preferences over time. You can
+                  view and manage your memories from the user menu in the sidebar footer. Memory categories include:
                 </p>
                 <ul className="text-sm space-y-2 ml-4 list-disc">
-                  <li><strong>Risk Tolerance:</strong> Your preferred risk level per trade (e.g., max 2% risk)</li>
+                  <li><strong>Risk Tolerance:</strong> Your preferred risk level per trade (e.g., max 2% of capital)</li>
+                  <li><strong>Position Sizing:</strong> How you size your positions relative to your portfolio</li>
                   <li><strong>Trading Style:</strong> Swing trader, day trader, positional -- your approach</li>
-                  <li><strong>Sector Preferences:</strong> Favorite sectors like IT, banking, pharma</li>
-                  <li><strong>Avoid List:</strong> Stocks you prefer not to trade</li>
-                  <li><strong>Past Learnings:</strong> Lessons from previous trades for smarter future decisions</li>
+                  <li><strong>Sector Preferences:</strong> Sectors you follow closely (IT, banking, pharma, etc.)</li>
+                  <li><strong>Avoid List:</strong> Stocks or sectors you prefer not to trade</li>
+                  <li><strong>Past Learnings:</strong> Lessons from previous trades</li>
+                  <li><strong>Schedule:</strong> When you typically trade or check markets</li>
+                  <li><strong>Experience Level:</strong> Beginner, intermediate, or advanced -- affects explanation depth</li>
                 </ul>
                 <div className="mt-4 p-4 rounded-lg bg-blue-50/50 dark:bg-blue-500/5 border border-blue-200/50 dark:border-blue-500/20">
                   <p className="text-sm text-blue-800 dark:text-blue-200">
-                    <strong>Pro Tip:</strong> Extract memories after important conversations about your trading preferences
-                    or lessons learned. This helps Nifty Strategist provide more personalized recommendations.
+                    <strong>Tip:</strong> Tell the AI about your preferences naturally in conversation --
+                    "I'm a swing trader who focuses on IT stocks with max 2% risk per trade." It will
+                    remember this for future conversations.
                   </p>
                 </div>
               </div>
@@ -324,17 +477,93 @@ export default function Help() {
             >
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <p className="text-sm">
-                  Nifty Strategist supports both paper trading and live trading modes:
+                  Nifty Strategist supports two trading modes, toggled from the switch at the bottom of the sidebar:
                 </p>
                 <ul className="text-sm space-y-2 ml-4 list-disc">
-                  <li><strong>Paper Trading:</strong> Practice with virtual funds. No real money at risk. Great for learning and testing strategies.</li>
-                  <li><strong>Live Trading:</strong> Real orders via Upstox. Requires connecting your Upstox account in Settings.</li>
+                  <li><strong>Paper Trading (default):</strong> Practice with simulated orders. No real money involved.
+                    Perfect for learning, testing strategies, or just exploring the platform.</li>
+                  <li><strong>Live Trading:</strong> Real orders via your connected Upstox account.
+                    Requires Upstox OAuth authorization in Settings.</li>
                 </ul>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2 mt-4">
+                    Connecting Upstox
+                  </h4>
+                  <p className="text-sm">
+                    Go to <strong>Settings</strong> and click <strong>"Connect Upstox"</strong>. You'll be
+                    redirected to Upstox's login page to authorize Nifty Strategist. After approval, you'll
+                    be redirected back and can switch to live trading mode. Your Upstox tokens are encrypted
+                    and stored securely.
+                  </p>
+                </div>
+
                 <div className="mt-4 p-4 rounded-lg bg-amber-50/50 dark:bg-amber-500/5 border border-amber-200/50 dark:border-amber-500/20">
                   <p className="text-sm text-amber-800 dark:text-amber-200">
-                    <strong>Important:</strong> You can toggle between paper and live trading using the switch in the sidebar footer.
-                    Always verify your trading mode before placing orders.
+                    <strong>Important:</strong> The trading mode toggle is visible at the bottom of the sidebar
+                    at all times. Always verify your mode before asking the AI to place orders. Switching to
+                    live mode requires a confirmation step.
                   </p>
+                </div>
+              </div>
+            </Section>
+
+            {/* Example Prompts */}
+            <Section
+              id="example-prompts"
+              title="Example Prompts"
+              icon={PencilSquareIcon}
+              expanded={expandedSection === 'example-prompts'}
+              onToggle={() => toggleSection('example-prompts')}
+            >
+              <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Market Overview</h4>
+                  <ul className="text-sm space-y-1 ml-4 list-disc">
+                    <li>"Is the market open right now?"</li>
+                    <li>"Give me a quick market summary"</li>
+                    <li>"What time does the market close today?"</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Stock Analysis</h4>
+                  <ul className="text-sm space-y-1 ml-4 list-disc">
+                    <li>"Analyze RELIANCE for a swing trade"</li>
+                    <li>"What's the RSI and MACD for HDFC Bank?"</li>
+                    <li>"Compare TCS, INFY, and WIPRO on technicals"</li>
+                    <li>"Show me the daily chart for TATAMOTORS"</li>
+                    <li>"Find Nifty 50 stocks with RSI below 30"</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Portfolio & Orders</h4>
+                  <ul className="text-sm space-y-1 ml-4 list-disc">
+                    <li>"Show my current portfolio"</li>
+                    <li>"How are my positions doing today?"</li>
+                    <li>"Buy 10 shares of RELIANCE at market price"</li>
+                    <li>"Place a limit order for INFY at 1450"</li>
+                    <li>"What's the right position size for HDFC if I want to risk 2%?"</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Watchlist</h4>
+                  <ul className="text-sm space-y-1 ml-4 list-disc">
+                    <li>"Add SBIN to my watchlist"</li>
+                    <li>"Show my watchlist with current prices"</li>
+                    <li>"Set a price alert for TATASTEEL at 130"</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Learning</h4>
+                  <ul className="text-sm space-y-1 ml-4 list-disc">
+                    <li>"What does RSI divergence mean?"</li>
+                    <li>"Explain MACD crossover in simple terms"</li>
+                    <li>"How should I set stop losses for swing trades?"</li>
+                  </ul>
                 </div>
               </div>
             </Section>
@@ -350,11 +579,11 @@ export default function Help() {
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    Be specific with requests
+                    Be specific with your requests
                   </h4>
                   <p className="text-sm">
-                    Instead of "analyze stocks," try "analyze RELIANCE and HDFC for swing trades with a 5-day holding period."
-                    More context helps Nifty Strategist provide better analysis.
+                    Instead of "analyze stocks," try "analyze RELIANCE and HDFC for swing trades with a
+                    5-day holding period." The more context you provide, the better the analysis.
                   </p>
                 </div>
 
@@ -363,67 +592,41 @@ export default function Help() {
                     Start with paper trading
                   </h4>
                   <p className="text-sm">
-                    If you're new to trading, start with paper trading mode to practice without risking real money.
-                    Build confidence with the system before switching to live trading.
+                    New to the platform or new to trading? Paper trading mode lets you practice
+                    everything without risking real money. Build confidence before switching to live.
                   </p>
                 </div>
 
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    Extract memories regularly
+                    Share your preferences early
                   </h4>
                   <p className="text-sm">
-                    After conversations about your trading preferences, risk tolerance, or lessons learned,
-                    use "Extract Memories" to save that knowledge for future conversations.
+                    Tell the AI about your trading style, risk tolerance, and favorite sectors in your
+                    first few conversations. It will remember these and tailor future recommendations.
                   </p>
                 </div>
 
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    Review before executing trades
+                    Review orders carefully
                   </h4>
                   <p className="text-sm">
-                    Always review the trade details (stock, quantity, price, order type) before approving.
-                    You can stop execution with the Stop button if needed.
+                    Always review the full order details (stock, quantity, price, order type) before
+                    approving. Keep Approval Mode enabled in Settings for an extra safety net.
                   </p>
                 </div>
-              </div>
-            </Section>
 
-            {/* Tips & Tricks */}
-            <Section
-              id="tips-tricks"
-              title="Tips & Tricks"
-              icon={CommandLineIcon}
-              expanded={expandedSection === 'tips-tricks'}
-              onToggle={() => toggleSection('tips-tricks')}
-            >
-              <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
-                <ul className="text-sm space-y-3 ml-4 list-disc">
-                  <li>
-                    <strong>Quick navigation:</strong> Use the sidebar to switch between conversations, dashboard,
-                    and other sections without losing context.
-                  </li>
-                  <li>
-                    <strong>Voice input:</strong> Click the microphone button to dictate messages instead of typing.
-                    Great for longer market analysis requests.
-                  </li>
-                  <li>
-                    <strong>Real-time streaming:</strong> Responses stream in real-time. You don't need to wait for
-                    the full response before reading the analysis.
-                  </li>
-                  <li>
-                    <strong>Conversation context:</strong> Nifty Strategist remembers the entire conversation thread.
-                    You can reference previous analyses naturally.
-                  </li>
-                  <li>
-                    <strong>Copy responses:</strong> Hover over messages to see a copy button for
-                    easy copying of analysis data or trade details.
-                  </li>
-                  <li>
-                    <strong>Keyboard shortcuts:</strong> Enter to send, Shift+Enter for new line, Esc to clear input.
-                  </li>
-                </ul>
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
+                    Use the scratchpad and notes together
+                  </h4>
+                  <p className="text-sm">
+                    Use the scratchpad for quick temporary notes during a trading session. Move important
+                    findings to Notes for long-term reference -- trade journals, strategy documentation,
+                    research notes.
+                  </p>
+                </div>
               </div>
             </Section>
 
@@ -441,8 +644,8 @@ export default function Help() {
                     Not getting a response
                   </h4>
                   <p className="text-sm">
-                    Check your internet connection and refresh the page. If the problem persists, start a new
-                    conversation. Your conversation history is preserved.
+                    Check your internet connection and refresh the page. If the problem persists, start a
+                    new conversation. Your conversation history is always preserved.
                   </p>
                 </div>
 
@@ -451,18 +654,30 @@ export default function Help() {
                     Response was interrupted
                   </h4>
                   <p className="text-sm">
-                    If you stopped a response mid-stream, you'll see an amber warning banner. You can continue
-                    the conversation normally -- just ask to retry or rephrase your request.
+                    If you or the system stopped a response mid-stream, you'll see an amber warning banner.
+                    Just continue the conversation normally -- ask to retry or rephrase your request.
                   </p>
                 </div>
 
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    Market data unavailable
+                    "Market data unavailable" errors
                   </h4>
                   <p className="text-sm">
-                    Market data requires a valid Upstox connection. Check that your Upstox account is connected
-                    in Settings. Data is available during market hours (9:15 AM - 3:30 PM IST) and after hours for historical data.
+                    Live market data requires a connected Upstox account. Go to <strong>Settings</strong> and
+                    connect Upstox. Note that Upstox tokens expire daily and may need re-authorization.
+                    Historical data is available even outside market hours (9:15 AM - 3:30 PM IST).
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
+                    Orders rejected or failing
+                  </h4>
+                  <p className="text-sm">
+                    Common reasons: insufficient funds, market is closed (try AMO orders after hours),
+                    invalid quantity or price. The AI will explain the rejection reason. Make sure your
+                    Upstox account has sufficient margin for the trade.
                   </p>
                 </div>
 
@@ -471,10 +686,30 @@ export default function Help() {
                     Can't access a feature
                   </h4>
                   <p className="text-sm">
-                    Some features require specific permissions. Contact Pranav if you need access to
-                    additional features.
+                    Features like Dashboard, Memory, and Settings require specific permissions assigned
+                    to your account. Contact Pranav if you need access to additional features.
                   </p>
                 </div>
+              </div>
+            </Section>
+
+            {/* Safety & Security */}
+            <Section
+              id="safety"
+              title="Safety & Security"
+              icon={ShieldCheckIcon}
+              expanded={expandedSection === 'safety'}
+              onToggle={() => toggleSection('safety')}
+            >
+              <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
+                <ul className="text-sm space-y-2 ml-4 list-disc">
+                  <li><strong>Human-in-the-loop:</strong> No trade is ever placed without your explicit approval (when Approval Mode is on)</li>
+                  <li><strong>Paper trading default:</strong> New accounts start in paper trading mode -- no risk of accidental real trades</li>
+                  <li><strong>Encrypted credentials:</strong> Your Upstox tokens are encrypted at rest using industry-standard encryption</li>
+                  <li><strong>Session-based auth:</strong> JWT tokens expire after 7 days, requiring re-login</li>
+                  <li><strong>Dry-run orders:</strong> You can ask the AI to simulate any order with <code className="bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded text-xs">--dry-run</code> before placing it for real</li>
+                  <li><strong>No financial advice:</strong> Nifty Strategist provides technical analysis and trade execution tools. It is not a registered financial advisor. Always do your own research</li>
+                </ul>
               </div>
             </Section>
 
@@ -488,19 +723,20 @@ export default function Help() {
             >
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <p className="text-sm">
-                  If you're still stuck or have questions not covered here:
+                  If you're stuck or have questions not covered here:
                 </p>
                 <ul className="text-sm space-y-2 ml-4 list-disc">
-                  <li>Ask Nifty Strategist directly -- it can answer questions about its own capabilities</li>
-                  <li>Contact Pranav for technical support</li>
+                  <li>Ask the AI directly -- it knows its own capabilities and can help you navigate features</li>
+                  <li>Contact Pranav for technical support or account issues</li>
                 </ul>
                 <div className="mt-6 p-4 rounded-lg bg-gradient-to-br from-blue-50/80 to-purple-50/80 dark:from-blue-500/5 dark:to-purple-500/5 border border-blue-200/50 dark:border-blue-500/20">
                   <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">
-                    Remember: Always review trades before execution
+                    Remember: You're always in control
                   </p>
                   <p className="text-sm text-blue-800 dark:text-blue-200">
                     Nifty Strategist provides analysis and recommendations, but you always have the final say.
-                    Review all trade details carefully before approving execution.
+                    Review all trade details carefully before approving. Start with paper trading until you're
+                    comfortable with the platform.
                   </p>
                 </div>
               </div>
