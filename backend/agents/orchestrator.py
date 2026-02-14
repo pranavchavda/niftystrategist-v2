@@ -382,9 +382,18 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
         # Uses a fast LLM to detect when model claims results without making actual tool calls
         @self.agent.output_validator
         async def validate_tool_claims(ctx: RunContext[OrchestratorDeps], result: str) -> str:
-            """Use LLM to detect fake tool call claims."""
+            """Use LLM to detect fake tool call claims.
 
-            # 1. Extract actual tool calls from message history
+            Multi-layer validation:
+            1. Skip if tools were called this turn (ctx.messages)
+            2. Skip if response is too short
+            3. Skip if tools were called in prior turns (state.tools_called_history)
+            4. Skip for follow-up/educational/conversational patterns (heuristic)
+            5. LLM validation with enriched context (user question + conversation history)
+            """
+            import re
+
+            # 1. Extract actual tool calls from current run's message history
             actual_tool_calls = []
             for msg in ctx.messages:
                 if isinstance(msg, ModelResponse):
@@ -392,47 +401,103 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
                         if isinstance(part, ToolCallPart):
                             actual_tool_calls.append(part.tool_name)
 
-            # 2. Skip validation if tools were called (common case, saves API cost)
+            # 2. Skip validation if tools were called this turn (common case)
             if actual_tool_calls:
-                # Tools were called - likely legitimate claims
                 return result
 
-            # 3. Skip validation for short responses or obvious non-claims
+            # 3. Skip validation for short responses
             if len(result) < 50:
                 return result
 
-            # 4. Use fast LLM to check for fabricated claims
-            # Using gpt-oss-safeguard-20b via OpenRouter (Groq provider puts output in reasoning field)
+            # 4. Skip if tools were called in prior turns of this conversation
+            prior_tools = ctx.deps.state.tools_called_history
+            if prior_tools:
+                logger.info(f"[VALIDATOR] Skipping - prior turns used tools: {prior_tools}")
+                return result
 
-            validation_prompt = f"""You are a strict validator checking if an AI assistant fabricated tool results.
+            # 5. Heuristic pre-filters for common false positive patterns
+            lower_result = result.lower()
 
-CRITICAL: The assistant response below was generated with NO TOOLS CALLED. If it claims to have retrieved data, called an agent, executed a query, or presents specific results - it is FABRICATING.
+            # Follow-up references to prior context
+            follow_up_patterns = [
+                r"as (i|we) (mentioned|showed|discussed|analyzed|noted)",
+                r"(earlier|previously|above|before),?\s+(i|we|the)",
+                r"based on (the|my|our) (earlier|previous|prior|above)",
+                r"from (the|my|our) (earlier|previous) (analysis|data|results)",
+                r"as (you can see|shown) (above|earlier|previously)",
+            ]
+            for pattern in follow_up_patterns:
+                if re.search(pattern, lower_result):
+                    logger.info(f"[VALIDATOR] Skipping - follow-up pattern: {pattern}")
+                    return result
+
+            # General knowledge and conversational patterns (only skip if no specific numeric data)
+            has_specific_data = bool(re.search(
+                r'(?:₹|rs\.?|inr)\s*[\d,]+|[\d.]+%|\b\d{4,}\b', lower_result
+            ))
+            if not has_specific_data:
+                non_claim_patterns = [
+                    r"(is a|are a|refers to|means|stands for|measures|indicates|is used)",
+                    r"(in general|typically|usually|commonly|generally speaking)",
+                    r"(here'?s (a|an) (brief|quick|simple)?\s?(explanation|overview|summary))",
+                    r"^(sure|okay|yes|no|got it|understood|absolutely|of course)",
+                    r"(would you like|shall i|should i|do you want|let me know)",
+                    r"(i can help|i'd be happy to|i'll)",
+                ]
+                for pattern in non_claim_patterns:
+                    if re.search(pattern, lower_result):
+                        logger.info(f"[VALIDATOR] Skipping - non-claim pattern: {pattern}")
+                        return result
+
+            # 6. LLM validation with enriched context
+            # Extract user question from current turn
+            user_question = ""
+            for msg in ctx.messages:
+                if isinstance(msg, ModelRequest):
+                    for part in msg.parts:
+                        if isinstance(part, UserPromptPart):
+                            content = part.content if isinstance(part.content, str) else str(part.content)
+                            if content and not content.startswith("[Context from"):
+                                user_question = content
+
+            # Build conversation summary from state
+            conversation_summary = ""
+            recent_msgs = ctx.deps.state.get_recent_messages(limit=6)
+            if len(recent_msgs) > 1:
+                summary_parts = []
+                for msg in recent_msgs[:-1]:  # Exclude current turn
+                    role_label = "User" if msg.role == MessageRole.USER else "Assistant"
+                    summary_parts.append(f"{role_label}: {msg.content[:200]}")
+                conversation_summary = "\n".join(summary_parts[-4:])
+
+            validation_prompt = f"""You are a validator checking if an AI trading assistant fabricated tool results.
+
+USER QUESTION: {user_question[:500]}
+
+{"RECENT CONVERSATION:" + chr(10) + conversation_summary if conversation_summary else "NO PRIOR CONVERSATION"}
+
+TOOLS CALLED THIS TURN: NONE
 
 RESPONSE TO ANALYZE:
 {result[:2000]}
 
-TOOLS ACTUALLY CALLED: NONE (zero tools were invoked)
+FAKE means the assistant is INVENTING specific data (stock prices, percentages, analysis results) that it has NO source for — not from tools, not from conversation history, and not from general knowledge.
 
-FAKE INDICATORS (any of these = FAKE):
-- Says "Here's the documentation/data/results" but no tool was called
-- Says "The agent returned" or "The agent is working" but no agent was called
-- Says "I found X products/items/results" but no search was performed
-- Says "Perfect!" or "Success!" followed by data that would require a tool call
-- Presents code examples, documentation, or structured data as if retrieved
-- Claims an operation completed successfully
+VALID if ANY of these apply:
+- Response answers the user's question using general/educational knowledge
+- Response references or summarizes data from the conversation context above
+- Response is conversational (greeting, clarification, offering to help)
+- Response discusses concepts, definitions, or strategies without claiming live data
+- Response says "Let me check..." or "I'll look that up..." (future intent)
 
-VALID INDICATORS:
-- Says "Let me check..." or "I'll search..." (future intent)
-- Asks a question like "Should I look this up?"
-- Discusses what WOULD happen hypothetically
-- Provides general knowledge without claiming to have retrieved it
+FAKE ONLY if ALL of these are true:
+- Response presents SPECIFIC numeric data (prices, percentages, exact figures)
+- That data was NOT provided in the conversation context above
+- The response claims or implies the data was just retrieved/computed
 
-OUTPUT ONLY ONE OF:
-- "VALID" - if response doesn't fabricate tool results
-- "FAKE: <reason>" - if response claims results without tool calls"""
+OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
 
             try:
-                # Use OpenRouter for the safety-optimized model
                 import httpx
 
                 async with httpx.AsyncClient() as http_client:
@@ -445,7 +510,7 @@ OUTPUT ONLY ONE OF:
                         json={
                             "model": "openai/gpt-oss-safeguard-20b",
                             "messages": [{"role": "user", "content": validation_prompt}],
-                            "max_tokens": 1000,  # Reasoning model needs headroom for CoT + answer
+                            "max_tokens": 200,
                             "temperature": 0,
                         },
                         timeout=10.0,
@@ -468,7 +533,6 @@ OUTPUT ONLY ONE OF:
                         "Do NOT fabricate data or claim actions you haven't taken."
                     )
             except ModelRetry:
-                # Re-raise ModelRetry exceptions
                 raise
             except Exception as e:
                 # Don't block on validation errors - log and continue
@@ -1352,6 +1416,10 @@ Relevant memories about user preferences are automatically injected. Use them to
                 if script_match:
                     script_name = script_match.group(1)
 
+                    # Track tool call across turns for validator context
+                    if script_name not in ctx.deps.state.tools_called_history:
+                        ctx.deps.state.tools_called_history.append(script_name)
+
                     # ENFORCEMENT: Check if docs were looked up before execution
                     docs_checked = script_name in ctx.deps.docs_checked_scripts
                     first_use = script_name not in ctx.deps.used_bash_tools
@@ -1670,6 +1738,10 @@ Relevant memories about user preferences are automatically injected. Use them to
             # If we found a valid agent, use it
             if matched_name:
                 agent_name = matched_name
+                # Track sub-agent call across turns for validator context
+                agent_tool_name = f"call_agent:{agent_name}"
+                if agent_tool_name not in ctx.deps.state.tools_called_history:
+                    ctx.deps.state.tools_called_history.append(agent_tool_name)
             else:
                 # Fallthrough to error if no match found
                 return f"""Agent '{agent_name}' is not available.

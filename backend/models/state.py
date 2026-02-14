@@ -118,6 +118,9 @@ class ConversationState(BaseModel):
     queued_messages: List[str] = Field(default_factory=list)  # Messages queued during processing
     interrupt_reason: Optional[str] = None
 
+    # Cross-turn tool tracking (persists across reset_for_new_request)
+    tools_called_history: List[str] = Field(default_factory=list)
+
     # Metadata
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
