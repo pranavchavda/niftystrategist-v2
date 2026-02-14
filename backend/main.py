@@ -1887,10 +1887,12 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
 
         preferred_model = DEFAULT_MODEL_ID
         user_upstox_token = None  # Decrypted live token for CLI tools
+        user_trading_mode = "paper"  # Default to paper, updated from DB below
         if user:
             async with db_manager.async_session() as db:
                 db_user = await db.get(DBUser, user.id)
                 if db_user:
+                    user_trading_mode = db_user.trading_mode or "paper"
                     if db_user.preferred_model:
                         preferred_model = db_user.preferred_model
                         logger.info(f"Using user's preferred model: {preferred_model}")
@@ -2034,12 +2036,12 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
         interrupt_signal = interrupt_mgr.register_stream(stream_key)
         logger.info(f"[Interrupt] Registered interrupt signal for stream {stream_key} (run_id={run_id}, thread_id={thread_id})")
 
-        # Fetch paper trading portfolio for dynamic context
+        # Fetch paper trading portfolio for dynamic context (only in paper mode)
         paper_total_value = None
         paper_total_pnl = None
         paper_pnl_percent = None
-        
-        if user:
+
+        if user and user_trading_mode == "paper":
             try:
                 # Use the global trade_persistence instance
                 if trade_persistence:
