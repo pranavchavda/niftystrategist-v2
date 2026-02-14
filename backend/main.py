@@ -2034,6 +2034,23 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
         interrupt_signal = interrupt_mgr.register_stream(stream_key)
         logger.info(f"[Interrupt] Registered interrupt signal for stream {stream_key} (run_id={run_id}, thread_id={thread_id})")
 
+        # Fetch paper trading portfolio for dynamic context
+        paper_total_value = None
+        paper_total_pnl = None
+        paper_pnl_percent = None
+        
+        if user:
+            try:
+                # Use the global trade_persistence instance
+                if trade_persistence:
+                    portfolio = await trade_persistence.get_portfolio_for_user(user.id)
+                    paper_total_value = portfolio.total_value
+                    paper_total_pnl = portfolio.total_pnl
+                    paper_pnl_percent = portfolio.total_pnl_percentage
+                    logger.info(f"[Paper] Loaded portfolio for user {user.id}: ₹{paper_total_value:,.2f}")
+            except Exception as e:
+                logger.error(f"Error loading paper portfolio for context: {e}")
+
         # Create dependencies for the orchestrator
         deps = OrchestratorDeps(
             state=state,
@@ -2046,6 +2063,9 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
             interrupt_signal=interrupt_signal,
             upstox_access_token=user_upstox_token,
             user_id=user.id if user else None,
+            paper_total_value=paper_total_value,
+            paper_total_pnl=paper_total_pnl,
+            paper_pnl_percent=paper_pnl_percent,
         )
         logger.info(f"[TODO] Created OrchestratorDeps with use_todo={deps.use_todo}")
 

@@ -257,6 +257,9 @@ class OrchestratorDeps(BaseModel):
     )  # A2UI surfaces to render (cleared after emission)
     upstox_access_token: Optional[str] = None  # Injected as NF_ACCESS_TOKEN for CLI tools
     user_id: Optional[int] = None  # Numeric DB user ID, injected as NF_USER_ID for CLI tools
+    paper_total_value: Optional[float] = None  # Paper trading total value
+    paper_total_pnl: Optional[float] = None  # Paper trading total P&L
+    paper_pnl_percent: Optional[float] = None  # Paper trading total P&L percentage
 
 
 class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
@@ -1003,6 +1006,34 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 )
                 sections.append(memories_section)
 
+            # Inject Paper Trading Mode status dynamically
+            if ctx.deps.paper_total_value is not None:
+                paper_section = "\n\n## Paper Trading Mode\n\n"
+                paper_section += "Currently operating in **paper trading mode**:\n"
+                
+                # Format currency with Indian locale style (Lakhs/Crores) manually
+                # since locale might not be available in container
+                def format_inr(amount):
+                    try:
+                        s, *d = str(amount).partition(".")
+                        r = ",".join([s[x-2:x] for x in range(-3, -len(s), -2)][::-1] + [s[-3:]])
+                        return "".join([r] + d)
+                    except:
+                        return str(amount)
+
+                total_val = format_inr(round(ctx.deps.paper_total_value, 2))
+                pnl = format_inr(round(ctx.deps.paper_total_pnl or 0, 2))
+                pnl_pct = float(ctx.deps.paper_pnl_percent or 0)
+                
+                pnl_emoji = "🟢" if (ctx.deps.paper_total_pnl or 0) >= 0 else "🔴"
+                
+                paper_section += f"- **Current Capital**: ₹{total_val}\n"
+                paper_section += f"- **Total P&L**: {pnl_emoji} ₹{pnl} ({pnl_pct:+.2f}%)\n"
+                paper_section += "- Orders are simulated, not real (no risk)\n"
+                paper_section += "- Perfect for learning and testing strategies\n"
+                
+                sections.append(paper_section)
+
             # Inject TODO mode instruction if enabled
             if ctx.deps.use_todo:
                 logger.info("[TODO] Injecting TODO mode instruction into agent prompt")
@@ -1177,13 +1208,7 @@ Relevant memories about user preferences are automatically injected. Use them to
 
 ---
 
-## Paper Trading Mode
 
-Currently operating in **paper trading mode**:
-- Orders are simulated, not real
-- Starting capital: 10,00,000 (10 lakh rupees)
-- No real money at risk
-- Perfect for learning and testing strategies
 
 ---
 
