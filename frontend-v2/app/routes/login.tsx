@@ -55,11 +55,19 @@ export default function Login() {
         body: JSON.stringify(body),
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        throw new Error(data.detail || "Authentication failed");
+        let message = "Authentication failed";
+        try {
+          const errData = await response.json();
+          message = errData.detail || message;
+        } catch {
+          // Server returned non-JSON (e.g. "Internal Server Error")
+          message = `Server error (${response.status}). Please try again later.`;
+        }
+        throw new Error(message);
       }
+
+      const data = await response.json();
 
       // Store token and redirect
       localStorage.setItem("auth_token", data.access_token);

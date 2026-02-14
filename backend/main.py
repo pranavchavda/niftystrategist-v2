@@ -1214,58 +1214,68 @@ async def register(request: RegisterRequest):
     from sqlalchemy.orm import selectinload
     import bcrypt
 
-    async with db_manager.async_session() as db:
-        # Check if user already exists
-        stmt = select(DBUser).where(DBUser.email == request.email)
-        result = await db.execute(stmt)
-        existing_user = result.scalar_one_or_none()
+    try:
+        async with db_manager.async_session() as db:
+            # Check if user already exists
+            stmt = select(DBUser).where(DBUser.email == request.email)
+            result = await db.execute(stmt)
+            existing_user = result.scalar_one_or_none()
 
-        if existing_user:
-            raise HTTPException(status_code=400, detail="Email already registered")
+            if existing_user:
+                raise HTTPException(status_code=400, detail="Email already registered")
 
-        # Hash password
-        password_hash = bcrypt.hashpw(request.password.encode(), bcrypt.gensalt()).decode()
+            # Hash password
+            password_hash = bcrypt.hashpw(request.password.encode(), bcrypt.gensalt()).decode()
 
-        # Create new user
-        new_user = DBUser(
-            email=request.email,
-            name=request.name,
-            password_hash=password_hash,
-            is_active=True
-        )
-        db.add(new_user)
+            # Create new user
+            new_user = DBUser(
+                email=request.email,
+                name=request.name,
+                password_hash=password_hash,
+                is_active=True
+            )
+            db.add(new_user)
 
-        # Assign default 'new_user' role (pending activation, no permissions)
-        role_stmt = select(Role).where(Role.name == "new_user").options(selectinload(Role.permissions))
-        role_result = await db.execute(role_stmt)
-        user_role = role_result.scalar_one_or_none()
+            # Flush to get the new user's ID before assigning roles
+            await db.flush()
 
-        permissions = []
-        if user_role:
-            new_user.roles.append(user_role)
-            # Get permissions while role is still attached to session
-            for perm in user_role.permissions:
-                permissions.append(perm.name)
+            # Assign default 'new_user' role (pending activation, no permissions)
+            role_stmt = select(Role).where(Role.name == "new_user").options(selectinload(Role.permissions))
+            role_result = await db.execute(role_stmt)
+            user_role = role_result.scalar_one_or_none()
 
-        await db.commit()
-        await db.refresh(new_user)
+            permissions = []
+            if user_role:
+                # Insert into association table directly to avoid lazy-load issue
+                from database.models import user_roles
+                await db.execute(user_roles.insert().values(user_id=new_user.id, role_id=user_role.id))
+                # Get permissions while role is still attached to session
+                for perm in user_role.permissions:
+                    permissions.append(perm.name)
 
-        # Create JWT token
-        user_data = {
-            "id": new_user.id,
-            "email": new_user.email,
-            "name": new_user.name,
-            "permissions": permissions
-        }
-        token = create_access_token(user_data)
+            await db.commit()
 
-        logger.info(f"[Auth] New user registered: {new_user.email} with permissions: {permissions}")
+            # Create JWT token
+            user_data = {
+                "id": new_user.id,
+                "email": new_user.email,
+                "name": new_user.name,
+                "permissions": permissions
+            }
+            token = create_access_token(user_data)
 
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user": user_data
-        }
+            logger.info(f"[Auth] New user registered: {new_user.email} with permissions: {permissions}")
+
+            return {
+                "access_token": token,
+                "token_type": "bearer",
+                "user": user_data
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Auth] Registration failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again later.")
 
 
 @app.get("/api/auth/dev-login")
