@@ -1,17 +1,13 @@
 {
   "name": "Nifty Strategist - AI Trading Assistant",
   "short_name": "Nifty Strategist",
-  "description": "AI-powered trading assistant for the Indian stock market (NSE/BSE). Analyze stocks, track portfolios, and execute trades with intelligent recommendations.",
+  "description": "Upstox connected AI-powered trading assistant for the Indian stock market (NSE/BSE). Analyze stocks, track portfolios, and execute trades with intelligent recommendations.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#1f2937",
   "orientation": "portrait-primary",
-  "categories": [
-    "finance",
-    "productivity",
-    "business"
-  ],
+  "categories": ["finance", "productivity", "business"],
   "icons": [
     {
       "src": "/icons/icon-72x72.png",
