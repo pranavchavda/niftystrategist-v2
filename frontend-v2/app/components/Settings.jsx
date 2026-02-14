@@ -17,6 +17,8 @@ import {
   FileText,
   Loader2,
   AlertTriangle,
+  Key,
+  X,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router';
 import { Button } from './catalyst/button';
@@ -52,6 +54,12 @@ export default function Settings({ authToken, user, setUser }) {
   const [isSwitchingMode, setIsSwitchingMode] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [showLiveConfirmDialog, setShowLiveConfirmDialog] = useState(false);
+
+  // Upstox API credentials state
+  const [hasOwnCredentials, setHasOwnCredentials] = useState(false);
+  const [credApiKey, setCredApiKey] = useState('');
+  const [credApiSecret, setCredApiSecret] = useState('');
+  const [isSavingCreds, setIsSavingCreds] = useState(false);
 
   // Fetch available models and user preference
   useEffect(() => {
@@ -112,6 +120,7 @@ export default function Settings({ authToken, user, setUser }) {
         setTradingMode(data.trading_mode || 'paper');
         setUpstoxConnected(data.connected);
         setUpstoxUserId(data.upstox_user_id);
+        setHasOwnCredentials(data.has_own_credentials || false);
       } catch (err) {
         console.error('Failed to fetch trading status:', err);
       } finally {
@@ -244,6 +253,54 @@ export default function Settings({ authToken, user, setUser }) {
       showSaveStatus('Failed to disconnect Upstox', 'error');
     } finally {
       setIsDisconnecting(false);
+    }
+  };
+
+  // Upstox credentials handlers
+  const handleSaveCredentials = async () => {
+    if (!credApiKey.trim() || !credApiSecret.trim()) {
+      showSaveStatus('Both API Key and Secret are required', 'error');
+      return;
+    }
+    setIsSavingCreds(true);
+    try {
+      const res = await fetch('/api/auth/upstox/credentials', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ api_key: credApiKey.trim(), api_secret: credApiSecret.trim() })
+      });
+      if (res.ok) {
+        setHasOwnCredentials(true);
+        setCredApiKey('');
+        setCredApiSecret('');
+        showSaveStatus('Upstox API credentials saved', 'success');
+      } else {
+        const error = await res.json();
+        showSaveStatus(error.detail || 'Failed to save credentials', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to save credentials:', err);
+      showSaveStatus('Failed to save credentials', 'error');
+    } finally {
+      setIsSavingCreds(false);
+    }
+  };
+
+  const handleClearCredentials = async () => {
+    try {
+      const res = await fetch('/api/auth/upstox/credentials', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        setHasOwnCredentials(false);
+        showSaveStatus('Credentials cleared — will use default app credentials', 'success');
+      }
+    } catch (err) {
+      console.error('Failed to clear credentials:', err);
     }
   };
 
@@ -563,6 +620,88 @@ export default function Settings({ authToken, user, setUser }) {
             </div>
           ) : (
             <div className="space-y-4">
+              {/* Upstox API Credentials */}
+              <div className="p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
+                <div className="flex items-center gap-2 mb-3">
+                  <Key className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
+                  <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                    Upstox API Credentials
+                  </div>
+                  {hasOwnCredentials && (
+                    <span className="ml-auto px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
+                      Saved
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">
+                  Enter your own Upstox API credentials from the{' '}
+                  <a
+                    href="https://account.upstox.com/developer/apps"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 dark:text-blue-400 underline"
+                  >
+                    Upstox Developer Console
+                  </a>
+                  . Required if the default app isn't approved for your account.
+                </p>
+                {hasOwnCredentials ? (
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+                    <span className="text-sm text-green-700 dark:text-green-300">
+                      Using your own API credentials
+                    </span>
+                    <Button
+                      variant="outline"
+                      onClick={handleClearCredentials}
+                      className="text-xs"
+                    >
+                      <X className="w-3 h-3 mr-1" />
+                      Clear
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                        API Key
+                      </label>
+                      <input
+                        type="text"
+                        value={credApiKey}
+                        onChange={(e) => setCredApiKey(e.target.value)}
+                        placeholder="Enter your Upstox API Key"
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                        API Secret
+                      </label>
+                      <input
+                        type="password"
+                        value={credApiSecret}
+                        onChange={(e) => setCredApiSecret(e.target.value)}
+                        placeholder="Enter your Upstox API Secret"
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
+                    <Button
+                      onClick={handleSaveCredentials}
+                      disabled={isSavingCreds || !credApiKey.trim() || !credApiSecret.trim()}
+                    >
+                      {isSavingCreds ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Saving...
+                        </>
+                      ) : (
+                        'Save Credentials'
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
+
               {/* Upstox Connection Status */}
               <div className="p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
                 <div className="flex items-center justify-between">

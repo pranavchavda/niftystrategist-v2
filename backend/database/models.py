@@ -136,6 +136,10 @@ class User(Base):
     upstox_token_expiry = Column(DateTime, nullable=True)
     upstox_user_id = Column(String(100), nullable=True)  # Upstox user identifier
 
+    # Per-user Upstox API credentials (encrypted, for multi-user support)
+    upstox_api_key = Column(Text, nullable=True)
+    upstox_api_secret = Column(Text, nullable=True)
+
     # Trading mode: 'paper' or 'live'
     trading_mode = Column(String(10), default="paper", nullable=False)
 

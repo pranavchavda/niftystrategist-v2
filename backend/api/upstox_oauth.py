@@ -103,6 +103,12 @@ def _verify_oauth_state(state: str) -> Optional[int]:
         return None
 
 
+class UpstoxCredentialsRequest(BaseModel):
+    """Request to save Upstox API credentials."""
+    api_key: str
+    api_secret: str
+
+
 class TradingModeRequest(BaseModel):
     """Request to change trading mode."""
     mode: str  # 'paper' or 'live'
@@ -114,6 +120,7 @@ class UpstoxStatusResponse(BaseModel):
     upstox_user_id: Optional[str] = None
     token_expiry: Optional[str] = None
     trading_mode: str = "paper"
+    has_own_credentials: bool = False
 
 
 class TradingModeResponse(BaseModel):
@@ -122,9 +129,87 @@ class TradingModeResponse(BaseModel):
     upstox_connected: bool
 
 
-def _build_upstox_auth_url(user_id: int) -> str:
-    """Build Upstox OAuth URL with state for given user."""
-    api_key = os.getenv("UPSTOX_API_KEY")
+async def _get_user_upstox_credentials(user_id: int) -> tuple[str, str]:
+    """
+    Get Upstox API credentials for a user.
+    Reads per-user credentials from DB (decrypted), falls back to env vars.
+    Returns (api_key, api_secret).
+    """
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser.upstox_api_key, DBUser.upstox_api_secret).where(DBUser.id == user_id)
+        )
+        row = result.one_or_none()
+
+        if row and row.upstox_api_key and row.upstox_api_secret:
+            api_key = decrypt_token(row.upstox_api_key)
+            api_secret = decrypt_token(row.upstox_api_secret)
+            if api_key and api_secret:
+                return api_key, api_secret
+
+    # Fallback to env vars
+    return os.getenv("UPSTOX_API_KEY", ""), os.getenv("UPSTOX_API_SECRET", "")
+
+
+@router.post("/credentials")
+async def save_upstox_credentials(
+    request: UpstoxCredentialsRequest,
+    user: User = Depends(get_current_user),
+):
+    """Save per-user Upstox API credentials (encrypted)."""
+    if not request.api_key.strip() or not request.api_secret.strip():
+        raise HTTPException(status_code=400, detail="API key and secret are required")
+
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser).where(DBUser.id == user.id)
+        )
+        db_user = result.scalar_one_or_none()
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        db_user.upstox_api_key = encrypt_token(request.api_key.strip())
+        db_user.upstox_api_secret = encrypt_token(request.api_secret.strip())
+        await session.commit()
+
+    logger.info(f"Saved Upstox API credentials for user {user.id}")
+    return {"status": "success", "message": "Credentials saved"}
+
+
+@router.get("/credentials")
+async def get_upstox_credentials_status(user: User = Depends(get_current_user)):
+    """Check if user has saved their own Upstox API credentials."""
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser.upstox_api_key).where(DBUser.id == user.id)
+        )
+        api_key = result.scalar_one_or_none()
+
+    return {"has_credentials": bool(api_key)}
+
+
+@router.delete("/credentials")
+async def delete_upstox_credentials(user: User = Depends(get_current_user)):
+    """Clear stored Upstox API credentials."""
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser).where(DBUser.id == user.id)
+        )
+        db_user = result.scalar_one_or_none()
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        db_user.upstox_api_key = None
+        db_user.upstox_api_secret = None
+        await session.commit()
+
+    logger.info(f"Cleared Upstox API credentials for user {user.id}")
+    return {"status": "success", "message": "Credentials cleared"}
+
+
+async def _build_upstox_auth_url(user_id: int) -> str:
+    """Build Upstox OAuth URL with state for given user. Uses per-user credentials."""
+    api_key, _ = await _get_user_upstox_credentials(user_id)
     redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:5173/auth/upstox/callback")
 
     if not api_key:
@@ -153,7 +238,7 @@ async def authorize_upstox(
     Initiate Upstox OAuth flow.
     Redirects user to Upstox login page.
     """
-    auth_url = _build_upstox_auth_url(user.id)
+    auth_url = await _build_upstox_auth_url(user.id)
     logger.info(f"Redirecting user {user.id} to Upstox OAuth")
     return RedirectResponse(url=auth_url)
 
@@ -164,7 +249,7 @@ async def get_authorize_url(user: User = Depends(get_current_user)):
     Get Upstox OAuth URL without redirecting.
     Used by frontend to initiate OAuth flow via fetch + redirect.
     """
-    auth_url = _build_upstox_auth_url(user.id)
+    auth_url = await _build_upstox_auth_url(user.id)
     logger.info(f"Generated Upstox OAuth URL for user {user.id}")
     return {"url": auth_url}
 
@@ -183,8 +268,7 @@ async def oauth_callback(
     if user_id is None:
         raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
 
-    api_key = os.getenv("UPSTOX_API_KEY")
-    api_secret = os.getenv("UPSTOX_API_SECRET")
+    api_key, api_secret = await _get_user_upstox_credentials(user_id)
     redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:5173/auth/upstox/callback")
 
     if not api_key or not api_secret:
@@ -360,6 +444,7 @@ async def get_upstox_status(user: User = Depends(get_current_user)):
             upstox_user_id=db_user.upstox_user_id if connected else None,
             token_expiry=token_expiry,
             trading_mode=db_user.trading_mode or "paper",
+            has_own_credentials=bool(db_user.upstox_api_key),
         )
 
 
