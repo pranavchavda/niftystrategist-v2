@@ -8,6 +8,8 @@ AI-powered trading assistant for the Indian stock market (NSE/BSE). Forked from 
 
 **Key Principles**: Maximum agent autonomy for analysis; HITL approval only for actual transactions; educational tone for non-technical users; memory system for personalization.
 
+**Upstox Integration**: Not a registered multi-user Upstox app (requires separate approval). The app owner's (Pranav's) Upstox credentials are in `.env`. Other users must enter their own Upstox API key and secret via the Settings page (`/settings` → Trading Settings → Upstox API Credentials), which are stored encrypted per-user in the DB.
+
 ## Development Commands
 
 ```bash
@@ -106,8 +108,8 @@ DATABASE_URL=postgresql://...        # Supabase PostgreSQL
 OPENROUTER_API_KEY=sk-or-...         # LLM provider
 JWT_SECRET=...                       # Auth
 ENCRYPTION_KEY=...                   # Fernet key for Upstox token encryption
-UPSTOX_API_KEY=...                   # Upstox app credentials
-UPSTOX_API_SECRET=...
+UPSTOX_API_KEY=...                   # Default Upstox app credentials (owner's)
+UPSTOX_API_SECRET=...                # Other users provide their own via Settings page
 UPSTOX_REDIRECT_URI=http://localhost:5173/auth/upstox/callback
 ```
 
@@ -116,5 +118,6 @@ UPSTOX_REDIRECT_URI=http://localhost:5173/auth/upstox/callback
 - **Supabase requires Cloudflare WARP** on this machine (IPv6-only free tier, no public IPv6). Run `warp-cli connect` before starting backend.
 - **Dev auth user_id=999** must exist in the DB for dev tokens to work.
 - **Upstox API quirk**: `PlaceOrderV3Request` requires `disclosed_quantity=0`, `trigger_price=0`, `is_amo=False` even for basic orders.
+- **Upstox is NOT multi-user approved** — the default `.env` credentials only work for the app owner. Other users must enter their own API key/secret in Settings, stored encrypted per-user.
 - **`tools/trading/`** directory is DEPRECATED — kept for reference only. Active tools are in `cli-tools/`.
 - **Never push to git** without user testing and confirmation first.

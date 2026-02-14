@@ -84,18 +84,6 @@
       ]
     },
     {
-      "name": "Tasks",
-      "short_name": "Tasks",
-      "description": "Task management",
-      "url": "/tasks",
-      "icons": [
-        {
-          "src": "/icons/shortcut-tasks.png",
-          "sizes": "192x192"
-        }
-      ]
-    },
-    {
       "name": "Notes",
       "short_name": "Notes",
       "description": "View notes",
