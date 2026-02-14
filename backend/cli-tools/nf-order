@@ -19,7 +19,7 @@ from base import SYMBOLS, format_inr, init_client, print_error, print_json, prin
 
 def place_order(symbol: str, action: str, quantity: int, order_type: str,
                 price: float | None, stop_loss: float | None, target: float | None,
-                dry_run: bool, as_json: bool):
+                dry_run: bool, as_json: bool, amo: bool = False):
     """Place a buy or sell order."""
     sym = validate_symbol(symbol)
     act = action.upper()
@@ -75,6 +75,7 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
             quantity=quantity,
             order_type=order_type,
             price=price if price else 0,
+            is_amo=True if amo else None,  # True=force AMO, None=auto-detect
         ))
     except Exception as e:
         print_error(f"Order failed: {e}")
@@ -177,7 +178,8 @@ Examples:
   nf-order buy RELIANCE 10                     Market buy 10 shares
   nf-order buy RELIANCE 10 --type LIMIT --price 1450   Limit buy
   nf-order buy RELIANCE 10 --dry-run           Preview without executing
-  nf-order sell TCS 5                           Market sell
+  nf-order sell TCS 5                           Market sell (AMO auto-detected)
+  nf-order sell TCS 5 --amo                      Force after-market order
   nf-order list                                 Show open orders
   nf-order list --all --limit 20                Show all recent orders
   nf-order cancel ORDER_ID                      Cancel an order
@@ -196,6 +198,7 @@ Examples:
         p.add_argument("--price", type=float, help="Limit price (required for LIMIT orders)")
         p.add_argument("--sl", type=float, help="Stop loss price")
         p.add_argument("--target", type=float, help="Target price")
+        p.add_argument("--amo", action="store_true", help="Force after-market order (auto-detected if omitted)")
         p.add_argument("--dry-run", action="store_true", help="Preview order without executing")
         p.add_argument("--json", action="store_true", help="Output as JSON")
 
@@ -227,6 +230,7 @@ Examples:
             target=args.target,
             dry_run=args.dry_run,
             as_json=args.json,
+            amo=args.amo,
         )
     elif args.command == "list":
         show_orders(open_only=not args.all, limit=args.limit, as_json=args.json)

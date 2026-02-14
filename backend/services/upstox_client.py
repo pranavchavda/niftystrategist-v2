@@ -522,6 +522,21 @@ class UpstoxClient:
 
     # Order Execution
 
+    @staticmethod
+    def _is_market_open() -> bool:
+        """Check if NSE market is currently open (9:15 AM - 3:30 PM IST, weekdays, non-holidays)."""
+        from datetime import timezone
+
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(IST)
+
+        if now.weekday() >= 5:  # Weekend
+            return False
+
+        market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        return market_open <= now < market_close
+
     async def place_order(
         self,
         symbol: str,
@@ -529,12 +544,16 @@ class UpstoxClient:
         quantity: int,
         price: float,
         order_type: Literal["MARKET", "LIMIT"] = "LIMIT",
+        is_amo: bool | None = None,
     ) -> TradeResult:
         """
         Place an order.
 
         In paper trading mode, simulates the order.
         In live mode, places a real order via Upstox SDK.
+
+        Args:
+            is_amo: Force AMO flag. If None, auto-detects based on market hours.
         """
         if self.paper_trading:
             return await self._paper_place_order(
@@ -545,6 +564,10 @@ class UpstoxClient:
             raise ValueError("Access token required for live trading")
 
         instrument_key = self._get_instrument_key(symbol)
+
+        # Auto-detect AMO: if market is closed, send as after-market order
+        if is_amo is None:
+            is_amo = not self._is_market_open()
 
         try:
             api_client = upstox_client.ApiClient(self._configuration)
@@ -560,7 +583,7 @@ class UpstoxClient:
                 order_type=order_type,
                 transaction_type=transaction_type,
                 disclosed_quantity=0,  # Show full quantity (no iceberg)
-                is_amo=False,  # Not after-market order
+                is_amo=is_amo,
             )
 
             response = order_api.place_order(body)
@@ -569,11 +592,12 @@ class UpstoxClient:
             order_ids = response.data.order_ids if response.data else []
             order_id = order_ids[0] if order_ids else None
 
+            amo_label = " [AMO]" if is_amo else ""
             return TradeResult(
                 success=True,
                 order_id=order_id,
                 status="PENDING",
-                message=f"Order placed successfully (ID: {order_id})",
+                message=f"Order placed successfully{amo_label} (ID: {order_id})",
             )
 
         except ApiException as e:
