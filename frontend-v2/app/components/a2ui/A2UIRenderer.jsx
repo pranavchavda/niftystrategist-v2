@@ -59,6 +59,25 @@ const TYPE_ALIASES = {
 };
 
 /**
+ * Sanitize the style prop: LLMs sometimes send a CSS string instead of an object.
+ * Convert "margin-top: 10px; color: red" → { marginTop: "10px", color: "red" }
+ */
+function sanitizeStyle(style) {
+  if (!style) return undefined;
+  if (typeof style === 'object') return style;
+  if (typeof style !== 'string') return undefined;
+
+  const obj = {};
+  style.split(';').forEach(rule => {
+    const [prop, ...valueParts] = rule.split(':');
+    if (!prop || valueParts.length === 0) return;
+    const key = prop.trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    obj[key] = valueParts.join(':').trim();
+  });
+  return Object.keys(obj).length > 0 ? obj : undefined;
+}
+
+/**
  * Normalize a component definition to a standard internal format
  *
  * Handles both A2UI spec format and simplified format
@@ -82,6 +101,8 @@ function normalizeComponent(component, dataModel = {}) {
       }
     }
 
+    if ('style' in resolvedProps) resolvedProps.style = sanitizeStyle(resolvedProps.style);
+
     return {
       id: component.id,
       type: componentType,
@@ -102,6 +123,8 @@ function normalizeComponent(component, dataModel = {}) {
       if (key === 'children' || key === 'components') continue;
       resolvedProps[key] = resolveA2UIValue(value, dataModel);
     }
+
+    if ('style' in resolvedProps) resolvedProps.style = sanitizeStyle(resolvedProps.style);
 
     return {
       id,

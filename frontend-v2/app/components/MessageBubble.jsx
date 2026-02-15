@@ -530,42 +530,26 @@ function MessageBubble({
                             // { name, surfaceId, sourceComponentId, timestamp, context }
                             console.log('[A2UI] userAction:', userAction);
 
+                            if (!onSendMessage) return;
+
                             const actionName = userAction.name;
                             const context = userAction.context || {};
 
-                            // For submit/search actions, send as a new message to the agent
+                            // For submit/search, send form data as a message
                             if (actionName === 'submit' || actionName === 'search') {
-                              // Build a message from the context (form data)
                               const query = context.query || context.value || context.search || JSON.stringify(context);
-
-                              if (onSendMessage && query) {
-                                // Send as new message - agent will process the search/submit
+                              if (query) {
                                 onSendMessage(`[User submitted form] ${query}`, threadId);
                               }
                               return;
                             }
 
-                            // For other actions, send userAction to backend
-                            try {
-                              const response = await fetch('/api/agent/a2ui-interaction', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  thread_id: threadId,
-                                  // A2UI v0.8 spec fields
-                                  name: userAction.name,
-                                  surface_id: userAction.surfaceId,
-                                  source_component_id: userAction.sourceComponentId,
-                                  timestamp: userAction.timestamp,
-                                  context: userAction.context,
-                                }),
-                              });
-                              if (!response.ok) {
-                                console.error('[A2UI] userAction failed:', await response.text());
-                              }
-                            } catch (err) {
-                              console.error('[A2UI] userAction error:', err);
-                            }
+                            // For all other actions (button clicks), send as a chat message
+                            // so the agent sees it and can respond
+                            const contextStr = Object.keys(context).length > 0
+                              ? ` with: ${JSON.stringify(context)}`
+                              : '';
+                            onSendMessage(`[User clicked '${actionName}']${contextStr}`, threadId);
                           }}
                         />
                       ))}

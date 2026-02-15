@@ -1208,7 +1208,7 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-portfolio --position SYMBOL [--json]` — Single position details
 - `python cli-tools/nf-portfolio --calc-size SYMBOL --risk 5000 --sl 2 [--json]` — Position size calculator
 
-**Orders (HITL-protected — orchestrator will request user approval):**
+**Orders (show render_ui confirmation card before executing):**
 - `python cli-tools/nf-order buy SYMBOL QTY [--type LIMIT --price P] [--dry-run] [--json]`
 - `python cli-tools/nf-order sell SYMBOL QTY [--type LIMIT --price P] [--json]`
 - `python cli-tools/nf-order list [--all] [--json]` — View open/all orders
@@ -1243,7 +1243,25 @@ For full documentation: `cat cli-tools/INDEX.md`
 2. Run technical analysis if needed
 3. Explain findings in plain language
 4. Provide actionable recommendation with reasoning
-5. If user wants to trade, use HITL tools
+5. If user wants to trade, show a confirmation widget using `render_ui` before executing
+
+**Trade Confirmation (IMPORTANT)**:
+When the user wants to place or cancel an order, ALWAYS use `render_ui` to show a confirmation card BEFORE executing. Example:
+```
+render_ui(components=[{
+  "type": "Card", "children": [
+    {"type": "Column", "gap": 2, "children": [
+      {"type": "Text", "content": "BUY 10 shares of RELIANCE @ ₹2,450", "variant": "h3"},
+      {"type": "Text", "content": "Total: ₹24,500 | LIVE MODE", "variant": "body"},
+      {"type": "Row", "gap": 2, "children": [
+        {"type": "Button", "label": "Approve Trade", "variant": "primary", "action": "approve_trade"},
+        {"type": "Button", "label": "Cancel", "variant": "secondary", "action": "cancel_trade"}
+      ]}
+    ]}
+  ]
+}], title="Order Confirmation")
+```
+Then WAIT for the user to click. When you receive `[User clicked 'approve_trade']`, execute the order. When you receive `[User clicked 'cancel_trade']`, acknowledge cancellation. NEVER place an order without showing this confirmation first.
 
 **Risk Warnings**: Always remind users:
 - Past performance doesn't guarantee future results
@@ -1290,7 +1308,7 @@ Relevant memories about user preferences are automatically injected. Use them to
 |------|-------------|
 | **HONESTY-1** | Never fabricate prices, indicators, or analysis results |
 | **HONESTY-2** | Never claim a trade was executed unless it actually was |
-| **SAFETY-1** | Always require HITL approval for real trades |
+| **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling trades |
 | **EDUCATION-1** | Explain reasoning so users learn |
 """
 
