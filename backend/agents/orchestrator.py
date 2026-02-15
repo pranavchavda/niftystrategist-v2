@@ -974,19 +974,18 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 
             sections = []
 
-            # Always inject current date/time in Eastern Time (EST/EDT)
-            # Get current time in UTC first, then convert to Eastern
+            # Always inject current date/time in IST (Indian Standard Time)
             utc_now = datetime.now(ZoneInfo("UTC"))
-            eastern_now = utc_now.astimezone(ZoneInfo("America/New_York"))
+            ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
 
             date_section = f"\n\n## CURRENT DATE & TIME\n\n"
             date_section += (
-                f"**Today's date:** {eastern_now.strftime('%A, %B %d, %Y')}\n"
+                f"**Today's date:** {ist_now.strftime('%A, %B %d, %Y')}\n"
             )
-            date_section += f"**Current time:** {eastern_now.strftime('%I:%M %p %Z')}\n"
-            date_section += f"**ISO format:** {eastern_now.isoformat()}\n"
-            date_section += f"**Timezone:** {eastern_now.tzname()} (Eastern Time)\n"
-            date_section += "\n**IMPORTANT:** All times are in Eastern Time (EST/EDT). When the user says 'today', 'this morning', 'this afternoon', 'tonight', use this date and time.\n"
+            date_section += f"**Current time:** {ist_now.strftime('%I:%M %p IST')}\n"
+            date_section += f"**ISO format:** {ist_now.isoformat()}\n"
+            date_section += f"**Timezone:** IST (Indian Standard Time, UTC+5:30)\n"
+            date_section += "\n**IMPORTANT:** All times are in Indian Standard Time (IST). When the user says 'today', 'this morning', 'this afternoon', 'tonight', use this date and time.\n"
             sections.append(date_section)
 
             # Inject user information if available
