@@ -224,21 +224,23 @@ async def cockpit_watchlist(
             company = item.company_name or UpstoxClient.SYMBOL_TO_COMPANY.get(item.symbol) or cache_get_company_name(item.symbol) or item.symbol
 
             # Fetch live quote
-            quote_data = {"ltp": 0, "volume": 0, "close": 0}
+            quote_data = {"ltp": 0, "volume": 0, "close": 0, "net_change": 0, "pct_change": 0}
             try:
                 quote = await client.get_quote(item.symbol)
                 quote_data = {
                     "ltp": quote.get("ltp", 0),
                     "volume": quote.get("volume", 0),
                     "close": quote.get("close", 0),
+                    "net_change": quote.get("net_change", 0),
+                    "pct_change": quote.get("pct_change", 0),
                 }
             except Exception as qe:
                 logger.warning(f"Quote fetch failed for {item.symbol}: {qe}")
 
             ltp = quote_data["ltp"] or 0
-            close = quote_data["close"] or ltp
-            change = ltp - close if close else 0
-            change_pct = (change / close * 100) if close else 0
+            # Prefer API-provided net_change/pct_change (correct even on weekends)
+            change = quote_data["net_change"] or 0
+            change_pct = quote_data["pct_change"] or 0
 
             # Fetch sparkline (7 days of closing prices)
             sparkline = []
@@ -285,9 +287,10 @@ async def cockpit_chart(
         candles = await client.get_historical_data(symbol.upper(), interval=interval, days=days)
         # Upstox returns newest-first; lightweight-charts requires ascending order
         candles.sort(key=lambda c: c.timestamp)
+        intraday = interval in ("1minute", "5minute", "15minute", "30minute")
         return [
             {
-                "time": c.timestamp[:10] if len(c.timestamp) >= 10 else c.timestamp,
+                "time": int(datetime.fromisoformat(c.timestamp).timestamp()) if intraday else (c.timestamp[:10] if len(c.timestamp) >= 10 else c.timestamp),
                 "open": c.open,
                 "high": c.high,
                 "low": c.low,

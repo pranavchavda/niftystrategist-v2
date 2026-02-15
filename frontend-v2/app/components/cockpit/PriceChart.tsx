@@ -9,7 +9,7 @@ interface PriceChartProps {
   onTimeframeChange?: (tf: string) => void;
 }
 
-const TIMEFRAMES = ['1W', '1M', '3M', '6M', '1Y'] as const;
+const TIMEFRAMES = ['1D', '5D', '1W', '1M', '3M', '6M', '1Y'] as const;
 
 export default function PriceChart({ symbol, data, className = '', activeTimeframe: controlledTf, onTimeframeChange }: PriceChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -71,7 +71,7 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
       },
       timeScale: {
         borderColor: isDark ? 'rgba(63, 63, 70, 0.5)' : 'rgba(228, 228, 231, 0.7)',
-        timeVisible: false,
+        timeVisible: activeTimeframe === '1D' || activeTimeframe === '5D',
       },
       handleScroll: { vertTouchDrag: false },
     });
@@ -113,7 +113,7 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
       chart.remove();
       chartRef.current = null;
     };
-  }, [data, isDark]);
+  }, [data, isDark, activeTimeframe]);
 
   // Get current price info from data
   const lastCandle = data[data.length - 1];

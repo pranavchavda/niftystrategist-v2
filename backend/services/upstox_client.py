@@ -82,6 +82,7 @@ class UpstoxClient:
         "NIFTY 50": "NSE_INDEX|Nifty 50",
         "BANK NIFTY": "NSE_INDEX|Nifty Bank",
         "INDIA VIX": "NSE_INDEX|INDIA VIX",
+        "SENSEX": "BSE_INDEX|SENSEX",
     }
 
     # Symbol to company name mapping (Nifty 50)
@@ -283,6 +284,11 @@ class UpstoxClient:
         3. NSE instruments cache (any NSE symbol)
         """
         sym = symbol.upper()
+
+        # Check index keys first
+        if sym in self.INDEX_KEYS:
+            return self.INDEX_KEYS[sym]
+
         isin = self.SYMBOL_TO_ISIN.get(sym)
         if isin:
             return f"NSE_EQ|{isin}"
@@ -393,15 +399,44 @@ class UpstoxClient:
             api_client = upstox_client.ApiClient(self._configuration)
             history_api = upstox_client.HistoryV3Api(api_client)
 
-            response = history_api.get_historical_candle_data1(
-                instrument_key=instrument_key,
-                unit=unit,
-                interval=interval_value,
-                to_date=to_date,
-                from_date=from_date,
-            )
+            # Use intraday endpoint for today's minute-level data (days <= 1),
+            # historical endpoint for multi-day ranges (including 5D with minute intervals).
+            # If intraday returns nothing (market closed / weekend), fall back to
+            # historical with a wider window to show the last trading day's candles.
+            candles_data = []
+            if days <= 1 and unit == "minutes":
+                response = history_api.get_intra_day_candle_data(
+                    instrument_key=instrument_key,
+                    unit=unit,
+                    interval=interval_value,
+                )
+                candles_data = response.data.candles if response.data else []
 
-            candles_data = response.data.candles if response.data else []
+                if not candles_data:
+                    # Market closed — fall back to last 4 days to cover weekends/holidays
+                    logger.info(f"Intraday empty for {symbol}, falling back to historical (last 4 days)")
+                    fallback_from = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d")
+                    response = history_api.get_historical_candle_data1(
+                        instrument_key=instrument_key,
+                        unit=unit,
+                        interval=interval_value,
+                        to_date=to_date,
+                        from_date=fallback_from,
+                    )
+                    candles_data = response.data.candles if response.data else []
+                    # Keep only the most recent trading day's candles
+                    if candles_data:
+                        last_day = candles_data[0][0][:10]
+                        candles_data = [c for c in candles_data if c[0][:10] == last_day]
+            else:
+                response = history_api.get_historical_candle_data1(
+                    instrument_key=instrument_key,
+                    unit=unit,
+                    interval=interval_value,
+                    to_date=to_date,
+                    from_date=from_date,
+                )
+                candles_data = response.data.candles if response.data else []
 
             if not candles_data:
                 raise ValueError(f"No candle data returned for {symbol}. Market may be closed or symbol invalid.")
@@ -464,6 +499,8 @@ class UpstoxClient:
                 "low": quote_data.ohlc.low if quote_data.ohlc else None,
                 "close": quote_data.ohlc.close if quote_data.ohlc else None,
                 "volume": getattr(quote_data, 'volume', None) or getattr(quote_data, 'volume_traded', None),
+                "net_change": getattr(quote_data, 'net_change', None) or 0,
+                "pct_change": getattr(quote_data, 'percentage_change', None) or 0,
             }
 
         except ApiException as e:
@@ -472,7 +509,7 @@ class UpstoxClient:
             raise ValueError(f"Failed to fetch quote for {symbol}: {e}")
 
     async def get_index_quotes(self) -> list[dict]:
-        """Get quotes for NIFTY 50, BANK NIFTY, and INDIA VIX."""
+        """Get quotes for NIFTY 50, BANK NIFTY, SENSEX, and INDIA VIX."""
         await self._ensure_valid_token()
         if not self.access_token:
             return []

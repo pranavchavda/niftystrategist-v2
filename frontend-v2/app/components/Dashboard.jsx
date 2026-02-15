@@ -29,8 +29,8 @@ const Dashboard = ({ authToken }) => {
   const [showChatDrawer, setShowChatDrawer] = useState(false);
 
   // Active symbol + timeframe for chart
-  const [activeSymbol, setActiveSymbol] = useState('RELIANCE');
-  const [chartDays, setChartDays] = useState(90);
+  const [activeSymbol, setActiveSymbol] = useState('NIFTY 50');
+  const [activeTimeframe, setActiveTimeframe] = useState('3M');
 
   // Chat context
   const [chatContext, setChatContext] = useState(null);
@@ -43,10 +43,18 @@ const Dashboard = ({ authToken }) => {
 
   // Live data hooks
   const cockpitData = useCockpitData(authToken, autoRefresh);
-  const chartResult = useChartData(authToken, activeSymbol, chartDays);
-
-  // Map timeframe labels to days for the chart hook
-  const TIMEFRAME_TO_DAYS = { '1W': 7, '1M': 30, '3M': 90, '6M': 180, '1Y': 365 };
+  // Map timeframe labels to days + interval for the chart hook
+  const TIMEFRAME_CONFIG = {
+    '1D': { days: 1, interval: '1minute' },
+    '5D': { days: 5, interval: '5minute' },
+    '1W': { days: 7, interval: 'day' },
+    '1M': { days: 30, interval: 'day' },
+    '3M': { days: 90, interval: 'day' },
+    '6M': { days: 180, interval: 'day' },
+    '1Y': { days: 365, interval: 'day' },
+  };
+  const chartConfig = TIMEFRAME_CONFIG[activeTimeframe] || { days: 90, interval: 'day' };
+  const chartResult = useChartData(authToken, activeSymbol, chartConfig.days, chartConfig.interval);
 
   // Derive market open status from live data
   const marketOpen = cockpitData.marketStatus?.status === 'open' || cockpitData.marketStatus?.status === 'pre_open';
@@ -227,7 +235,8 @@ const Dashboard = ({ authToken }) => {
             <PriceChart
               symbol={activeSymbol}
               data={chartResult.data}
-              onTimeframeChange={(tf) => setChartDays(TIMEFRAME_TO_DAYS[tf] || 90)}
+              activeTimeframe={activeTimeframe}
+              onTimeframeChange={(tf) => setActiveTimeframe(tf)}
             />
           </div>
 

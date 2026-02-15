@@ -12,6 +12,7 @@ export function useChartData(
   authToken: string,
   symbol: string,
   days: number = 90,
+  interval: string = 'day',
 ): { data: OHLCV[]; isLoading: boolean; error: string | null } {
   const [data, setData] = useState<OHLCV[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -32,7 +33,7 @@ export function useChartData(
     setIsLoading(true);
     setError(null);
 
-    fetch(`/api/cockpit/chart/${encodeURIComponent(symbol)}?days=${days}`, {
+    fetch(`/api/cockpit/chart/${encodeURIComponent(symbol)}?days=${days}&interval=${interval}`, {
       headers: { Authorization: `Bearer ${authToken}` },
       signal: controller.signal,
     })
@@ -57,7 +58,7 @@ export function useChartData(
     return () => {
       controller.abort();
     };
-  }, [authToken, symbol, days]);
+  }, [authToken, symbol, days, interval]);
 
   return { data, isLoading, error };
 }
