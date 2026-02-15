@@ -2065,6 +2065,7 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
             interrupt_signal=interrupt_signal,
             upstox_access_token=user_upstox_token,
             user_id=user.id if user else None,
+            trading_mode=user_trading_mode,
             paper_total_value=paper_total_value,
             paper_total_pnl=paper_total_pnl,
             paper_pnl_percent=paper_pnl_percent,

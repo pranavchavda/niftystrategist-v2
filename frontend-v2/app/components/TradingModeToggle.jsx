@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   AlertTriangle,
-  Zap,
-  FileText,
   Link as LinkIcon,
   Loader2,
 } from 'lucide-react';
@@ -14,10 +12,12 @@ import {
   DialogDescription,
   DialogTitle,
 } from './catalyst/dialog';
+import { Switch, SwitchField } from './catalyst/switch';
+import { Label, Description } from './catalyst/fieldset';
 
 /**
  * TradingModeToggle - Toggle between paper and live trading
- * Shows in sidebar, handles Upstox connection and confirmation
+ * Uses a compact Catalyst Switch in the sidebar footer.
  */
 export default function TradingModeToggle({ authToken, isCollapsed, onModeChange }) {
   const [tradingMode, setTradingMode] = useState('paper');
@@ -53,14 +53,10 @@ export default function TradingModeToggle({ authToken, isCollapsed, onModeChange
     }
   };
 
-  const handleToggleClick = async () => {
-    if (tradingMode === 'live') {
-      // Switching to paper - no confirmation needed
-      switchTradingMode('paper');
-    } else {
-      // Switching to live - need to check Upstox connection first
+  const handleToggle = async (checked) => {
+    if (checked) {
+      // Turning on = switching to live
       if (!upstoxConnected) {
-        // Need to connect Upstox - fetch the authorize URL with auth token
         try {
           const response = await fetch('/api/auth/upstox/authorize-url', {
             headers: {
@@ -80,9 +76,11 @@ export default function TradingModeToggle({ authToken, isCollapsed, onModeChange
           alert('Failed to connect to Upstox. Please try again.');
         }
       } else {
-        // Show confirmation dialog
         setShowConfirmDialog(true);
       }
+    } else {
+      // Turning off = switching to paper — no confirmation needed
+      switchTradingMode('paper');
     }
   };
 
@@ -129,30 +127,28 @@ export default function TradingModeToggle({ authToken, isCollapsed, onModeChange
 
   const isLive = tradingMode === 'live';
 
-  // Collapsed view
+  // Collapsed view — just an icon
   if (isCollapsed) {
     return (
       <>
         <div className="relative group px-2 py-1 flex justify-center">
           <button
-            onClick={handleToggleClick}
+            onClick={() => handleToggle(!isLive)}
             disabled={isSwitching}
             className={`
               p-2 rounded-xl transition-all duration-200
               ${isLive
                 ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 ring-1 ring-red-200 dark:ring-red-800'
-                : 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-200 dark:ring-amber-800'
+                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 ring-1 ring-zinc-200 dark:ring-zinc-700'
               }
               hover:scale-105
             `}
-            title={isLive ? 'Live Trading - Click to switch to Paper' : 'Paper Trading - Click to switch to Live'}
+            title={isLive ? 'Live Trading — Click to switch to Paper' : 'Paper Trading — Click to switch to Live'}
           >
             {isSwitching ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : isLive ? (
-              <Zap className="w-5 h-5" />
+              <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
-              <FileText className="w-5 h-5" />
+              <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-red-500 animate-pulse' : 'bg-zinc-400'}`} />
             )}
           </button>
           {/* Tooltip */}
@@ -161,7 +157,6 @@ export default function TradingModeToggle({ authToken, isCollapsed, onModeChange
           </div>
         </div>
 
-        {/* Confirmation Dialog */}
         <ConfirmLiveDialog
           open={showConfirmDialog}
           onClose={() => setShowConfirmDialog(false)}
@@ -172,57 +167,31 @@ export default function TradingModeToggle({ authToken, isCollapsed, onModeChange
     );
   }
 
-  // Expanded view
+  // Expanded view — compact switch row
   return (
     <>
-      <div className="px-3 py-2">
-        <button
-          onClick={handleToggleClick}
-          disabled={isSwitching}
-          className={`
-            w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200
-            ${isLive
-              ? 'bg-red-100 dark:bg-red-900/30 ring-1 ring-red-200 dark:ring-red-800'
-              : 'bg-amber-100 dark:bg-amber-900/30 ring-1 ring-amber-200 dark:ring-amber-800'
-            }
-            hover:scale-[1.02] active:scale-[0.98]
-          `}
-        >
-          {/* Icon */}
-          <div className={`p-1.5 rounded-lg ${isLive ? 'bg-red-200 dark:bg-red-800' : 'bg-amber-200 dark:bg-amber-800'}`}>
-            {isSwitching ? (
-              <Loader2 className={`w-4 h-4 animate-spin ${isLive ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300'}`} />
-            ) : isLive ? (
-              <Zap className="w-4 h-4 text-red-600 dark:text-red-300" />
-            ) : (
-              <FileText className="w-4 h-4 text-amber-600 dark:text-amber-300" />
-            )}
-          </div>
+      <div className="px-4 py-2">
+        <SwitchField>
+          <Label className="text-xs text-zinc-500 dark:text-zinc-400 cursor-default">
+            {isLive ? 'Live Trading' : 'Paper Trading'}
+          </Label>
+          <Switch
+            color={isLive ? 'red' : 'dark/zinc'}
+            checked={isLive}
+            onChange={handleToggle}
+            disabled={isSwitching}
+          />
+        </SwitchField>
 
-          {/* Text */}
-          <div className="flex-1 text-left">
-            <div className={`text-sm font-semibold ${isLive ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300'}`}>
-              {isLive ? 'Live Trading' : 'Paper Trading'}
-            </div>
-            <div className={`text-xs ${isLive ? 'text-red-600/70 dark:text-red-400/70' : 'text-amber-600/70 dark:text-amber-400/70'}`}>
-              {isLive ? 'Real money at risk' : 'No real money'}
-            </div>
-          </div>
-
-          {/* Status indicator */}
-          <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-red-500 animate-pulse' : 'bg-amber-500'}`} />
-        </button>
-
-        {/* Connection status */}
+        {/* Connection hint */}
         {!upstoxConnected && (
-          <div className="mt-2 flex items-center gap-2 px-3 text-xs text-zinc-500 dark:text-zinc-400">
+          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
             <LinkIcon className="w-3 h-3" />
-            <span>Connect Upstox for live trading</span>
+            <span>Connect Upstox for live</span>
           </div>
         )}
       </div>
 
-      {/* Confirmation Dialog */}
       <ConfirmLiveDialog
         open={showConfirmDialog}
         onClose={() => setShowConfirmDialog(false)}
