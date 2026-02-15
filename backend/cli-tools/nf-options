@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""Options trading tool for Nifty/Bank Nifty F&O.
+
+Supports:
+- Option chain lookup
+- Get option quotes
+- Place BUY/SELL option orders
+
+NOTE: place and cancel subcommands are HITL-protected — they require
+user approval when called from the orchestrator via execute_bash.
+"""
+
+import argparse
+import sys
+import os
+from datetime import datetime
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import format_inr, init_client, print_error, print_json, print_success, run_async
+
+# Options instrument cache file (same as equity cache - it contains F&O too)
+OPTIONS_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache", "nse_instruments.csv")
+
+_options_cache: dict = {}
+
+
+def _load_options_cache():
+    """Load options instruments from cache."""
+    global _options_cache
+    if _options_cache:
+        return _options_cache
+    
+    import csv
+    if not os.path.exists(OPTIONS_CACHE):
+        print_error("Instruments cache not found. Run nf-quote first to download.")
+    
+    options = {}
+    with open(OPTIONS_CACHE, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # Only index options (OPTIDX) and stock options (OPTSTK)
+            if row.get("instrument_type") in ("OPTIDX", "OPTSTK"):
+                tradingsymbol = row.get("tradingsymbol", "")
+                options[tradingsymbol] = {
+                    "instrument_key": row.get("instrument_key"),
+                    "exchange_token": row.get("exchange_token"),
+                    "tradingsymbol": tradingsymbol,
+                    "name": row.get("name"),
+                    "last_price": float(row.get("last_price") or 0),
+                    "expiry": row.get("expiry"),
+                    "strike": float(row.get("strike") or 0),
+                    "tick_size": float(row.get("tick_size") or 0.05),
+                    "lot_size": int(row.get("lot_size") or 1),
+                    "instrument_type": row.get("instrument_type"),
+                    "option_type": row.get("option_type"),
+                    "exchange": row.get("exchange"),
+                }
+    _options_cache = options
+    return _options_cache
+
+
+def find_option(symbol: str, expiry_date: str, strike: float, option_type: str):
+    """Find an option instrument.
+    
+    Args:
+        symbol: NIFTY, BANKNIFTY, etc.
+        expiry_date: DDMMMYY format (e.g., 17FEB26) or YYYY-MM-DD
+        strike: Strike price
+        option_type: CE (Call) or PE (Put)
+    """
+    cache = _load_options_cache()
+    symbol = symbol.upper()
+    opt_type = option_type.upper()
+    
+    # Normalize expiry format
+    expiry_normalized = expiry_date
+    if "-" in expiry_date:
+        # Convert YYYY-MM-DD to DDMMMYY
+        dt = datetime.strptime(expiry_date, "%Y-%m-%d")
+        expiry_normalized = dt.strftime("%d%b%y").upper()
+    
+    # Build tradingsymbol pattern: NIFTY2621725500PE
+    # Format: SYMBOL + YY + DD + MM + STRIKE + OPTTYPE
+    # Note: The actual format in cache is: NIFTY2621725500PE
+    # Which seems to be: NIFTY + 26 (year) + 21 (day) + 7 (month digit?) + 25500 + PE
+    
+    # Let's search by pattern matching
+    matching = []
+    for ts, data in cache.items():
+        if (data["name"] == symbol and 
+            data["strike"] == strike and 
+            data["option_type"] == opt_type):
+            # Check expiry matches
+            cache_expiry = data.get("expiry", "")
+            if expiry_normalized in cache_expiry or cache_expiry.endswith(expiry_date[-2:]):
+                matching.append(data)
+    
+    if not matching:
+        # Try fuzzy match on tradingsymbol
+        pattern = f"{symbol}{expiry_normalized[-5:-2]}{strike:.0f}{opt_type}"
+        for ts, data in cache.items():
+            if ts.startswith(symbol) and ts.endswith(f"{int(strike)}{opt_type}"):
+                # Check if expiry is close
+                cache_expiry = data.get("expiry", "")
+                if expiry_date in cache_expiry or expiry_normalized[-4:] in ts:
+                    matching.append(data)
+    
+    if not matching:
+        return None
+    
+    # Return the nearest expiry match
+    matching.sort(key=lambda x: x.get("expiry", ""))
+    return matching[0]
+
+
+def get_option_chain(symbol: str, expiry: str = None):
+    """Get option chain for a symbol."""
+    cache = _load_options_cache()
+    symbol = symbol.upper()
+    
+    chain = []
+    for ts, data in cache.items():
+        if data["name"] == symbol:
+            if expiry:
+                if expiry.upper() not in ts:
+                    continue
+            chain.append(data)
+    
+    # Group by strike
+    strikes = {}
+    for opt in chain:
+        strike = opt["strike"]
+        if strike not in strikes:
+            strikes[strike] = {"strike": strike, "expiry": opt["expiry"]}
+        strikes[strike][opt["option_type"].lower()] = opt
+    
+    return sorted(strikes.values(), key=lambda x: x["strike"])
+
+
+def show_chain(symbol: str, expiry: str = None, as_json: bool = False):
+    """Display option chain."""
+    chain = get_option_chain(symbol, expiry)
+    
+    if not chain:
+        print_error(f"No options found for {symbol}")
+    
+    if as_json:
+        print_json({"symbol": symbol, "chain": chain})
+        return
+    
+    print(f"📊 Option Chain: {symbol}\n")
+    print(f"{'Strike':>10} {'CALL':>12} {'PUT':>12} {'Expiry':>12}")
+    print("-" * 50)
+    
+    for item in chain[-20:]:  # Show last 20 strikes
+        strike = item["strike"]
+        ce_price = item.get("ce", {}).get("last_price", 0)
+        pe_price = item.get("pe", {}).get("last_price", 0)
+        expiry = item.get("expiry", "")
+        print(f"{strike:>10.0f} {format_inr(ce_price):>12} {format_inr(pe_price):>12} {expiry:>12}")
+
+
+def place_option_order(symbol: str, expiry: str, strike: float, option_type: str,
+                       action: str, quantity_lots: int, price: float = None,
+                       order_type: str = "MARKET", dry_run: bool = False, as_json: bool = False):
+    """Place an option order."""
+    option = find_option(symbol, expiry, strike, option_type)
+    
+    if not option:
+        print_error(f"Option not found: {symbol} {expiry} {strike} {option_type}")
+    
+    lot_size = option["lot_size"]
+    quantity = quantity_lots * lot_size
+    instrument_key = option["instrument_key"]
+    tradingsymbol = option["tradingsymbol"]
+    
+    client = init_client()
+    
+    # Get current price if not specified
+    if not price:
+        price = option.get("last_price", 0)
+    
+    if dry_run:
+        result = {
+            "dry_run": True,
+            "symbol": tradingsymbol,
+            "instrument_key": instrument_key,
+            "action": action,
+            "quantity_lots": quantity_lots,
+            "quantity_units": quantity,
+            "lot_size": lot_size,
+            "order_type": order_type,
+            "price": price,
+            "estimated_value": price * quantity,
+        }
+        if as_json:
+            print_json(result)
+        else:
+            print(f"🔍 Dry Run — order NOT placed\n")
+            print(f"  {action} {quantity_lots} lot(s) = {quantity} units of {tradingsymbol}")
+            print(f"  Instrument: {instrument_key}")
+            print(f"  Strike: {strike} | Expiry: {option['expiry']}")
+            print(f"  Order Type: {order_type}")
+            if price:
+                print(f"  Price: {format_inr(price)}")
+            print(f"  Est. Value: {format_inr(result['estimated_value'])}")
+        return
+    
+    # Place live order
+    if not client.access_token:
+        print_error("No access token. Please connect Upstox account.")
+    
+    try:
+        import upstox_client
+        
+        # Auto-detect AMO
+        is_amo = not client._is_market_open()
+        
+        api_client = upstox_client.ApiClient(client._configuration)
+        order_api = upstox_client.OrderApiV3(api_client)
+        
+        body = upstox_client.PlaceOrderV3Request(
+            quantity=quantity,
+            product="D",  # Delivery (for options carry forward)
+            validity="DAY",
+            price=price if order_type == "LIMIT" else 0,
+            trigger_price=0,
+            instrument_token=instrument_key,
+            order_type=order_type,
+            transaction_type=action.upper(),
+            disclosed_quantity=0,
+            is_amo=is_amo,
+        )
+        
+        response = order_api.place_order(body)
+        order_ids = response.data.order_ids if response.data else []
+        order_id = order_ids[0] if order_ids else None
+        
+        amo_label = " [AMO]" if is_amo else ""
+        mode = "Paper" if client.paper_trading else "🔴 LIVE"
+        
+        if as_json:
+            print_json({
+                "success": True,
+                "order_id": order_id,
+                "tradingsymbol": tradingsymbol,
+                "instrument_key": instrument_key,
+                "action": action,
+                "quantity_lots": quantity_lots,
+                "quantity_units": quantity,
+                "lot_size": lot_size,
+                "order_type": order_type,
+                "price": price,
+                "status": "PLACED",
+                "mode": mode,
+            })
+        else:
+            emoji = "🟢" if action.upper() == "BUY" else "🔴"
+            print_success(f"Order Placed [{mode}]{amo_label}")
+            print(f"\n  {emoji} {action.upper()} {quantity_lots} lot(s) = {quantity} units")
+            print(f"  Symbol: {tradingsymbol}")
+            print(f"  Strike: {strike} {option_type} | Expiry: {option['expiry']}")
+            print(f"  Order ID: {order_id}")
+            print(f"  Type: {order_type}")
+            if price:
+                print(f"  Price: {format_inr(price)}")
+    
+    except Exception as e:
+        print_error(f"Order failed: {e}")
+
+
+def show_expiries(symbol: str, as_json: bool = False):
+    """Show upcoming expiry dates for a symbol."""
+    cache = _load_options_cache()
+    symbol = symbol.upper()
+    
+    expiries = set()
+    for ts, data in cache.items():
+        if data["name"] == symbol and data.get("expiry"):
+            expiries.add(data["expiry"])
+    
+    if not expiries:
+        print_error(f"No options found for {symbol}")
+    
+    expiries = sorted(expiries)
+    
+    if as_json:
+        print_json({"symbol": symbol, "expiries": expiries})
+        return
+    
+    print(f"📅 Upcoming Expiries for {symbol}\n")
+    for i, exp in enumerate(expiries[:10], 1):
+        dt = datetime.strptime(exp, "%Y-%m-%d")
+        day_name = dt.strftime("%A")
+        print(f"  {i}. {exp} ({day_name})")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-options",
+        description="Options trading tool for Nifty/Bank Nifty F&O",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-options chain NIFTY                          Show NIFTY option chain
+  nf-options chain NIFTY --expiry 17FEB           Show specific expiry
+  nf-options expiries NIFTY                       Show upcoming expiries
+  nf-options quote NIFTY 17FEB26 25500 PE         Get option quote
+  nf-options buy NIFTY 17FEB26 25500 PE 1         Buy 1 lot (dry-run in paper mode)
+  nf-options buy NIFTY 17FEB26 25500 PE 1 --dry-run  Preview order
+  nf-options sell NIFTY 17FEB26 25500 CE 2        Sell 2 lots
+  nf-options buy NIFTY 17FEB26 25500 PE 1 --price 150 --type LIMIT  Limit order
+""",
+    )
+
+    sub = parser.add_subparsers(dest="command", help="Command")
+
+    # chain
+    p_chain = sub.add_parser("chain", help="Show option chain")
+    p_chain.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_chain.add_argument("--expiry", help="Filter by expiry (e.g., 17FEB, 17FEB26)")
+    p_chain.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # expiries
+    p_exp = sub.add_parser("expiries", help="Show upcoming expiry dates")
+    p_exp.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_exp.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # quote
+    p_quote = sub.add_parser("quote", help="Get option quote")
+    p_quote.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_quote.add_argument("expiry", help="Expiry date (DDMMMYY format, e.g., 17FEB26)")
+    p_quote.add_argument("strike", type=float, help="Strike price")
+    p_quote.add_argument("option_type", choices=["CE", "PE", "ce", "pe"], help="Call (CE) or Put (PE)")
+    p_quote.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # buy / sell
+    for cmd in ("buy", "sell"):
+        p = sub.add_parser(cmd, help=f"{cmd.title()} option")
+        p.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+        p.add_argument("expiry", help="Expiry date (DDMMMYY format, e.g., 17FEB26)")
+        p.add_argument("strike", type=float, help="Strike price")
+        p.add_argument("option_type", choices=["CE", "PE", "ce", "pe"], help="Call (CE) or Put (PE)")
+        p.add_argument("lots", type=int, help="Number of lots")
+        p.add_argument("--price", type=float, help="Limit price")
+        p.add_argument("--type", dest="order_type", default="MARKET", choices=["MARKET", "LIMIT"], help="Order type")
+        p.add_argument("--dry-run", action="store_true", help="Preview without executing")
+        p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "chain":
+        show_chain(args.symbol, args.expiry, args.json)
+    elif args.command == "expiries":
+        show_expiries(args.symbol, args.json)
+    elif args.command == "quote":
+        option = find_option(args.symbol, args.expiry, args.strike, args.option_type)
+        if not option:
+            print_error(f"Option not found: {args.symbol} {args.expiry} {args.strike} {args.option_type}")
+        if args.json:
+            print_json(option)
+        else:
+            print(f"📊 Option Quote\n")
+            print(f"  Symbol:   {option['tradingsymbol']}")
+            print(f"  Strike:   {option['strike']} {option['option_type']}")
+            print(f"  Expiry:   {option['expiry']}")
+            print(f"  LTP:      {format_inr(option['last_price'])}")
+            print(f"  Lot Size: {option['lot_size']}")
+            print(f"  Key:      {option['instrument_key']}")
+    elif args.command in ("buy", "sell"):
+        place_option_order(
+            symbol=args.symbol,
+            expiry=args.expiry,
+            strike=args.strike,
+            option_type=args.option_type,
+            action=args.command.upper(),
+            quantity_lots=args.lots,
+            price=args.price,
+            order_type=args.order_type,
+            dry_run=args.dry_run,
+            as_json=args.json,
+        )
+
+
+if __name__ == "__main__":
+    main()
