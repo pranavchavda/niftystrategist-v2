@@ -597,6 +597,64 @@ class WatchlistItem(Base):
     )
 
 
+class MonitorRule(Base):
+    """IFTTT-style trade monitoring rules evaluated by nf-monitor daemon."""
+    __tablename__ = "monitor_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+
+    trigger_type = Column(String(20), nullable=False)
+    trigger_config = Column(JSON, nullable=False)
+
+    action_type = Column(String(20), nullable=False)
+    action_config = Column(JSON, nullable=False)
+
+    instrument_token = Column(String(50), nullable=True)
+    symbol = Column(String(50), nullable=True, index=True)
+    linked_trade_id = Column(Integer, ForeignKey("trades.id", ondelete="SET NULL"), nullable=True)
+    linked_order_id = Column(String(100), nullable=True)
+
+    fire_count = Column(Integer, default=0, nullable=False)
+    max_fires = Column(Integer, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    fired_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User")
+
+    __table_args__ = (
+        Index('idx_monitor_rules_user_enabled', 'user_id', 'enabled'),
+        Index('idx_monitor_rules_instrument', 'instrument_token'),
+    )
+
+
+class MonitorLog(Base):
+    """Audit log for monitor rule firings."""
+    __tablename__ = "monitor_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    rule_id = Column(Integer, ForeignKey("monitor_rules.id", ondelete="SET NULL"), nullable=True)
+
+    trigger_snapshot = Column(JSON, nullable=True)
+    action_taken = Column(String(50), nullable=False)
+    action_result = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    rule = relationship("MonitorRule")
+
+    __table_args__ = (
+        Index('idx_monitor_logs_user', 'user_id', 'created_at'),
+        Index('idx_monitor_logs_rule', 'rule_id', 'created_at'),
+    )
+
+
 # ==============================================================================
 # Database Connection Manager
 # ==============================================================================
