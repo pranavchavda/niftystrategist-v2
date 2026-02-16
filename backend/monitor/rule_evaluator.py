@@ -5,9 +5,17 @@ whether the trigger condition fires (True) or not (False).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from monitor.models import MonitorRule, OrderStatusTrigger, PriceTrigger, TimeTrigger
+from monitor.models import (
+    CancelRuleAction,
+    CompoundTrigger,
+    MonitorRule,
+    OrderStatusTrigger,
+    PriceTrigger,
+    TimeTrigger,
+)
 
 
 # ── Day-name mapping (ISO weekday: Monday=0 … Sunday=6) ─────────────
@@ -125,3 +133,126 @@ def evaluate_order_status_trigger(
     event_status = order_event.get("status")
 
     return event_order_id == cfg.order_id and event_status == cfg.status
+
+
+# ── Compound triggers ────────────────────────────────────────────────
+
+def evaluate_compound_trigger(rule: MonitorRule, ctx: dict) -> bool:
+    """Evaluate a compound trigger (AND/OR over a list of sub-conditions).
+
+    Args:
+        rule: MonitorRule with trigger_type="compound".
+        ctx: Dict with keys ``market_data``, ``now``, ``order_event``.
+
+    Returns:
+        True if the compound condition is satisfied, False otherwise.
+    """
+    cfg = CompoundTrigger(**rule.trigger_config)
+
+    results: list[bool] = []
+    for condition in cfg.conditions:
+        cond_type = condition["type"]
+
+        # Build a minimal temporary rule so we can reuse existing evaluators
+        temp_config = {k: v for k, v in condition.items() if k != "type"}
+        temp_rule = MonitorRule(
+            id=rule.id,
+            user_id=rule.user_id,
+            name=rule.name,
+            trigger_type=cond_type,
+            trigger_config=temp_config,
+            action_type=rule.action_type,
+            action_config=rule.action_config,
+            instrument_token=rule.instrument_token,
+        )
+
+        if cond_type == "price":
+            results.append(evaluate_price_trigger(temp_rule, ctx.get("market_data") or {}))
+        elif cond_type == "time":
+            now = ctx.get("now")
+            if now is None:
+                results.append(False)
+            else:
+                results.append(evaluate_time_trigger(temp_rule, now))
+        elif cond_type == "order_status":
+            results.append(evaluate_order_status_trigger(temp_rule, ctx.get("order_event") or {}))
+        else:
+            results.append(False)
+
+    if cfg.operator == "and":
+        return all(results)
+    else:  # "or"
+        return any(results)
+
+
+# ── Top-level entry point ────────────────────────────────────────────
+
+@dataclass
+class EvalContext:
+    """Context passed to rule evaluation."""
+    market_data: dict = field(default_factory=dict)
+    prev_prices: dict = field(default_factory=dict)  # {instrument_token: prev_ltp}
+    order_event: dict = field(default_factory=dict)
+    now: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class RuleResult:
+    """Result of evaluating a single rule."""
+    rule_id: int
+    fired: bool = False
+    skipped: bool = False
+    action_type: str | None = None
+    action_config: dict = field(default_factory=dict)
+    rules_to_cancel: list[int] = field(default_factory=list)
+
+
+def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
+    """Evaluate a single rule against the given context.
+
+    This is the top-level entry point for the rule engine.
+
+    Args:
+        rule: The rule to evaluate.
+        ctx: Evaluation context with market data, timestamps, etc.
+
+    Returns:
+        RuleResult indicating whether the rule fired, was skipped, and
+        what actions (if any) should be executed.
+    """
+    result = RuleResult(rule_id=rule.id)
+
+    # 1. Check if the rule should be evaluated at all
+    if not rule.should_evaluate:
+        result.skipped = True
+        return result
+
+    # 2. Dispatch to the appropriate trigger evaluator
+    fired = False
+    if rule.trigger_type == "price":
+        prev_price = ctx.prev_prices.get(rule.instrument_token)
+        fired = evaluate_price_trigger(rule, ctx.market_data, prev_price=prev_price)
+    elif rule.trigger_type == "time":
+        fired = evaluate_time_trigger(rule, ctx.now)
+    elif rule.trigger_type == "order_status":
+        fired = evaluate_order_status_trigger(rule, ctx.order_event)
+    elif rule.trigger_type == "compound":
+        compound_ctx = {
+            "market_data": ctx.market_data,
+            "now": ctx.now,
+            "order_event": ctx.order_event,
+        }
+        fired = evaluate_compound_trigger(rule, compound_ctx)
+
+    result.fired = fired
+
+    # 3. If fired, populate action details
+    if fired:
+        result.action_type = rule.action_type
+        result.action_config = rule.action_config
+
+        if rule.action_type == "cancel_rule":
+            cancel = CancelRuleAction(**rule.action_config)
+            result.rules_to_cancel = [cancel.rule_id]
+
+    return result
