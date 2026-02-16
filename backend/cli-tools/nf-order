@@ -19,7 +19,7 @@ from base import SYMBOLS, format_inr, init_client, print_error, print_json, prin
 
 def place_order(symbol: str, action: str, quantity: int, order_type: str,
                 price: float | None, stop_loss: float | None, target: float | None,
-                dry_run: bool, as_json: bool, amo: bool = False):
+                dry_run: bool, as_json: bool, amo: bool = False, product: str = "D"):
     """Place a buy or sell order."""
     sym = validate_symbol(symbol)
     act = action.upper()
@@ -47,6 +47,7 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
             "quantity": quantity,
             "order_type": order_type,
             "price": price,
+            "product": product,
             "current_ltp": ltp,
             "stop_loss": stop_loss,
             "target": target,
@@ -57,6 +58,7 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
         else:
             print(f"🔍 Dry Run — order NOT placed\n")
             print(f"  {act} {quantity}x {sym} @ {order_type}")
+            print(f"  Product:   {'Intraday (MIS)' if product == 'I' else 'Delivery (CNC)'}")
             if price:
                 print(f"  Limit Price: {format_inr(price)}")
             if ltp:
@@ -76,6 +78,7 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
             order_type=order_type,
             price=price if price else 0,
             is_amo=True if amo else None,  # True=force AMO, None=auto-detect
+            product=product,
         ))
     except Exception as e:
         print_error(f"Order failed: {e}")
@@ -198,6 +201,8 @@ Examples:
         p.add_argument("--price", type=float, help="Limit price (required for LIMIT orders)")
         p.add_argument("--sl", type=float, help="Stop loss price")
         p.add_argument("--target", type=float, help="Target price")
+        p.add_argument("--product", default="D", choices=["D", "I"],
+                       help="Product type: D=Delivery/CNC, I=Intraday/MIS (default: D)")
         p.add_argument("--amo", action="store_true", help="Force after-market order (auto-detected if omitted)")
         p.add_argument("--dry-run", action="store_true", help="Preview order without executing")
         p.add_argument("--json", action="store_true", help="Output as JSON")
@@ -231,6 +236,7 @@ Examples:
             dry_run=args.dry_run,
             as_json=args.json,
             amo=args.amo,
+            product=args.product,
         )
     elif args.command == "list":
         show_orders(open_only=not args.all, limit=args.limit, as_json=args.json)

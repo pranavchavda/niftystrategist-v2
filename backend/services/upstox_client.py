@@ -582,6 +582,7 @@ class UpstoxClient:
         price: float,
         order_type: Literal["MARKET", "LIMIT"] = "LIMIT",
         is_amo: bool | None = None,
+        product: Literal["D", "I"] = "D",
     ) -> TradeResult:
         """
         Place an order.
@@ -594,7 +595,7 @@ class UpstoxClient:
         """
         if self.paper_trading:
             return await self._paper_place_order(
-                symbol, transaction_type, quantity, price, order_type
+                symbol, transaction_type, quantity, price, order_type, product
             )
 
         if not self.access_token:
@@ -612,7 +613,7 @@ class UpstoxClient:
 
             body = upstox_client.PlaceOrderV3Request(
                 quantity=quantity,
-                product="D",  # Delivery
+                product=product,
                 validity="DAY",
                 price=price if order_type == "LIMIT" else 0,
                 trigger_price=0,  # No stop-loss trigger
@@ -669,6 +670,7 @@ class UpstoxClient:
         quantity: int,
         price: float,
         order_type: Literal["MARKET", "LIMIT"],
+        product: Literal["D", "I"] = "D",
     ) -> TradeResult:
         """Simulate order placement for paper trading with database persistence."""
         import random
