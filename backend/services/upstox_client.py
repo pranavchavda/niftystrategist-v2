@@ -491,16 +491,29 @@ class UpstoxClient:
             if not quote_data:
                 raise ValueError(f"No quote data returned for {symbol}. Keys: {list(response.data.keys()) if response.data else []}")
 
+            ltp = quote_data.last_price
+            close = quote_data.ohlc.close if quote_data.ohlc else None
+            net_change = getattr(quote_data, 'net_change', None)
+            # SDK doesn't have percentage_change — compute from net_change and close
+            if net_change is not None and close:
+                pct_change = (net_change / close) * 100
+            elif close and ltp:
+                net_change = ltp - close
+                pct_change = (net_change / close) * 100
+            else:
+                net_change = net_change or 0
+                pct_change = 0
+
             return {
                 "symbol": symbol,
-                "ltp": quote_data.last_price,
+                "ltp": ltp,
                 "open": quote_data.ohlc.open if quote_data.ohlc else None,
                 "high": quote_data.ohlc.high if quote_data.ohlc else None,
                 "low": quote_data.ohlc.low if quote_data.ohlc else None,
-                "close": quote_data.ohlc.close if quote_data.ohlc else None,
+                "close": close,
                 "volume": getattr(quote_data, 'volume', None) or getattr(quote_data, 'volume_traded', None),
-                "net_change": getattr(quote_data, 'net_change', None) or 0,
-                "pct_change": getattr(quote_data, 'percentage_change', None) or 0,
+                "net_change": round(net_change, 4),
+                "pct_change": round(pct_change, 2),
             }
 
         except ApiException as e:
@@ -535,11 +548,16 @@ class UpstoxClient:
                         continue
 
                     ltp = quote.last_price
-                    net_change = getattr(quote, 'net_change', None) or 0
                     close = quote.ohlc.close if quote.ohlc else ltp
+                    raw_net_change = getattr(quote, 'net_change', None)
                     # Prefer API's net_change; fall back to ltp - close
-                    change = net_change if net_change else (ltp - close if close else 0)
-                    change_pct = (change / (ltp - change) * 100) if (ltp - change) else 0
+                    if raw_net_change is not None:
+                        change = raw_net_change
+                    elif close and ltp:
+                        change = ltp - close
+                    else:
+                        change = 0
+                    change_pct = (change / close * 100) if close else 0
 
                     results.append({
                         "name": name,
@@ -556,6 +574,34 @@ class UpstoxClient:
         except Exception as e:
             logger.error(f"Failed to fetch index quotes: {e}")
             return []
+
+    # Market Status
+
+    async def get_market_status_api(self) -> dict | None:
+        """Get market status from Upstox API.
+
+        Returns dict with 'exchange', 'status' (e.g. 'NormalOpen', 'Closed')
+        or None if the API call fails.
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            return None
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            market_api = upstox_client.MarketHolidaysAndTimingsApi(api_client)
+            response = market_api.get_market_status(exchange="NSE")
+
+            if response and response.data:
+                return {
+                    "exchange": getattr(response.data, 'exchange', 'NSE'),
+                    "status": getattr(response.data, 'status', None),
+                    "last_updated": getattr(response.data, 'last_updated', None),
+                }
+            return None
+        except Exception as e:
+            logger.warning(f"Upstox market status API failed: {e}")
+            return None
 
     # Order Execution
 
@@ -813,6 +859,23 @@ class UpstoxClient:
             response = portfolio_api.get_holdings(api_version="v2")
             holdings = response.data if response.data else []
 
+            # Fetch today's positions to find delivery sells.
+            # Holdings API returns FULL quantity (pre-settlement). If the user
+            # sold shares today, those appear as negative-qty delivery positions.
+            # We must subtract them to match the actual portfolio.
+            sell_qty_map: dict[str, int] = {}
+            try:
+                pos_response = portfolio_api.get_positions(api_version="v2")
+                for pos in (pos_response.data or []):
+                    qty = getattr(pos, 'quantity', 0) or 0
+                    product = getattr(pos, 'product', '')
+                    if product == 'D' and qty < 0:
+                        sym = (getattr(pos, 'tradingsymbol', None) or getattr(pos, 'trading_symbol', '') or '').upper()
+                        if sym:
+                            sell_qty_map[sym] = sell_qty_map.get(sym, 0) + abs(qty)
+            except Exception as e:
+                logger.warning(f"Failed to fetch positions for sell adjustment: {e}")
+
             positions = []
             for holding in holdings:
                 # Cache instrument_token so chart/quote can look up any holding
@@ -821,30 +884,35 @@ class UpstoxClient:
                 if tsym and inst_token:
                     self._dynamic_symbols[tsym.upper()] = inst_token
 
-                # Upstox day_change may be None/0 on non-trading days;
-                # fall back to last_price - close_price for last session's change
-                raw_day_change = getattr(holding, 'day_change', None)
+                # Adjust quantity for today's sells (unsettled T+1)
+                adj_qty = holding.quantity - sell_qty_map.get(tsym.upper(), 0)
+                if adj_qty <= 0:
+                    continue  # Fully sold today, skip
+
+                # Upstox day_change/day_change_percentage are unreliable:
+                # Always compute from close_price (prev session close) and last_price.
                 close_price = getattr(holding, 'close_price', None) or 0
                 last_price = holding.last_price or 0
 
-                if raw_day_change:
-                    day_chg = float(raw_day_change)
-                    day_chg_pct = float(getattr(holding, 'day_change_percentage', 0) or 0)
-                elif close_price and last_price:
-                    day_chg = last_price - close_price
-                    day_chg_pct = (day_chg / close_price * 100) if close_price else 0
+                if close_price and last_price:
+                    day_chg = last_price - close_price  # per-share
+                    day_chg_pct = (day_chg / close_price * 100)
                 else:
                     day_chg = 0.0
                     day_chg_pct = 0.0
 
+                # Recalculate P&L based on adjusted quantity
+                pnl = (last_price - holding.average_price) * adj_qty
+                pnl_pct = ((last_price - holding.average_price) / holding.average_price * 100) if holding.average_price > 0 else 0
+
                 positions.append(
                     PortfolioPosition(
                         symbol=tsym,
-                        quantity=holding.quantity,
+                        quantity=adj_qty,
                         average_price=holding.average_price,
                         current_price=last_price,
-                        pnl=holding.pnl,
-                        pnl_percentage=(holding.pnl / (holding.average_price * holding.quantity)) * 100 if holding.quantity > 0 else 0,
+                        pnl=pnl,
+                        pnl_percentage=pnl_pct,
                         day_change=day_chg,
                         day_change_percentage=day_chg_pct,
                     )
@@ -853,6 +921,7 @@ class UpstoxClient:
             invested = sum(p.average_price * p.quantity for p in positions)
             current = sum(p.current_price * p.quantity for p in positions)
             day_pnl = sum(p.day_change * p.quantity for p in positions)
+            total_pnl = current - invested
             # Previous close total = current value minus today's change
             prev_close_total = current - day_pnl
 
@@ -862,8 +931,8 @@ class UpstoxClient:
                 invested_value=invested,
                 day_pnl=day_pnl,
                 day_pnl_percentage=(day_pnl / prev_close_total * 100) if prev_close_total else 0,
-                total_pnl=current - invested,
-                total_pnl_percentage=((current - invested) / invested * 100) if invested > 0 else 0,
+                total_pnl=total_pnl,
+                total_pnl_percentage=(total_pnl / invested * 100) if invested > 0 else 0,
                 positions=positions,
             )
 

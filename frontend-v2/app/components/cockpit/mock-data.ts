@@ -13,7 +13,7 @@ export interface Position {
   pnlPct: number;
   dayChange: number;
   dayChangePct: number;
-  holdDays: number;
+  holdDays: number | null;
   stopLoss?: number;
   target?: number;
 }
