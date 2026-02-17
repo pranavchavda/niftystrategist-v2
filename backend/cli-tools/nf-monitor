@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+"""Manage trade monitor rules (IFTTT-style triggers → actions).
+
+Create, list, enable/disable, and delete monitoring rules.
+Rules are evaluated by the trade monitor daemon against live market data.
+"""
+
+import argparse
+import sys
+import os
+from datetime import datetime, timedelta
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+
+
+def _get_user_id() -> int:
+    """Get user ID from environment."""
+    return int(os.environ.get("NF_USER_ID", "999"))
+
+
+def _parse_expires(value: str) -> datetime:
+    """Parse --expires value into a naive UTC datetime.
+
+    Accepts:
+      - "today" → today at 15:30 IST (= 10:00 UTC), or next day if past
+      - ISO datetime string (assumed UTC if no timezone)
+    """
+    if value.lower() == "today":
+        now = datetime.utcnow()
+        # IST is UTC+5:30. Market close is 15:30 IST = 10:00 UTC
+        today_close_utc = now.replace(hour=10, minute=0, second=0, microsecond=0)
+        if now > today_close_utc:
+            today_close_utc += timedelta(days=1)
+        return today_close_utc
+    else:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            print_error(f"Invalid expires value: {value}. Use 'today' or ISO datetime (e.g. 2025-01-15T10:00:00)")
+
+
+def _rule_to_dict(rule) -> dict:
+    """Convert a DB rule object to a JSON-serializable dict."""
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "enabled": rule.enabled,
+        "trigger_type": rule.trigger_type,
+        "trigger_config": rule.trigger_config,
+        "action_type": rule.action_type,
+        "action_config": rule.action_config,
+        "symbol": rule.symbol,
+        "linked_trade_id": rule.linked_trade_id,
+        "linked_order_id": rule.linked_order_id,
+        "fire_count": rule.fire_count,
+        "max_fires": rule.max_fires,
+        "expires_at": str(rule.expires_at) if rule.expires_at else None,
+        "fired_at": str(rule.fired_at) if rule.fired_at else None,
+        "created_at": str(rule.created_at) if rule.created_at else None,
+    }
+
+
+def _log_to_dict(log) -> dict:
+    """Convert a DB log object to a JSON-serializable dict."""
+    return {
+        "id": log.id,
+        "rule_id": log.rule_id,
+        "trigger_snapshot": log.trigger_snapshot,
+        "action_taken": log.action_taken,
+        "action_result": log.action_result,
+        "created_at": str(log.created_at) if log.created_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Subcommand handlers
+# ---------------------------------------------------------------------------
+
+def cmd_add_rule(args):
+    """Create a single monitoring rule."""
+    from database.session import get_db_context
+    from monitor.crud import create_rule
+
+    user_id = _get_user_id()
+
+    # Validate symbol if provided
+    symbol = None
+    if args.symbol:
+        symbol = validate_symbol(args.symbol)
+
+    # Build trigger config
+    trigger_type = args.trigger
+    trigger_config = {}
+
+    if trigger_type == "price":
+        if not args.condition or args.price is None:
+            print_error("Price trigger requires --condition and --price")
+        trigger_config = {
+            "condition": args.condition,
+            "price": args.price,
+            "reference": args.reference or "ltp",
+        }
+
+    elif trigger_type == "time":
+        if not args.at:
+            print_error("Time trigger requires --at HH:MM")
+        on_days = ["mon", "tue", "wed", "thu", "fri"]
+        if args.on_days:
+            on_days = [d.strip().lower() for d in args.on_days.split(",")]
+        trigger_config = {
+            "at": args.at,
+            "on_days": on_days,
+            "market_only": args.market_only,
+        }
+
+    elif trigger_type == "indicator":
+        if not args.indicator or not args.condition or args.ind_value is None:
+            print_error("Indicator trigger requires --indicator, --condition, and --ind-value")
+        trigger_config = {
+            "indicator": args.indicator,
+            "timeframe": args.timeframe or "5m",
+            "condition": args.condition,
+            "value": args.ind_value,
+        }
+
+    elif trigger_type == "order_status":
+        if not args.order_id or not args.status:
+            print_error("Order status trigger requires --order-id and --status")
+        trigger_config = {
+            "order_id": args.order_id,
+            "status": args.status,
+        }
+
+    else:
+        print_error(f"Unknown trigger type: {trigger_type}")
+
+    # Build action config
+    action_type = args.action
+    action_config = {}
+
+    if action_type == "place_order":
+        if not symbol:
+            print_error("place_order action requires --symbol")
+        if not args.side or not args.qty:
+            print_error("place_order action requires --side and --qty")
+        action_config = {
+            "symbol": symbol,
+            "transaction_type": args.side.upper(),
+            "quantity": args.qty,
+            "order_type": args.order_type or "MARKET",
+            "product": args.product or "I",
+        }
+        if args.limit_price is not None:
+            action_config["price"] = args.limit_price
+
+    elif action_type == "cancel_order":
+        if not args.cancel_order_id:
+            print_error("cancel_order action requires --cancel-order-id")
+        action_config = {"order_id": args.cancel_order_id}
+
+    elif action_type == "cancel_rule":
+        if not args.cancel_rule_id:
+            print_error("cancel_rule action requires --cancel-rule-id")
+        action_config = {"rule_id": args.cancel_rule_id}
+
+    else:
+        print_error(f"Unknown action type: {action_type}")
+
+    # Parse expires
+    expires_at = None
+    if args.expires:
+        expires_at = _parse_expires(args.expires)
+
+    async def _create():
+        async with get_db_context() as session:
+            rule = await create_rule(
+                session=session,
+                user_id=user_id,
+                name=args.name,
+                trigger_type=trigger_type,
+                trigger_config=trigger_config,
+                action_type=action_type,
+                action_config=action_config,
+                symbol=symbol,
+                linked_trade_id=args.linked_trade,
+                linked_order_id=args.linked_order,
+                max_fires=args.max_fires,
+                expires_at=expires_at,
+            )
+            return rule
+
+    rule = run_async(_create())
+
+    if args.json:
+        print_json({"created": _rule_to_dict(rule)})
+    else:
+        print_success(f"Rule #{rule.id} created: {rule.name}")
+        print(f"  Trigger: {trigger_type} → {trigger_config}")
+        print(f"  Action:  {action_type} → {action_config}")
+        if expires_at:
+            print(f"  Expires: {expires_at}")
+        if args.max_fires:
+            print(f"  Max fires: {args.max_fires}")
+
+
+def cmd_add_oco(args):
+    """Create a stop-loss + target OCO pair (two linked rules)."""
+    from database.session import get_db_context
+    from monitor.crud import create_rule, update_rule
+
+    user_id = _get_user_id()
+    symbol = validate_symbol(args.symbol)
+
+    expires_at = None
+    if args.expires:
+        expires_at = _parse_expires(args.expires)
+
+    async def _create_oco():
+        async with get_db_context() as session:
+            # Step 1: Create the SL rule (placeholder cancel_rule target)
+            sl_rule = await create_rule(
+                session=session,
+                user_id=user_id,
+                name=f"{symbol} OCO Stop-Loss @ {args.sl}",
+                trigger_type="price",
+                trigger_config={
+                    "condition": "lte",
+                    "price": args.sl,
+                    "reference": "ltp",
+                },
+                action_type="place_order",
+                action_config={
+                    "symbol": symbol,
+                    "transaction_type": "SELL",
+                    "quantity": args.qty,
+                    "order_type": "MARKET",
+                    "product": args.product,
+                },
+                symbol=symbol,
+                linked_trade_id=args.linked_trade,
+                max_fires=1,
+                expires_at=expires_at,
+            )
+
+            # Step 2: Create the target rule (cancels SL rule on fire)
+            target_rule = await create_rule(
+                session=session,
+                user_id=user_id,
+                name=f"{symbol} OCO Target @ {args.target}",
+                trigger_type="price",
+                trigger_config={
+                    "condition": "gte",
+                    "price": args.target,
+                    "reference": "ltp",
+                },
+                action_type="place_order",
+                action_config={
+                    "symbol": symbol,
+                    "transaction_type": "SELL",
+                    "quantity": args.qty,
+                    "order_type": "MARKET",
+                    "product": args.product,
+                    "also_cancel_rule": sl_rule.id,
+                },
+                symbol=symbol,
+                linked_trade_id=args.linked_trade,
+                max_fires=1,
+                expires_at=expires_at,
+            )
+
+            # Step 3: Update SL rule action to also cancel target rule
+            sl_action = sl_rule.action_config.copy()
+            sl_action["also_cancel_rule"] = target_rule.id
+            await update_rule(session, sl_rule.id, action_config=sl_action)
+
+            # Refresh SL rule to get updated data
+            from monitor.crud import get_rule
+            sl_rule = await get_rule(session, sl_rule.id)
+
+            return sl_rule, target_rule
+
+    sl_rule, target_rule = run_async(_create_oco())
+
+    if args.json:
+        print_json({
+            "oco": True,
+            "sl_rule": _rule_to_dict(sl_rule),
+            "target_rule": _rule_to_dict(target_rule),
+        })
+    else:
+        print_success(f"OCO pair created for {symbol}")
+        print(f"  SL Rule     #{sl_rule.id}: price <= {args.sl} → SELL {args.qty}")
+        print(f"  Target Rule #{target_rule.id}: price >= {args.target} → SELL {args.qty}")
+        if expires_at:
+            print(f"  Expires: {expires_at}")
+        if args.linked_trade:
+            print(f"  Linked trade: #{args.linked_trade}")
+
+
+def cmd_list(args):
+    """List monitoring rules."""
+    from database.session import get_db_context
+    from monitor.crud import list_rules
+
+    user_id = _get_user_id()
+
+    async def _list():
+        async with get_db_context() as session:
+            return await list_rules(session, user_id, enabled_only=args.active)
+
+    rules = run_async(_list())
+
+    if args.json:
+        print_json({"rules": [_rule_to_dict(r) for r in rules]})
+        return
+
+    if not rules:
+        print("No monitor rules found.")
+        return
+
+    label = "Active Rules" if args.active else "All Rules"
+    print(f"{label}\n")
+    print(f"{'ID':>4}  {'Status':<8}  {'Name':<30}  {'Trigger':<14}  {'Action':<14}  {'Fires':>7}")
+    print("-" * 85)
+
+    for r in rules:
+        status = "ON" if r.enabled else "OFF"
+        fires = f"{r.fire_count}" + (f"/{r.max_fires}" if r.max_fires else "")
+        name = r.name[:28] + ".." if len(r.name) > 30 else r.name
+        print(f"{r.id:>4}  {status:<8}  {name:<30}  {r.trigger_type:<14}  {r.action_type:<14}  {fires:>7}")
+
+
+def cmd_enable(args):
+    """Enable a rule."""
+    from database.session import get_db_context
+    from monitor.crud import enable_rule
+
+    async def _enable():
+        async with get_db_context() as session:
+            return await enable_rule(session, args.rule_id)
+
+    rule = run_async(_enable())
+    if not rule:
+        print_error(f"Rule #{args.rule_id} not found")
+
+    if args.json:
+        print_json({"enabled": _rule_to_dict(rule)})
+    else:
+        print_success(f"Rule #{rule.id} enabled: {rule.name}")
+
+
+def cmd_disable(args):
+    """Disable a rule."""
+    from database.session import get_db_context
+    from monitor.crud import disable_rule
+
+    async def _disable():
+        async with get_db_context() as session:
+            return await disable_rule(session, args.rule_id)
+
+    rule = run_async(_disable())
+    if not rule:
+        print_error(f"Rule #{args.rule_id} not found")
+
+    if args.json:
+        print_json({"disabled": _rule_to_dict(rule)})
+    else:
+        print_success(f"Rule #{rule.id} disabled: {rule.name}")
+
+
+def cmd_delete(args):
+    """Delete a rule."""
+    from database.session import get_db_context
+    from monitor.crud import delete_rule
+
+    async def _delete():
+        async with get_db_context() as session:
+            return await delete_rule(session, args.rule_id)
+
+    deleted = run_async(_delete())
+    if not deleted:
+        print_error(f"Rule #{args.rule_id} not found")
+
+    if args.json:
+        print_json({"deleted": args.rule_id})
+    else:
+        print_success(f"Rule #{args.rule_id} deleted")
+
+
+def cmd_logs(args):
+    """Show rule firing history."""
+    from database.session import get_db_context
+    from monitor.crud import get_logs
+
+    user_id = _get_user_id()
+
+    async def _logs():
+        async with get_db_context() as session:
+            return await get_logs(session, user_id, rule_id=args.rule, limit=args.limit)
+
+    logs = run_async(_logs())
+
+    if args.json:
+        print_json({"logs": [_log_to_dict(l) for l in logs]})
+        return
+
+    if not logs:
+        print("No monitor logs found.")
+        return
+
+    print("Monitor Logs\n")
+    print(f"{'ID':>5}  {'Rule':>5}  {'Action':<16}  {'Time':<20}  {'Result'}")
+    print("-" * 75)
+
+    for l in logs:
+        time_str = str(l.created_at)[:19] if l.created_at else "?"
+        result_str = ""
+        if l.action_result:
+            if isinstance(l.action_result, dict):
+                result_str = l.action_result.get("message", str(l.action_result))[:30]
+            else:
+                result_str = str(l.action_result)[:30]
+        print(f"{l.id:>5}  {l.rule_id or '-':>5}  {l.action_taken:<16}  {time_str:<20}  {result_str}")
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-monitor",
+        description="Manage trade monitor rules (IFTTT-style triggers → actions)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-monitor add-rule --name "RELIANCE SL" --symbol RELIANCE \\
+    --trigger price --condition lte --price 2400 \\
+    --action place_order --side SELL --qty 10 --product I --json
+
+  nf-monitor add-oco --symbol RELIANCE --qty 10 --product I \\
+    --sl 2400 --target 2700 --linked-trade 42 --expires today --json
+
+  nf-monitor list --active --json
+  nf-monitor enable 5
+  nf-monitor disable 5
+  nf-monitor delete 5
+  nf-monitor logs --rule 5 --limit 10 --json
+""",
+    )
+
+    sub = parser.add_subparsers(dest="command", help="Command")
+
+    # ---- add-rule ----
+    p_add = sub.add_parser("add-rule", help="Create a monitoring rule")
+    p_add.add_argument("--name", required=True, help="Human-readable rule name")
+    p_add.add_argument("--symbol", help="Stock symbol (validated)")
+
+    # Trigger
+    p_add.add_argument("--trigger", required=True,
+                       choices=["price", "time", "indicator", "order_status"],
+                       help="Trigger type")
+    # Price trigger args
+    p_add.add_argument("--condition", choices=["lte", "gte", "crosses_above", "crosses_below"],
+                       help="Trigger condition")
+    p_add.add_argument("--price", type=float, help="Trigger price level")
+    p_add.add_argument("--reference", default="ltp",
+                       choices=["ltp", "bid", "ask", "open", "high", "low"],
+                       help="Price reference (default: ltp)")
+    # Time trigger args
+    p_add.add_argument("--at", help="Time in HH:MM IST (for time trigger)")
+    p_add.add_argument("--on-days", help="Comma-separated days: mon,tue,wed,thu,fri")
+    p_add.add_argument("--market-only", action="store_true", default=True,
+                       help="Only fire when market is open (default: true)")
+    # Indicator trigger args
+    p_add.add_argument("--indicator", choices=["rsi", "macd", "ema_crossover", "volume_spike"],
+                       help="Indicator name")
+    p_add.add_argument("--timeframe", choices=["1m", "5m", "15m", "30m", "1h", "1d"],
+                       help="Candle timeframe (default: 5m)")
+    p_add.add_argument("--ind-value", type=float, help="Indicator threshold value")
+    # Order status trigger args
+    p_add.add_argument("--order-id", help="Order ID to watch")
+    p_add.add_argument("--status", choices=["complete", "rejected", "cancelled", "partially_filled"],
+                       help="Target order status")
+
+    # Action
+    p_add.add_argument("--action", required=True,
+                       choices=["place_order", "cancel_order", "cancel_rule"],
+                       help="Action to take when trigger fires")
+    # place_order action args
+    p_add.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"],
+                       help="Order side")
+    p_add.add_argument("--qty", type=int, help="Order quantity")
+    p_add.add_argument("--product", choices=["D", "I"], default="I",
+                       help="Product type: D=Delivery, I=Intraday (default: I)")
+    p_add.add_argument("--order-type", choices=["MARKET", "LIMIT"], default="MARKET",
+                       help="Order type (default: MARKET)")
+    p_add.add_argument("--limit-price", type=float, help="Limit price (for LIMIT orders)")
+    # cancel_order action args
+    p_add.add_argument("--cancel-order-id", help="Order ID to cancel")
+    # cancel_rule action args
+    p_add.add_argument("--cancel-rule-id", type=int, help="Rule ID to cancel")
+
+    # Metadata
+    p_add.add_argument("--max-fires", type=int, help="Max number of times to fire")
+    p_add.add_argument("--expires", help="Expiry: 'today' or ISO datetime")
+    p_add.add_argument("--linked-trade", type=int, help="Linked trade ID")
+    p_add.add_argument("--linked-order", help="Linked order ID")
+    p_add.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- add-oco ----
+    p_oco = sub.add_parser("add-oco", help="Create stop-loss + target OCO pair")
+    p_oco.add_argument("--symbol", required=True, help="Stock symbol")
+    p_oco.add_argument("--qty", type=int, required=True, help="Order quantity")
+    p_oco.add_argument("--product", choices=["D", "I"], default="I",
+                       help="Product type: D=Delivery, I=Intraday (default: I)")
+    p_oco.add_argument("--sl", type=float, required=True, help="Stop-loss price")
+    p_oco.add_argument("--target", type=float, required=True, help="Target price")
+    p_oco.add_argument("--linked-trade", type=int, help="Linked trade ID")
+    p_oco.add_argument("--expires", help="Expiry: 'today' or ISO datetime")
+    p_oco.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- list ----
+    p_list = sub.add_parser("list", help="List monitoring rules")
+    p_list.add_argument("--active", action="store_true", help="Show only active (enabled) rules")
+    p_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- enable ----
+    p_enable = sub.add_parser("enable", help="Enable a rule")
+    p_enable.add_argument("rule_id", type=int, help="Rule ID to enable")
+    p_enable.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- disable ----
+    p_disable = sub.add_parser("disable", help="Disable a rule")
+    p_disable.add_argument("rule_id", type=int, help="Rule ID to disable")
+    p_disable.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- delete ----
+    p_delete = sub.add_parser("delete", help="Delete a rule")
+    p_delete.add_argument("rule_id", type=int, help="Rule ID to delete")
+    p_delete.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- logs ----
+    p_logs = sub.add_parser("logs", help="Show rule firing history")
+    p_logs.add_argument("--rule", type=int, help="Filter by rule ID")
+    p_logs.add_argument("--limit", type=int, default=20, help="Max entries (default: 20)")
+    p_logs.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "add-rule":
+        cmd_add_rule(args)
+    elif args.command == "add-oco":
+        cmd_add_oco(args)
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "enable":
+        cmd_enable(args)
+    elif args.command == "disable":
+        cmd_disable(args)
+    elif args.command == "delete":
+        cmd_delete(args)
+    elif args.command == "logs":
+        cmd_logs(args)
+
+
+if __name__ == "__main__":
+    main()
