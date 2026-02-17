@@ -11,6 +11,7 @@ from datetime import datetime
 from monitor.models import (
     CancelRuleAction,
     CompoundTrigger,
+    IndicatorTrigger,
     MonitorRule,
     OrderStatusTrigger,
     PriceTrigger,
@@ -135,6 +136,61 @@ def evaluate_order_status_trigger(
     return event_order_id == cfg.order_id and event_status == cfg.status
 
 
+# ── Indicator triggers ───────────────────────────────────────────────
+
+def evaluate_indicator_trigger(
+    rule: MonitorRule,
+    indicator_values: dict,
+    prev_indicator_values: dict | None = None,
+) -> bool:
+    """Evaluate an indicator trigger against pre-computed indicator values.
+
+    The daemon pre-computes indicator values (RSI, MACD, etc.) and passes
+    them in via ``indicator_values``.  This function just compares the
+    current value against the configured threshold.
+
+    Args:
+        rule: MonitorRule with trigger_type="indicator".
+        indicator_values: Dict keyed by ``{indicator}_{timeframe}``,
+                          e.g. ``{"rsi_5m": 28.5, "macd_15m": -0.3}``.
+        prev_indicator_values: Previous tick's indicator values.
+                               Required for ``crosses_above`` / ``crosses_below``.
+
+    Returns:
+        True if the trigger condition is met, False otherwise.
+    """
+    cfg = IndicatorTrigger(**rule.trigger_config)
+
+    key = f"{cfg.indicator}_{cfg.timeframe}"
+    current = indicator_values.get(key)
+    if current is None:
+        return False
+
+    if cfg.condition == "lte":
+        return current <= cfg.value
+
+    if cfg.condition == "gte":
+        return current >= cfg.value
+
+    if cfg.condition == "crosses_above":
+        if prev_indicator_values is None:
+            return False
+        prev = prev_indicator_values.get(key)
+        if prev is None:
+            return False
+        return prev < cfg.value and current >= cfg.value
+
+    if cfg.condition == "crosses_below":
+        if prev_indicator_values is None:
+            return False
+        prev = prev_indicator_values.get(key)
+        if prev is None:
+            return False
+        return prev > cfg.value and current <= cfg.value
+
+    return False
+
+
 # ── Compound triggers ────────────────────────────────────────────────
 
 def evaluate_compound_trigger(rule: MonitorRule, ctx: dict) -> bool:
@@ -176,6 +232,12 @@ def evaluate_compound_trigger(rule: MonitorRule, ctx: dict) -> bool:
                 results.append(evaluate_time_trigger(temp_rule, now))
         elif cond_type == "order_status":
             results.append(evaluate_order_status_trigger(temp_rule, ctx.get("order_event") or {}))
+        elif cond_type == "indicator":
+            results.append(evaluate_indicator_trigger(
+                temp_rule,
+                ctx.get("indicator_values") or {},
+                prev_indicator_values=ctx.get("prev_indicator_values"),
+            ))
         else:
             results.append(False)
 
@@ -194,6 +256,8 @@ class EvalContext:
     prev_prices: dict = field(default_factory=dict)  # {instrument_token: prev_ltp}
     order_event: dict = field(default_factory=dict)
     now: datetime = field(default_factory=datetime.utcnow)
+    indicator_values: dict = field(default_factory=dict)  # {"rsi_5m": 28.5, "macd_5m": -0.3, ...}
+    prev_indicator_values: dict = field(default_factory=dict)  # previous tick's indicator values
 
 
 @dataclass
@@ -236,11 +300,19 @@ def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
         fired = evaluate_time_trigger(rule, ctx.now)
     elif rule.trigger_type == "order_status":
         fired = evaluate_order_status_trigger(rule, ctx.order_event)
+    elif rule.trigger_type == "indicator":
+        fired = evaluate_indicator_trigger(
+            rule,
+            ctx.indicator_values,
+            prev_indicator_values=ctx.prev_indicator_values or None,
+        )
     elif rule.trigger_type == "compound":
         compound_ctx = {
             "market_data": ctx.market_data,
             "now": ctx.now,
             "order_event": ctx.order_event,
+            "indicator_values": ctx.indicator_values,
+            "prev_indicator_values": ctx.prev_indicator_values or None,
         }
         fired = evaluate_compound_trigger(rule, compound_ctx)
 
