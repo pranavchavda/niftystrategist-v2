@@ -175,7 +175,7 @@ export default function PositionsTable({ positions, holdings, onSymbolSelect, on
                         {pos.dayChangePct >= 0 ? '+' : ''}{pos.dayChangePct.toFixed(2)}%
                       </td>
                       <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-500 tabular-nums">
-                        {pos.holdDays}d
+                        {pos.holdDays != null ? `${pos.holdDays}d` : '—'}
                       </td>
                       <td className="py-2.5 px-3 text-right">
                         <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

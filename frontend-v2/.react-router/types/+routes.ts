@@ -58,6 +58,9 @@ type Pages = {
   "/automations": {
     params: {};
   };
+  "/monitor": {
+    params: {};
+  };
   "/user": {
     params: {};
   };
@@ -78,7 +81,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -102,7 +105,7 @@ type RouteFiles = {
   };
   "./routes/_auth.tsx": {
     id: "routes/_auth";
-    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/chat.$threadId.tsx": {
     id: "routes/chat.$threadId";
@@ -139,6 +142,10 @@ type RouteFiles = {
   "./routes/automations.tsx": {
     id: "routes/automations";
     page: "/automations";
+  };
+  "./routes/monitor.tsx": {
+    id: "routes/monitor";
+    page: "/monitor";
   };
   "./routes/user.tsx": {
     id: "routes/user";

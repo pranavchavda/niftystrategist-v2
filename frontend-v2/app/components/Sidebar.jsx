@@ -493,6 +493,18 @@ export default function Sidebar({
                 >
                   <StickyNote className="w-4 h-4" />
                 </NavLink>
+                <NavLink
+                  to="/monitor"
+                  title="Trade Monitor"
+                  className={({ isActive }) =>
+                    `p-2 rounded-lg transition-colors ${isActive
+                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`
+                  }
+                >
+                  <Shield className="w-4 h-4" />
+                </NavLink>
                 {hasPermission(user, PERMISSIONS.GOOGLE_WORKSPACE_ACCESS) && (
                   <NavLink
                     to="/tasks"
@@ -772,6 +784,12 @@ export default function Sidebar({
                   <DropdownItem href="/automations">
                     <Zap data-slot="icon" />
                     <DropdownLabel>Automations</DropdownLabel>
+                  </DropdownItem>
+                )}
+                {hasPermission(user, PERMISSIONS.SETTINGS_ACCESS) && (
+                  <DropdownItem href="/monitor">
+                    <Shield data-slot="icon" />
+                    <DropdownLabel>Trade Monitor</DropdownLabel>
                   </DropdownItem>
                 )}
                 <DropdownDivider />

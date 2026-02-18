@@ -97,12 +97,22 @@ async def _get_db() -> AsyncSession:
 
 
 # ---------------------------------------------------------------------------
-# GET /market-status  (no auth required — pure time calculation)
+# GET /market-status
 # ---------------------------------------------------------------------------
 @router.get("/market-status")
 async def cockpit_market_status():
-    """Return current NSE market status."""
-    return get_market_status()
+    """Return current NSE market status (Upstox API with IST-based fallback)."""
+    upstox_status = None
+    try:
+        client = _get_upstox_client()
+        api_result = await client.get_market_status_api()
+        if api_result:
+            upstox_status = api_result.get("status")
+            logger.debug(f"Upstox market status API: {upstox_status}")
+    except Exception as e:
+        logger.warning(f"Upstox market status API unavailable, using time-based: {e}")
+
+    return get_market_status(upstox_api_status=upstox_status)
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +170,7 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
                 "pnlPct": pos.pnl_percentage,
                 "dayChange": pos.day_change,
                 "dayChangePct": pos.day_change_percentage,
-                "holdDays": 0,
+                "holdDays": None,  # Upstox doesn't provide purchase date
             }
             # In live mode, get_portfolio() calls get_holdings() → these are holdings.
             # In paper mode, everything is a position (simulated intraday).
@@ -238,9 +248,8 @@ async def cockpit_watchlist(
                 logger.warning(f"Quote fetch failed for {item.symbol}: {qe}")
 
             ltp = quote_data["ltp"] or 0
-            # Prefer API-provided net_change/pct_change (correct even on weekends)
-            change = quote_data["net_change"] or 0
-            change_pct = quote_data["pct_change"] or 0
+            change = quote_data["net_change"]
+            change_pct = quote_data["pct_change"]
 
             # Fetch sparkline (7 days of closing prices)
             sparkline = []

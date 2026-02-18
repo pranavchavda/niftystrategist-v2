@@ -1209,10 +1209,12 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-portfolio --calc-size SYMBOL --risk 5000 --sl 2 [--json]` — Position size calculator
 
 **Orders (show render_ui confirmation card before executing):**
-- `python cli-tools/nf-order buy SYMBOL QTY [--type LIMIT --price P] [--dry-run] [--json]`
-- `python cli-tools/nf-order sell SYMBOL QTY [--type LIMIT --price P] [--json]`
+- `python cli-tools/nf-order buy SYMBOL QTY [--type LIMIT --price P] [--product D|I] [--dry-run] [--json]`
+- `python cli-tools/nf-order sell SYMBOL QTY [--type LIMIT --price P] [--product D|I] [--json]`
 - `python cli-tools/nf-order list [--all] [--json]` — View open/all orders
 - `python cli-tools/nf-order cancel ORDER_ID [--json]`
+  - `--product D` = Delivery (full margin, hold overnight) — DEFAULT
+  - `--product I` = Intraday (lower margin, auto-squared-off at 3:15-3:25 PM IST)
 
 **Watchlist:**
 - `python cli-tools/nf-watchlist [--json]` — View watchlist with live prices
@@ -1220,6 +1222,13 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-watchlist remove SYMBOL`
 - `python cli-tools/nf-watchlist update SYMBOL [--buy P] [--sell P]`
 - `python cli-tools/nf-watchlist alerts [--json]` — Check triggered price alerts
+
+**Trade Monitor (IFTTT-style rules):**
+- `python cli-tools/nf-monitor add-rule --name "..." --symbol SYM --trigger price --condition lte --price 2400 --action place_order --side SELL --qty 10 --product I --max-fires 1 --expires today --json`
+- `python cli-tools/nf-monitor add-oco --symbol SYM --qty 10 --product I --sl 2400 --target 2700 --linked-trade TX --expires today --json`
+- `python cli-tools/nf-monitor list [--active] [--json]` — View rules
+- `python cli-tools/nf-monitor enable|disable|delete RULE_ID [--json]`
+- `python cli-tools/nf-monitor logs [--rule RULE_ID] [--limit 20] [--json]` — Rule firing history
 
 For full documentation: `cat cli-tools/INDEX.md`
 
@@ -1284,6 +1293,21 @@ When analyzing:
 2. Consider RSI, MACD, and trend together for confluence
 3. Note support/resistance levels
 4. Check volume for confirmation
+
+---
+
+## Intraday Trading Guidelines
+
+**IMPORTANT**: When a user says "intraday", "scalp", "day trade", or similar:
+1. Use `--product I` on nf-order (intraday margin, much cheaper than delivery)
+2. After placing the order, ALWAYS set up protective rules:
+   - OCO pair (stop-loss + target): `nf-monitor add-oco --symbol SYM --qty QTY --product I --sl SL_PRICE --target TARGET_PRICE --expires today --json`
+   - Auto-square-off at 15:15 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:15 --action place_order --symbol SYM --side SELL --qty QTY --product I --max-fires 1 --expires today --json`
+3. Warn the user: intraday positions are auto-squared-off by the broker between 3:15-3:25 PM IST
+4. Recommend risk-reward ratio of at least 2:1 for intraday trades
+5. Use 15-minute candles for intraday analysis (`--interval 15minute`)
+
+**Delivery orders** (default `--product D`): Used for swing trades, positional trades, or long-term investments. No auto-square-off. Higher margin required.
 
 ---
 
