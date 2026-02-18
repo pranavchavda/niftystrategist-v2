@@ -6,6 +6,7 @@ Rules are evaluated by the trade monitor daemon against live market data.
 """
 
 import argparse
+import asyncio
 import sys
 import os
 from datetime import datetime, timedelta
@@ -427,6 +428,45 @@ def cmd_logs(args):
         print(f"{l.id:>5}  {l.rule_id or '-':>5}  {l.action_taken:<16}  {time_str:<20}  {result_str}")
 
 
+def cmd_start(args):
+    """Start the trade monitor daemon."""
+    import signal
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon(
+        paper_mode=args.paper,
+        poll_interval=args.poll_interval,
+    )
+
+    # Set access token from environment if available
+    user_id = _get_user_id()
+    access_token = os.environ.get("NF_ACCESS_TOKEN")
+    if access_token:
+        daemon.set_access_token(user_id, access_token)
+        print(f"Loaded access token for user {user_id}")
+    else:
+        print("WARNING: No NF_ACCESS_TOKEN set. Daemon will not be able to stream data.")
+        print("Set NF_ACCESS_TOKEN environment variable or the daemon will skip users without tokens.")
+
+    mode_label = "PAPER" if args.paper else "LIVE"
+    print(f"Starting trade monitor daemon [{mode_label}] (poll every {args.poll_interval}s)")
+    print("Press Ctrl+C to stop")
+
+    loop = asyncio.get_event_loop()
+
+    def shutdown_handler(sig, frame):
+        print("\nShutting down...")
+        loop.create_task(daemon.stop())
+
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
+    try:
+        loop.run_until_complete(daemon.start())
+    except KeyboardInterrupt:
+        loop.run_until_complete(daemon.stop())
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -450,6 +490,8 @@ Examples:
   nf-monitor disable 5
   nf-monitor delete 5
   nf-monitor logs --rule 5 --limit 10 --json
+  nf-monitor start --paper            # Start daemon in paper mode
+  nf-monitor start --poll-interval 10 # Start daemon with faster polling
 """,
     )
 
@@ -550,6 +592,12 @@ Examples:
     p_logs.add_argument("--limit", type=int, default=20, help="Max entries (default: 20)")
     p_logs.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # ---- start ----
+    p_start = sub.add_parser("start", help="Start the trade monitor daemon")
+    p_start.add_argument("--paper", action="store_true", help="Paper trading mode (no real orders)")
+    p_start.add_argument("--poll-interval", type=float, default=30.0,
+                         help="Seconds between DB polls (default: 30)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -570,6 +618,8 @@ Examples:
         cmd_delete(args)
     elif args.command == "logs":
         cmd_logs(args)
+    elif args.command == "start":
+        cmd_start(args)
 
 
 if __name__ == "__main__":
