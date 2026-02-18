@@ -41,6 +41,9 @@ export default [
     // Automations (scheduled workflows)
     route('automations', './routes/automations.tsx'),
 
+    // Trade Monitor (IFTTT-style rules)
+    route('monitor', './routes/monitor.tsx'),
+
     // User Profile
     route('user', './routes/user.tsx', [
       route('profile', './routes/user.profile.tsx'),
