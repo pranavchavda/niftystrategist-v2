@@ -450,19 +450,23 @@ def cmd_start(args):
     print("Access tokens loaded from DB automatically for users with active rules.")
     print("Press Ctrl+C to stop")
 
-    loop = asyncio.get_event_loop()
+    async def _run():
+        loop = asyncio.get_running_loop()
 
-    def shutdown_handler(sig, frame):
-        print("\nShutting down...")
-        loop.create_task(daemon.stop())
+        def _handle_signal():
+            print("\nShutting down...")
+            daemon._running = False
 
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _handle_signal)
+
+        await daemon.start()  # Blocks until _running = False
+        await daemon.stop()   # Clean up user sessions
 
     try:
-        loop.run_until_complete(daemon.start())
+        asyncio.run(_run())
     except KeyboardInterrupt:
-        loop.run_until_complete(daemon.stop())
+        pass
 
 
 # ---------------------------------------------------------------------------
