@@ -66,7 +66,7 @@ class BaseWebSocketStream(ABC):
 
     @property
     def connected(self) -> bool:
-        return self._ws is not None and self._ws.open
+        return self._ws is not None and not self._ws.closed
 
     async def _run_loop(self):
         """Main connection loop with exponential backoff reconnection."""
@@ -121,7 +121,7 @@ class BaseWebSocketStream(ABC):
 
     async def send(self, data: bytes | str):
         """Send a message on the WebSocket."""
-        if self._ws and self._ws.open:
+        if self._ws and not self._ws.closed:
             await self._ws.send(data)
         else:
             logger.warning(f"[{self.name}] Cannot send — not connected")

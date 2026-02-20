@@ -43,14 +43,14 @@ class TestBaseWebSocketStream:
     def test_connected_false_when_ws_closed(self):
         stream = self._make_stream()
         ws = MagicMock()
-        ws.open = False
+        ws.closed = True
         stream._ws = ws
         assert not stream.connected
 
     def test_connected_true_when_ws_open(self):
         stream = self._make_stream()
         ws = MagicMock()
-        ws.open = True
+        ws.closed = False
         stream._ws = ws
         assert stream.connected
 
@@ -128,7 +128,7 @@ class TestBaseWebSocketStream:
     async def test_send_delegates_to_ws(self):
         stream = self._make_stream()
         ws = AsyncMock()
-        ws.open = True
+        ws.closed = False
         stream._ws = ws
         await stream.send("test data")
         ws.send.assert_called_once_with("test data")
@@ -426,7 +426,7 @@ class TestMarketDataStreamSubscription:
     async def test_subscribe_sends_binary_json(self):
         stream = self._make_stream()
         stream._ws = AsyncMock()
-        stream._ws.open = True
+        stream._ws.closed = False
 
         await stream.subscribe(["NSE_EQ|INE002A01018"])
 
@@ -445,7 +445,7 @@ class TestMarketDataStreamSubscription:
     async def test_subscribe_empty_list_noop(self):
         stream = self._make_stream()
         stream._ws = AsyncMock()
-        stream._ws.open = True
+        stream._ws.closed = False
 
         await stream.subscribe([])
         stream._ws.send.assert_not_called()
@@ -454,7 +454,7 @@ class TestMarketDataStreamSubscription:
     async def test_unsubscribe_sends_unsub_message(self):
         stream = self._make_stream()
         stream._ws = AsyncMock()
-        stream._ws.open = True
+        stream._ws.closed = False
         stream._subscribed_keys = {"NSE_EQ|A", "NSE_EQ|B"}
 
         await stream.unsubscribe(["NSE_EQ|A"])
@@ -469,7 +469,7 @@ class TestMarketDataStreamSubscription:
     async def test_change_mode_sends_message(self):
         stream = self._make_stream(mode="ltpc")
         stream._ws = AsyncMock()
-        stream._ws.open = True
+        stream._ws.closed = False
 
         await stream.change_mode(["NSE_EQ|A"], "full")
 
@@ -484,7 +484,7 @@ class TestMarketDataStreamSubscription:
     async def test_on_connected_resubscribes(self):
         stream = self._make_stream()
         stream._ws = AsyncMock()
-        stream._ws.open = True
+        stream._ws.closed = False
         stream._subscribed_keys = {"NSE_EQ|A", "NSE_EQ|B"}
 
         ws_mock = AsyncMock()
@@ -497,7 +497,7 @@ class TestMarketDataStreamSubscription:
     async def test_on_connected_no_keys_no_subscribe(self):
         stream = self._make_stream()
         stream._ws = AsyncMock()
-        stream._ws.open = True
+        stream._ws.closed = False
 
         ws_mock = AsyncMock()
         await stream._on_connected(ws_mock)
