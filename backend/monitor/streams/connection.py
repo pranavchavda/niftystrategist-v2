@@ -8,6 +8,7 @@ from typing import Any, Callable, Coroutine
 
 import websockets
 from websockets.asyncio.client import ClientConnection
+from websockets.protocol import State as WsState
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class BaseWebSocketStream(ABC):
 
     @property
     def connected(self) -> bool:
-        return self._ws is not None and not self._ws.closed
+        return self._ws is not None and self._ws.state is WsState.OPEN
 
     async def _run_loop(self):
         """Main connection loop with exponential backoff reconnection."""
@@ -121,7 +122,7 @@ class BaseWebSocketStream(ABC):
 
     async def send(self, data: bytes | str):
         """Send a message on the WebSocket."""
-        if self._ws and not self._ws.closed:
+        if self._ws and self._ws.state is WsState.OPEN:
             await self._ws.send(data)
         else:
             logger.warning(f"[{self.name}] Cannot send — not connected")
