@@ -1,0 +1,18 @@
+[Unit]
+Description=NiftyStrategist Trade Monitor Daemon
+After=network.target niftystrategist.service
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/niftystrategist/backend
+EnvironmentFile=/opt/niftystrategist/backend/.env
+ExecStart=/opt/niftystrategist/backend/venv/bin/python cli-tools/nf-monitor start
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

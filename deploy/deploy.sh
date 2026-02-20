@@ -51,9 +51,10 @@ source venv/bin/activate
 pip install -q -r requirements.txt 2>/dev/null || pip install -q -r pyproject.toml 2>/dev/null || echo "Install deps manually if needed"
 ENDSSH
 
-# --- Restart service (as root, since deploy user sudo is restricted) ---
-echo "[5/5] Restarting service..."
+# --- Restart services (as root, since deploy user sudo is restricted) ---
+echo "[5/5] Restarting services..."
 ssh root@${SERVER_IP} "systemctl restart niftystrategist && systemctl status niftystrategist --no-pager"
+ssh root@${SERVER_IP} "systemctl restart niftystrategist-monitor 2>/dev/null && systemctl status niftystrategist-monitor --no-pager || echo '(monitor service not installed yet — run setup-server.sh to install)'"
 
 echo ""
 echo "=== Deploy complete ==="

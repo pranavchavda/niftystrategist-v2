@@ -53,9 +53,12 @@ echo "Firewall configured (SSH, HTTP, HTTPS)"
 echo "Caddy installed. Place Caddyfile at /etc/caddy/Caddyfile"
 
 # --- Systemd services ---
-echo "Copy service files to /etc/systemd/system/ then run:"
-echo "  systemctl daemon-reload"
-echo "  systemctl enable niftystrategist-backend niftystrategist-frontend"
+echo "Installing systemd service files..."
+cp /opt/niftystrategist/deploy/niftystrategist.service /etc/systemd/system/
+cp /opt/niftystrategist/deploy/niftystrategist-monitor.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable niftystrategist niftystrategist-monitor
+echo "Systemd services installed and enabled"
 
 echo ""
 echo "=== Setup complete ==="
@@ -66,4 +69,4 @@ echo "  2. Copy the app code to /opt/niftystrategist/"
 echo "  3. Set up backend venv and .env"
 echo "  4. Build frontend"
 echo "  5. Copy Caddyfile to /etc/caddy/Caddyfile and restart caddy"
-echo "  6. Copy systemd services, enable, and start"
+echo "  6. Start services: systemctl start niftystrategist niftystrategist-monitor"

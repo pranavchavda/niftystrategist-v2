@@ -70,6 +70,7 @@ All trading operations use CLI scripts in `backend/cli-tools/`, invoked by the o
 | `nf-portfolio` | Holdings, positions, position size calculator |
 | `nf-order` | Place/cancel/list orders (--dry-run supported) |
 | `nf-watchlist` | Watchlist CRUD with price alerts |
+| `nf-monitor` | Monitor rule CRUD, list/enable/disable/delete rules |
 
 Conventions: `--json` for structured output, `--help` on every tool, `--dry-run` for orders. Subprocess env vars: `NF_ACCESS_TOKEN`, `NF_USER_ID`. CWD is `backend/`.
 
@@ -87,7 +88,7 @@ Conventions: `--json` for structured output, `--help` on every tool, `--dry-run`
 - Background tasks / MCP: `async with get_db_context() as session:` — context manager
 - Direct use: `async with get_db_session() as session:` — returns AsyncSessionLocal
 
-**Key models** (`database/models.py`): User, Conversation, Message, Memory, Trade, WatchlistItem, AgentDecision, Note, UserMCPServer.
+**Key models** (`database/models.py`): User, Conversation, Message, Memory, Trade, WatchlistItem, AgentDecision, Note, UserMCPServer, MonitorRule, MonitorLog.
 
 ### Auth
 
@@ -112,6 +113,38 @@ UPSTOX_API_KEY=...                   # Default Upstox app credentials (owner's)
 UPSTOX_API_SECRET=...                # Other users provide their own via Settings page
 UPSTOX_REDIRECT_URI=http://localhost:5173/auth/upstox/callback
 ```
+
+### Trade Monitor (IFTTT-style rules engine)
+
+Background daemon that evaluates user-defined rules against live market data and executes actions automatically.
+
+```
+FastAPI (web)                    MonitorDaemon (separate process)
+├── REST API: /api/monitor/*     ├── Polls DB for active rules (30s)
+├── Rule Builder UI: /monitor    ├── Opens Upstox WebSocket streams
+└── Symbol search autocomplete   ├── Evaluates triggers on each tick
+                                 └── Fires actions (place/cancel orders)
+```
+
+**Key files:**
+- Rule engine: `backend/monitor/` (rule_evaluator, daemon, streams/, crud, models)
+- REST API: `backend/api/monitor.py` (7 endpoints: rules CRUD, OCO, symbol search, logs)
+- Frontend UI: `frontend-v2/app/routes/monitor.tsx` (Rule Builder with 3 tabs)
+- CLI: `backend/cli-tools/nf-monitor`
+- DB migration: `backend/migrations/014_add_monitor_tables.sql`
+- Tests: `backend/tests/monitor/` (67+ tests)
+
+**Trigger types:** price, indicator (RSI/SMA/EMA/MACD), time, order_status, compound (AND/OR).
+**Action types:** place_order, cancel_order, cancel_rule.
+**OCO pairs:** Linked stop-loss + target rules where one firing disables the other.
+
+**Daemon deployment (TODO):**
+- Needs its own systemd unit (separate from the FastAPI service)
+- Currently started manually via `nf-monitor start`
+- Token loading: daemon should load Upstox access tokens from the DB (encrypted in `users` table) on each poll cycle, not via manual `set_access_token()` calls
+- Upstox tokens expire daily (end of trading day) and **cannot be refreshed silently** — users must re-authenticate via OAuth each morning. Daemon skips users with expired/missing tokens.
+
+**API datetime gotcha:** Frontend sends ISO strings with `Z` (timezone-aware). The `_strip_tz()` helper in `api/monitor.py` strips tzinfo before DB insert since columns are naive TIMESTAMP.
 
 ## Key Gotchas
 

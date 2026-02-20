@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from typing import Optional
 
 from database.session import get_db_context
 from monitor import crud
@@ -26,6 +27,7 @@ class MonitorDaemon:
 
     Responsibilities:
     - Periodically polls DB for active rules (every ``poll_interval`` seconds)
+    - Loads Upstox access tokens from the DB (encrypted, per-user)
     - Starts/stops/syncs per-user streaming sessions via UserManager
     - Routes market data ticks to price/indicator rule evaluation
     - Routes portfolio events to order-status rule evaluation
@@ -57,6 +59,9 @@ class MonitorDaemon:
 
         self._rules_by_user: dict[int, list[MonitorRule]] = {}
         self._access_tokens: dict[int, str] = {}
+        # Manual token overrides (for testing / CLI fallback).
+        # These take precedence over DB-loaded tokens.
+        self._manual_tokens: dict[int, str] = {}
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -85,17 +90,39 @@ class MonitorDaemon:
         logger.info("Monitor daemon stopped")
 
     def set_access_token(self, user_id: int, token: str) -> None:
-        """Set or update an access token for a user."""
+        """Manually set an access token (overrides DB lookup for this user).
+
+        Primarily used for testing and CLI fallback. In production the
+        daemon loads tokens from the DB automatically.
+        """
+        self._manual_tokens[user_id] = token
         self._access_tokens[user_id] = token
+
+    # ── Token loading ────────────────────────────────────────────────
+
+    async def _load_access_token(self, user_id: int) -> Optional[str]:
+        """Load access token for a user.
+
+        Manual overrides (via ``set_access_token``) take precedence.
+        Otherwise loads from the DB via ``get_user_upstox_token`` which
+        decrypts the token and checks expiry — returns None if expired.
+        """
+        if user_id in self._manual_tokens:
+            return self._manual_tokens[user_id]
+        # Lazy import to avoid circular deps and keep tests lightweight
+        from api.upstox_oauth import get_user_upstox_token
+        return await get_user_upstox_token(user_id)
 
     # ── Rule polling ──────────────────────────────────────────────────
 
     async def _poll_rules(self) -> None:
-        """Load active rules from DB and sync user sessions.
+        """Load active rules from DB, fetch tokens, and sync user sessions.
 
-        Groups rules by user_id, then:
-        - Starts sessions for new users (that have access tokens)
+        Groups rules by user_id, loads access tokens from the DB for
+        each user, then:
+        - Starts sessions for new users (that have valid access tokens)
         - Stops sessions for users with no more active rules
+        - Stops sessions for users whose tokens have expired
         - Syncs rules for users whose sessions already exist
         """
         async with get_db_context() as session:
@@ -106,6 +133,15 @@ class MonitorDaemon:
         for db_rule in db_rules:
             schema = crud.db_rule_to_schema(db_rule)
             rules_by_user.setdefault(schema.user_id, []).append(schema)
+
+        # Load access tokens from DB for all users with active rules
+        for uid in rules_by_user:
+            token = await self._load_access_token(uid)
+            if token:
+                self._access_tokens[uid] = token
+            else:
+                self._access_tokens.pop(uid, None)
+                logger.debug("No valid Upstox token for user %d, skipping", uid)
 
         # Determine users to start/stop/sync
         old_users = set(self._rules_by_user.keys())
@@ -121,9 +157,17 @@ class MonitorDaemon:
             if token:
                 await self._user_manager.start_user(uid, token, rules_by_user[uid])
 
-        # Sync existing users
+        # Sync or stop existing users
         for uid in old_users & new_users:
-            await self._user_manager.sync_rules(uid, rules_by_user[uid])
+            token = self._access_tokens.get(uid)
+            if token:
+                await self._user_manager.sync_rules(uid, rules_by_user[uid])
+            else:
+                # Token expired mid-session — stop the user
+                await self._user_manager.stop_user(uid)
+                logger.info(
+                    "Stopped session for user %d (token expired)", uid
+                )
 
         self._rules_by_user = rules_by_user
 

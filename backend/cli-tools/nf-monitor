@@ -438,18 +438,16 @@ def cmd_start(args):
         poll_interval=args.poll_interval,
     )
 
-    # Set access token from environment if available
-    user_id = _get_user_id()
+    # Optional: manual token override from env (for single-user / testing)
     access_token = os.environ.get("NF_ACCESS_TOKEN")
     if access_token:
+        user_id = _get_user_id()
         daemon.set_access_token(user_id, access_token)
-        print(f"Loaded access token for user {user_id}")
-    else:
-        print("WARNING: No NF_ACCESS_TOKEN set. Daemon will not be able to stream data.")
-        print("Set NF_ACCESS_TOKEN environment variable or the daemon will skip users without tokens.")
+        print(f"Manual token override for user {user_id}")
 
     mode_label = "PAPER" if args.paper else "LIVE"
     print(f"Starting trade monitor daemon [{mode_label}] (poll every {args.poll_interval}s)")
+    print("Access tokens loaded from DB automatically for users with active rules.")
     print("Press Ctrl+C to stop")
 
     loop = asyncio.get_event_loop()

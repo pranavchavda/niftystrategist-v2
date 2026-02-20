@@ -455,3 +455,85 @@ async def test_get_client_raises_without_token():
 
     with pytest.raises(ValueError, match="No access token for user 999"):
         await daemon._get_client(999)
+
+
+# ── Test: _poll_rules loads tokens from DB ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_poll_rules_loads_tokens_from_db():
+    """When no manual token is set, _poll_rules loads from DB via _load_access_token."""
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+    # No manual set_access_token call — token comes from DB
+
+    db_rule = _make_db_rule(rule_id=1, user_id=999)
+
+    with patch("monitor.daemon.get_db_context") as mock_ctx, \
+         patch("monitor.daemon.crud") as mock_crud, \
+         patch.object(daemon, "_load_access_token", new_callable=AsyncMock, return_value="db-token") as mock_load:
+
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        mock_crud.get_active_rules_for_daemon = AsyncMock(return_value=[db_rule])
+        mock_crud.db_rule_to_schema.side_effect = lambda r: _make_rule(
+            rule_id=r.id, user_id=r.user_id
+        )
+
+        daemon._user_manager = AsyncMock()
+        daemon._user_manager.get_session.return_value = None
+
+        await daemon._poll_rules()
+
+        # Token was loaded from DB
+        mock_load.assert_awaited_once_with(999)
+
+    # User session started with DB token
+    daemon._user_manager.start_user.assert_awaited_once()
+    call_args = daemon._user_manager.start_user.call_args
+    assert call_args[0][1] == "db-token"
+
+
+# ── Test: _poll_rules stops user when token expires ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_poll_rules_stops_user_when_token_expires():
+    """A running user whose token expires gets stopped."""
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    # Pre-populate: user 999 had a running session
+    old_rule = _make_rule(rule_id=1, user_id=999)
+    daemon._rules_by_user = {999: [old_rule]}
+    daemon._access_tokens = {999: "old-token"}
+
+    # Same rule still active, but token expired
+    db_rule = _make_db_rule(rule_id=1, user_id=999)
+
+    with patch("monitor.daemon.get_db_context") as mock_ctx, \
+         patch("monitor.daemon.crud") as mock_crud, \
+         patch.object(daemon, "_load_access_token", new_callable=AsyncMock, return_value=None):
+
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        mock_crud.get_active_rules_for_daemon = AsyncMock(return_value=[db_rule])
+        mock_crud.db_rule_to_schema.side_effect = lambda r: _make_rule(
+            rule_id=r.id, user_id=r.user_id
+        )
+
+        daemon._user_manager = AsyncMock()
+
+        await daemon._poll_rules()
+
+    # User should be stopped (token expired)
+    daemon._user_manager.stop_user.assert_awaited_once_with(999)
+    # Not synced or started
+    daemon._user_manager.sync_rules.assert_not_awaited()
+    daemon._user_manager.start_user.assert_not_awaited()

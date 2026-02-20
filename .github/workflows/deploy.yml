@@ -63,10 +63,10 @@ jobs:
           pip install -q -r requirements.txt
           EOF
 
-      - name: Restart service
+      - name: Restart services
         run: |
           ssh -i ~/.ssh/deploy_key root@${{ secrets.SERVER_IP }} \
-            "systemctl restart niftystrategist"
+            "systemctl restart niftystrategist && systemctl restart niftystrategist-monitor"
 
       - name: Health check
         run: |
