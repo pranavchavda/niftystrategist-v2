@@ -106,12 +106,19 @@ class MonitorDaemon:
         Manual overrides (via ``set_access_token``) take precedence.
         Otherwise loads from the DB via ``get_user_upstox_token`` which
         decrypts the token and checks expiry — returns None if expired.
+        If the DB token is expired/missing and TOTP credentials are
+        configured, attempts automatic token refresh via TOTP.
         """
         if user_id in self._manual_tokens:
             return self._manual_tokens[user_id]
         # Lazy import to avoid circular deps and keep tests lightweight
-        from api.upstox_oauth import get_user_upstox_token
-        return await get_user_upstox_token(user_id)
+        from api.upstox_oauth import get_user_upstox_token, auto_refresh_upstox_token
+
+        token = await get_user_upstox_token(user_id)
+        if token:
+            return token
+        # Token expired — try TOTP auto-refresh
+        return await auto_refresh_upstox_token(user_id)
 
     # ── Rule polling ──────────────────────────────────────────────────
 

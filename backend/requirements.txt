@@ -210,4 +210,5 @@ zipp==3.23.0
 
 # Trading-specific
 upstox-python-sdk>=2.0.0
+upstox-totp>=1.0.0
 ta>=0.10.0

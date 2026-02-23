@@ -114,6 +114,14 @@ class TradingModeRequest(BaseModel):
     mode: str  # 'paper' or 'live'
 
 
+class TotpCredentialsRequest(BaseModel):
+    """Request to save TOTP auto-login credentials."""
+    mobile: str
+    password: str
+    pin: str
+    totp_secret: str
+
+
 class UpstoxStatusResponse(BaseModel):
     """Response for Upstox connection status."""
     connected: bool
@@ -121,6 +129,7 @@ class UpstoxStatusResponse(BaseModel):
     token_expiry: Optional[str] = None
     trading_mode: str = "paper"
     has_own_credentials: bool = False
+    has_totp_credentials: bool = False
 
 
 class TradingModeResponse(BaseModel):
@@ -445,6 +454,9 @@ async def get_upstox_status(user: User = Depends(get_current_user)):
             token_expiry=token_expiry,
             trading_mode=db_user.trading_mode or "paper",
             has_own_credentials=bool(db_user.upstox_api_key),
+            has_totp_credentials=bool(
+                db_user.upstox_mobile and db_user.upstox_totp_secret
+            ),
         )
 
 
@@ -518,6 +530,80 @@ async def set_trading_mode(
         )
 
 
+# ── TOTP credential management endpoints ─────────────────────────────
+
+
+@router.post("/totp-credentials")
+async def save_totp_credentials(
+    request: TotpCredentialsRequest,
+    user: User = Depends(get_current_user),
+):
+    """Save TOTP auto-login credentials (encrypted)."""
+    if not all([
+        request.mobile.strip(),
+        request.password.strip(),
+        request.pin.strip(),
+        request.totp_secret.strip(),
+    ]):
+        raise HTTPException(status_code=400, detail="All TOTP fields are required")
+
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser).where(DBUser.id == user.id)
+        )
+        db_user = result.scalar_one_or_none()
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        db_user.upstox_mobile = encrypt_token(request.mobile.strip())
+        db_user.upstox_password = encrypt_token(request.password.strip())
+        db_user.upstox_pin = encrypt_token(request.pin.strip())
+        db_user.upstox_totp_secret = encrypt_token(request.totp_secret.strip())
+        db_user.upstox_totp_last_failed_at = None  # Clear any cooldown
+        await session.commit()
+
+    logger.info(f"Saved TOTP credentials for user {user.id}")
+    return {"status": "success", "message": "TOTP credentials saved"}
+
+
+@router.delete("/totp-credentials")
+async def delete_totp_credentials(user: User = Depends(get_current_user)):
+    """Clear stored TOTP auto-login credentials."""
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser).where(DBUser.id == user.id)
+        )
+        db_user = result.scalar_one_or_none()
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        db_user.upstox_mobile = None
+        db_user.upstox_password = None
+        db_user.upstox_pin = None
+        db_user.upstox_totp_secret = None
+        db_user.upstox_totp_last_failed_at = None
+        await session.commit()
+
+    logger.info(f"Cleared TOTP credentials for user {user.id}")
+    return {"status": "success", "message": "TOTP credentials cleared"}
+
+
+@router.post("/totp-test")
+async def test_totp_login(user: User = Depends(get_current_user)):
+    """Test TOTP auto-login right now.
+
+    Attempts to get a fresh token via TOTP and stores it on success.
+    """
+    token = await auto_refresh_upstox_token(user.id)
+    if token:
+        return {"status": "success", "message": "TOTP auto-login successful, token refreshed"}
+    else:
+        return {"status": "failed", "message": "TOTP auto-login failed. Check credentials or try again after cooldown."}
+
+
+# ── Standalone helper functions ──────────────────────────────────────
+
+
 async def get_user_upstox_token(user_id: int) -> Optional[str]:
     """
     Get decrypted Upstox access token for a user.
@@ -540,6 +626,145 @@ async def get_user_upstox_token(user_id: int) -> Optional[str]:
             return None
 
         return decrypt_token(db_user.upstox_access_token)
+
+
+# ── TOTP auto-refresh ─────────────────────────────────────────────
+
+
+TOTP_COOLDOWN_MINUTES = 30
+
+
+def _import_totp_login():
+    """Lazy-import the upstox_totp.TotpLogin class to avoid import at module level."""
+    from upstox_totp import TotpLogin
+    return TotpLogin
+
+
+def _totp_get_token(
+    mobile: str,
+    password: str,
+    pin: str,
+    totp_secret: str,
+    api_key: str,
+    api_secret: str,
+    redirect_uri: str,
+) -> dict:
+    """Synchronous TOTP login wrapper.
+
+    Returns dict with keys:
+        success: bool
+        access_token: str (on success)
+        error: str (on failure)
+    """
+    try:
+        TotpLogin = _import_totp_login()
+        result = TotpLogin(
+            mobile=mobile,
+            password=password,
+            pin=pin,
+            totp_secret=totp_secret,
+            api_key=api_key,
+            api_secret=api_secret,
+            redirect_uri=redirect_uri,
+        )
+        access_token = result.get_access_token()
+        return {"success": True, "access_token": access_token}
+    except Exception as e:
+        logger.error("TOTP login failed: %s", e)
+        return {"success": False, "error": str(e)}
+
+
+async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
+    """Try to auto-refresh an expired Upstox token via TOTP.
+
+    Returns the new access token string on success, None on failure.
+    Checks:
+    1. TOTP credentials exist (all 4: mobile, password, pin, totp_secret)
+    2. Not within cooldown period after a previous failure
+    3. Calls _totp_get_token via run_in_executor (sync library)
+    4. On success: stores new encrypted token + expiry in DB
+    5. On failure: records last_failed_at for cooldown
+    """
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(DBUser).where(DBUser.id == user_id)
+        )
+        db_user = result.scalar_one_or_none()
+        if not db_user:
+            return None
+
+        # Check TOTP credentials exist
+        if not all([
+            db_user.upstox_mobile,
+            db_user.upstox_password,
+            db_user.upstox_pin,
+            db_user.upstox_totp_secret,
+        ]):
+            return None
+
+        # Check cooldown
+        if db_user.upstox_totp_last_failed_at:
+            elapsed = datetime.utcnow() - db_user.upstox_totp_last_failed_at
+            if elapsed < timedelta(minutes=TOTP_COOLDOWN_MINUTES):
+                logger.info(
+                    "TOTP cooldown active for user %d (%d min remaining)",
+                    user_id,
+                    TOTP_COOLDOWN_MINUTES - int(elapsed.total_seconds() / 60),
+                )
+                return None
+
+        # Decrypt credentials
+        mobile = decrypt_token(db_user.upstox_mobile)
+        password = decrypt_token(db_user.upstox_password)
+        pin = decrypt_token(db_user.upstox_pin)
+        totp_secret = decrypt_token(db_user.upstox_totp_secret)
+
+        if not all([mobile, password, pin, totp_secret]):
+            logger.error("Failed to decrypt TOTP credentials for user %d", user_id)
+            return None
+
+        # Get API credentials
+        api_key, api_secret = await _get_user_upstox_credentials(user_id)
+        redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:5173/auth/upstox/callback")
+
+        if not api_key or not api_secret:
+            logger.error("No Upstox API credentials for user %d", user_id)
+            return None
+
+        # Call sync TOTP login in executor
+        import asyncio
+        loop = asyncio.get_event_loop()
+        try:
+            totp_result = await loop.run_in_executor(
+                None,
+                _totp_get_token,
+                mobile, password, pin, totp_secret,
+                api_key, api_secret, redirect_uri,
+            )
+        except Exception as e:
+            logger.error("TOTP auto-refresh exception for user %d: %s", user_id, e)
+            db_user.upstox_totp_last_failed_at = datetime.utcnow()
+            await session.commit()
+            return None
+
+        if not totp_result.get("success"):
+            logger.warning(
+                "TOTP auto-refresh failed for user %d: %s",
+                user_id, totp_result.get("error"),
+            )
+            db_user.upstox_totp_last_failed_at = datetime.utcnow()
+            await session.commit()
+            return None
+
+        # Success — store new token
+        new_token = totp_result["access_token"]
+        db_user.upstox_access_token = encrypt_token(new_token)
+        db_user.upstox_token_expiry = datetime.utcnow() + timedelta(hours=24)
+        db_user.upstox_totp_last_failed_at = None  # Clear cooldown
+        await session.commit()
+
+        logger.info("TOTP auto-refresh successful for user %d", user_id)
+        return new_token
 
 
 async def get_user_trading_mode(user_id: int) -> str:

@@ -19,6 +19,8 @@ import {
   AlertTriangle,
   Key,
   X,
+  Smartphone,
+  RefreshCw,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router';
 import { Button } from './catalyst/button';
@@ -60,6 +62,15 @@ export default function Settings({ authToken, user, setUser }) {
   const [credApiKey, setCredApiKey] = useState('');
   const [credApiSecret, setCredApiSecret] = useState('');
   const [isSavingCreds, setIsSavingCreds] = useState(false);
+
+  // TOTP auto-login state
+  const [hasTotpCredentials, setHasTotpCredentials] = useState(false);
+  const [totpMobile, setTotpMobile] = useState('');
+  const [totpPassword, setTotpPassword] = useState('');
+  const [totpPin, setTotpPin] = useState('');
+  const [totpSecret, setTotpSecret] = useState('');
+  const [isSavingTotp, setIsSavingTotp] = useState(false);
+  const [isTestingTotp, setIsTestingTotp] = useState(false);
 
   // Fetch available models and user preference
   useEffect(() => {
@@ -121,6 +132,7 @@ export default function Settings({ authToken, user, setUser }) {
         setUpstoxConnected(data.connected);
         setUpstoxUserId(data.upstox_user_id);
         setHasOwnCredentials(data.has_own_credentials || false);
+        setHasTotpCredentials(data.has_totp_credentials || false);
       } catch (err) {
         console.error('Failed to fetch trading status:', err);
       } finally {
@@ -301,6 +313,83 @@ export default function Settings({ authToken, user, setUser }) {
       }
     } catch (err) {
       console.error('Failed to clear credentials:', err);
+    }
+  };
+
+  // TOTP credential handlers
+  const handleSaveTotpCredentials = async () => {
+    if (!totpMobile.trim() || !totpPassword.trim() || !totpPin.trim() || !totpSecret.trim()) {
+      showSaveStatus('All TOTP fields are required', 'error');
+      return;
+    }
+    setIsSavingTotp(true);
+    try {
+      const res = await fetch('/api/auth/upstox/totp-credentials', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          mobile: totpMobile.trim(),
+          password: totpPassword.trim(),
+          pin: totpPin.trim(),
+          totp_secret: totpSecret.trim(),
+        })
+      });
+      if (res.ok) {
+        setHasTotpCredentials(true);
+        setTotpMobile('');
+        setTotpPassword('');
+        setTotpPin('');
+        setTotpSecret('');
+        showSaveStatus('TOTP auto-login credentials saved', 'success');
+      } else {
+        const error = await res.json();
+        showSaveStatus(error.detail || 'Failed to save TOTP credentials', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to save TOTP credentials:', err);
+      showSaveStatus('Failed to save TOTP credentials', 'error');
+    } finally {
+      setIsSavingTotp(false);
+    }
+  };
+
+  const handleClearTotpCredentials = async () => {
+    try {
+      const res = await fetch('/api/auth/upstox/totp-credentials', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        setHasTotpCredentials(false);
+        showSaveStatus('TOTP credentials cleared', 'success');
+      }
+    } catch (err) {
+      console.error('Failed to clear TOTP credentials:', err);
+    }
+  };
+
+  const handleTestTotp = async () => {
+    setIsTestingTotp(true);
+    try {
+      const res = await fetch('/api/auth/upstox/totp-test', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setUpstoxConnected(true);
+        showSaveStatus('TOTP auto-login successful! Token refreshed.', 'success');
+      } else {
+        showSaveStatus(data.message || 'TOTP test failed', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to test TOTP:', err);
+      showSaveStatus('Failed to test TOTP auto-login', 'error');
+    } finally {
+      setIsTestingTotp(false);
     }
   };
 
@@ -696,6 +785,131 @@ export default function Settings({ authToken, user, setUser }) {
                         </>
                       ) : (
                         'Save Credentials'
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* TOTP Auto-Login Credentials */}
+              <div className="p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
+                <div className="flex items-center gap-2 mb-3">
+                  <Smartphone className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
+                  <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                    TOTP Auto-Login
+                  </div>
+                  {hasTotpCredentials && (
+                    <span className="ml-auto px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
+                      Configured
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">
+                  Enable automatic token refresh when your Upstox session expires (daily ~3:30 AM).
+                  Requires your Upstox mobile number, password, PIN, and TOTP secret from your authenticator app.
+                </p>
+                {hasTotpCredentials ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+                      <span className="text-sm text-green-700 dark:text-green-300">
+                        TOTP auto-login configured
+                      </span>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={handleTestTotp}
+                          disabled={isTestingTotp}
+                          className="text-xs"
+                        >
+                          {isTestingTotp ? (
+                            <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                          ) : (
+                            <RefreshCw className="w-3 h-3 mr-1" />
+                          )}
+                          Test
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={handleClearTotpCredentials}
+                          className="text-xs"
+                        >
+                          <X className="w-3 h-3 mr-1" />
+                          Clear
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                        Mobile Number
+                      </label>
+                      <input
+                        type="text"
+                        value={totpMobile}
+                        onChange={(e) => setTotpMobile(e.target.value)}
+                        placeholder="Your registered mobile number"
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                        Password
+                      </label>
+                      <input
+                        type="password"
+                        value={totpPassword}
+                        onChange={(e) => setTotpPassword(e.target.value)}
+                        placeholder="Your Upstox password"
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                          PIN
+                        </label>
+                        <input
+                          type="password"
+                          value={totpPin}
+                          onChange={(e) => setTotpPin(e.target.value)}
+                          placeholder="6-digit PIN"
+                          className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                          TOTP Secret
+                        </label>
+                        <input
+                          type="password"
+                          value={totpSecret}
+                          onChange={(e) => setTotpSecret(e.target.value)}
+                          placeholder="Base32 secret key"
+                          className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                      <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300 text-xs">
+                        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                        <span>
+                          These credentials are stored encrypted. Your password cannot be independently revoked — use a strong, unique password.
+                        </span>
+                      </div>
+                    </div>
+                    <Button
+                      onClick={handleSaveTotpCredentials}
+                      disabled={isSavingTotp || !totpMobile.trim() || !totpPassword.trim() || !totpPin.trim() || !totpSecret.trim()}
+                    >
+                      {isSavingTotp ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Saving...
+                        </>
+                      ) : (
+                        'Save TOTP Credentials'
                       )}
                     </Button>
                   </div>
