@@ -116,3 +116,52 @@ def test_monitor_rule_max_fires_reached():
         max_fires=1, fire_count=1,
     )
     assert not rule.should_evaluate
+
+
+from monitor.models import TrailingStopTrigger, MonitorRule
+
+
+class TestTrailingStopTrigger:
+    def test_valid_config(self):
+        t = TrailingStopTrigger(
+            trail_percent=15.0,
+            initial_price=1770.0,
+            highest_price=1850.0,
+        )
+        assert t.trail_percent == 15.0
+        assert t.reference == "ltp"
+
+    def test_custom_reference(self):
+        t = TrailingStopTrigger(
+            trail_percent=10.0,
+            initial_price=100.0,
+            highest_price=100.0,
+            reference="high",
+        )
+        assert t.reference == "high"
+
+
+class TestMonitorRuleTrailingStop:
+    def test_trailing_stop_trigger_type_accepted(self):
+        rule = MonitorRule(
+            id=1,
+            user_id=999,
+            name="test trailing",
+            trigger_type="trailing_stop",
+            trigger_config={
+                "trail_percent": 15.0,
+                "initial_price": 100.0,
+                "highest_price": 110.0,
+            },
+            action_type="place_order",
+            action_config={
+                "symbol": "X",
+                "transaction_type": "SELL",
+                "quantity": 1,
+                "order_type": "MARKET",
+                "product": "I",
+                "price": None,
+            },
+            instrument_token="NSE_EQ|TEST",
+        )
+        assert rule.trigger_type == "trailing_stop"

@@ -50,6 +50,13 @@ class CompoundTrigger(BaseModel):
     conditions: list[dict[str, Any]]
 
 
+class TrailingStopTrigger(BaseModel):
+    trail_percent: float
+    initial_price: float
+    highest_price: float
+    reference: Literal["ltp", "bid", "ask", "open", "high", "low"] = "ltp"
+
+
 class PlaceOrderAction(BaseModel):
     symbol: str
     transaction_type: Literal["BUY", "SELL"]
@@ -74,7 +81,7 @@ class MonitorRule(BaseModel):
     name: str
     enabled: bool = True
 
-    trigger_type: Literal["price", "time", "indicator", "order_status", "compound"]
+    trigger_type: Literal["price", "time", "indicator", "order_status", "compound", "trailing_stop"]
     trigger_config: dict[str, Any]
 
     action_type: Literal["place_order", "cancel_order", "modify_order", "cancel_rule"]
