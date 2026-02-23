@@ -15,7 +15,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from base import init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
 def _get_user_id() -> int:
@@ -46,7 +46,7 @@ def _parse_expires(value: str) -> datetime:
 
 def _rule_to_dict(rule) -> dict:
     """Convert a DB rule object to a JSON-serializable dict."""
-    return {
+    d = {
         "id": rule.id,
         "name": rule.name,
         "enabled": rule.enabled,
@@ -63,6 +63,14 @@ def _rule_to_dict(rule) -> dict:
         "fired_at": str(rule.fired_at) if rule.fired_at else None,
         "created_at": str(rule.created_at) if rule.created_at else None,
     }
+    # Add computed fields for trailing stop rules
+    if rule.trigger_type == "trailing_stop":
+        tc = rule.trigger_config or {}
+        hp = tc.get("highest_price", 0)
+        tp = tc.get("trail_percent", 0)
+        d["stop_price"] = round(hp * (1 - tp / 100), 2) if hp else None
+        d["highest_price"] = hp
+    return d
 
 
 def _log_to_dict(log) -> dict:
@@ -302,6 +310,88 @@ def cmd_add_oco(args):
             print(f"  Linked trade: #{args.linked_trade}")
 
 
+def cmd_add_trailing(args):
+    """Create a trailing stop-loss rule that auto-adjusts as price rises."""
+    from database.session import get_db_context
+    from monitor.crud import create_rule
+    from services.instruments_cache import get_instrument_key
+
+    user_id = _get_user_id()
+    symbol = validate_symbol(args.symbol)
+    instrument_token = get_instrument_key(symbol)
+    if not instrument_token:
+        print_error(f"Could not find instrument key for {symbol}")
+
+    # Fetch current LTP to set initial_price and highest_price
+    client = init_client()
+
+    async def _get_ltp():
+        quote = await client.get_quote(symbol)
+        return quote["ltp"]
+
+    ltp = run_async(_get_ltp())
+    if ltp is None:
+        print_error(f"Could not fetch LTP for {symbol}")
+
+    trail_pct = args.trail_percent
+    stop_price = ltp * (1 - trail_pct / 100)
+    name = args.name or f"{symbol} Trailing SL {trail_pct}%"
+
+    trigger_config = {
+        "trail_percent": trail_pct,
+        "initial_price": ltp,
+        "highest_price": ltp,
+        "reference": args.reference or "ltp",
+    }
+
+    action_config = {
+        "symbol": symbol,
+        "transaction_type": "SELL",
+        "quantity": args.qty,
+        "order_type": "MARKET",
+        "product": args.product or "I",
+    }
+
+    expires_at = None
+    if args.expires:
+        expires_at = _parse_expires(args.expires)
+
+    async def _create():
+        async with get_db_context() as session:
+            rule = await create_rule(
+                session=session,
+                user_id=user_id,
+                name=name,
+                trigger_type="trailing_stop",
+                trigger_config=trigger_config,
+                action_type="place_order",
+                action_config=action_config,
+                instrument_token=instrument_token,
+                symbol=symbol,
+                max_fires=args.max_fires or 1,
+                expires_at=expires_at,
+            )
+            return rule
+
+    rule = run_async(_create())
+
+    if args.json:
+        print_json({
+            "created": _rule_to_dict(rule),
+            "stop_price": round(stop_price, 2),
+            "ltp_at_creation": ltp,
+        })
+    else:
+        print_success(f"Trailing SL rule #{rule.id}: {name}")
+        print(f"  Symbol:       {symbol}")
+        print(f"  Current LTP:  {ltp}")
+        print(f"  Trail:        {trail_pct}%")
+        print(f"  Initial Stop: {stop_price:.2f}")
+        print(f"  Sell Qty:     {args.qty} ({args.product or 'I'})")
+        if expires_at:
+            print(f"  Expires:      {expires_at}")
+
+
 def cmd_list(args):
     """List monitoring rules."""
     from database.session import get_db_context
@@ -487,6 +577,9 @@ Examples:
   nf-monitor add-oco --symbol RELIANCE --qty 10 --product I \\
     --sl 2400 --target 2700 --linked-trade 42 --expires today --json
 
+  nf-monitor add-trailing --symbol RELIANCE --qty 10 --trail-percent 15 \\
+    --product D --expires today --json
+
   nf-monitor list --active --json
   nf-monitor enable 5
   nf-monitor disable 5
@@ -568,6 +661,22 @@ Examples:
     p_oco.add_argument("--expires", help="Expiry: 'today' or ISO datetime")
     p_oco.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # ---- add-trailing ----
+    p_trail = sub.add_parser("add-trailing", help="Create a trailing stop-loss rule")
+    p_trail.add_argument("--symbol", required=True, help="Stock symbol")
+    p_trail.add_argument("--qty", type=int, required=True, help="Quantity to sell when triggered")
+    p_trail.add_argument("--trail-percent", type=float, required=True,
+                         help="Trail percentage below highest price (e.g. 15 = 15%%)")
+    p_trail.add_argument("--product", choices=["D", "I"], default="I",
+                         help="Product type: D=Delivery, I=Intraday (default: I)")
+    p_trail.add_argument("--reference", default="ltp",
+                         choices=["ltp", "bid", "ask", "open", "high", "low"],
+                         help="Price reference (default: ltp)")
+    p_trail.add_argument("--name", help="Custom rule name (auto-generated if omitted)")
+    p_trail.add_argument("--max-fires", type=int, default=1, help="Max fires (default: 1)")
+    p_trail.add_argument("--expires", help="Expiry: 'today' or ISO datetime")
+    p_trail.add_argument("--json", action="store_true", help="Output as JSON")
+
     # ---- list ----
     p_list = sub.add_parser("list", help="List monitoring rules")
     p_list.add_argument("--active", action="store_true", help="Show only active (enabled) rules")
@@ -610,6 +719,8 @@ Examples:
         cmd_add_rule(args)
     elif args.command == "add-oco":
         cmd_add_oco(args)
+    elif args.command == "add-trailing":
+        cmd_add_trailing(args)
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "enable":
