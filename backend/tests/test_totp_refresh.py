@@ -15,7 +15,6 @@ def _make_db_user(**overrides) -> MagicMock:
     user = MagicMock()
     user.id = overrides.get("id", 999)
     user.upstox_mobile = overrides.get("upstox_mobile", None)
-    user.upstox_password = overrides.get("upstox_password", None)
     user.upstox_pin = overrides.get("upstox_pin", None)
     user.upstox_totp_secret = overrides.get("upstox_totp_secret", None)
     user.upstox_totp_last_failed_at = overrides.get("upstox_totp_last_failed_at", None)
@@ -34,17 +33,16 @@ def test_totp_get_token_success():
     """_totp_get_token returns access_token on success."""
     from api.upstox_oauth import _totp_get_token
 
-    mock_result = MagicMock()
-    mock_result.get_access_token.return_value = "fresh-access-token"
+    mock_client = MagicMock()
+    mock_client.app_token = "fresh-access-token"
 
     with patch("api.upstox_oauth._import_totp_login") as mock_import:
-        mock_login_cls = MagicMock()
-        mock_login_cls.return_value = mock_result
-        mock_import.return_value = mock_login_cls
+        mock_cls = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_import.return_value = mock_cls
 
         result = _totp_get_token(
             mobile="9876543210",
-            password="pass123",
             pin="1234",
             totp_secret="JBSWY3DPEHPK3PXP",
             api_key="my-api-key",
@@ -53,13 +51,12 @@ def test_totp_get_token_success():
         )
 
     assert result == {"success": True, "access_token": "fresh-access-token"}
-    mock_login_cls.assert_called_once_with(
-        mobile="9876543210",
-        password="pass123",
-        pin="1234",
+    mock_cls.assert_called_once_with(
+        username="9876543210",
+        pin_code="1234",
         totp_secret="JBSWY3DPEHPK3PXP",
-        api_key="my-api-key",
-        api_secret="my-api-secret",
+        client_id="my-api-key",
+        client_secret="my-api-secret",
         redirect_uri="http://localhost:5173/auth/upstox/callback",
     )
 
@@ -72,13 +69,12 @@ def test_totp_get_token_failure():
     from api.upstox_oauth import _totp_get_token
 
     with patch("api.upstox_oauth._import_totp_login") as mock_import:
-        mock_login_cls = MagicMock()
-        mock_login_cls.side_effect = Exception("TOTP login failed: invalid OTP")
-        mock_import.return_value = mock_login_cls
+        mock_cls = MagicMock()
+        mock_cls.side_effect = Exception("TOTP login failed: invalid OTP")
+        mock_import.return_value = mock_cls
 
         result = _totp_get_token(
             mobile="9876543210",
-            password="pass123",
             pin="1234",
             totp_secret="BAD_SECRET",
             api_key="my-api-key",
@@ -100,7 +96,6 @@ async def test_auto_refresh_success():
 
     db_user = _make_db_user(
         upstox_mobile="enc-mobile",
-        upstox_password="enc-password",
         upstox_pin="enc-pin",
         upstox_totp_secret="enc-totp-secret",
     )
@@ -165,7 +160,6 @@ async def test_auto_refresh_cooldown_active():
 
     db_user = _make_db_user(
         upstox_mobile="enc-mobile",
-        upstox_password="enc-password",
         upstox_pin="enc-pin",
         upstox_totp_secret="enc-totp-secret",
         # Failed 5 minutes ago
@@ -196,7 +190,6 @@ async def test_auto_refresh_failure_sets_cooldown():
 
     db_user = _make_db_user(
         upstox_mobile="enc-mobile",
-        upstox_password="enc-password",
         upstox_pin="enc-pin",
         upstox_totp_secret="enc-totp-secret",
     )
@@ -231,7 +224,6 @@ async def test_auto_refresh_exception_sets_cooldown():
 
     db_user = _make_db_user(
         upstox_mobile="enc-mobile",
-        upstox_password="enc-password",
         upstox_pin="enc-pin",
         upstox_totp_secret="enc-totp-secret",
     )

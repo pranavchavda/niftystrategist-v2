@@ -66,7 +66,6 @@ export default function Settings({ authToken, user, setUser }) {
   // TOTP auto-login state
   const [hasTotpCredentials, setHasTotpCredentials] = useState(false);
   const [totpMobile, setTotpMobile] = useState('');
-  const [totpPassword, setTotpPassword] = useState('');
   const [totpPin, setTotpPin] = useState('');
   const [totpSecret, setTotpSecret] = useState('');
   const [isSavingTotp, setIsSavingTotp] = useState(false);
@@ -318,7 +317,7 @@ export default function Settings({ authToken, user, setUser }) {
 
   // TOTP credential handlers
   const handleSaveTotpCredentials = async () => {
-    if (!totpMobile.trim() || !totpPassword.trim() || !totpPin.trim() || !totpSecret.trim()) {
+    if (!totpMobile.trim() || !totpPin.trim() || !totpSecret.trim()) {
       showSaveStatus('All TOTP fields are required', 'error');
       return;
     }
@@ -332,7 +331,6 @@ export default function Settings({ authToken, user, setUser }) {
         },
         body: JSON.stringify({
           mobile: totpMobile.trim(),
-          password: totpPassword.trim(),
           pin: totpPin.trim(),
           totp_secret: totpSecret.trim(),
         })
@@ -340,7 +338,6 @@ export default function Settings({ authToken, user, setUser }) {
       if (res.ok) {
         setHasTotpCredentials(true);
         setTotpMobile('');
-        setTotpPassword('');
         setTotpPin('');
         setTotpSecret('');
         showSaveStatus('TOTP auto-login credentials saved', 'success');
@@ -853,18 +850,6 @@ export default function Settings({ authToken, user, setUser }) {
                         className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
-                        Password
-                      </label>
-                      <input
-                        type="password"
-                        value={totpPassword}
-                        onChange={(e) => setTotpPassword(e.target.value)}
-                        placeholder="Your Upstox password"
-                        className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
-                      />
-                    </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
@@ -895,13 +880,13 @@ export default function Settings({ authToken, user, setUser }) {
                       <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300 text-xs">
                         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
                         <span>
-                          These credentials are stored encrypted. Your password cannot be independently revoked — use a strong, unique password.
+                          These credentials are stored encrypted on the server. Your TOTP secret and PIN enable automatic login without manual OAuth each morning.
                         </span>
                       </div>
                     </div>
                     <Button
                       onClick={handleSaveTotpCredentials}
-                      disabled={isSavingTotp || !totpMobile.trim() || !totpPassword.trim() || !totpPin.trim() || !totpSecret.trim()}
+                      disabled={isSavingTotp || !totpMobile.trim() || !totpPin.trim() || !totpSecret.trim()}
                     >
                       {isSavingTotp ? (
                         <>

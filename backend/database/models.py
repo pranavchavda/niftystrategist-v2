@@ -142,7 +142,6 @@ class User(Base):
 
     # TOTP auto-login credentials (encrypted, for automatic token refresh)
     upstox_mobile = Column(Text, nullable=True)
-    upstox_password = Column(Text, nullable=True)
     upstox_pin = Column(Text, nullable=True)
     upstox_totp_secret = Column(Text, nullable=True)
     upstox_totp_last_failed_at = Column(DateTime, nullable=True)

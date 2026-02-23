@@ -117,7 +117,6 @@ class TradingModeRequest(BaseModel):
 class TotpCredentialsRequest(BaseModel):
     """Request to save TOTP auto-login credentials."""
     mobile: str
-    password: str
     pin: str
     totp_secret: str
 
@@ -541,7 +540,6 @@ async def save_totp_credentials(
     """Save TOTP auto-login credentials (encrypted)."""
     if not all([
         request.mobile.strip(),
-        request.password.strip(),
         request.pin.strip(),
         request.totp_secret.strip(),
     ]):
@@ -556,7 +554,6 @@ async def save_totp_credentials(
             raise HTTPException(status_code=404, detail="User not found")
 
         db_user.upstox_mobile = encrypt_token(request.mobile.strip())
-        db_user.upstox_password = encrypt_token(request.password.strip())
         db_user.upstox_pin = encrypt_token(request.pin.strip())
         db_user.upstox_totp_secret = encrypt_token(request.totp_secret.strip())
         db_user.upstox_totp_last_failed_at = None  # Clear any cooldown
@@ -578,7 +575,6 @@ async def delete_totp_credentials(user: User = Depends(get_current_user)):
             raise HTTPException(status_code=404, detail="User not found")
 
         db_user.upstox_mobile = None
-        db_user.upstox_password = None
         db_user.upstox_pin = None
         db_user.upstox_totp_secret = None
         db_user.upstox_totp_last_failed_at = None
@@ -635,14 +631,13 @@ TOTP_COOLDOWN_MINUTES = 30
 
 
 def _import_totp_login():
-    """Lazy-import the upstox_totp.TotpLogin class to avoid import at module level."""
-    from upstox_totp import TotpLogin
-    return TotpLogin
+    """Lazy-import the upstox_totp.UpstoxTOTP class to avoid import at module level."""
+    from upstox_totp import UpstoxTOTP
+    return UpstoxTOTP
 
 
 def _totp_get_token(
     mobile: str,
-    password: str,
     pin: str,
     totp_secret: str,
     api_key: str,
@@ -657,17 +652,16 @@ def _totp_get_token(
         error: str (on failure)
     """
     try:
-        TotpLogin = _import_totp_login()
-        result = TotpLogin(
-            mobile=mobile,
-            password=password,
-            pin=pin,
+        UpstoxTOTP = _import_totp_login()
+        client = UpstoxTOTP(
+            username=mobile,
+            pin_code=pin,
             totp_secret=totp_secret,
-            api_key=api_key,
-            api_secret=api_secret,
+            client_id=api_key,
+            client_secret=api_secret,
             redirect_uri=redirect_uri,
         )
-        access_token = result.get_access_token()
+        access_token = client.app_token
         return {"success": True, "access_token": access_token}
     except Exception as e:
         logger.error("TOTP login failed: %s", e)
@@ -679,7 +673,7 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
 
     Returns the new access token string on success, None on failure.
     Checks:
-    1. TOTP credentials exist (all 4: mobile, password, pin, totp_secret)
+    1. TOTP credentials exist (mobile, pin, totp_secret)
     2. Not within cooldown period after a previous failure
     3. Calls _totp_get_token via run_in_executor (sync library)
     4. On success: stores new encrypted token + expiry in DB
@@ -696,7 +690,6 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
         # Check TOTP credentials exist
         if not all([
             db_user.upstox_mobile,
-            db_user.upstox_password,
             db_user.upstox_pin,
             db_user.upstox_totp_secret,
         ]):
@@ -715,11 +708,10 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
 
         # Decrypt credentials
         mobile = decrypt_token(db_user.upstox_mobile)
-        password = decrypt_token(db_user.upstox_password)
         pin = decrypt_token(db_user.upstox_pin)
         totp_secret = decrypt_token(db_user.upstox_totp_secret)
 
-        if not all([mobile, password, pin, totp_secret]):
+        if not all([mobile, pin, totp_secret]):
             logger.error("Failed to decrypt TOTP credentials for user %d", user_id)
             return None
 
@@ -738,7 +730,7 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
             totp_result = await loop.run_in_executor(
                 None,
                 _totp_get_token,
-                mobile, password, pin, totp_secret,
+                mobile, pin, totp_secret,
                 api_key, api_secret, redirect_uri,
             )
         except Exception as e:
