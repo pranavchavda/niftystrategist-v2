@@ -33,8 +33,16 @@ def test_totp_get_token_success():
     """_totp_get_token returns access_token on success."""
     from api.upstox_oauth import _totp_get_token
 
+    # Mock the response from get_access_token()
+    mock_response = MagicMock()
+    mock_response.success = True
+    mock_response.data.access_token = "fresh-access-token"
+
+    mock_app_token = MagicMock()
+    mock_app_token.get_access_token.return_value = mock_response
+
     mock_client = MagicMock()
-    mock_client.app_token = "fresh-access-token"
+    mock_client.app_token = mock_app_token
 
     with patch("api.upstox_oauth._import_totp_login") as mock_import:
         mock_cls = MagicMock()
@@ -53,6 +61,7 @@ def test_totp_get_token_success():
     assert result == {"success": True, "access_token": "fresh-access-token"}
     mock_cls.assert_called_once_with(
         username="9876543210",
+        password="1234",
         pin_code="1234",
         totp_secret="JBSWY3DPEHPK3PXP",
         client_id="my-api-key",

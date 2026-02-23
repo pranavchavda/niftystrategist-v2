@@ -655,14 +655,17 @@ def _totp_get_token(
         UpstoxTOTP = _import_totp_login()
         client = UpstoxTOTP(
             username=mobile,
+            password=pin,  # Required by library Config but never sent to Upstox
             pin_code=pin,
             totp_secret=totp_secret,
             client_id=api_key,
             client_secret=api_secret,
             redirect_uri=redirect_uri,
         )
-        access_token = client.app_token
-        return {"success": True, "access_token": access_token}
+        response = client.app_token.get_access_token()
+        if response.success and response.data:
+            return {"success": True, "access_token": response.data.access_token}
+        return {"success": False, "error": str(response.error or "Unknown error")}
     except Exception as e:
         logger.error("TOTP login failed: %s", e)
         return {"success": False, "error": str(e)}
