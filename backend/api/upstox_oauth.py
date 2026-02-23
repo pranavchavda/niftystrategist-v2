@@ -618,8 +618,8 @@ async def get_user_upstox_token(user_id: int) -> Optional[str]:
 
         # Check expiry (use naive datetime for DB compatibility)
         if db_user.upstox_token_expiry and db_user.upstox_token_expiry < datetime.utcnow():
-            logger.warning(f"Upstox token expired for user {user_id}")
-            return None
+            logger.warning(f"Upstox token expired for user {user_id}, attempting TOTP refresh")
+            return await auto_refresh_upstox_token(user_id)
 
         return decrypt_token(db_user.upstox_access_token)
 

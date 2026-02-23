@@ -652,56 +652,48 @@ async def test_evaluate_and_execute_no_persist_when_no_update():
 
 
 @pytest.mark.asyncio
-async def test_load_access_token_tries_totp_on_expired():
-    """When DB token is expired (None), _load_access_token tries TOTP auto-refresh."""
+async def test_load_access_token_delegates_to_get_user_upstox_token():
+    """_load_access_token delegates to get_user_upstox_token (which handles TOTP internally)."""
     from monitor.daemon import MonitorDaemon
 
     daemon = MonitorDaemon()
 
-    with patch("api.upstox_oauth.get_user_upstox_token", new_callable=AsyncMock, return_value=None), \
-         patch("api.upstox_oauth.auto_refresh_upstox_token", new_callable=AsyncMock, return_value="totp-token") as mock_totp:
-
+    with patch("api.upstox_oauth.get_user_upstox_token", new_callable=AsyncMock, return_value="refreshed-token") as mock_get:
         token = await daemon._load_access_token(999)
 
-    assert token == "totp-token"
-    mock_totp.assert_awaited_once_with(999)
+    assert token == "refreshed-token"
+    mock_get.assert_awaited_once_with(999)
 
 
-# ── Test: _load_access_token skips TOTP when token valid ──────────────
+# ── Test: _load_access_token returns None when no token ──────────────
 
 
 @pytest.mark.asyncio
-async def test_load_access_token_skips_totp_when_token_valid():
-    """When DB token is valid, TOTP is not attempted."""
+async def test_load_access_token_returns_none_when_no_token():
+    """Returns None when get_user_upstox_token returns None (expired, no TOTP)."""
     from monitor.daemon import MonitorDaemon
 
     daemon = MonitorDaemon()
 
-    with patch("api.upstox_oauth.get_user_upstox_token", new_callable=AsyncMock, return_value="valid-token"), \
-         patch("api.upstox_oauth.auto_refresh_upstox_token", new_callable=AsyncMock) as mock_totp:
-
+    with patch("api.upstox_oauth.get_user_upstox_token", new_callable=AsyncMock, return_value=None):
         token = await daemon._load_access_token(999)
 
-    assert token == "valid-token"
-    mock_totp.assert_not_awaited()
+    assert token is None
 
 
-# ── Test: _load_access_token manual overrides TOTP ────────────────────
+# ── Test: _load_access_token manual overrides DB ────────────────────
 
 
 @pytest.mark.asyncio
-async def test_load_access_token_manual_overrides_totp():
-    """Manual set_access_token takes precedence, TOTP is not attempted."""
+async def test_load_access_token_manual_overrides_db():
+    """Manual set_access_token takes precedence over DB lookup."""
     from monitor.daemon import MonitorDaemon
 
     daemon = MonitorDaemon()
     daemon.set_access_token(999, "manual-token")
 
-    with patch("api.upstox_oauth.get_user_upstox_token", new_callable=AsyncMock) as mock_db, \
-         patch("api.upstox_oauth.auto_refresh_upstox_token", new_callable=AsyncMock) as mock_totp:
-
+    with patch("api.upstox_oauth.get_user_upstox_token", new_callable=AsyncMock) as mock_get:
         token = await daemon._load_access_token(999)
 
     assert token == "manual-token"
-    mock_db.assert_not_awaited()
-    mock_totp.assert_not_awaited()
+    mock_get.assert_not_awaited()

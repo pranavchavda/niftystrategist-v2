@@ -112,13 +112,10 @@ class MonitorDaemon:
         if user_id in self._manual_tokens:
             return self._manual_tokens[user_id]
         # Lazy import to avoid circular deps and keep tests lightweight
-        from api.upstox_oauth import get_user_upstox_token, auto_refresh_upstox_token
+        from api.upstox_oauth import get_user_upstox_token
 
-        token = await get_user_upstox_token(user_id)
-        if token:
-            return token
-        # Token expired — try TOTP auto-refresh
-        return await auto_refresh_upstox_token(user_id)
+        # get_user_upstox_token handles expiry detection + TOTP auto-refresh
+        return await get_user_upstox_token(user_id)
 
     # ── Rule polling ──────────────────────────────────────────────────
 
