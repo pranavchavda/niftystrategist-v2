@@ -10,6 +10,8 @@ AI-powered trading assistant for the Indian stock market (NSE/BSE). Forked from 
 
 **Upstox Integration**: Not a registered multi-user Upstox app (requires separate approval). The app owner's (Pranav's) Upstox credentials are in `.env`. Other users must enter their own Upstox API key and secret via the Settings page (`/settings` → Trading Settings → Upstox API Credentials), which are stored encrypted per-user in the DB.
 
+**TOTP Auto-Refresh**: Upstox tokens expire daily (~3:30 AM IST) and SEBI regulations prevent refresh tokens. Users can optionally save TOTP credentials (mobile, PIN, TOTP secret) in Settings to enable automatic token refresh via the `upstox-totp` library. `get_user_upstox_token()` in `api/upstox_oauth.py` handles expiry detection and auto-refresh for all callers (chat, dashboard, daemon, CLI). 30-minute cooldown after failed attempts. DB migration: `015_add_totp_credentials.sql`.
+
 ## Development Commands
 
 ```bash
@@ -134,15 +136,15 @@ FastAPI (web)                    MonitorDaemon (separate process)
 - DB migration: `backend/migrations/014_add_monitor_tables.sql`
 - Tests: `backend/tests/monitor/` (67+ tests)
 
-**Trigger types:** price, indicator (RSI/SMA/EMA/MACD), time, order_status, compound (AND/OR).
+**Trigger types:** price, indicator (RSI/SMA/EMA/MACD), time, order_status, compound (AND/OR), trailing_stop.
 **Action types:** place_order, cancel_order, cancel_rule.
 **OCO pairs:** Linked stop-loss + target rules where one firing disables the other.
 
 **Daemon deployment (TODO):**
 - Needs its own systemd unit (separate from the FastAPI service)
 - Currently started manually via `nf-monitor start`
-- Token loading: daemon should load Upstox access tokens from the DB (encrypted in `users` table) on each poll cycle, not via manual `set_access_token()` calls
-- Upstox tokens expire daily (end of trading day) and **cannot be refreshed silently** — users must re-authenticate via OAuth each morning. Daemon skips users with expired/missing tokens.
+- Token loading: daemon loads Upstox access tokens from the DB (encrypted in `users` table) via `get_user_upstox_token()` on each poll cycle
+- Upstox tokens expire daily (~3:30 AM IST). If TOTP credentials are configured, tokens auto-refresh silently via `upstox-totp` library. Otherwise users must re-authenticate via OAuth each morning. Daemon skips users with expired/missing tokens and no TOTP credentials.
 
 **API datetime gotcha:** Frontend sends ISO strings with `Z` (timezone-aware). The `_strip_tz()` helper in `api/monitor.py` strips tzinfo before DB insert since columns are naive TIMESTAMP.
 
