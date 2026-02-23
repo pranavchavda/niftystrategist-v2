@@ -101,3 +101,66 @@ class TestPrevPrices:
         )
         result = evaluate_rule(rule, ctx)
         assert result.fired is True
+
+
+# ── Trailing stop dispatch ─────────────────────────────────────────
+
+class TestTrailingStopDispatch:
+    def test_trailing_stop_fires_through_evaluate_rule(self):
+        """trailing_stop trigger type dispatches correctly and fires."""
+        rule = MonitorRule(
+            id=20,
+            user_id=999,
+            name="trailing test",
+            trigger_type="trailing_stop",
+            trigger_config={
+                "trail_percent": 10.0,
+                "initial_price": 100.0,
+                "highest_price": 100.0,
+            },
+            action_type="place_order",
+            action_config={
+                "symbol": "X",
+                "transaction_type": "SELL",
+                "quantity": 5,
+                "order_type": "MARKET",
+                "product": "D",
+                "price": None,
+            },
+            instrument_token="NSE_EQ|TEST",
+        )
+        # Stop at 90.0 (10% below 100). Price at 85 fires.
+        ctx = EvalContext(market_data={"ltp": 85.0})
+        result = evaluate_rule(rule, ctx)
+        assert result.fired is True
+        assert result.action_type == "place_order"
+        assert result.trigger_config_update is None
+
+    def test_trailing_stop_updates_highest_through_evaluate_rule(self):
+        """trailing_stop returns trigger_config_update when price rises."""
+        rule = MonitorRule(
+            id=21,
+            user_id=999,
+            name="trailing test",
+            trigger_type="trailing_stop",
+            trigger_config={
+                "trail_percent": 10.0,
+                "initial_price": 100.0,
+                "highest_price": 100.0,
+            },
+            action_type="place_order",
+            action_config={
+                "symbol": "X",
+                "transaction_type": "SELL",
+                "quantity": 5,
+                "order_type": "MARKET",
+                "product": "D",
+                "price": None,
+            },
+            instrument_token="NSE_EQ|TEST",
+        )
+        ctx = EvalContext(market_data={"ltp": 120.0})
+        result = evaluate_rule(rule, ctx)
+        assert result.fired is False
+        assert result.trigger_config_update is not None
+        assert result.trigger_config_update["highest_price"] == 120.0
