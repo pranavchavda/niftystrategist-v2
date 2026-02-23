@@ -597,3 +597,33 @@ class TestStopAll:
 
         assert mgr.get_session(1) is None
         assert mgr.get_session(2) is None
+
+
+def test_trailing_stop_extracts_instrument():
+    """trailing_stop rules should extract instrument tokens for subscription."""
+    from monitor.user_manager import extract_instruments_from_rules
+    from monitor.models import MonitorRule
+
+    rule = MonitorRule(
+        id=1,
+        user_id=999,
+        name="trailing test",
+        trigger_type="trailing_stop",
+        trigger_config={
+            "trail_percent": 15.0,
+            "initial_price": 100.0,
+            "highest_price": 100.0,
+        },
+        action_type="place_order",
+        action_config={
+            "symbol": "X",
+            "transaction_type": "SELL",
+            "quantity": 1,
+            "order_type": "MARKET",
+            "product": "I",
+            "price": None,
+        },
+        instrument_token="NSE_EQ|TEST123",
+    )
+    instruments = extract_instruments_from_rules([rule])
+    assert "NSE_EQ|TEST123" in instruments

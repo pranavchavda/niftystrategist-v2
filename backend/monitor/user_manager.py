@@ -38,7 +38,7 @@ def extract_instruments_from_rules(rules: list[MonitorRule]) -> set[str]:
     """
     instruments: set[str] = set()
     for rule in rules:
-        if rule.trigger_type in ("price", "indicator", "compound"):
+        if rule.trigger_type in ("price", "indicator", "compound", "trailing_stop"):
             if rule.instrument_token:
                 instruments.add(rule.instrument_token)
     return instruments
