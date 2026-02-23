@@ -537,3 +537,112 @@ async def test_poll_rules_stops_user_when_token_expires():
     # Not synced or started
     daemon._user_manager.sync_rules.assert_not_awaited()
     daemon._user_manager.start_user.assert_not_awaited()
+
+
+# ── Test: _on_tick evaluates trailing_stop rules ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_on_tick_evaluates_trailing_stop_rules():
+    """A market tick triggers trailing_stop rule evaluation."""
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(
+        rule_id=1,
+        user_id=999,
+        trigger_type="trailing_stop",
+        instrument_token="NSE_EQ|A",
+        trigger_config={
+            "trail_percent": 15.0,
+            "initial_price": 1000.0,
+            "highest_price": 1000.0,
+        },
+    )
+
+    session_obj = _make_user_session(999, rules=[rule])
+    daemon._user_manager = MagicMock()
+    daemon._user_manager.get_session.return_value = session_obj
+    daemon._rules_by_user = {999: [rule]}
+
+    with patch.object(daemon, "_evaluate_and_execute", new_callable=AsyncMock) as mock_exec:
+        await daemon._on_tick(999, "NSE_EQ|A", {"ltp": 850.0})
+
+    mock_exec.assert_awaited_once()
+
+
+# ── Test: _evaluate_and_execute persists trigger_config_update ────────
+
+
+@pytest.mark.asyncio
+async def test_evaluate_and_execute_persists_trigger_config_update():
+    """When evaluate_rule returns trigger_config_update, daemon persists it."""
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(
+        rule_id=5,
+        user_id=999,
+        trigger_type="trailing_stop",
+        trigger_config={
+            "trail_percent": 15.0,
+            "initial_price": 1000.0,
+            "highest_price": 1000.0,
+        },
+    )
+
+    updated_config = {
+        "trail_percent": 15.0,
+        "initial_price": 1000.0,
+        "highest_price": 1100.0,
+        "reference": "ltp",
+    }
+
+    not_fired_result = RuleResult(
+        rule_id=5,
+        fired=False,
+        trigger_config_update=updated_config,
+    )
+
+    ctx = EvalContext(market_data={"ltp": 1100.0}, now=datetime.utcnow())
+
+    with patch("monitor.daemon.evaluate_rule", return_value=not_fired_result), \
+         patch("monitor.daemon.get_db_context") as mock_ctx, \
+         patch("monitor.daemon.crud") as mock_crud:
+
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_crud.update_rule = AsyncMock()
+
+        await daemon._evaluate_and_execute(rule, ctx)
+
+    # Should persist the trigger_config_update to DB
+    mock_crud.update_rule.assert_awaited_once_with(
+        mock_session, 5, trigger_config=updated_config
+    )
+    # Should update in-memory rule
+    assert rule.trigger_config == updated_config
+
+
+@pytest.mark.asyncio
+async def test_evaluate_and_execute_no_persist_when_no_update():
+    """When trigger_config_update is None, no DB write happens."""
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(rule_id=5, user_id=999)
+    not_fired_result = RuleResult(rule_id=5, fired=False)
+
+    ctx = EvalContext(market_data={"ltp": 50.0}, now=datetime.utcnow())
+
+    with patch("monitor.daemon.evaluate_rule", return_value=not_fired_result), \
+         patch("monitor.daemon.crud") as mock_crud:
+
+        mock_crud.update_rule = AsyncMock()
+        await daemon._evaluate_and_execute(rule, ctx)
+
+    mock_crud.update_rule.assert_not_awaited()

@@ -182,7 +182,7 @@ class MonitorDaemon:
             return
 
         for rule in session_obj.rules:
-            if rule.trigger_type not in ("price", "indicator", "compound"):
+            if rule.trigger_type not in ("price", "indicator", "compound", "trailing_stop"):
                 continue
             if rule.instrument_token != instrument_token:
                 continue
@@ -224,8 +224,29 @@ class MonitorDaemon:
     async def _evaluate_and_execute(
         self, rule: MonitorRule, ctx: EvalContext
     ) -> None:
-        """Evaluate a rule and execute its action if fired."""
+        """Evaluate a rule and execute its action if fired.
+
+        Also persists trigger_config_update (used by trailing_stop to
+        track highest_price) to DB and updates the in-memory rule.
+        """
         result = evaluate_rule(rule, ctx)
+
+        # Persist trigger_config_update if present (e.g. trailing stop highest_price)
+        if result.trigger_config_update is not None:
+            try:
+                async with get_db_context() as db_session:
+                    await crud.update_rule(
+                        db_session, rule.id,
+                        trigger_config=result.trigger_config_update,
+                    )
+                # Update in-memory rule so next tick uses new values
+                rule.trigger_config = result.trigger_config_update
+            except Exception as e:
+                logger.error(
+                    "Failed to persist trigger_config_update for rule %d: %s",
+                    rule.id, e,
+                )
+
         if not result.fired:
             return
 
