@@ -16,6 +16,7 @@ from monitor.models import (
     OrderStatusTrigger,
     PriceTrigger,
     TimeTrigger,
+    TrailingStopTrigger,
 )
 
 
@@ -73,6 +74,39 @@ def evaluate_price_trigger(
         return prev_price > cfg.price and current <= cfg.price
 
     return False
+
+
+# ── Trailing stop triggers ──────────────────────────────────────────
+
+def evaluate_trailing_stop_trigger(
+    rule: MonitorRule,
+    market_data: dict,
+) -> tuple[bool, dict | None]:
+    """Evaluate a trailing stop-loss trigger.
+
+    Returns (fired, trigger_config_update).
+    - fired=True when price drops to or below the trailing stop level.
+    - trigger_config_update is non-None when highest_price needs updating.
+    """
+    cfg = TrailingStopTrigger(**rule.trigger_config)
+
+    current = market_data.get(cfg.reference)
+    if current is None:
+        return False, None
+
+    stop_price = cfg.highest_price * (1 - cfg.trail_percent / 100)
+
+    # Check if price has dropped to/below the stop level
+    if current <= stop_price:
+        return True, None
+
+    # Check if we have a new high
+    if current > cfg.highest_price:
+        updated = rule.trigger_config.copy()
+        updated["highest_price"] = current
+        return False, updated
+
+    return False, None
 
 
 # ── Time triggers ────────────────────────────────────────────────────
@@ -269,6 +303,7 @@ class RuleResult:
     action_type: str | None = None
     action_config: dict = field(default_factory=dict)
     rules_to_cancel: list[int] = field(default_factory=list)
+    trigger_config_update: dict | None = None
 
 
 def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
@@ -315,6 +350,9 @@ def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
             "prev_indicator_values": ctx.prev_indicator_values or None,
         }
         fired = evaluate_compound_trigger(rule, compound_ctx)
+    elif rule.trigger_type == "trailing_stop":
+        fired, config_update = evaluate_trailing_stop_trigger(rule, ctx.market_data)
+        result.trigger_config_update = config_update
 
     result.fired = fired
 
