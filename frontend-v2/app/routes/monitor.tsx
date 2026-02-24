@@ -137,8 +137,11 @@ function actionSummary(rule: MonitorRule): string {
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
-  const d = new Date(iso);
+  // DB stores naive UTC timestamps (no Z suffix), so append Z to ensure
+  // JS interprets them as UTC, then display in IST.
+  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
   return d.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit',
     hour12: true,
