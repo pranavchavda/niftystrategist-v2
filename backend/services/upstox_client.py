@@ -925,9 +925,21 @@ class UpstoxClient:
             # Previous close total = current value minus today's change
             prev_close_total = current - day_pnl
 
+            # Fetch available cash from funds API
+            available_cash = 0.0
+            try:
+                user_api = upstox_client.UserApi(api_client)
+                funds_response = user_api.get_user_fund_margin(api_version="v2")
+                if funds_response.data:
+                    equity_data = funds_response.data.get("equity")
+                    if equity_data:
+                        available_cash = equity_data.available_margin or 0.0
+            except Exception as e:
+                logger.warning(f"Failed to fetch funds/margin: {e}")
+
             return Portfolio(
-                total_value=current,
-                available_cash=0,  # Would need funds API
+                total_value=current + available_cash,
+                available_cash=available_cash,
                 invested_value=invested,
                 day_pnl=day_pnl,
                 day_pnl_percentage=(day_pnl / prev_close_total * 100) if prev_close_total else 0,
