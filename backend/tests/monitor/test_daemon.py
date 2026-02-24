@@ -210,7 +210,12 @@ async def test_poll_rules_syncs_existing_users():
             rule_id=r.id, user_id=r.user_id
         )
 
-        daemon._user_manager = AsyncMock()
+        mock_um = AsyncMock()
+        # get_session is sync — return a mock with matching access_token
+        mock_session_obj = MagicMock()
+        mock_session_obj.access_token = "test-token"
+        mock_um.get_session = MagicMock(return_value=mock_session_obj)
+        daemon._user_manager = mock_um
 
         await daemon._poll_rules()
 
@@ -219,7 +224,7 @@ async def test_poll_rules_syncs_existing_users():
     assert call_args[0][0] == 999  # user_id
     assert len(call_args[0][1]) == 1  # updated rules list
 
-    # start_user and stop_user should NOT be called for existing users
+    # start_user and stop_user should NOT be called (same token)
     daemon._user_manager.start_user.assert_not_awaited()
     daemon._user_manager.stop_user.assert_not_awaited()
 

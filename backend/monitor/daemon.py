@@ -161,17 +161,23 @@ class MonitorDaemon:
             if token:
                 await self._user_manager.start_user(uid, token, rules_by_user[uid])
 
-        # Sync or stop existing users
+        # Sync or restart existing users
         for uid in old_users & new_users:
             token = self._access_tokens.get(uid)
-            if token:
-                await self._user_manager.sync_rules(uid, rules_by_user[uid])
-            else:
+            if not token:
                 # Token expired mid-session — stop the user
                 await self._user_manager.stop_user(uid)
                 logger.info(
                     "Stopped session for user %d (token expired)", uid
                 )
+                continue
+            # Check if the token changed (e.g. TOTP refresh) — restart streams
+            session = self._user_manager.get_session(uid)
+            if session and session.access_token != token:
+                logger.info("Token changed for user %d, restarting streams", uid)
+                await self._user_manager.start_user(uid, token, rules_by_user[uid])
+            else:
+                await self._user_manager.sync_rules(uid, rules_by_user[uid])
 
         self._rules_by_user = rules_by_user
 

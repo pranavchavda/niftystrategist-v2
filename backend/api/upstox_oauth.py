@@ -447,6 +447,14 @@ async def get_upstox_status(user: User = Depends(get_current_user)):
                 # On network error, trust DB expiry rather than marking disconnected
                 pass
 
+        # Token stale — try TOTP auto-refresh
+        if not connected and db_user.upstox_mobile and db_user.upstox_totp_secret:
+            refreshed = await auto_refresh_upstox_token(user.id)
+            if refreshed:
+                connected = True
+                token_expiry = (datetime.utcnow() + timedelta(hours=24)).isoformat()
+                logger.info(f"TOTP auto-refresh on status check for user {user.id}")
+
         return UpstoxStatusResponse(
             connected=connected,
             upstox_user_id=db_user.upstox_user_id if connected else None,
