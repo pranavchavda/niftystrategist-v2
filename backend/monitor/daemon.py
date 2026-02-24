@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# IST = UTC+5:30 — used for time-trigger evaluation because users specify
+# trigger times in IST (Indian market hours).
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 from database.session import get_db_context
 from monitor import crud
@@ -285,13 +289,18 @@ class MonitorDaemon:
     # ── Time rule checking ────────────────────────────────────────────
 
     async def _check_time_rules(self) -> None:
-        """Evaluate all time-based rules (called every poll_interval)."""
-        now = datetime.utcnow()
+        """Evaluate all time-based rules (called every poll_interval).
+
+        Time triggers use IST because users specify trigger times in IST
+        (Indian market hours).  We convert UTC → IST here and pass a naive
+        IST datetime so evaluate_time_trigger() can compare directly.
+        """
+        now_ist = datetime.now(_IST).replace(tzinfo=None)
         for user_id, rules in self._rules_by_user.items():
             for rule in rules:
                 if rule.trigger_type != "time":
                     continue
-                ctx = EvalContext(now=now)
+                ctx = EvalContext(now=now_ist)
                 await self._evaluate_and_execute(rule, ctx)
 
     # ── Evaluation + execution ────────────────────────────────────────

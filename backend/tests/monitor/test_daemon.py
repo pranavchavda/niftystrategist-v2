@@ -354,6 +354,43 @@ async def test_check_time_rules_evaluates_time_rules():
     assert isinstance(exec_args[1].now, datetime)
 
 
+@pytest.mark.asyncio
+async def test_check_time_rules_passes_ist_not_utc():
+    """_check_time_rules must pass IST (UTC+5:30), not UTC, to EvalContext.
+
+    Time triggers use IST because users specify trigger times in Indian
+    market hours.  Previously the daemon passed datetime.utcnow() which
+    meant a rule set for 15:15 IST would only match at 15:15 UTC (= 20:45 IST).
+    """
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+    rule = _make_rule(
+        rule_id=1,
+        user_id=999,
+        trigger_type="time",
+        instrument_token=None,
+        trigger_config={"at": "15:15", "on_days": ["mon", "tue", "wed", "thu", "fri"]},
+    )
+    daemon._rules_by_user = {999: [rule]}
+
+    # Freeze UTC time to 09:45 (= 15:15 IST).
+    frozen_utc = datetime(2026, 2, 24, 9, 45, 0)
+
+    with patch.object(daemon, "_evaluate_and_execute", new_callable=AsyncMock) as mock_exec, \
+         patch("monitor.daemon.datetime") as mock_dt:
+        # datetime.now(_IST) is called inside _check_time_rules
+        mock_dt.now.return_value = datetime(2026, 2, 24, 15, 15, 0)
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        await daemon._check_time_rules()
+
+    mock_exec.assert_awaited_once()
+    ctx = mock_exec.call_args[0][1]
+    # The `now` passed to EvalContext should be ~15:15, not ~09:45
+    assert ctx.now.hour == 15
+    assert ctx.now.minute == 15
+
+
 # ── Test: _evaluate_and_execute fires action ─────────────────────────
 
 
