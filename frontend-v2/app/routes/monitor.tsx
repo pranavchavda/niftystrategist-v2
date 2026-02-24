@@ -109,11 +109,13 @@ function triggerSummary(rule: MonitorRule): string {
     case 'indicator':
       return `${tc.indicator}(${tc.params?.period || ''}) ${tc.condition} ${tc.threshold}`;
     case 'time':
-      return `At ${tc.time} IST`;
+      return `At ${tc.at} IST`;
     case 'order_status':
-      return `Order ${tc.order_id?.slice(-8) || '?'} → ${tc.expected_status}`;
+      return `Order ${tc.order_id?.slice(-8) || '?'} → ${tc.status}`;
     case 'compound':
-      return `${(tc.conditions || []).length} conditions (${tc.logic || 'AND'})`;
+      return `${(tc.conditions || []).length} conditions (${tc.operator || 'AND'})`;
+    case 'trailing_stop':
+      return `Trail ${tc.trail_percent}% from ${tc.highest_price || tc.initial_price}`;
     default:
       return rule.trigger_type;
   }
