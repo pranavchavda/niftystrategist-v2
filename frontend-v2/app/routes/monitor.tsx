@@ -1282,7 +1282,7 @@ function CreateRuleWizard({
                   ...prev,
                   symbol,
                   instrument_token: instrumentKey,
-                  action_config: { ...prev.action_config, symbol: instrumentKey },
+                  action_config: { ...prev.action_config, symbol },
                 }));
               }}
             />
@@ -1488,7 +1488,7 @@ function CreateRuleWizard({
                   value={formData.action_config.symbol ? formData.symbol || '' : ''}
                   label="Symbol"
                   onSelect={(symbol, instrumentKey) => {
-                    updateAC('symbol', instrumentKey);
+                    updateAC('symbol', symbol);
                     update('symbol', symbol);
                   }}
                 />
