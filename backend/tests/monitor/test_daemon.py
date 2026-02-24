@@ -443,7 +443,7 @@ async def test_get_client_returns_upstox_client():
         MockClient.return_value = MagicMock()
         client = await daemon._get_client(999)
 
-    MockClient.assert_called_once_with(access_token="my-access-token", user_id=999)
+    MockClient.assert_called_once_with(access_token="my-access-token", user_id=999, paper_trading=False)
     assert client is MockClient.return_value
 
 

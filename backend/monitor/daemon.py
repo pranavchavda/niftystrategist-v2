@@ -347,4 +347,8 @@ class MonitorDaemon:
         token = self._access_tokens.get(user_id)
         if not token:
             raise ValueError(f"No access token for user {user_id}")
-        return UpstoxClient(access_token=token, user_id=user_id)
+        return UpstoxClient(
+            access_token=token,
+            user_id=user_id,
+            paper_trading=self._paper_mode,
+        )
