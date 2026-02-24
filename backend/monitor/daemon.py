@@ -48,9 +48,12 @@ class MonitorDaemon:
         self._poll_interval = poll_interval
         self._running = False
 
+        self._auth_refresh_locks: dict[int, asyncio.Lock] = {}
+
         self._user_manager = UserManager(
             on_tick=self._on_tick,
             on_portfolio_event=self._on_portfolio_event,
+            on_auth_failure=self._on_stream_auth_failure,
         )
         self._action_executor = ActionExecutor(
             get_client=self._get_client,
@@ -116,6 +119,68 @@ class MonitorDaemon:
 
         # get_user_upstox_token handles expiry detection + TOTP auto-refresh
         return await get_user_upstox_token(user_id)
+
+    # ── Stream auth failure handling ─────────────────────────────────
+
+    async def _on_stream_auth_failure(self, user_id: int) -> None:
+        """Handle authentication failure from a WebSocket stream.
+
+        Called when a stream gets a 401/403 from Upstox. Both streams
+        for the same user may fire concurrently, so we deduplicate via
+        a per-user asyncio.Lock — if a refresh is already in progress,
+        the second call is a no-op.
+
+        On success (new token obtained): restarts streams for the user.
+        On failure (same/no token): leaves user stopped for next poll cycle.
+        """
+        lock = self._auth_refresh_locks.setdefault(user_id, asyncio.Lock())
+
+        # If already handling this user's auth failure, skip
+        if lock.locked():
+            logger.debug(
+                "Auth failure for user %d already being handled, skipping",
+                user_id,
+            )
+            return
+
+        async with lock:
+            stale_token = self._access_tokens.get(user_id)
+            logger.warning(
+                "Stream auth failure for user %d, attempting token refresh",
+                user_id,
+            )
+
+            # Tear down both streams
+            await self._user_manager.stop_user(user_id)
+
+            # Attempt TOTP refresh
+            new_token = await self._load_access_token(user_id)
+
+            if new_token and new_token != stale_token:
+                # Fresh token — restart streams
+                self._access_tokens[user_id] = new_token
+                rules = self._rules_by_user.get(user_id, [])
+                if rules:
+                    await self._user_manager.start_user(
+                        user_id, new_token, rules
+                    )
+                    logger.info(
+                        "Refreshed token for user %d, streams restarted",
+                        user_id,
+                    )
+                else:
+                    logger.info(
+                        "Refreshed token for user %d but no active rules",
+                        user_id,
+                    )
+            else:
+                # Refresh failed or returned same stale token
+                self._access_tokens.pop(user_id, None)
+                logger.warning(
+                    "Token refresh failed for user %d, "
+                    "streams stopped until next poll cycle",
+                    user_id,
+                )
 
     # ── Rule polling ──────────────────────────────────────────────────
 

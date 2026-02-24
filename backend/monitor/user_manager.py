@@ -116,10 +116,12 @@ class UserManager:
         self,
         on_tick: Callable[[int, str, dict], Coroutine[Any, Any, None]],
         on_portfolio_event: Callable[[int, dict], Coroutine[Any, Any, None]],
+        on_auth_failure: Callable[[int], Coroutine[Any, Any, None]] | None = None,
     ):
         self._sessions: dict[int, UserSession] = {}
         self._on_tick = on_tick
         self._on_portfolio_event_cb = on_portfolio_event
+        self._on_auth_failure = on_auth_failure
 
     def get_session(self, user_id: int) -> UserSession | None:
         """Get the session for a user, or None if not active."""
@@ -141,14 +143,22 @@ class UserManager:
         if user_id in self._sessions:
             await self.stop_user(user_id)
 
+        # Create auth failure closure that binds user_id
+        auth_failure_cb = None
+        if self._on_auth_failure:
+            async def auth_failure_cb():
+                await self._on_auth_failure(user_id)
+
         # Create stream instances with closures that bind user_id
         portfolio_stream = PortfolioStream(
             access_token=access_token,
             on_message=lambda event: self._on_portfolio_event(user_id, event),
+            on_auth_failure=auth_failure_cb,
         )
         market_stream = MarketDataStream(
             access_token=access_token,
             on_message=lambda tick_data: self._on_market_tick(user_id, tick_data),
+            on_auth_failure=auth_failure_cb,
         )
 
         session = UserSession(

@@ -8,7 +8,7 @@ from typing import Any, Callable, Coroutine
 import aiohttp
 from google.protobuf import json_format
 
-from monitor.streams.connection import BaseWebSocketStream
+from monitor.streams.connection import AuthenticationError, BaseWebSocketStream
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class MarketDataStream(BaseWebSocketStream):
         access_token: str,
         on_message: Callable[[dict], Coroutine[Any, Any, None]],
         mode: str = "ltpc",
+        on_auth_failure: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ):
         self._access_token = access_token
         self._mode = mode
@@ -63,6 +64,7 @@ class MarketDataStream(BaseWebSocketStream):
             name="MarketDataStream",
             get_auth_url=get_url,
             on_message=on_message,
+            on_auth_failure=on_auth_failure,
         )
 
     async def _authorize(self) -> str:
@@ -81,6 +83,10 @@ class MarketDataStream(BaseWebSocketStream):
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
+                    if resp.status in (401, 403):
+                        raise AuthenticationError(
+                            f"Market data auth failed ({resp.status}): {text}"
+                        )
                     raise ConnectionError(
                         f"Market data auth failed ({resp.status}): {text}"
                     )

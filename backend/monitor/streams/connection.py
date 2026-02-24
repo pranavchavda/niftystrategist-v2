@@ -13,6 +13,10 @@ from websockets.protocol import State as WsState
 logger = logging.getLogger(__name__)
 
 
+class AuthenticationError(ConnectionError):
+    """Raised when a stream gets a 401/403 from Upstox (expired token)."""
+
+
 class BaseWebSocketStream(ABC):
     """Base class for Upstox WebSocket streams with reconnection.
 
@@ -30,12 +34,14 @@ class BaseWebSocketStream(ABC):
         on_message: Callable[[Any], Coroutine[Any, Any, None]],
         max_reconnect_delay: float = 60.0,
         heartbeat_timeout: float = 30.0,
+        on_auth_failure: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ):
         self.name = name
         self._get_auth_url = get_auth_url
         self._on_message = on_message
         self._max_reconnect_delay = max_reconnect_delay
         self._heartbeat_timeout = heartbeat_timeout
+        self._on_auth_failure = on_auth_failure
         self._ws: ClientConnection | None = None
         self._running = False
         self._reconnect_delay = 1.0
@@ -86,6 +92,20 @@ class BaseWebSocketStream(ABC):
                     await self._receive_loop(ws)
 
             except asyncio.CancelledError:
+                break
+            except AuthenticationError as e:
+                logger.error(
+                    f"[{self.name}] Authentication failed: {e}. "
+                    "Stopping stream (no retry)."
+                )
+                self._running = False
+                if self._on_auth_failure:
+                    try:
+                        await self._on_auth_failure()
+                    except Exception as cb_err:
+                        logger.error(
+                            f"[{self.name}] on_auth_failure callback error: {cb_err}"
+                        )
                 break
             except Exception as e:
                 if not self._running:

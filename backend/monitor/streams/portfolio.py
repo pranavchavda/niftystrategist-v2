@@ -7,7 +7,7 @@ from typing import Any, Callable, Coroutine
 
 import aiohttp
 
-from monitor.streams.connection import BaseWebSocketStream
+from monitor.streams.connection import AuthenticationError, BaseWebSocketStream
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class PortfolioStream(BaseWebSocketStream):
         access_token: str,
         on_message: Callable[[dict], Coroutine[Any, Any, None]],
         update_types: str = "order,position,holding",
+        on_auth_failure: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ):
         self._access_token = access_token
         self._update_types = update_types
@@ -47,6 +48,7 @@ class PortfolioStream(BaseWebSocketStream):
             name="PortfolioStream",
             get_auth_url=get_url,
             on_message=on_message,
+            on_auth_failure=on_auth_failure,
         )
 
     async def _authorize(self) -> str:
@@ -68,6 +70,10 @@ class PortfolioStream(BaseWebSocketStream):
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
+                    if resp.status in (401, 403):
+                        raise AuthenticationError(
+                            f"Portfolio auth failed ({resp.status}): {text}"
+                        )
                     raise ConnectionError(
                         f"Portfolio auth failed ({resp.status}): {text}"
                     )
