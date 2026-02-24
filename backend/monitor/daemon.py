@@ -325,6 +325,12 @@ class MonitorDaemon:
         if not result.fired:
             return
 
+        # Immediately increment in-memory fire_count so the next tick's
+        # should_evaluate check sees the updated count.  Without this,
+        # rules with max_fires=1 and level-triggered conditions (gte/lte)
+        # fire on every tick until the next _poll_rules() DB reload.
+        rule.fire_count += 1
+
         logger.info("Rule %d (%s) FIRED", rule.id, rule.name)
 
         trigger_snapshot = {

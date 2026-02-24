@@ -702,3 +702,95 @@ async def test_load_access_token_manual_overrides_db():
 
     assert token == "manual-token"
     mock_get.assert_not_awaited()
+
+
+# ── Test: fire_count incremented in memory immediately ────────────────
+
+
+@pytest.mark.asyncio
+async def test_evaluate_and_execute_increments_fire_count_in_memory():
+    """After a rule fires, fire_count is incremented in memory immediately.
+
+    This prevents level-triggered rules (gte/lte) from firing on every tick
+    when max_fires is set — the in-memory fire_count must be updated before
+    the next tick arrives, not just in the DB.
+    """
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(rule_id=1, user_id=999)
+    rule.max_fires = 1
+    rule.fire_count = 0
+
+    ctx = EvalContext(market_data={"ltp": 105.0}, now=datetime.utcnow())
+
+    fired_result = RuleResult(
+        rule_id=1, fired=True, action_type="place_order", action_config=rule.action_config
+    )
+
+    with patch("monitor.daemon.evaluate_rule", return_value=fired_result), \
+         patch("monitor.daemon.get_db_context") as mock_ctx, \
+         patch.object(daemon._action_executor, "execute", new_callable=AsyncMock):
+
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await daemon._evaluate_and_execute(rule, ctx)
+
+    # fire_count should be incremented in memory
+    assert rule.fire_count == 1
+    # should_evaluate should now return False (1 >= max_fires=1)
+    assert rule.should_evaluate is False
+
+
+@pytest.mark.asyncio
+async def test_max_fires_prevents_second_fire_on_next_tick():
+    """Simulates two rapid ticks for a max_fires=1 rule — only fires once.
+
+    This is the exact race condition that caused 21 SELL orders for MAFANG:
+    gte is true every tick, and the in-memory fire_count wasn't being updated.
+    """
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(
+        rule_id=1,
+        user_id=999,
+        trigger_type="price",
+        trigger_config={"condition": "gte", "price": 100.0, "reference": "ltp"},
+    )
+    rule.max_fires = 1
+    rule.fire_count = 0
+
+    session_obj = _make_user_session(999, rules=[rule])
+    daemon._user_manager = MagicMock()
+    daemon._user_manager.get_session.return_value = session_obj
+    daemon._rules_by_user = {999: [rule]}
+
+    execute_call_count = 0
+
+    async def mock_execute(rule, result, snapshot, session):
+        nonlocal execute_call_count
+        execute_call_count += 1
+
+    with patch("monitor.daemon.get_db_context") as mock_ctx:
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        daemon._action_executor.execute = mock_execute
+
+        # Tick 1: price >= 100, should fire
+        await daemon._on_tick(999, "NSE_EQ|INE002A01018", {"ltp": 105.0})
+
+        # Tick 2: price still >= 100, should NOT fire (max_fires reached)
+        await daemon._on_tick(999, "NSE_EQ|INE002A01018", {"ltp": 106.0})
+
+        # Tick 3: just to be safe
+        await daemon._on_tick(999, "NSE_EQ|INE002A01018", {"ltp": 107.0})
+
+    # Only 1 execution despite 3 qualifying ticks
+    assert execute_call_count == 1
