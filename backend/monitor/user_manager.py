@@ -258,10 +258,10 @@ class UserManager:
         """Handle a market data tick from the MarketDataStream.
 
         For each instrument in the tick:
-        1. Update prev_prices
-        2. Feed candle buffers
-        3. Recompute indicators on candle completion
-        4. Forward to external on_tick callback
+        1. Feed candle buffers
+        2. Recompute indicators on candle completion
+        3. Forward to external on_tick callback (prev_prices still has OLD value)
+        4. Update prev_prices to current LTP (for next tick's crosses_above/below)
         """
         session = self._sessions.get(user_id)
         if session is None:
@@ -276,10 +276,7 @@ class UserManager:
 
             volume = data.get("volume", 0)
 
-            # 1. Update prev_prices (store current before overwriting)
-            session.prev_prices[instrument_key] = ltp
-
-            # 2. Feed candle buffers and check for candle completion
+            # 1. Feed candle buffers and check for candle completion
             for buf_key, buf in session.candle_buffers.items():
                 if not buf_key.startswith(f"{instrument_key}_"):
                     continue
@@ -289,13 +286,16 @@ class UserManager:
                 buf.add_tick(ltp, volume=volume, timestamp=ts)
                 candle_count_after = len(buf.get_candles())
 
-                # 3. New candle started => previous candle completed
+                # 2. New candle started => previous candle completed
                 candle_completed = candle_count_after > candle_count_before
                 if candle_completed:
                     self._recompute_indicators(session, buf_key, buf)
 
-            # 4. Forward to external callback
+            # 3. Forward to external callback (prev_prices still has OLD value)
             await self._on_tick(user_id, instrument_key, data)
+
+            # 4. Update prev_prices AFTER callback so crosses_above/below works
+            session.prev_prices[instrument_key] = ltp
 
     async def _on_portfolio_event(self, user_id: int, event: dict):
         """Handle a portfolio event from the PortfolioStream."""
