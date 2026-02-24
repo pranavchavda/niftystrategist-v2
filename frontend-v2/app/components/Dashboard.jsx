@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import * as Headless from '@headlessui/react';
 import {
   PanelLeftCloseIcon,
@@ -55,6 +55,29 @@ const Dashboard = ({ authToken }) => {
   };
   const chartConfig = TIMEFRAME_CONFIG[activeTimeframe] || { days: 90, interval: 'day' };
   const chartResult = useChartData(authToken, activeSymbol, chartConfig.days, chartConfig.interval);
+
+  // Build live quote for the chart header from cockpit data (indices, holdings, watchlist)
+  const liveQuote = useMemo(() => {
+    // Check indices (NIFTY 50, BANK NIFTY, SENSEX, etc.)
+    const idx = cockpitData.indices.find(i => i.name === activeSymbol);
+    if (idx) return { price: idx.value, change: idx.change, changePct: idx.changePct };
+
+    // Check holdings
+    const holding = cockpitData.holdings.find(h => h.symbol === activeSymbol);
+    if (holding) return { price: holding.ltp, change: holding.dayChange, changePct: holding.dayChangePct };
+
+    // Check positions
+    const position = cockpitData.positions.find(p => p.symbol === activeSymbol);
+    if (position) return { price: position.ltp, change: position.dayChange, changePct: position.dayChangePct };
+
+    // Check watchlists
+    for (const items of Object.values(cockpitData.watchlists)) {
+      const wl = items.find(w => w.symbol === activeSymbol);
+      if (wl) return { price: wl.ltp, change: wl.change, changePct: wl.changePct };
+    }
+
+    return null;
+  }, [activeSymbol, cockpitData.indices, cockpitData.holdings, cockpitData.positions, cockpitData.watchlists]);
 
   // Derive market open status from live data
   const marketOpen = cockpitData.marketStatus?.status === 'open' || cockpitData.marketStatus?.status === 'pre_open';
@@ -237,6 +260,7 @@ const Dashboard = ({ authToken }) => {
               data={chartResult.data}
               activeTimeframe={activeTimeframe}
               onTimeframeChange={(tf) => setActiveTimeframe(tf)}
+              liveQuote={liveQuote}
             />
           </div>
 

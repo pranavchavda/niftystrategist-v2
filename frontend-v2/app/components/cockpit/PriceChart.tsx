@@ -1,17 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, CandlestickSeries, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from 'lightweight-charts';
 
+interface LiveQuote {
+  price: number;
+  change: number;
+  changePct: number;
+}
+
 interface PriceChartProps {
   symbol: string;
   data: { time: string; open: number; high: number; low: number; close: number }[];
   className?: string;
   activeTimeframe?: string;
   onTimeframeChange?: (tf: string) => void;
+  liveQuote?: LiveQuote | null;
 }
 
 const TIMEFRAMES = ['1D', '5D', '1W', '1M', '3M', '6M', '1Y'] as const;
 
-export default function PriceChart({ symbol, data, className = '', activeTimeframe: controlledTf, onTimeframeChange }: PriceChartProps) {
+export default function PriceChart({ symbol, data, className = '', activeTimeframe: controlledTf, onTimeframeChange, liveQuote }: PriceChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -115,11 +122,12 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
     };
   }, [data, isDark, activeTimeframe]);
 
-  // Get current price info from data
+  // Get current price info — prefer live quote over last candle
   const lastCandle = data[data.length - 1];
   const prevCandle = data[data.length - 2];
-  const priceChange = lastCandle && prevCandle ? lastCandle.close - prevCandle.close : 0;
-  const priceChangePct = prevCandle ? (priceChange / prevCandle.close) * 100 : 0;
+  const headerPrice = liveQuote?.price ?? lastCandle?.close ?? 0;
+  const priceChange = liveQuote?.change ?? (lastCandle && prevCandle ? lastCandle.close - prevCandle.close : 0);
+  const priceChangePct = liveQuote?.changePct ?? (prevCandle ? ((lastCandle.close - prevCandle.close) / prevCandle.close) * 100 : 0);
   const isUp = priceChange >= 0;
 
   return (
@@ -128,10 +136,10 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
       <div className="flex items-center justify-between px-3 py-2 flex-shrink-0">
         <div className="flex items-baseline gap-3">
           <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-200">{symbol}</h3>
-          {lastCandle && (
+          {headerPrice > 0 && (
             <>
               <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                {lastCandle.close.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                {headerPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </span>
               <span className={`text-xs font-semibold tabular-nums ${isUp ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                 {isUp ? '+' : ''}{priceChange.toFixed(2)} ({isUp ? '+' : ''}{priceChangePct.toFixed(2)}%)
