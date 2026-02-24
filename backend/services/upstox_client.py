@@ -1,8 +1,10 @@
 """Upstox API client using the official SDK."""
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 import upstox_client
@@ -925,7 +927,7 @@ class UpstoxClient:
             # Previous close total = current value minus today's change
             prev_close_total = current - day_pnl
 
-            # Fetch available cash from funds API
+            # Fetch available cash from funds API (unavailable 12:00 AM - 5:30 AM IST)
             available_cash = 0.0
             try:
                 user_api = upstox_client.UserApi(api_client)
@@ -934,8 +936,14 @@ class UpstoxClient:
                     equity_data = funds_response.data.get("equity")
                     if equity_data:
                         available_cash = equity_data.available_margin or 0.0
+                if available_cash > 0:
+                    self._cache_available_cash(available_cash)
             except Exception as e:
                 logger.warning(f"Failed to fetch funds/margin: {e}")
+
+            # Fall back to cached value when funds API is unavailable
+            if available_cash == 0:
+                available_cash = self._read_cached_available_cash()
 
             return Portfolio(
                 total_value=current + available_cash,
@@ -952,6 +960,27 @@ class UpstoxClient:
             raise ValueError(f"Failed to fetch portfolio: {e.status} - {e.reason}. {e.body}")
         except Exception as e:
             raise ValueError(f"Failed to fetch portfolio: {e}")
+
+    def _cash_cache_path(self) -> Path:
+        """Path for the per-user available cash cache file."""
+        cache_dir = Path(__file__).resolve().parent.parent / ".cache"
+        cache_dir.mkdir(exist_ok=True)
+        return cache_dir / f"funds_user_{self.user_id}.json"
+
+    def _cache_available_cash(self, amount: float) -> None:
+        """Persist available cash to file for offline fallback."""
+        try:
+            self._cash_cache_path().write_text(json.dumps({"available_cash": amount}))
+        except Exception as e:
+            logger.warning(f"Failed to write cash cache: {e}")
+
+    def _read_cached_available_cash(self) -> float:
+        """Read cached available cash from file."""
+        try:
+            data = json.loads(self._cash_cache_path().read_text())
+            return data.get("available_cash", 0.0)
+        except Exception:
+            return 0.0
 
     def get_known_symbols(self) -> list[str]:
         """Get list of supported stock symbols (all NSE symbols if cache available)."""
