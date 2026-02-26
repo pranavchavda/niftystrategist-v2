@@ -48,7 +48,7 @@ def register_portfolio_tools(agent, deps_type):
             if portfolio.positions:
                 result.append("")
                 result.append("---")
-                result.append("**Positions:**")
+                result.append("**📦 Holdings (Delivery/CNC):**")
                 result.append("")
                 result.append("| Symbol | Qty | Avg Price | Current | P&L | % |")
                 result.append("|--------|-----|-----------|---------|-----|---|")
@@ -61,7 +61,22 @@ def register_portfolio_tools(agent, deps_type):
                     )
             else:
                 result.append("")
-                result.append("*No open positions*")
+                result.append("*No delivery holdings*")
+
+            if portfolio.intraday_positions:
+                result.append("")
+                result.append("---")
+                result.append("**⚡ Intraday Positions (MIS):**")
+                result.append("")
+                result.append("| Symbol | Qty | Avg Price | Current | P&L | % |")
+                result.append("|--------|-----|-----------|---------|-----|---|")
+
+                for pos in portfolio.intraday_positions:
+                    pos_emoji = "🟢" if pos.pnl >= 0 else "🔴"
+                    result.append(
+                        f"| {pos.symbol} | {pos.quantity} | ₹{pos.average_price:,.2f} | "
+                        f"₹{pos.current_price:,.2f} | {pos_emoji} ₹{pos.pnl:,.2f} | {pos.pnl_percentage:+.2f}% |"
+                    )
 
             # Add note about paper trading if applicable
             if client.paper_trading:
@@ -98,11 +113,16 @@ def register_portfolio_tools(agent, deps_type):
 
             portfolio = await client.get_portfolio()
 
-            # Find the position
+            # Find the position (check delivery holdings first, then intraday)
             position = next(
                 (p for p in portfolio.positions if p.symbol.upper() == symbol.upper()),
                 None
             )
+            if not position:
+                position = next(
+                    (p for p in portfolio.intraday_positions if p.symbol.upper() == symbol.upper()),
+                    None
+                )
 
             if not position:
                 return f"📭 No position found for {symbol.upper()}"

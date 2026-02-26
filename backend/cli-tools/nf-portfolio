@@ -39,8 +39,23 @@ def show_portfolio(as_json: bool):
                     "pnl_percentage": p.pnl_percentage,
                     "day_change": p.day_change,
                     "day_change_percentage": p.day_change_percentage,
+                    "product": p.product or "D",
                 }
                 for p in portfolio.positions
+            ],
+            "intraday_positions": [
+                {
+                    "symbol": p.symbol,
+                    "quantity": p.quantity,
+                    "average_price": p.average_price,
+                    "current_price": p.current_price,
+                    "pnl": p.pnl,
+                    "pnl_percentage": p.pnl_percentage,
+                    "day_change": p.day_change,
+                    "day_change_percentage": p.day_change_percentage,
+                    "product": "I",
+                }
+                for p in portfolio.intraday_positions
             ],
         }
         print_json(data)
@@ -56,7 +71,8 @@ def show_portfolio(as_json: bool):
     print(f"  Total P&L:      {format_inr(portfolio.total_pnl)} ({portfolio.total_pnl_percentage:+.2f}%)")
 
     if portfolio.positions:
-        print(f"\n{'Symbol':<12} {'Qty':>5} {'Avg Price':>12} {'Current':>12} {'P&L':>12} {'%':>8}")
+        print(f"\n📦 Holdings (Delivery/CNC)")
+        print(f"{'Symbol':<12} {'Qty':>5} {'Avg Price':>12} {'Current':>12} {'P&L':>12} {'%':>8}")
         print("-" * 65)
         for p in portfolio.positions:
             arrow = "▲" if p.pnl >= 0 else "▼"
@@ -65,7 +81,18 @@ def show_portfolio(as_json: bool):
                 f"{format_inr(p.current_price):>12} {arrow} {format_inr(p.pnl):>10} {p.pnl_percentage:>+7.2f}%"
             )
     else:
-        print("\n  No open positions.")
+        print("\n  No delivery holdings.")
+
+    if portfolio.intraday_positions:
+        print(f"\n⚡ Intraday Positions (MIS)")
+        print(f"{'Symbol':<12} {'Qty':>5} {'Avg Price':>12} {'Current':>12} {'P&L':>12} {'%':>8}")
+        print("-" * 65)
+        for p in portfolio.intraday_positions:
+            arrow = "▲" if p.pnl >= 0 else "▼"
+            print(
+                f"{p.symbol:<12} {p.quantity:>5} {format_inr(p.average_price):>12} "
+                f"{format_inr(p.current_price):>12} {arrow} {format_inr(p.pnl):>10} {p.pnl_percentage:>+7.2f}%"
+            )
 
 
 def show_position(symbol: str, as_json: bool):
@@ -78,6 +105,8 @@ def show_position(symbol: str, as_json: bool):
         print_error(f"Failed to get portfolio: {e}")
 
     position = next((p for p in portfolio.positions if p.symbol.upper() == sym), None)
+    if not position:
+        position = next((p for p in portfolio.intraday_positions if p.symbol.upper() == sym), None)
     if not position:
         print_error(f"No position found for {sym}")
 

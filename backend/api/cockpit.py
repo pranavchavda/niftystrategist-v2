@@ -160,7 +160,7 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
 
         for pos in portfolio.positions:
             company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
-            item = {
+            holdings.append({
                 "symbol": pos.symbol,
                 "company": company,
                 "qty": pos.quantity,
@@ -170,14 +170,30 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
                 "pnlPct": pos.pnl_percentage,
                 "dayChange": pos.day_change,
                 "dayChangePct": pos.day_change_percentage,
-                "holdDays": None,  # Upstox doesn't provide purchase date
-            }
-            # In live mode, get_portfolio() calls get_holdings() → these are holdings.
-            # In paper mode, everything is a position (simulated intraday).
-            if client.paper_trading:
-                positions.append(item)
-            else:
-                holdings.append(item)
+                "holdDays": None,
+                "product": pos.product or "D",
+            })
+
+        for pos in portfolio.intraday_positions:
+            company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
+            positions.append({
+                "symbol": pos.symbol,
+                "company": company,
+                "qty": pos.quantity,
+                "avgPrice": pos.average_price,
+                "ltp": pos.current_price,
+                "pnl": pos.pnl,
+                "pnlPct": pos.pnl_percentage,
+                "dayChange": pos.day_change,
+                "dayChangePct": pos.day_change_percentage,
+                "holdDays": None,
+                "product": "I",
+            })
+
+        # In paper mode, all positions are simulated (treat as intraday/positions)
+        if client.paper_trading and not positions and holdings:
+            positions = holdings
+            holdings = []
 
         return {"positions": positions, "holdings": holdings}
     except Exception as e:

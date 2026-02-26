@@ -861,22 +861,65 @@ class UpstoxClient:
             response = portfolio_api.get_holdings(api_version="v2")
             holdings = response.data if response.data else []
 
-            # Fetch today's positions to find delivery sells.
+            # Fetch today's positions to find delivery sells AND intraday positions.
             # Holdings API returns FULL quantity (pre-settlement). If the user
             # sold shares today, those appear as negative-qty delivery positions.
             # We must subtract them to match the actual portfolio.
+            # Intraday (MIS) positions are collected separately.
             sell_qty_map: dict[str, int] = {}
+            intraday_positions: list[PortfolioPosition] = []
             try:
                 pos_response = portfolio_api.get_positions(api_version="v2")
                 for pos in (pos_response.data or []):
                     qty = getattr(pos, 'quantity', 0) or 0
                     product = getattr(pos, 'product', '')
+                    sym = (getattr(pos, 'tradingsymbol', None) or getattr(pos, 'trading_symbol', '') or '').upper()
+
                     if product == 'D' and qty < 0:
-                        sym = (getattr(pos, 'tradingsymbol', None) or getattr(pos, 'trading_symbol', '') or '').upper()
+                        # Delivery sell today — subtract from holdings
                         if sym:
                             sell_qty_map[sym] = sell_qty_map.get(sym, 0) + abs(qty)
+                    elif product == 'I' and qty != 0:
+                        # Intraday (MIS) position — collect it
+                        if sym:
+                            # Cache instrument_token for chart/quote lookups
+                            inst_token = getattr(pos, 'instrument_token', None)
+                            if inst_token:
+                                self._dynamic_symbols[sym] = inst_token
+
+                            avg_price = getattr(pos, 'average_price', 0) or getattr(pos, 'buy_price', 0) or 0
+                            last_price = getattr(pos, 'last_price', 0) or 0
+                            close_price = getattr(pos, 'close_price', 0) or 0
+
+                            if avg_price and last_price:
+                                intra_pnl = (last_price - avg_price) * qty
+                                intra_pnl_pct = ((last_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+                            else:
+                                intra_pnl = 0.0
+                                intra_pnl_pct = 0.0
+
+                            if close_price and last_price:
+                                intra_day_chg = last_price - close_price
+                                intra_day_chg_pct = (intra_day_chg / close_price * 100)
+                            else:
+                                intra_day_chg = 0.0
+                                intra_day_chg_pct = 0.0
+
+                            intraday_positions.append(
+                                PortfolioPosition(
+                                    symbol=sym,
+                                    quantity=abs(qty),
+                                    average_price=avg_price,
+                                    current_price=last_price,
+                                    pnl=intra_pnl,
+                                    pnl_percentage=intra_pnl_pct,
+                                    day_change=intra_day_chg,
+                                    day_change_percentage=intra_day_chg_pct,
+                                    product='I',
+                                )
+                            )
             except Exception as e:
-                logger.warning(f"Failed to fetch positions for sell adjustment: {e}")
+                logger.warning(f"Failed to fetch positions: {e}")
 
             positions = []
             for holding in holdings:
@@ -917,6 +960,7 @@ class UpstoxClient:
                         pnl_percentage=pnl_pct,
                         day_change=day_chg,
                         day_change_percentage=day_chg_pct,
+                        product='D',
                     )
                 )
 
@@ -954,6 +998,7 @@ class UpstoxClient:
                 total_pnl=total_pnl,
                 total_pnl_percentage=(total_pnl / invested * 100) if invested > 0 else 0,
                 positions=positions,
+                intraday_positions=intraday_positions,
             )
 
         except ApiException as e:

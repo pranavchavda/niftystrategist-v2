@@ -96,6 +96,9 @@ class PortfolioPosition(BaseModel):
     pnl_percentage: float
     day_change: float
     day_change_percentage: float
+    product: str | None = Field(
+        default=None, description="Product type: 'D' for delivery/CNC, 'I' for intraday/MIS"
+    )
 
 
 class Portfolio(BaseModel):
@@ -109,5 +112,8 @@ class Portfolio(BaseModel):
     total_pnl: float = Field(description="Total profit/loss")
     total_pnl_percentage: float = Field(description="Total P&L percentage")
     positions: list[PortfolioPosition] = Field(
-        default_factory=list, description="List of current positions"
+        default_factory=list, description="List of delivery/CNC positions (holdings)"
+    )
+    intraday_positions: list[PortfolioPosition] = Field(
+        default_factory=list, description="List of intraday/MIS positions for today"
     )

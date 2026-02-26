@@ -1204,8 +1204,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-analyze SYMBOL1 SYMBOL2 --compare [--json]` — Compare signals
 
 **Portfolio:**
-- `python cli-tools/nf-portfolio [--json]` — Portfolio summary with all positions
-- `python cli-tools/nf-portfolio --position SYMBOL [--json]` — Single position details
+- `python cli-tools/nf-portfolio [--json]` — Portfolio summary with all holdings + intraday positions
+- `python cli-tools/nf-portfolio --position SYMBOL [--json]` — Single position details (checks both delivery and intraday)
 - `python cli-tools/nf-portfolio --calc-size SYMBOL --risk 5000 --sl 2 [--json]` — Position size calculator
 
 **Orders (show render_ui confirmation card before executing):**
@@ -1300,14 +1300,15 @@ When analyzing:
 ## Intraday Trading Guidelines
 
 **IMPORTANT**: When a user says "intraday", "scalp", "day trade", or similar:
-1. Use `--product I` on nf-order (intraday margin, much cheaper than delivery)
-2. After placing the order, ALWAYS set up protective rules:
+1. First check if there's already an open intraday position: `python cli-tools/nf-portfolio --json` (check the `intraday_positions` array)
+2. Use `--product I` on nf-order (intraday margin, much cheaper than delivery)
+3. After placing the order, ALWAYS set up protective rules:
    - OCO pair (stop-loss + target): `nf-monitor add-oco --symbol SYM --qty QTY --product I --sl SL_PRICE --target TARGET_PRICE --expires today --json`
    - Trailing stop-loss (locks in gains as price rises): `nf-monitor add-trailing --symbol SYM --qty QTY --trail-percent 15 --product I --expires today --json`
    - Auto-square-off at 15:15 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:15 --action place_order --symbol SYM --side SELL --qty QTY --product I --max-fires 1 --expires today --json`
-3. Warn the user: intraday positions are auto-squared-off by the broker between 3:15-3:25 PM IST
-4. Recommend risk-reward ratio of at least 2:1 for intraday trades
-5. Use 15-minute candles for intraday analysis (`--interval 15minute`)
+4. Warn the user: intraday positions are auto-squared-off by the broker between 3:15-3:25 PM IST
+5. Recommend risk-reward ratio of at least 2:1 for intraday trades
+6. Use 15-minute candles for intraday analysis (`--interval 15minute`)
 
 **Delivery orders** (default `--product D`): Used for swing trades, positional trades, or long-term investments. No auto-square-off. Higher margin required.
 

@@ -1393,8 +1393,23 @@ async def get_portfolio(user: User = Depends(get_current_user)):
                     "pnl_percentage": pos.pnl_percentage,
                     "day_change": pos.day_change,
                     "day_change_percentage": pos.day_change_percentage,
+                    "product": pos.product or "D",
                 }
                 for pos in portfolio.positions
+            ],
+            "intraday_positions": [
+                {
+                    "symbol": pos.symbol,
+                    "quantity": pos.quantity,
+                    "average_price": pos.average_price,
+                    "current_price": pos.current_price,
+                    "pnl": pos.pnl,
+                    "pnl_percentage": pos.pnl_percentage,
+                    "day_change": pos.day_change,
+                    "day_change_percentage": pos.day_change_percentage,
+                    "product": "I",
+                }
+                for pos in portfolio.intraday_positions
             ],
             "paper_trading": shared_upstox_client.paper_trading,
             "market_status": "Paper Trading Mode" if shared_upstox_client.paper_trading else "Live",
@@ -1409,19 +1424,32 @@ async def get_positions(user: User = Depends(get_current_user)):
     """Get all open positions."""
     try:
         portfolio = await shared_upstox_client.get_portfolio()
+        all_positions = [
+            {
+                "symbol": pos.symbol,
+                "quantity": pos.quantity,
+                "average_price": pos.average_price,
+                "current_price": pos.current_price,
+                "pnl": pos.pnl,
+                "pnl_percentage": pos.pnl_percentage,
+                "product": pos.product or "D",
+            }
+            for pos in portfolio.positions
+        ] + [
+            {
+                "symbol": pos.symbol,
+                "quantity": pos.quantity,
+                "average_price": pos.average_price,
+                "current_price": pos.current_price,
+                "pnl": pos.pnl,
+                "pnl_percentage": pos.pnl_percentage,
+                "product": "I",
+            }
+            for pos in portfolio.intraday_positions
+        ]
         return {
-            "positions": [
-                {
-                    "symbol": pos.symbol,
-                    "quantity": pos.quantity,
-                    "average_price": pos.average_price,
-                    "current_price": pos.current_price,
-                    "pnl": pos.pnl,
-                    "pnl_percentage": pos.pnl_percentage,
-                }
-                for pos in portfolio.positions
-            ],
-            "count": len(portfolio.positions),
+            "positions": all_positions,
+            "count": len(all_positions),
         }
     except Exception as e:
         logger.error(f"Error fetching positions: {e}")
