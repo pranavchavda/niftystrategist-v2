@@ -145,8 +145,8 @@ pydantic==2.12.4
 pydantic-ai==1.47.0
 pydantic-ai-claude-code==0.8.1
 pydantic-ai-slim==1.47.0
-pydantic-evals==1.39.0
-pydantic-graph==1.39.0
+pydantic-evals==1.47.0
+pydantic-graph==1.47.0
 pydantic-settings==2.12.0
 pydantic_core==2.41.5
 Pygments==2.19.2
