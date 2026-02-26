@@ -630,6 +630,72 @@ ensure to think carefully about the classification before making a decision.
         # Strip timezone for naive datetime DB columns
         return result.replace(tzinfo=None)
 
+    async def _load_thread_messages(self, thread_id: str) -> list:
+        """Load up to 50 most recent messages from a thread for context replay."""
+        from database.models import Message
+        from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
+
+        result = await self.db.execute(
+            select(Message)
+            .where(Message.conversation_id == thread_id)
+            .order_by(Message.timestamp.desc())
+            .limit(50)
+        )
+        messages = list(reversed(result.scalars().all()))
+
+        history = []
+        for msg in messages:
+            if msg.role == "user":
+                history.append(ModelRequest(parts=[UserPromptPart(content=msg.content)]))
+            elif msg.role == "assistant" and msg.content:
+                history.append(ModelResponse(parts=[TextPart(text=msg.content)]))
+            # system messages skipped — they're injected via system prompt
+        return history
+
+    async def _write_followup_to_thread(
+        self,
+        thread_id: str,
+        user_id: int,
+        response_text: str,
+    ) -> None:
+        """Write a system trigger + assistant response back to the thread."""
+        import uuid
+        from database.models import Message, Conversation
+        from datetime import timedelta
+
+        now = utc_now_naive()
+
+        # System message marking the automated trigger
+        trigger_msg = Message(
+            conversation_id=thread_id,
+            message_id=f"followup_trigger_{uuid.uuid4().hex}",
+            role="system",
+            content="Scheduled follow-up triggered",
+            timestamp=now,
+            extra_metadata={"auto_followup": True, "workflow_user_id": user_id},
+        )
+        self.db.add(trigger_msg)
+
+        # Assistant response (1 microsecond after trigger for ordering)
+        response_msg = Message(
+            conversation_id=thread_id,
+            message_id=f"followup_response_{uuid.uuid4().hex}",
+            role="assistant",
+            content=response_text,
+            timestamp=now + timedelta(microseconds=1),
+            extra_metadata={"auto_followup": True},
+        )
+        self.db.add(response_msg)
+
+        # Bump conversation.updated_at so thread surfaces in sidebar
+        await self.db.execute(
+            update(Conversation)
+            .where(Conversation.id == thread_id)
+            .values(updated_at=now + timedelta(microseconds=2))
+        )
+        await self.db.commit()
+        logger.info(f"Thread awakening: wrote follow-up response to thread {thread_id}")
+
     async def execute_custom_workflow(
         self,
         user_id: int,
@@ -639,7 +705,9 @@ ensure to think carefully about the classification before making a decision.
         """
         Execute a user-defined prompt-based workflow.
 
-        This runs the user's prompt through the orchestrator and stores the result.
+        If the workflow has a thread_id, this is a thread-bound follow-up: it loads
+        the thread's message history as context, runs the prompt autonomously, and
+        writes the result back to the thread (Thread Awakening).
 
         Args:
             user_id: The user ID
@@ -652,6 +720,7 @@ ensure to think carefully about the classification before making a decision.
         from database.models import WorkflowDefinition, WorkflowRun, User
         from agents.orchestrator import OrchestratorAgent, OrchestratorDeps
         from models.state import ConversationState
+        from config.models import DEFAULT_MODEL_ID
 
         start_time = utc_now_naive()
 
@@ -684,8 +753,9 @@ ensure to think carefully about the classification before making a decision.
                 error=f"User {user_id} not found"
             )
 
-        # Create a workflow run record (reuse WorkflowRun with a special workflow_type)
-        # Note: Database uses TIMESTAMP WITHOUT TIME ZONE, so we strip tzinfo
+        is_followup = bool(workflow_def.thread_id)
+
+        # Create a workflow run record
         run = WorkflowRun(
             workflow_config_id=None,  # No config for custom workflows
             user_id=user_id,
@@ -699,34 +769,64 @@ ensure to think carefully about the classification before making a decision.
         await self.db.refresh(run)
 
         try:
-            # Create orchestrator and execute the prompt
-            orchestrator = OrchestratorAgent()
+            # Select model: prefer user's saved preference
+            model_id = (user.preferred_model or DEFAULT_MODEL_ID)
+            orchestrator = OrchestratorAgent(model_id=model_id)
 
-            # Build conversation state with user context
-            state = ConversationState(
-                user_id=str(user_id),
-                thread_id=f"workflow_{workflow_def_id}_{int(start_time.timestamp())}",
-            )
+            if is_followup:
+                # Thread Awakening: run in the original thread with full message history
+                thread_id = workflow_def.thread_id
+                state = ConversationState(
+                    user_id=user.email,
+                    thread_id=thread_id,
+                )
+                message_history = await self._load_thread_messages(thread_id)
+                logger.info(
+                    f"Thread awakening for workflow {workflow_def_id}: "
+                    f"loaded {len(message_history)} messages from thread {thread_id}"
+                )
+                # Autonomous-mode prompt — no user is present
+                effective_prompt = (
+                    "[AUTOMATED FOLLOW-UP — NO USER PRESENT]\n"
+                    "You are executing a scheduled follow-up in an existing conversation thread. "
+                    "The user is NOT available to respond. Rules:\n"
+                    "- Execute the task described below completely\n"
+                    "- Report your findings clearly\n"
+                    "- Do NOT ask questions or request clarification\n"
+                    "- Do NOT propose further actions that require user input\n"
+                    "- If you encounter an issue that requires human decision, note it and stop\n"
+                    f"Task: {workflow_def.prompt}"
+                )
+            else:
+                # Regular automation: ephemeral thread ID
+                thread_id = f"workflow_{workflow_def_id}_{int(start_time.timestamp())}"
+                state = ConversationState(
+                    user_id=user.email,
+                    thread_id=thread_id,
+                )
+                message_history = None
+                effective_prompt = workflow_def.prompt
 
-            # Build dependencies with user's Google credentials if available
             deps = OrchestratorDeps(
                 state=state,
-                google_access_token=user.google_access_token,
-                google_refresh_token=user.google_refresh_token,
-                google_token_expiry=user.google_token_expiry
+                upstox_access_token=user.upstox_access_token,
+                user_id=user.id,
+                trading_mode=user.trading_mode or "paper",
             )
 
             # Execute the prompt with streaming (required by Anthropic for long operations)
             import asyncio
             try:
-                # Use streaming to avoid Anthropic's "streaming required" error
-                # Collect all chunks into final result
                 result_chunks = []
 
                 async def run_with_streaming():
-                    async for chunk in orchestrator.stream(workflow_def.prompt, deps):
+                    kwargs = {}
+                    if message_history:
+                        kwargs["message_history"] = message_history
+                    async for chunk in orchestrator.stream(effective_prompt, deps, **kwargs):
                         result_chunks.append(chunk)
-                    return "".join(result_chunks)
+                    # stream_text() yields cumulative full text — take the last chunk
+                    return result_chunks[-1] if result_chunks else ""
 
                 orchestrator_result = await asyncio.wait_for(
                     run_with_streaming(),
@@ -739,13 +839,21 @@ ensure to think carefully about the classification before making a decision.
             end_time = utc_now_naive()
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
-            # Update run record (strip tzinfo for naive datetime DB columns)
+            # For thread follow-ups: write result back to the thread
+            if is_followup and orchestrator_result:
+                await self._write_followup_to_thread(
+                    thread_id=workflow_def.thread_id,
+                    user_id=user_id,
+                    response_text=orchestrator_result,
+                )
+
+            # Update run record
             run.status = WorkflowStatus.COMPLETED
             run.completed_at = end_time.replace(tzinfo=None)
             run.duration_ms = duration_ms
             run.result = {
                 "prompt": workflow_def.prompt,
-                "response": orchestrator_result[:5000] if orchestrator_result else None,  # Limit size
+                "response": orchestrator_result[:5000] if orchestrator_result else None,
                 "workflow_name": workflow_def.name
             }
 
@@ -763,8 +871,8 @@ ensure to think carefully about the classification before making a decision.
 
             await self.db.commit()
 
-            # Send success notification if enabled
-            if workflow_def.notify_on_complete:
+            # Send success notification if enabled (skip for thread follow-ups — result is in the thread)
+            if workflow_def.notify_on_complete and not is_followup:
                 await self._send_workflow_notification(
                     user=user,
                     workflow_name=workflow_def.name,
@@ -793,7 +901,6 @@ ensure to think carefully about the classification before making a decision.
             run.error_message = str(e)
             await self.db.commit()
 
-            # Send failure notification if enabled
             if workflow_def.notify_on_failure:
                 await self._send_workflow_notification(
                     user=user,
@@ -820,7 +927,6 @@ ensure to think carefully about the classification before making a decision.
             run.error_message = str(e)
             await self.db.commit()
 
-            # Send failure notification if enabled
             if workflow_def.notify_on_failure:
                 await self._send_workflow_notification(
                     user=user,

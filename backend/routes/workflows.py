@@ -12,12 +12,12 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from utils.datetime_utils import utc_now_naive
 
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, desc
 from sqlalchemy.orm import selectinload
 
-from auth import User, get_current_user
+from auth import User, get_current_user, get_current_user_optional
 from database.session import AsyncSessionLocal
 from database.models import WorkflowConfig, WorkflowRun, WorkflowDefinition, User as DBUser
 from services.workflow_engine import WorkflowEngine, WorkflowType, WorkflowStatus
@@ -480,6 +480,58 @@ async def get_workflow_history(
         runs = result.scalars().all()
 
         return runs
+
+
+# ========================================
+# Thread Awakening: Activate Endpoint
+# ========================================
+
+@router.post("/api/workflows/followup/activate/{workflow_id}")
+async def activate_followup(
+    workflow_id: int,
+    request: Request,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    Register a thread-bound follow-up workflow with the scheduler.
+
+    Called by schedule_followup.py immediately after DB insertion.
+    Localhost calls are allowed without authentication (CLI tool usage).
+    """
+    client_host = request.client.host if request.client else ""
+    is_localhost = client_host in ("127.0.0.1", "::1", "localhost")
+
+    if not current_user and not is_localhost:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    async with AsyncSessionLocal() as session:
+        q = select(WorkflowDefinition).where(WorkflowDefinition.id == workflow_id)
+        if current_user:
+            user_result = await session.execute(
+                select(DBUser).where(DBUser.email == current_user.email)
+            )
+            db_user = user_result.scalar_one_or_none()
+            if db_user:
+                q = q.where(WorkflowDefinition.user_id == db_user.id)
+
+        result = await session.execute(q)
+        workflow_def = result.scalar_one_or_none()
+
+        if not workflow_def:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        scheduler = get_scheduler()
+        if scheduler:
+            await scheduler.add_or_update_custom_workflow(workflow_def)
+            logger.info(f"Activated follow-up workflow {workflow_id} in scheduler")
+
+        return {
+            "status": "scheduled",
+            "workflow_id": workflow_id,
+            "name": workflow_def.name,
+            "scheduled_at": workflow_def.scheduled_at.isoformat() if workflow_def.scheduled_at else None,
+            "thread_id": workflow_def.thread_id,
+        }
 
 
 @router.get("/api/workflows/history", response_model=List[WorkflowRunResponse])

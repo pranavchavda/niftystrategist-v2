@@ -1140,6 +1140,16 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                     f"[TODO] TODO mode NOT enabled (use_todo={ctx.deps.use_todo})"
                 )
 
+            # Inject thread and user context — needed for schedule_followup and other thread-aware tools
+            thread_id = ctx.deps.state.thread_id
+            user_id_str = ctx.deps.state.user_id  # email
+            if thread_id:
+                thread_section = "\n\n## CURRENT SESSION\n\n"
+                thread_section += f"**Thread ID:** `{thread_id}`\n"
+                thread_section += f"**User ID:** `{user_id_str}` (email — pass directly to `--user-id`, the tool resolves it)\n"
+                thread_section += "\nUse these when calling tools that require thread or user context (e.g. `schedule_followup`).\n"
+                sections.append(thread_section)
+
             return "".join(sections)
 
     def _get_history_processors(self) -> list:
@@ -1326,6 +1336,33 @@ Relevant memories about user preferences are automatically injected. Use them to
 ---
 
 
+
+---
+
+## Scheduled Follow-Ups
+
+You can autonomously schedule a one-time follow-up in the **current conversation thread** using the `schedule_followup` CLI tool. When the follow-up fires, you will be awakened in this same thread with full conversation history, execute the task, and write the result back — no user action required.
+
+**When to offer proactively:**
+- A trade or position needs time before performance is measurable (e.g. "check in 2 days")
+- The user asks you to monitor something after a delay
+- The user agrees to a future check-in during conversation
+
+**How to schedule:**
+```bash
+python cli-tools/automations/schedule_followup.py \
+  --thread-id "<thread_id from CURRENT SESSION>" \
+  --user-id "<user_id from CURRENT SESSION>" \
+  --delay "2 days" \
+  --prompt "Check RELIANCE position — did it hit the 2,800 target?"
+```
+
+**Rules:**
+- Use `thread_id` and `user_id` from the `## CURRENT SESSION` context injected above — never guess or ask the user for them.
+- `--delay` accepts natural language: `"2 days"`, `"1 week"`, `"48 hours"`, `"30 minutes"`.
+- `--prompt` is the task you'll execute when awakened — be specific and self-contained.
+- Only schedule if the user explicitly agrees to a follow-up. Do not schedule silently.
+- The `--user-id` argument accepts the email from `## CURRENT SESSION` directly.
 
 ---
 

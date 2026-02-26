@@ -662,6 +662,104 @@ class MonitorLog(Base):
 
 
 # ==============================================================================
+# Workflow Automation Models
+# ==============================================================================
+
+class WorkflowConfig(Base):
+    """Built-in workflow configuration per user"""
+    __tablename__ = "workflow_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_type = Column(String(50), nullable=False)
+
+    enabled = Column(Boolean, default=False)
+    frequency = Column(String(20), default="daily")
+    cron_expression = Column(String(100), nullable=True)
+
+    config = Column(JSON, default=dict)
+
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'workflow_type', name='unique_workflow_config'),
+    )
+
+
+class WorkflowRun(Base):
+    """Workflow execution history"""
+    __tablename__ = "workflow_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workflow_config_id = Column(Integer, ForeignKey("workflow_configs.id", ondelete="CASCADE"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_type = Column(String(50), nullable=False)
+
+    status = Column(String(20), nullable=False, default="pending")
+    trigger_type = Column(String(20), nullable=False)
+
+    started_at = Column(DateTime, default=utc_now, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    result = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        Index('idx_workflow_runs_user', 'user_id'),
+        Index('idx_workflow_runs_config', 'workflow_config_id'),
+        Index('idx_workflow_runs_started', 'started_at'),
+    )
+
+
+class WorkflowDefinition(Base):
+    """User-created prompt-based custom workflows"""
+    __tablename__ = "workflow_definitions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    icon = Column(String(10), default="🤖")
+
+    prompt = Column(Text, nullable=False)
+    agent_hint = Column(String(50), nullable=True)
+
+    # Thread-bound follow-ups (NULL for regular automations)
+    thread_id = Column(String, ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    enabled = Column(Boolean, default=False)
+    frequency = Column(String(20), default="daily")
+    cron_expression = Column(String(100), nullable=True)
+    scheduled_at = Column(DateTime, nullable=True)
+
+    timeout_seconds = Column(Integer, default=120)
+    notify_on_complete = Column(Boolean, default=False)
+    notify_on_failure = Column(Boolean, default=True)
+
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    run_count = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'name', name='unique_workflow_definition'),
+        Index('idx_workflow_defs_user', 'user_id'),
+        Index('idx_workflow_defs_enabled', 'enabled'),
+        Index('idx_workflow_defs_thread_id', 'thread_id'),
+    )
+
+
+# ==============================================================================
 # Database Connection Manager
 # ==============================================================================
 

@@ -658,11 +658,30 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize agents: {e}")
         raise
 
+    # Initialize and start the workflow scheduler
+    try:
+        from services.scheduler import init_scheduler
+        scheduler = init_scheduler(db_manager.get_session)
+        await scheduler.start()
+        logger.info("Workflow scheduler started")
+    except Exception as e:
+        logger.error(f"Failed to start workflow scheduler: {e}")
+        # Non-fatal — app continues without scheduler
+
     # Yield to allow app to run
     yield
 
     # Cleanup on shutdown
     logger.info("Shutting down Nifty Strategist...")
+
+    # Shutdown workflow scheduler
+    try:
+        from services.scheduler import get_scheduler
+        sched = get_scheduler()
+        if sched:
+            await sched.shutdown()
+    except Exception as e:
+        logger.error(f"Error shutting down scheduler: {e}")
 
     # Close database connections gracefully
     try:
@@ -735,6 +754,9 @@ app.include_router(voice.router)
 app.include_router(notes.router)
 # Include Monitor rules router (trade monitor IFTTT rules)
 app.include_router(monitor_api.router, prefix="/api/monitor", tags=["monitor"])
+# Include Workflow automation router
+from routes import workflows as workflows_routes
+app.include_router(workflows_routes.router)
 
 # Configure CORS for frontend
 _cors_env = os.getenv("CORS_ORIGINS", "http://localhost:5173")
