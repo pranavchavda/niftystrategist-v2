@@ -971,8 +971,6 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             from datetime import datetime
             from zoneinfo import ZoneInfo
 
-            from tools.native.scratchpad import Scratchpad
-
             sections = []
 
             # Always inject current date/time in IST (Indian Standard Time)
@@ -1002,6 +1000,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             # Inject scratchpad content if available
             thread_id = ctx.deps.state.thread_id
             if thread_id:
+                from tools.native.scratchpad import Scratchpad
                 scratchpad = Scratchpad(thread_id)
                 entries = scratchpad.get_entries()
                 if entries:
