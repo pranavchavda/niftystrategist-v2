@@ -142,9 +142,9 @@ pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pycparser==2.23
 pydantic==2.12.4
-pydantic-ai==1.39.0
+pydantic-ai==1.47.0
 pydantic-ai-claude-code==0.8.1
-pydantic-ai-slim==1.39.0
+pydantic-ai-slim==1.47.0
 pydantic-evals==1.39.0
 pydantic-graph==1.39.0
 pydantic-settings==2.12.0

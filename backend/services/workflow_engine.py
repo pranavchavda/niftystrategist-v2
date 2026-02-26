@@ -648,7 +648,7 @@ ensure to think carefully about the classification before making a decision.
             if msg.role == "user":
                 history.append(ModelRequest(parts=[UserPromptPart(content=msg.content)]))
             elif msg.role == "assistant" and msg.content:
-                history.append(ModelResponse(parts=[TextPart(content=msg.content)]))
+                history.append(ModelResponse(parts=[TextPart(text=msg.content)]))
             # system messages skipped — they're injected via system prompt
         return history
 
