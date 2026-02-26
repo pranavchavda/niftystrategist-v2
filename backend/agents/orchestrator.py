@@ -983,7 +983,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             date_section += (
                 f"**Today's date:** {ist_now.strftime('%A, %B %d, %Y')}\n"
             )
-            date_section += f"**Current time:** {ist_now.strftime('%I:%M %p IST')}\n"
+            date_section += f"**Current time:** {ist_now.strftime('%I:%M:%S %p IST')}\n"
             date_section += f"**ISO format:** {ist_now.isoformat()}\n"
             date_section += f"**Timezone:** IST (Indian Standard Time, UTC+5:30)\n"
             date_section += "\n**IMPORTANT:** All times are in Indian Standard Time (IST). When the user says 'today', 'this morning', 'this afternoon', 'tonight', use this date and time.\n"
