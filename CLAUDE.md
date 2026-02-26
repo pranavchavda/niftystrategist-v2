@@ -148,6 +148,34 @@ FastAPI (web)                    MonitorDaemon (separate process)
 
 **API datetime gotcha:** Frontend sends ISO strings with `Z` (timezone-aware). The `_strip_tz()` helper in `api/monitor.py` strips tzinfo before DB insert since columns are naive TIMESTAMP.
 
+## Thread Awakening (Scheduled Follow-Ups)
+
+Agents can schedule one-shot follow-ups bound to an existing conversation thread. When fired, the awakening loads the full thread history and runs the agent autonomously, writing the response back into the same thread.
+
+**How it works:**
+1. Orchestrator calls `schedule_followup` CLI tool → inserts a `workflow_definitions` row with `trigger_type=one_time`, `thread_id`, and a scheduled datetime
+2. APScheduler (started in `main.py` lifespan) fires the job via `POST /api/workflows/followup/activate/{workflow_id}` on localhost (no JWT required)
+3. `execute_custom_workflow()` in `workflow_engine.py` detects `workflow_def.thread_id`, loads message history via `_load_thread_messages()`, runs the orchestrator with that history, and writes the result back via `_write_followup_to_thread()`
+4. Frontend `MessageBubble.jsx` shows an "Auto follow-up" badge for messages with `extra_metadata.auto_followup`
+
+**Key files:**
+- `backend/services/workflow_engine.py` — `execute_custom_workflow()`, `_load_thread_messages()`, `_write_followup_to_thread()`
+- `backend/cli-tools/automations/schedule_followup.py` — CLI tool the orchestrator calls
+- `backend/routes/workflows.py` — `/api/workflows/followup/activate/{id}` endpoint
+- `backend/database/models.py` — `WorkflowConfig`, `WorkflowRun`, `WorkflowDefinition` ORM models (with `thread_id` FK)
+
+**Migrations applied (Supabase):**
+- `backend/migrations/add_workflow_tables.sql`
+- `backend/migrations/add_workflow_definitions.sql`
+- `backend/migrations/add_scheduled_at.sql`
+- `backend/migrations/add_thread_id_to_workflow_definitions.sql`
+
+**pydantic-ai version note:** As of 2026-02-26, running pydantic-ai 1.47.0 (upgraded from 1.39.0). `TextPart` positional arg used (not `text=` kwarg) to stay version-agnostic.
+
+## Deploy Pipeline
+
+`.github/workflows/deploy.yml` uses **uv** (Rust-based pip replacement) for `pip install`, which is 10-100x faster than plain pip for large requirement sets. The venv is created with plain Python but deps installed via `pip install -q uv && uv pip install -r requirements.txt`.
+
 ## Key Gotchas
 
 - **Supabase requires Cloudflare WARP** on this machine (IPv6-only free tier, no public IPv6). Run `warp-cli connect` before starting backend.
