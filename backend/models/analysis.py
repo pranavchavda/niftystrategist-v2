@@ -8,16 +8,16 @@ from pydantic import BaseModel, Field
 class TechnicalIndicators(BaseModel):
     """Technical indicators calculated from OHLCV data."""
 
-    rsi_14: float = Field(description="14-period Relative Strength Index (0-100)")
-    macd_value: float = Field(description="MACD line value")
-    macd_signal: float = Field(description="MACD signal line value")
-    macd_histogram: float = Field(description="MACD histogram (macd - signal)")
-    sma_20: float = Field(description="20-period Simple Moving Average")
-    sma_50: float = Field(description="50-period Simple Moving Average")
-    ema_12: float = Field(description="12-period Exponential Moving Average")
-    ema_26: float = Field(description="26-period Exponential Moving Average")
-    atr_14: float = Field(description="14-period Average True Range (for volatility)")
-    volume_avg_20: float = Field(description="20-period average volume")
+    rsi_14: float | None = Field(default=None, description="14-period Relative Strength Index (0-100)")
+    macd_value: float | None = Field(default=None, description="MACD line value")
+    macd_signal: float | None = Field(default=None, description="MACD signal line value")
+    macd_histogram: float | None = Field(default=None, description="MACD histogram (macd - signal)")
+    sma_20: float | None = Field(default=None, description="20-period Simple Moving Average")
+    sma_50: float | None = Field(default=None, description="50-period Simple Moving Average")
+    ema_12: float | None = Field(default=None, description="12-period Exponential Moving Average")
+    ema_26: float | None = Field(default=None, description="26-period Exponential Moving Average")
+    atr_14: float | None = Field(default=None, description="14-period Average True Range (for volatility)")
+    volume_avg_20: float | None = Field(default=None, description="20-period average volume")
     current_volume: float = Field(description="Current/latest volume")
 
 

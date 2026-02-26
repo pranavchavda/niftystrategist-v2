@@ -55,41 +55,27 @@ class TechnicalAnalysisService:
         volume_avg_20 = df["volume"].rolling(window=20).mean().iloc[-1]
         current_volume = float(df["volume"].iloc[-1])
 
-        # Validate all indicators - fail if any are NaN (indicates insufficient data)
-        nan_indicators = []
-        if np.isnan(rsi_14):
-            nan_indicators.append("RSI")
-        if np.isnan(macd_value) or np.isnan(macd_signal):
-            nan_indicators.append("MACD")
-        if np.isnan(sma_20):
-            nan_indicators.append("SMA20")
-        if np.isnan(sma_50):
-            nan_indicators.append("SMA50")
-        if np.isnan(atr_14):
-            nan_indicators.append("ATR")
-
-        if nan_indicators:
-            raise ValueError(
-                f"Insufficient data to calculate indicators: {', '.join(nan_indicators)}. "
-                "Need more historical data for accurate analysis."
-            )
+        def safe_float(val):
+            return None if np.isnan(val) else float(val)
 
         return TechnicalIndicators(
-            rsi_14=float(rsi_14),
-            macd_value=float(macd_value),
-            macd_signal=float(macd_signal),
-            macd_histogram=float(macd_histogram),
-            sma_20=float(sma_20),
-            sma_50=float(sma_50),
-            ema_12=float(ema_12),
-            ema_26=float(ema_26),
-            atr_14=float(atr_14),
-            volume_avg_20=float(volume_avg_20) if not np.isnan(volume_avg_20) else current_volume,
+            rsi_14=safe_float(rsi_14),
+            macd_value=safe_float(macd_value),
+            macd_signal=safe_float(macd_signal),
+            macd_histogram=safe_float(macd_histogram),
+            sma_20=safe_float(sma_20),
+            sma_50=safe_float(sma_50),
+            ema_12=safe_float(ema_12),
+            ema_26=safe_float(ema_26),
+            atr_14=safe_float(atr_14),
+            volume_avg_20=safe_float(volume_avg_20) if not np.isnan(volume_avg_20) else current_volume,
             current_volume=current_volume,
         )
 
-    def interpret_rsi(self, rsi: float) -> Literal["oversold", "neutral", "overbought"]:
+    def interpret_rsi(self, rsi: float | None) -> Literal["oversold", "neutral", "overbought"]:
         """Interpret RSI value."""
+        if rsi is None:
+            return "neutral"
         if rsi < self.rsi_oversold:
             return "oversold"
         elif rsi > self.rsi_overbought:
@@ -97,9 +83,11 @@ class TechnicalAnalysisService:
         return "neutral"
 
     def interpret_macd(
-        self, macd_value: float, macd_signal: float, macd_histogram: float
+        self, macd_value: float | None, macd_signal: float | None, macd_histogram: float | None
     ) -> Literal["bullish", "bearish", "neutral"]:
         """Interpret MACD signals."""
+        if macd_value is None or macd_signal is None or macd_histogram is None:
+            return "neutral"
         # Bullish: MACD above signal and histogram positive/increasing
         # Bearish: MACD below signal and histogram negative/decreasing
         if macd_value > macd_signal and macd_histogram > 0:
@@ -109,9 +97,11 @@ class TechnicalAnalysisService:
         return "neutral"
 
     def interpret_trend(
-        self, current_price: float, sma_20: float, sma_50: float
+        self, current_price: float, sma_20: float | None, sma_50: float | None
     ) -> Literal["uptrend", "downtrend", "sideways"]:
         """Interpret price trend from moving averages."""
+        if sma_20 is None or sma_50 is None:
+            return "sideways"
         # Uptrend: Price > SMA20 > SMA50
         # Downtrend: Price < SMA20 < SMA50
         if current_price > sma_20 > sma_50:
@@ -121,9 +111,11 @@ class TechnicalAnalysisService:
         return "sideways"
 
     def interpret_volume(
-        self, current_volume: float, avg_volume: float
+        self, current_volume: float, avg_volume: float | None
     ) -> Literal["high", "normal", "low"]:
         """Interpret volume relative to average."""
+        if avg_volume is None:
+            avg_volume = current_volume
         ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
         if ratio > 1.5:
             return "high"
@@ -217,8 +209,8 @@ class TechnicalAnalysisService:
         Returns:
             MarketAnalysis with all indicators and interpretations
         """
-        if len(ohlcv_data) < 50:
-            raise ValueError("Need at least 50 candles for accurate analysis")
+        if not ohlcv_data:
+            raise ValueError("Empty data provided for analysis")
 
         # Data comes from API with newest first, so index 0 is the latest candle
         current_price = ohlcv_data[0].close
@@ -283,42 +275,49 @@ class TechnicalAnalysisService:
 
         # RSI explanation
         rsi_val = indicators.rsi_14
-        if rsi_signal == "oversold":
-            parts.append(
-                f"The RSI (Relative Strength Index) is at {rsi_val:.1f}, which is below 30. "
-                "This suggests the stock may be oversold and could be due for a bounce."
-            )
-        elif rsi_signal == "overbought":
-            parts.append(
-                f"The RSI is at {rsi_val:.1f}, which is above 70. "
-                "This suggests the stock may be overbought and could see a pullback."
-            )
+        if rsi_val is not None:
+            if rsi_signal == "oversold":
+                parts.append(
+                    f"The RSI (Relative Strength Index) is at {rsi_val:.1f}, which is below 30. "
+                    "This suggests the stock may be oversold and could be due for a bounce."
+                )
+            elif rsi_signal == "overbought":
+                parts.append(
+                    f"The RSI is at {rsi_val:.1f}, which is above 70. "
+                    "This suggests the stock may be overbought and could see a pullback."
+                )
+            else:
+                parts.append(f"The RSI is at {rsi_val:.1f}, in neutral territory.")
         else:
-            parts.append(f"The RSI is at {rsi_val:.1f}, in neutral territory.")
+            parts.append("Not enough data to calculate RSI.")
 
         # MACD explanation
-        if macd_trend == "bullish":
-            parts.append(
-                "The MACD indicator shows bullish momentum, with the MACD line above the signal line."
-            )
-        elif macd_trend == "bearish":
-            parts.append(
-                "The MACD indicator shows bearish momentum, with the MACD line below the signal line."
-            )
+        if indicators.macd_value is not None:
+            if macd_trend == "bullish":
+                parts.append(
+                    "The MACD indicator shows bullish momentum, with the MACD line above the signal line."
+                )
+            elif macd_trend == "bearish":
+                parts.append(
+                    "The MACD indicator shows bearish momentum, with the MACD line below the signal line."
+                )
 
         # Trend explanation
-        if price_trend == "uptrend":
+        if price_trend == "uptrend" and indicators.sma_20 is not None and indicators.sma_50 is not None:
             parts.append(
                 f"The stock is in an uptrend, trading above both the 20-day (₹{indicators.sma_20:.2f}) "
                 f"and 50-day (₹{indicators.sma_50:.2f}) moving averages."
             )
-        elif price_trend == "downtrend":
+        elif price_trend == "downtrend" and indicators.sma_20 is not None and indicators.sma_50 is not None:
             parts.append(
                 f"The stock is in a downtrend, trading below both the 20-day (₹{indicators.sma_20:.2f}) "
                 f"and 50-day (₹{indicators.sma_50:.2f}) moving averages."
             )
         else:
-            parts.append("The stock is moving sideways without a clear trend.")
+            if indicators.sma_20 is None or indicators.sma_50 is None:
+                parts.append("Not enough data to determine trend with moving averages.")
+            else:
+                parts.append("The stock is moving sideways without a clear trend.")
 
         # Volume explanation
         if volume_signal == "high":

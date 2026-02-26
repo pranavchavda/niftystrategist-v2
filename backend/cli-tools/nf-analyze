@@ -19,13 +19,16 @@ def analyze_single(symbol: str, interval: str, as_json: bool):
     sym = validate_symbol(symbol)
 
     client = init_client()
+    days_to_fetch = 100 if interval == "day" else 10
     try:
-        candles = run_async(client.get_historical_data(sym, interval=interval, days=60))
+        candles = run_async(client.get_historical_data(sym, interval=interval, days=days_to_fetch))
     except Exception as e:
         print_error(f"Failed to fetch data for {sym}: {e}")
 
-    if len(candles) < 50:
-        print_error(f"Insufficient data for {sym}: got {len(candles)} candles, need at least 50.")
+    if not candles:
+        print_error(f"No data received for {sym}")
+        return
+
 
     ta = TechnicalAnalysisService()
     analysis = ta.analyze(sym, candles)
@@ -66,16 +69,28 @@ def analyze_single(symbol: str, interval: str, as_json: bool):
     print(f"   Signal: {emoji} {analysis.overall_signal.upper().replace('_', ' ')} (confidence: {analysis.confidence:.0%})")
     print()
     print("   Indicators:")
-    print(f"     RSI (14):  {ind.rsi_14:.1f} → {analysis.rsi_signal.upper()}")
-    print(f"     MACD:      {ind.macd_value:.2f} (signal: {ind.macd_signal:.2f}) → {analysis.macd_trend.upper()}")
+    rsi_str = f"{ind.rsi_14:.1f}" if ind.rsi_14 is not None else "N/A"
+    macd_val_str = f"{ind.macd_value:.2f}" if ind.macd_value is not None else "N/A"
+    macd_sig_str = f"{ind.macd_signal:.2f}" if ind.macd_signal is not None else "N/A"
+    vol_avg_str = f"{ind.volume_avg_20:,.0f}" if ind.volume_avg_20 is not None else "N/A"
+
+    print(f"     RSI (14):  {rsi_str} → {analysis.rsi_signal.upper()}")
+    print(f"     MACD:      {macd_val_str} (signal: {macd_sig_str}) → {analysis.macd_trend.upper()}")
     print(f"     Trend:     {analysis.price_trend.upper()}")
-    print(f"     Volume:    {analysis.volume_signal.upper()} ({ind.current_volume:,.0f} vs avg {ind.volume_avg_20:,.0f})")
+    print(f"     Volume:    {analysis.volume_signal.upper()} ({ind.current_volume:,.0f} vs avg {vol_avg_str})")
     print()
+    
+    sma20_str = format_inr(ind.sma_20) if ind.sma_20 is not None else "N/A"
+    sma50_str = format_inr(ind.sma_50) if ind.sma_50 is not None else "N/A"
+    ema12_str = format_inr(ind.ema_12) if ind.ema_12 is not None else "N/A"
+    ema26_str = format_inr(ind.ema_26) if ind.ema_26 is not None else "N/A"
+    atr14_str = format_inr(ind.atr_14) if ind.atr_14 is not None else "N/A"
+
     print("   Moving Averages:")
-    print(f"     SMA 20: {format_inr(ind.sma_20)}  |  SMA 50: {format_inr(ind.sma_50)}")
-    print(f"     EMA 12: {format_inr(ind.ema_12)}  |  EMA 26: {format_inr(ind.ema_26)}")
+    print(f"     SMA 20: {sma20_str:<12} |  SMA 50: {sma50_str}")
+    print(f"     EMA 12: {ema12_str:<12} |  EMA 26: {ema26_str}")
     print()
-    print(f"   ATR (14): {format_inr(ind.atr_14)}")
+    print(f"   ATR (14): {atr14_str}")
 
     if analysis.support_level or analysis.resistance_level:
         print()
@@ -88,7 +103,7 @@ def analyze_single(symbol: str, interval: str, as_json: bool):
     print(f"\n   Analysis: {analysis.reasoning}")
 
 
-def compare_stocks(symbols: list[str], as_json: bool):
+def compare_stocks(symbols: list[str], interval: str, as_json: bool):
     """Compare technical signals across multiple stocks."""
     from services.technical_analysis import TechnicalAnalysisService
 
@@ -110,8 +125,9 @@ def compare_stocks(symbols: list[str], as_json: bool):
             results.append({"symbol": sym, "error": "Unknown symbol"})
             continue
         try:
-            candles = run_async(client.get_historical_data(sym, interval="15minute", days=60))
-            if len(candles) >= 50:
+            days_to_fetch = 100 if interval == "day" else 10
+            candles = run_async(client.get_historical_data(sym, interval=interval, days=days_to_fetch))
+            if candles:
                 analysis = ta.analyze(sym, candles)
                 results.append({
                     "symbol": sym,
@@ -122,7 +138,7 @@ def compare_stocks(symbols: list[str], as_json: bool):
                     "trend": analysis.price_trend,
                 })
             else:
-                results.append({"symbol": sym, "error": "Insufficient data"})
+                results.append({"symbol": sym, "error": "No data received"})
         except Exception as e:
             results.append({"symbol": sym, "error": str(e)})
 
@@ -143,9 +159,10 @@ def compare_stocks(symbols: list[str], as_json: bool):
             print(f"{r['symbol']:<12} {'❌ ' + r['error']}")
         else:
             emoji = signal_emoji.get(r["signal"], "")
+            rsi_val = f"{r['rsi']:>6.1f}" if r["rsi"] is not None else "   N/A"
             print(
                 f"{r['symbol']:<12} {format_inr(r['price']):>12} {emoji + ' ' + r['signal'].upper():<14} "
-                f"{r['confidence']:>9.0%} {r['rsi']:>6.1f} {r['trend']:<10}"
+                f"{r['confidence']:>9.0%} {rsi_val} {r['trend']:<10}"
             )
 
 
@@ -174,7 +191,7 @@ Examples:
     args = parser.parse_args()
 
     if args.compare or len(args.symbols) > 1:
-        compare_stocks(args.symbols, args.json)
+        compare_stocks(args.symbols, args.interval, args.json)
     else:
         analyze_single(args.symbols[0], args.interval, args.json)
 
