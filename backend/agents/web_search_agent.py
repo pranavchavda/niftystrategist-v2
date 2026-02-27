@@ -39,7 +39,7 @@ class WebSearchAgent(IntelligentBaseAgent[WebSearchDeps, str]):
         config = AgentConfig(
             name="web_search",
             description="Web search and research agent with direct API tools (web_search, web_fetch) and advanced Perplexity MCP tools (perplexity_ask, perplexity_research, perplexity_reason)",
-            model_name="perplexity/sonar-reasoning-pro",
+            model_name="perplexity/sonar-pro-search",
             use_openrouter=True,
         )
         
