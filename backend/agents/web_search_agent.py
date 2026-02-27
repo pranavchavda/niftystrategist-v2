@@ -451,6 +451,26 @@ NEVER respond without citing sources. The orchestrator will format your citation
         The existing web_search and web_fetch tools are registered directly
         on the temp agent for fast, direct API access.
         """
+        # Perplexity sonar models search the web natively — tool use is not supported.
+        # Skip MCP/tool machinery and call the model directly.
+        if "perplexity/" in self.config.model_name:
+            try:
+                direct_agent = Agent(
+                    model=self.model,
+                    name=self.name,
+                    deps_type=WebSearchDeps,
+                    output_type=str,
+                    instructions=self._get_system_prompt(),
+                    retries=self.config.max_retries,
+                )
+                result = await direct_agent.run(prompt, deps=deps, **kwargs)
+                logger.info("✅ Web Search agent (sonar direct) completed")
+                return result
+            except Exception as e:
+                import traceback
+                logger.error(f"❌ Web Search agent (sonar) error: {e}\n{traceback.format_exc()}")
+                raise RuntimeError(f"Web Search agent encountered an error: {str(e)}")
+
         mcp_servers = []
 
         try:
