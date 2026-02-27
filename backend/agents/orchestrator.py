@@ -261,6 +261,7 @@ class OrchestratorDeps(BaseModel):
     paper_total_value: Optional[float] = None  # Paper trading total value
     paper_total_pnl: Optional[float] = None  # Paper trading total P&L
     paper_pnl_percent: Optional[float] = None  # Paper trading total P&L percentage
+    is_awakening: bool = False  # True when running as a scheduled autonomous awakening (no user present)
 
 
 class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
@@ -1071,11 +1072,36 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 live_section = "\n\n## ⚠️ LIVE TRADING MODE\n\n"
                 live_section += "Currently operating in **LIVE trading mode**:\n"
                 live_section += "- **All orders execute with REAL MONEY** on Upstox\n"
-                live_section += "- Always confirm order details with the user before placing\n"
+                if ctx.deps.is_awakening:
+                    live_section += "- You are in AUTONOMOUS AWAKENING mode — per-trade render_ui is NOT needed when a mandate is pre-approved\n"
+                    live_section += "- Verify each order fits within the mandate bounds before executing\n"
+                else:
+                    live_section += "- Always confirm order details with the user before placing\n"
                 live_section += "- Double-check quantities, prices, and instrument names\n"
                 live_section += "- Remind the user this is live when discussing trades\n"
                 sections.append(live_section)
-            elif ctx.deps.paper_total_value is not None:
+
+            # Inject autonomous awakening context when running without a live user
+            if ctx.deps.is_awakening:
+                awakening_section = "\n\n## 🤖 AUTONOMOUS AWAKENING MODE\n\n"
+                awakening_section += "You are running as a **scheduled autonomous awakening** — the user is NOT present and cannot click UI buttons.\n\n"
+                awakening_section += "**Mandate-based pre-approval:**\n"
+                awakening_section += "Review the conversation history. If the user previously approved a **trading mandate** via an HITL confirmation (you'll see `[User clicked 'approve_trade']` and mandate details such as risk-per-trade, daily loss cap, allowed instruments, cutoff time), that approval serves as **blanket pre-authorization** for this awakening session.\n\n"
+                awakening_section += "**Under a pre-approved mandate you MAY:**\n"
+                awakening_section += "- Execute `nf-order` commands directly — NO render_ui confirmation card required\n"
+                awakening_section += "- Place multiple orders provided each is within the mandate's risk-per-trade and day-loss-cap\n"
+                awakening_section += "- Set up OCO / trailing-stop / auto-squareoff monitor rules immediately after each entry\n\n"
+                awakening_section += "**You MUST still:**\n"
+                awakening_section += "- Read the mandate carefully from the conversation history before trading\n"
+                awakening_section += "- Check current day P&L via `nf-portfolio --json` before placing new orders\n"
+                awakening_section += "- Skip orders if market is closed, mandate cutoff time has passed, or day loss cap is hit\n"
+                awakening_section += "- NOT place any orders if no valid mandate is found in the history\n"
+                awakening_section += "- Describe each order clearly in your written response (instrument, direction, qty, price, rationale)\n\n"
+                awakening_section += "**IMPORTANT:** `render_ui` calls are invisible during awakenings. Write trade confirmation details as plain text in your response instead of using render_ui.\n"
+                awakening_section += "\n**This section OVERRIDES SAFETY-1 for the current awakening session when a mandate is present.**\n"
+                sections.append(awakening_section)
+
+            if ctx.deps.trading_mode != "live" and ctx.deps.paper_total_value is not None:
                 paper_section = "\n\n## Paper Trading Mode\n\n"
                 paper_section += "Currently operating in **paper trading mode**:\n"
 
@@ -1277,7 +1303,7 @@ render_ui(components=[{
   ]
 }], title="Order Confirmation")
 ```
-Then WAIT for the user to click. When you receive `[User clicked 'approve_trade']`, execute the order. When you receive `[User clicked 'cancel_trade']`, acknowledge cancellation. NEVER place an order without showing this confirmation first.
+Then WAIT for the user to click. When you receive `[User clicked 'approve_trade']`, execute the order. When you receive `[User clicked 'cancel_trade']`, acknowledge cancellation. NEVER place an order without showing this confirmation first — **EXCEPTION**: during autonomous awakenings (## AUTONOMOUS AWAKENING MODE is active), skip render_ui if a mandate was pre-approved; write order details as plain text instead.
 
 **Risk Warnings**: Always remind users:
 - Past performance doesn't guarantee future results
@@ -1368,7 +1394,7 @@ python cli-tools/automations/schedule_followup.py \
 |------|-------------|
 | **HONESTY-1** | Never fabricate prices, indicators, or analysis results |
 | **HONESTY-2** | Never claim a trade was executed unless it actually was |
-| **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling trades |
+| **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling trades — **EXCEPTION**: when ## AUTONOMOUS AWAKENING MODE is active and a trading mandate was pre-approved in the conversation history, place orders directly within mandate bounds (no render_ui needed) |
 | **EDUCATION-1** | Explain reasoning so users learn |
 """
 

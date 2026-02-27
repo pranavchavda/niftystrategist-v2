@@ -818,6 +818,7 @@ ensure to think carefully about the classification before making a decision.
                 upstox_access_token=upstox_token,
                 user_id=user.id,
                 trading_mode=user.trading_mode or "paper",
+                is_awakening=True,  # Scheduled awakenings run without a live user
             )
 
             # Execute the prompt — agent.run() handles full multi-turn tool loops and
