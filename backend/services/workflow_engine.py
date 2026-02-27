@@ -718,9 +718,10 @@ ensure to think carefully about the classification before making a decision.
             WorkflowResult with success status and data
         """
         from database.models import WorkflowDefinition, WorkflowRun, User
-        from agents.orchestrator import OrchestratorAgent, OrchestratorDeps
+        from agents.orchestrator import OrchestratorDeps
         from models.state import ConversationState
         from config.models import DEFAULT_MODEL_ID
+        from main import get_orchestrator_for_model
 
         start_time = utc_now_naive()
 
@@ -771,7 +772,8 @@ ensure to think carefully about the classification before making a decision.
         try:
             # Select model: prefer user's saved preference
             model_id = (user.preferred_model or DEFAULT_MODEL_ID)
-            orchestrator = OrchestratorAgent(model_id=model_id)
+            # Use get_orchestrator_for_model so sub-agents (web_search, vision) are registered
+            orchestrator = await get_orchestrator_for_model(model_id, user_id=user_id)
 
             if is_followup:
                 # Thread Awakening: run in the original thread with full message history
@@ -807,31 +809,30 @@ ensure to think carefully about the classification before making a decision.
                 message_history = None
                 effective_prompt = workflow_def.prompt
 
+            # Resolve live Upstox token: decrypt + expiry check + TOTP auto-refresh
+            from api.upstox_oauth import get_user_upstox_token
+            upstox_token = await get_user_upstox_token(user.id)
+
             deps = OrchestratorDeps(
                 state=state,
-                upstox_access_token=user.upstox_access_token,
+                upstox_access_token=upstox_token,
                 user_id=user.id,
                 trading_mode=user.trading_mode or "paper",
             )
 
-            # Execute the prompt with streaming (required by Anthropic for long operations)
+            # Execute the prompt — agent.run() handles full multi-turn tool loops and
+            # returns the complete final response (stream_text only captures first model call)
             import asyncio
             try:
-                result_chunks = []
+                kwargs = {}
+                if message_history:
+                    kwargs["message_history"] = message_history
 
-                async def run_with_streaming():
-                    kwargs = {}
-                    if message_history:
-                        kwargs["message_history"] = message_history
-                    async for chunk in orchestrator.stream(effective_prompt, deps, **kwargs):
-                        result_chunks.append(chunk)
-                    # stream_text() yields cumulative full text — take the last chunk
-                    return result_chunks[-1] if result_chunks else ""
-
-                orchestrator_result = await asyncio.wait_for(
-                    run_with_streaming(),
+                run_result = await asyncio.wait_for(
+                    orchestrator.agent.run(effective_prompt, deps=deps, **kwargs),
                     timeout=workflow_def.timeout_seconds
                 )
+                orchestrator_result = run_result.output if run_result.output else ""
             except asyncio.TimeoutError:
                 raise TimeoutError(f"Workflow timed out after {workflow_def.timeout_seconds} seconds")
 

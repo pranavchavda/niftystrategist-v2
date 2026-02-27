@@ -526,15 +526,12 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
 
                 if judgment.startswith("FAKE:"):
                     reason = judgment[5:].strip()
-                    logger.warning(f"LLM detected fake tool claim: {reason}")
-                    raise ModelRetry(
-                        f"Your response appears to fabricate tool results: {reason}\n\n"
-                        f"Tools actually called: {actual_tool_calls if actual_tool_calls else 'none'}\n\n"
-                        "You MUST call the appropriate tool before claiming results. "
-                        "Do NOT fabricate data or claim actions you haven't taken."
-                    )
-            except ModelRetry:
-                raise
+                    # Log only — do NOT raise ModelRetry here.
+                    # ModelRetry causes pydantic-ai to stream a second model response,
+                    # which ResponseCapture saves as a duplicate assistant message in the DB.
+                    # The retry response is also often incoherent (the model confuses the
+                    # retry instruction for a tool call). Logging is sufficient signal.
+                    logger.warning(f"[VALIDATOR] Model narrated without tool calls: {reason}")
             except Exception as e:
                 # Don't block on validation errors - log and continue
                 logger.error(f"Tool claim validation error: {e}")

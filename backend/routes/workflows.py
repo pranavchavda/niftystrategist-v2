@@ -107,7 +107,7 @@ class CustomWorkflowCreate(BaseModel):
     frequency: str = "daily"  # 'hourly', '6hours', 'daily', 'weekly', 'once', 'manual'
     cron_expression: Optional[str] = None
     scheduled_at: Optional[datetime] = None  # For one-time runs (frequency='once')
-    timeout_seconds: int = 120
+    timeout_seconds: int = 600
     notify_on_complete: bool = True  # Default to true - users want success notifications
     notify_on_failure: bool = True
 

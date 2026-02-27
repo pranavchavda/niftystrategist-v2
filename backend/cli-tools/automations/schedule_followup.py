@@ -8,7 +8,7 @@ Optionally pokes the scheduler API to activate the follow-up immediately.
 
 Usage:
     python cli-tools/automations/schedule_followup.py --thread-id "thread_abc" --user-id user@email.com --delay "2 days" --prompt "Check RELIANCE position performance"
-    python cli-tools/automations/schedule_followup.py --thread-id "thread_abc" --user-id user@email.com --delay "1 week" --prompt "Review portfolio P&L" --timeout 180
+    python cli-tools/automations/schedule_followup.py --thread-id "thread_abc" --user-id user@email.com --delay "1 week" --prompt "Review portfolio P&L" --timeout 600
 """
 
 TOOL_META = {
@@ -18,7 +18,7 @@ TOOL_META = {
     "preferred_over": "Manual reminders or asking the user to come back later.",
     "examples": [
         'python cli-tools/automations/schedule_followup.py --thread-id "thread_abc123" --user-id user@email.com --delay "2 days" --prompt "Check RELIANCE position — did it hit target?"',
-        'python cli-tools/automations/schedule_followup.py --thread-id "thread_xyz" --user-id user@email.com --delay "1 week" --prompt "Review portfolio P&L after rebalancing" --timeout 180',
+        'python cli-tools/automations/schedule_followup.py --thread-id "thread_xyz" --user-id user@email.com --delay "1 week" --prompt "Review portfolio P&L after rebalancing" --timeout 600',
     ],
 }
 
@@ -344,8 +344,8 @@ def main():
     parser.add_argument(
         "--timeout",
         type=int,
-        default=120,
-        help="Execution timeout in seconds (default: 120)",
+        default=600,
+        help="Execution timeout in seconds (default: 600)",
     )
     parser.add_argument(
         "--auth-token",
