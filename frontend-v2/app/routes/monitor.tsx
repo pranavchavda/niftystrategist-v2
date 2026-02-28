@@ -1031,7 +1031,7 @@ function OCOTab({
               <SymbolSearch
                 authToken={authToken}
                 value={form.symbol}
-                onSelect={(symbol, instrumentKey) => onChange({ ...form, symbol: instrumentKey })}
+                onSelect={(symbol, instrumentKey) => onChange({ ...form, symbol })}
                 placeholder="Search symbol..."
               />
             </div>
