@@ -1257,8 +1257,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 
 **Trade Monitor (IFTTT-style rules):**
 - `python cli-tools/nf-monitor add-rule --name "..." --symbol SYM --trigger price --condition lte --price 2400 --action place_order --side SELL --qty 10 --product I --max-fires 1 --expires today --json`
-- `python cli-tools/nf-monitor add-oco --symbol SYM --qty 10 --product I --sl 2400 --target 2700 --linked-trade TX --expires today --json`
-- `python cli-tools/nf-monitor add-trailing --symbol SYM --qty N --trail-percent PCT [--product D|I] [--expires today] [--json]` — Trailing stop-loss: auto-raises stop as price climbs
+- `python cli-tools/nf-monitor add-oco --symbol SYM --qty 10 --product I --sl 2400 --target 2700 [--side SELL|BUY] [--linked-trade TX] [--expires today] --json` — OCO pair: --side SELL (default) exits LONG, --side BUY exits SHORT (flips trigger conditions + exit direction)
+- `python cli-tools/nf-monitor add-trailing --symbol SYM --qty N --trail-percent PCT [--side SELL|BUY] [--product D|I] [--expires today] [--json]` — Trailing stop: --side SELL (default) exits LONG (tracks highest), --side BUY exits SHORT (tracks lowest)
 - `python cli-tools/nf-monitor list [--active] [--json]` — View rules
 - `python cli-tools/nf-monitor enable|disable|delete RULE_ID [--json]`
 - `python cli-tools/nf-monitor logs [--rule RULE_ID] [--limit 20] [--json]` — Rule firing history
@@ -1334,10 +1334,10 @@ When analyzing:
 **IMPORTANT**: When a user says "intraday", "scalp", "day trade", or similar:
 1. First check if there's already an open intraday position: `python cli-tools/nf-portfolio --json` (check the `intraday_positions` array)
 2. Use `--product I` on nf-order (intraday margin, much cheaper than delivery)
-3. After placing the order, ALWAYS set up protective rules:
-   - OCO pair (stop-loss + target): `nf-monitor add-oco --symbol SYM --qty QTY --product I --sl SL_PRICE --target TARGET_PRICE --expires today --json`
-   - Trailing stop-loss (locks in gains as price rises): `nf-monitor add-trailing --symbol SYM --qty QTY --trail-percent 15 --product I --expires today --json`
-   - Auto-square-off at 15:15 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:15 --action place_order --symbol SYM --side SELL --qty QTY --product I --max-fires 1 --expires today --json`
+3. After placing the order, ALWAYS set up protective rules. Use `--side BUY` for SHORT positions and `--side SELL` (default) for LONG positions:
+   - OCO pair (stop-loss + target): `nf-monitor add-oco --symbol SYM --qty QTY --product I --sl SL_PRICE --target TARGET_PRICE [--side SELL|BUY] --expires today --json`
+   - Trailing stop-loss: `nf-monitor add-trailing --symbol SYM --qty QTY --trail-percent 15 --product I [--side SELL|BUY] --expires today --json`
+   - Auto-square-off at 15:15 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:15 --action place_order --symbol SYM --side SELL|BUY --qty QTY --product I --max-fires 1 --expires today --json`
 4. Warn the user: intraday positions are auto-squared-off by the broker between 3:15-3:25 PM IST
 5. Recommend risk-reward ratio of at least 2:1 for intraday trades
 6. Use 15-minute candles for intraday analysis (`--interval 15minute`)

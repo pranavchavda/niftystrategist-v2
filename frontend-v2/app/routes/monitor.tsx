@@ -325,6 +325,7 @@ export default function MonitorRoute() {
     symbol: '',
     qty: 1,
     product: 'I',
+    side: 'SELL' as 'SELL' | 'BUY',  // SELL = exit long, BUY = exit short
     sl: 0,
     target: 0,
     expires_at: '',
@@ -475,6 +476,7 @@ export default function MonitorRoute() {
         symbol: ocoForm.symbol,
         qty: ocoForm.qty,
         product: ocoForm.product,
+        side: ocoForm.side,
         sl: ocoForm.sl,
         target: ocoForm.target,
       };
@@ -496,7 +498,7 @@ export default function MonitorRoute() {
       }
       const data = await res.json();
       setRules(prev => [data.sl_rule, data.target_rule, ...prev]);
-      setOcoForm({ symbol: '', qty: 1, product: 'I', sl: 0, target: 0, expires_at: '' });
+      setOcoForm({ symbol: '', qty: 1, product: 'I', side: 'SELL', sl: 0, target: 0, expires_at: '' });
       setActiveTab('rules');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create OCO pair');
@@ -960,7 +962,7 @@ function RulesTab({
 function OCOTab({
   form, onChange, onSubmit, saving, authToken,
 }: {
-  form: { symbol: string; qty: number; product: string; sl: number; target: number; expires_at: string };
+  form: { symbol: string; qty: number; product: string; side: 'SELL' | 'BUY'; sl: number; target: number; expires_at: string };
   onChange: (f: any) => void;
   onSubmit: () => void;
   saving: boolean;
@@ -968,7 +970,10 @@ function OCOTab({
 }) {
   const update = (key: string, value: any) => onChange({ ...form, [key]: value });
 
-  const isValid = form.symbol.trim() && form.qty > 0 && form.sl > 0 && form.target > 0 && form.target > form.sl;
+  const isLong = form.side === 'SELL'; // SELL exits a LONG position
+  // Validation: for longs target > sl, for shorts sl > target
+  const pricesValid = form.sl > 0 && form.target > 0 && (isLong ? form.target > form.sl : form.sl > form.target);
+  const isValid = form.symbol.trim() && form.qty > 0 && pricesValid;
 
   return (
     <div className="max-w-2xl">
@@ -984,6 +989,42 @@ function OCOTab({
         </div>
 
         <div className="space-y-5">
+          {/* Position direction toggle */}
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-2">Position Type</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => onChange({ ...form, side: 'SELL', sl: 0, target: 0 })}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-all ${
+                  isLong
+                    ? 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700 text-green-700 dark:text-green-300 shadow-sm'
+                    : 'bg-zinc-50 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-zinc-600'
+                }`}
+              >
+                <TrendingUp className="w-4 h-4" />
+                Long Position
+              </button>
+              <button
+                type="button"
+                onClick={() => onChange({ ...form, side: 'BUY', sl: 0, target: 0 })}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-all ${
+                  !isLong
+                    ? 'bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 shadow-sm'
+                    : 'bg-zinc-50 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-zinc-600'
+                }`}
+              >
+                <TrendingDown className="w-4 h-4" />
+                Short Position
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500 mt-1.5">
+              {isLong
+                ? 'Exit side: SELL — SL below entry, target above'
+                : 'Exit side: BUY (cover) — SL above entry, target below'}
+            </p>
+          </div>
+
           {/* Symbol + Qty row */}
           <div className="grid grid-cols-3 gap-4">
             <div className="col-span-1">
@@ -1021,7 +1062,7 @@ function OCOTab({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-red-600 dark:text-red-400 mb-1.5 flex items-center gap-1.5">
-                <TrendingDown className="w-3.5 h-3.5" />
+                {isLong ? <TrendingDown className="w-3.5 h-3.5" /> : <TrendingUp className="w-3.5 h-3.5" />}
                 Stop-Loss Price
               </label>
               <Input
@@ -1033,11 +1074,15 @@ function OCOTab({
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => update('sl', parseFloat(e.target.value) || 0)}
                 className="text-sm"
               />
-              <p className="text-xs text-zinc-500 mt-1">Sells when price drops to this level</p>
+              <p className="text-xs text-zinc-500 mt-1">
+                {isLong
+                  ? 'Exits (SELL) when price drops to this level'
+                  : 'Exits (BUY) when price rises to this level'}
+              </p>
             </div>
             <div>
               <label className="block text-xs font-medium text-green-600 dark:text-green-400 mb-1.5 flex items-center gap-1.5">
-                <TrendingUp className="w-3.5 h-3.5" />
+                {isLong ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
                 Target Price
               </label>
               <Input
@@ -1049,7 +1094,11 @@ function OCOTab({
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => update('target', parseFloat(e.target.value) || 0)}
                 className="text-sm"
               />
-              <p className="text-xs text-zinc-500 mt-1">Sells when price rises to this level</p>
+              <p className="text-xs text-zinc-500 mt-1">
+                {isLong
+                  ? 'Exits (SELL) when price rises to this level'
+                  : 'Exits (BUY) when price drops to this level'}
+              </p>
             </div>
           </div>
 
@@ -1058,16 +1107,16 @@ function OCOTab({
             <div className="bg-zinc-50 dark:bg-zinc-900/50 rounded-lg p-4 border border-zinc-200 dark:border-zinc-700/30">
               <div className="flex items-center justify-between text-xs mb-2">
                 <span className="text-red-600 dark:text-red-400 font-medium">SL: {form.sl}</span>
-                <span className="text-zinc-500">Risk/Reward</span>
+                <span className="text-zinc-500">Risk / Reward</span>
                 <span className="text-green-600 dark:text-green-400 font-medium">Target: {form.target}</span>
               </div>
               <div className="relative h-2 bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
                 <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-red-500 to-zinc-400 dark:to-zinc-600 rounded-full" style={{ width: '50%' }} />
                 <div className="absolute inset-y-0 right-0 bg-gradient-to-l from-green-500 to-zinc-400 dark:to-zinc-600 rounded-full" style={{ width: '50%' }} />
               </div>
-              {form.target > form.sl && (
+              {pricesValid && (
                 <p className="text-center text-xs text-zinc-500 mt-2">
-                  R:R = 1:{((form.target - form.sl) / form.sl * 100).toFixed(1)}%
+                  R:R = 1:{(Math.abs(form.target - form.sl) / Math.abs(isLong ? form.sl : form.target) * 100).toFixed(1)}%
                 </p>
               )}
             </div>
@@ -1085,10 +1134,12 @@ function OCOTab({
           </div>
 
           {/* Validation */}
-          {form.sl > 0 && form.target > 0 && form.target <= form.sl && (
+          {form.sl > 0 && form.target > 0 && !pricesValid && (
             <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800/30 rounded-lg px-3 py-2">
               <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-              Target price must be above stop-loss price
+              {isLong
+                ? 'Target price must be above stop-loss price for long positions'
+                : 'Stop-loss price must be above target price for short positions'}
             </div>
           )}
 
@@ -1106,7 +1157,7 @@ function OCOTab({
             ) : (
               <>
                 <Target data-slot="icon" className="w-4 h-4" />
-                Create OCO Pair (2 linked rules)
+                Create OCO Pair ({isLong ? 'Long' : 'Short'} Exit)
               </>
             )}
           </Button>

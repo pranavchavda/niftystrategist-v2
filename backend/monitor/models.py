@@ -53,7 +53,9 @@ class CompoundTrigger(BaseModel):
 class TrailingStopTrigger(BaseModel):
     trail_percent: float
     initial_price: float
-    highest_price: float
+    highest_price: float = 0.0  # Tracked for long direction
+    lowest_price: float = 0.0   # Tracked for short direction
+    direction: Literal["long", "short"] = "long"
     reference: Literal["ltp", "bid", "ask", "open", "high", "low"] = "ltp"
 
 

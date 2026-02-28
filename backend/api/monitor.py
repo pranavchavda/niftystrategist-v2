@@ -51,6 +51,7 @@ class CreateOCORequest(BaseModel):
     product: str = "I"
     sl: float
     target: float
+    side: str = "SELL"  # Exit side: SELL for long positions, BUY for short positions
     linked_trade_id: Optional[int] = None
     expires_at: Optional[datetime] = None
 
@@ -169,7 +170,17 @@ async def api_create_oco(
     body: CreateOCORequest,
     user: User = Depends(get_current_user),
 ):
-    """Create a stop-loss + target OCO pair (two linked rules)."""
+    """Create a stop-loss + target OCO pair (two linked rules).
+
+    side=SELL (default): Exit a LONG. SL fires when price drops (lte), target fires when price rises (gte).
+    side=BUY:            Exit a SHORT. SL fires when price rises (gte), target fires when price drops (lte).
+    """
+    exit_side = body.side.upper()
+    if exit_side == "SELL":
+        sl_condition, target_condition = "lte", "gte"
+    else:
+        sl_condition, target_condition = "gte", "lte"
+
     async with get_db_context() as session:
         # Step 1: Create the SL rule
         sl_rule = await create_rule(
@@ -178,14 +189,14 @@ async def api_create_oco(
             name=f"{body.symbol} OCO Stop-Loss @ {body.sl}",
             trigger_type="price",
             trigger_config={
-                "condition": "lte",
+                "condition": sl_condition,
                 "price": body.sl,
                 "reference": "ltp",
             },
             action_type="place_order",
             action_config={
                 "symbol": body.symbol,
-                "transaction_type": "SELL",
+                "transaction_type": exit_side,
                 "quantity": body.qty,
                 "order_type": "MARKET",
                 "product": body.product,
@@ -203,14 +214,14 @@ async def api_create_oco(
             name=f"{body.symbol} OCO Target @ {body.target}",
             trigger_type="price",
             trigger_config={
-                "condition": "gte",
+                "condition": target_condition,
                 "price": body.target,
                 "reference": "ltp",
             },
             action_type="place_order",
             action_config={
                 "symbol": body.symbol,
-                "transaction_type": "SELL",
+                "transaction_type": exit_side,
                 "quantity": body.qty,
                 "order_type": "MARKET",
                 "product": body.product,

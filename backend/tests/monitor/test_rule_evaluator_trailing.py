@@ -132,3 +132,126 @@ class TestTrailingStopEdgeCases:
         # Stop at 99.0. Price at 99.01 should NOT fire.
         fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 99.01})
         assert fired is False
+
+    def test_backward_compat_no_direction_defaults_long(self):
+        """Rules created before direction field was added default to long behavior."""
+        rule = _make_trailing_rule(trail_percent=10.0, highest_price=100.0)
+        # No 'direction' key in trigger_config — should default to "long"
+        assert "direction" not in rule.trigger_config
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 90.0})
+        assert fired is True
+
+
+# -- SHORT direction trailing stop ────────────────────────────────────────────
+
+
+def _make_short_trailing_rule(
+    trail_percent: float = 1.5,
+    initial_price: float = 1300.0,
+    lowest_price: float = 1300.0,
+    reference: str = "ltp",
+) -> MonitorRule:
+    return MonitorRule(
+        id=2,
+        user_id=999,
+        name="test short trailing",
+        trigger_type="trailing_stop",
+        trigger_config={
+            "trail_percent": trail_percent,
+            "initial_price": initial_price,
+            "lowest_price": lowest_price,
+            "direction": "short",
+            "reference": reference,
+        },
+        action_type="place_order",
+        action_config={
+            "symbol": "INFY",
+            "transaction_type": "BUY",
+            "quantity": 60,
+            "order_type": "MARKET",
+            "product": "I",
+            "price": None,
+        },
+        instrument_token="NSE_EQ|INE009A01021",
+    )
+
+
+class TestShortTrailingStopFires:
+    def test_fires_when_price_rises_above_stop(self):
+        """1.5% trail from lowest=1300 → stop at 1319.5. Price 1320 fires."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1320.0})
+        assert fired is True
+        assert update is None
+
+    def test_fires_at_stop_level(self):
+        """Exactly at stop level should fire."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        # stop = 1300 * 1.015 = 1319.5
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1319.5})
+        assert fired is True
+
+    def test_fires_well_above_stop(self):
+        """Price far above stop fires."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1400.0})
+        assert fired is True
+
+
+class TestShortTrailingStopDoesNotFire:
+    def test_no_fire_below_stop(self):
+        """Price below stop level should not fire."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        # stop = 1319.5, price 1310 is below
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1310.0})
+        assert fired is False
+        assert update is None
+
+    def test_no_fire_at_lowest(self):
+        """Price at lowest should not fire (stop is above)."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1300.0})
+        assert fired is False
+
+
+class TestShortTrailingStopUpdatesLowest:
+    def test_updates_lowest_when_price_drops(self):
+        """When price drops below lowest_price, return updated config."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1280.0})
+        assert fired is False
+        assert update is not None
+        assert update["lowest_price"] == 1280.0
+        assert update["trail_percent"] == 1.5
+        assert update["direction"] == "short"
+
+    def test_no_update_when_price_equals_lowest(self):
+        """Same price as lowest — no update."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1300.0})
+        assert update is None
+
+    def test_no_update_when_price_rises_but_below_stop(self):
+        """Price rises but still below stop — no update, no fire."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+        # stop = 1319.5, price 1310 is below stop but above lowest
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1310.0})
+        assert fired is False
+        assert update is None
+
+    def test_tightening_stop_on_new_low(self):
+        """As price drops from 1300→1280→1260, stop tightens: 1319.5→1299.2→1278.9."""
+        rule = _make_short_trailing_rule(trail_percent=1.5, lowest_price=1300.0)
+
+        # Drop to 1280
+        fired, update = evaluate_trailing_stop_trigger(rule, {"ltp": 1280.0})
+        assert not fired
+        assert update["lowest_price"] == 1280.0
+        new_stop = 1280.0 * 1.015
+        assert abs(new_stop - 1299.2) < 0.1
+
+        # Apply update and drop further
+        rule.trigger_config = update
+        fired, update2 = evaluate_trailing_stop_trigger(rule, {"ltp": 1260.0})
+        assert not fired
+        assert update2["lowest_price"] == 1260.0

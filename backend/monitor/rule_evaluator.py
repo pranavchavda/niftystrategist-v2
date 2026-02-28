@@ -85,8 +85,14 @@ def evaluate_trailing_stop_trigger(
     """Evaluate a trailing stop-loss trigger.
 
     Returns (fired, trigger_config_update).
-    - fired=True when price drops to or below the trailing stop level.
-    - trigger_config_update is non-None when highest_price needs updating.
+
+    For LONG positions (direction="long", default):
+      - Tracks highest_price. Stop = highest * (1 - trail%).
+      - Fires when price drops to/below stop level.
+
+    For SHORT positions (direction="short"):
+      - Tracks lowest_price. Stop = lowest * (1 + trail%).
+      - Fires when price rises to/above stop level.
     """
     cfg = TrailingStopTrigger(**rule.trigger_config)
 
@@ -94,17 +100,31 @@ def evaluate_trailing_stop_trigger(
     if current is None:
         return False, None
 
-    stop_price = cfg.highest_price * (1 - cfg.trail_percent / 100)
+    if cfg.direction == "short":
+        # SHORT: track lowest price, fire when price rises above stop
+        lowest = cfg.lowest_price or cfg.initial_price
+        stop_price = lowest * (1 + cfg.trail_percent / 100)
 
-    # Check if price has dropped to/below the stop level
-    if current <= stop_price:
-        return True, None
+        if current >= stop_price:
+            return True, None
 
-    # Check if we have a new high
-    if current > cfg.highest_price:
-        updated = rule.trigger_config.copy()
-        updated["highest_price"] = current
-        return False, updated
+        # New low — tighten the stop
+        if current < lowest:
+            updated = rule.trigger_config.copy()
+            updated["lowest_price"] = current
+            return False, updated
+    else:
+        # LONG (default): track highest price, fire when price drops below stop
+        stop_price = cfg.highest_price * (1 - cfg.trail_percent / 100)
+
+        if current <= stop_price:
+            return True, None
+
+        # New high — tighten the stop
+        if current > cfg.highest_price:
+            updated = rule.trigger_config.copy()
+            updated["highest_price"] = current
+            return False, updated
 
     return False, None
 

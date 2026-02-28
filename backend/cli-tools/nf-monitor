@@ -66,10 +66,17 @@ def _rule_to_dict(rule) -> dict:
     # Add computed fields for trailing stop rules
     if rule.trigger_type == "trailing_stop":
         tc = rule.trigger_config or {}
-        hp = tc.get("highest_price", 0)
         tp = tc.get("trail_percent", 0)
-        d["stop_price"] = round(hp * (1 - tp / 100), 2) if hp else None
-        d["highest_price"] = hp
+        direction = tc.get("direction", "long")
+        if direction == "short":
+            lp = tc.get("lowest_price", tc.get("initial_price", 0))
+            d["stop_price"] = round(lp * (1 + tp / 100), 2) if lp else None
+            d["lowest_price"] = lp
+        else:
+            hp = tc.get("highest_price", 0)
+            d["stop_price"] = round(hp * (1 - tp / 100), 2) if hp else None
+            d["highest_price"] = hp
+        d["direction"] = direction
     return d
 
 
@@ -217,12 +224,30 @@ def cmd_add_rule(args):
 
 
 def cmd_add_oco(args):
-    """Create a stop-loss + target OCO pair (two linked rules)."""
+    """Create a stop-loss + target OCO pair (two linked rules).
+
+    Supports both LONG and SHORT positions via --side:
+      --side SELL (default): Exit a LONG position. SL fires when price drops (lte), target fires when price rises (gte).
+      --side BUY:            Exit a SHORT position. SL fires when price rises (gte), target fires when price drops (lte).
+    """
     from database.session import get_db_context
     from monitor.crud import create_rule, update_rule
 
     user_id = _get_user_id()
     symbol = validate_symbol(args.symbol)
+
+    # Determine exit side and trigger directions
+    exit_side = (args.side or "SELL").upper()
+    if exit_side == "SELL":
+        # Exiting a LONG: SL fires below entry (price drops), target fires above (price rises)
+        sl_condition = "lte"
+        target_condition = "gte"
+    elif exit_side == "BUY":
+        # Exiting a SHORT: SL fires above entry (price rises), target fires below (price drops)
+        sl_condition = "gte"
+        target_condition = "lte"
+    else:
+        print_error(f"Invalid --side: {exit_side}. Must be BUY or SELL.")
 
     expires_at = None
     if args.expires:
@@ -237,14 +262,14 @@ def cmd_add_oco(args):
                 name=f"{symbol} OCO Stop-Loss @ {args.sl}",
                 trigger_type="price",
                 trigger_config={
-                    "condition": "lte",
+                    "condition": sl_condition,
                     "price": args.sl,
                     "reference": "ltp",
                 },
                 action_type="place_order",
                 action_config={
                     "symbol": symbol,
-                    "transaction_type": "SELL",
+                    "transaction_type": exit_side,
                     "quantity": args.qty,
                     "order_type": "MARKET",
                     "product": args.product,
@@ -262,14 +287,14 @@ def cmd_add_oco(args):
                 name=f"{symbol} OCO Target @ {args.target}",
                 trigger_type="price",
                 trigger_config={
-                    "condition": "gte",
+                    "condition": target_condition,
                     "price": args.target,
                     "reference": "ltp",
                 },
                 action_type="place_order",
                 action_config={
                     "symbol": symbol,
-                    "transaction_type": "SELL",
+                    "transaction_type": exit_side,
                     "quantity": args.qty,
                     "order_type": "MARKET",
                     "product": args.product,
@@ -294,16 +319,21 @@ def cmd_add_oco(args):
 
     sl_rule, target_rule = run_async(_create_oco())
 
+    sl_cond_str = "≤" if sl_condition == "lte" else "≥"
+    tgt_cond_str = "≥" if target_condition == "gte" else "≤"
+
     if args.json:
         print_json({
             "oco": True,
+            "exit_side": exit_side,
             "sl_rule": _rule_to_dict(sl_rule),
             "target_rule": _rule_to_dict(target_rule),
         })
     else:
-        print_success(f"OCO pair created for {symbol}")
-        print(f"  SL Rule     #{sl_rule.id}: price <= {args.sl} → SELL {args.qty}")
-        print(f"  Target Rule #{target_rule.id}: price >= {args.target} → SELL {args.qty}")
+        position_type = "LONG" if exit_side == "SELL" else "SHORT"
+        print_success(f"OCO pair created for {symbol} ({position_type} exit)")
+        print(f"  SL Rule     #{sl_rule.id}: price {sl_cond_str} {args.sl} → {exit_side} {args.qty}")
+        print(f"  Target Rule #{target_rule.id}: price {tgt_cond_str} {args.target} → {exit_side} {args.qty}")
         if expires_at:
             print(f"  Expires: {expires_at}")
         if args.linked_trade:
@@ -311,7 +341,12 @@ def cmd_add_oco(args):
 
 
 def cmd_add_trailing(args):
-    """Create a trailing stop-loss rule that auto-adjusts as price rises."""
+    """Create a trailing stop-loss rule that auto-adjusts as price moves.
+
+    Supports both LONG and SHORT positions via --side:
+      --side SELL (default): Exit a LONG. Trail tracks highest price, fires when price drops below trail.
+      --side BUY:            Exit a SHORT. Trail tracks lowest price, fires when price rises above trail.
+    """
     from database.session import get_db_context
     from monitor.crud import create_rule
     from services.instruments_cache import get_instrument_key
@@ -322,7 +357,11 @@ def cmd_add_trailing(args):
     if not instrument_token:
         print_error(f"Could not find instrument key for {symbol}")
 
-    # Fetch current LTP to set initial_price and highest_price
+    exit_side = (args.side or "SELL").upper()
+    if exit_side not in ("BUY", "SELL"):
+        print_error(f"Invalid --side: {exit_side}. Must be BUY or SELL.")
+
+    # Fetch current LTP to set initial_price and highest/lowest price
     client = init_client()
 
     async def _get_ltp():
@@ -334,19 +373,33 @@ def cmd_add_trailing(args):
         print_error(f"Could not fetch LTP for {symbol}")
 
     trail_pct = args.trail_percent
-    stop_price = ltp * (1 - trail_pct / 100)
-    name = args.name or f"{symbol} Trailing SL {trail_pct}%"
 
-    trigger_config = {
-        "trail_percent": trail_pct,
-        "initial_price": ltp,
-        "highest_price": ltp,
-        "reference": args.reference or "ltp",
-    }
+    if exit_side == "SELL":
+        # LONG exit: track highest price, stop below
+        stop_price = ltp * (1 - trail_pct / 100)
+        name = args.name or f"{symbol} Trailing SL {trail_pct}%"
+        trigger_config = {
+            "trail_percent": trail_pct,
+            "initial_price": ltp,
+            "highest_price": ltp,
+            "direction": "long",
+            "reference": args.reference or "ltp",
+        }
+    else:
+        # SHORT exit: track lowest price, stop above
+        stop_price = ltp * (1 + trail_pct / 100)
+        name = args.name or f"{symbol} Trailing SL (short) {trail_pct}%"
+        trigger_config = {
+            "trail_percent": trail_pct,
+            "initial_price": ltp,
+            "lowest_price": ltp,
+            "direction": "short",
+            "reference": args.reference or "ltp",
+        }
 
     action_config = {
         "symbol": symbol,
-        "transaction_type": "SELL",
+        "transaction_type": exit_side,
         "quantity": args.qty,
         "order_type": "MARKET",
         "product": args.product or "I",
@@ -380,14 +433,16 @@ def cmd_add_trailing(args):
             "created": _rule_to_dict(rule),
             "stop_price": round(stop_price, 2),
             "ltp_at_creation": ltp,
+            "exit_side": exit_side,
         })
     else:
-        print_success(f"Trailing SL rule #{rule.id}: {name}")
+        pos_type = "LONG" if exit_side == "SELL" else "SHORT"
+        print_success(f"Trailing SL rule #{rule.id}: {name} ({pos_type} exit)")
         print(f"  Symbol:       {symbol}")
         print(f"  Current LTP:  {ltp}")
         print(f"  Trail:        {trail_pct}%")
         print(f"  Initial Stop: {stop_price:.2f}")
-        print(f"  Sell Qty:     {args.qty} ({args.product or 'I'})")
+        print(f"  Exit:         {exit_side} {args.qty} ({args.product or 'I'})")
         if expires_at:
             print(f"  Expires:      {expires_at}")
 
@@ -574,11 +629,21 @@ Examples:
     --trigger price --condition lte --price 2400 \\
     --action place_order --side SELL --qty 10 --product I --json
 
+  # OCO for a LONG position (default --side SELL):
   nf-monitor add-oco --symbol RELIANCE --qty 10 --product I \\
-    --sl 2400 --target 2700 --linked-trade 42 --expires today --json
+    --sl 2400 --target 2700 --expires today --json
 
+  # OCO for a SHORT position (--side BUY to buy-to-cover):
+  nf-monitor add-oco --symbol ICICIBANK --qty 80 --product I --side BUY \\
+    --sl 1400 --target 1370 --expires today --json
+
+  # Trailing stop for a LONG position:
   nf-monitor add-trailing --symbol RELIANCE --qty 10 --trail-percent 15 \\
     --product D --expires today --json
+
+  # Trailing stop for a SHORT position (tracks lowest price):
+  nf-monitor add-trailing --symbol INFY --qty 60 --side BUY \\
+    --trail-percent 1.5 --product I --expires today --json
 
   nf-monitor list --active --json
   nf-monitor enable 5
@@ -653,6 +718,8 @@ Examples:
     p_oco = sub.add_parser("add-oco", help="Create stop-loss + target OCO pair")
     p_oco.add_argument("--symbol", required=True, help="Stock symbol")
     p_oco.add_argument("--qty", type=int, required=True, help="Order quantity")
+    p_oco.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], default="SELL",
+                       help="Exit side: SELL for long positions (default), BUY for short positions")
     p_oco.add_argument("--product", choices=["D", "I"], default="I",
                        help="Product type: D=Delivery, I=Intraday (default: I)")
     p_oco.add_argument("--sl", type=float, required=True, help="Stop-loss price")
@@ -664,9 +731,11 @@ Examples:
     # ---- add-trailing ----
     p_trail = sub.add_parser("add-trailing", help="Create a trailing stop-loss rule")
     p_trail.add_argument("--symbol", required=True, help="Stock symbol")
-    p_trail.add_argument("--qty", type=int, required=True, help="Quantity to sell when triggered")
+    p_trail.add_argument("--qty", type=int, required=True, help="Quantity to exit when triggered")
+    p_trail.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], default="SELL",
+                         help="Exit side: SELL for long positions (default), BUY for short positions")
     p_trail.add_argument("--trail-percent", type=float, required=True,
-                         help="Trail percentage below highest price (e.g. 15 = 15%%)")
+                         help="Trail percentage from best price (e.g. 15 = 15%%)")
     p_trail.add_argument("--product", choices=["D", "I"], default="I",
                          help="Product type: D=Delivery, I=Intraday (default: I)")
     p_trail.add_argument("--reference", default="ltp",
