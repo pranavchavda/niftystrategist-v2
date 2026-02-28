@@ -172,6 +172,23 @@ Agents can schedule one-shot follow-ups bound to an existing conversation thread
 
 **pydantic-ai version note:** As of 2026-02-26, running pydantic-ai 1.47.0 (upgraded from 1.39.0). `TextPart` positional arg used (not `text=` kwarg) to stay version-agnostic.
 
+**Critical bugs fixed in awakenings (2026-02-27):**
+- **Use `agent.run()`, NOT `stream_text()`**: `stream_text()` only captures the first model response and misses all tool calls and subsequent turns. `agent.run()` completes the full tool-call loop. See `workflow_engine.py`.
+- **Use `get_orchestrator_for_model()`, NOT bare `OrchestratorAgent()`**: The bare constructor doesn't register sub-agents (`web_search`, `vision`). Always call `await get_orchestrator_for_model(model_id, user_id=user_id)` from `main.py`.
+- **Use `get_user_upstox_token(user.id)`, NOT `user.upstox_access_token`**: The raw DB field is an encrypted blob. `get_user_upstox_token()` handles decrypt + expiry + TOTP refresh.
+- **Validate_tool_claims must NOT raise `ModelRetry`**: Raising ModelRetry from an output validator causes duplicate assistant messages in DB (via ResponseCapture). Demote to a log warning only.
+
+**Mandate-based pre-approval for autonomous awakenings (2026-02-27):**
+The HITL render_ui confirmation is useless during awakenings (no user to click). Added `is_awakening: bool = False` to `OrchestratorDeps`. `workflow_engine.py` sets it `True`. When `is_awakening=True`, `_register_dynamic_instructions()` injects a `## 🤖 AUTONOMOUS AWAKENING MODE` section into the system prompt that:
+- Tells the agent the user is not present and cannot click UI buttons
+- Instructs it to look for a previously-approved trading mandate in the conversation history (`[User clicked 'approve_trade']` + mandate details)
+- Permits executing `nf-order` directly without a render_ui card when a mandate is found
+- Lists what must still be checked (day P&L, mandate bounds, market hours, cutoff time)
+- Explicitly overrides SAFETY-1 for that awakening session
+This allows a user to pre-approve a bounded trading mandate once via HITL and have awakenings operate within that mandate autonomously.
+
+**APScheduler timezone gotcha:** Server runs in EST; naive UTC datetimes stored in `scheduled_at` are interpreted as EST by APScheduler (5-hour offset). `_get_trigger()` also returns `None` for past `scheduled_at` times. For testing, set `scheduled_at` to local system time + a small delta rather than a UTC future time.
+
 ## Deploy Pipeline
 
 `.github/workflows/deploy.yml` uses **uv** (Rust-based pip replacement) for `pip install`, which is 10-100x faster than plain pip for large requirement sets. The venv is created with plain Python but deps installed via `pip install -q uv && uv pip install -r requirements.txt`.
