@@ -41,6 +41,13 @@ def extract_instruments_from_rules(rules: list[MonitorRule]) -> set[str]:
         if rule.trigger_type in ("price", "indicator", "compound", "trailing_stop"):
             if rule.instrument_token:
                 instruments.add(rule.instrument_token)
+            elif rule.enabled:
+                logger.error(
+                    "Rule #%d (%s) has trigger_type=%s but NO instrument_token — "
+                    "it will NEVER receive market data ticks and cannot fire! "
+                    "This is a data bug; the rule must be recreated with an instrument_token.",
+                    rule.id, rule.name, rule.trigger_type,
+                )
     return instruments
 
 

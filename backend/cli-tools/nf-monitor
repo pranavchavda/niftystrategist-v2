@@ -100,13 +100,17 @@ def cmd_add_rule(args):
     """Create a single monitoring rule."""
     from database.session import get_db_context
     from monitor.crud import create_rule
+    from services.instruments_cache import get_instrument_key
 
     user_id = _get_user_id()
 
     # Validate symbol if provided
     symbol = None
+    instrument_token = None
     if args.symbol:
         symbol = validate_symbol(args.symbol)
+        # Look up instrument token for price/indicator triggers (needed for WebSocket subscription)
+        instrument_token = get_instrument_key(symbol)
 
     # Build trigger config
     trigger_type = args.trigger
@@ -201,6 +205,7 @@ def cmd_add_rule(args):
                 trigger_config=trigger_config,
                 action_type=action_type,
                 action_config=action_config,
+                instrument_token=instrument_token,
                 symbol=symbol,
                 linked_trade_id=args.linked_trade,
                 linked_order_id=args.linked_order,
@@ -232,9 +237,13 @@ def cmd_add_oco(args):
     """
     from database.session import get_db_context
     from monitor.crud import create_rule, update_rule
+    from services.instruments_cache import get_instrument_key
 
     user_id = _get_user_id()
     symbol = validate_symbol(args.symbol)
+    instrument_token = get_instrument_key(symbol)
+    if not instrument_token:
+        print_error(f"Could not find instrument key for {symbol}")
 
     # Determine exit side and trigger directions
     exit_side = (args.side or "SELL").upper()
@@ -274,6 +283,7 @@ def cmd_add_oco(args):
                     "order_type": "MARKET",
                     "product": args.product,
                 },
+                instrument_token=instrument_token,
                 symbol=symbol,
                 linked_trade_id=args.linked_trade,
                 max_fires=1,
@@ -300,6 +310,7 @@ def cmd_add_oco(args):
                     "product": args.product,
                     "also_cancel_rule": sl_rule.id,
                 },
+                instrument_token=instrument_token,
                 symbol=symbol,
                 linked_trade_id=args.linked_trade,
                 max_fires=1,

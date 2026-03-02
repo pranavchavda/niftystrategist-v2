@@ -181,6 +181,10 @@ async def api_create_oco(
     else:
         sl_condition, target_condition = "gte", "lte"
 
+    instrument_token = get_instrument_key(body.symbol)
+    if not instrument_token:
+        raise HTTPException(status_code=400, detail=f"Could not find instrument key for {body.symbol}")
+
     async with get_db_context() as session:
         # Step 1: Create the SL rule
         sl_rule = await create_rule(
@@ -201,6 +205,7 @@ async def api_create_oco(
                 "order_type": "MARKET",
                 "product": body.product,
             },
+            instrument_token=instrument_token,
             symbol=body.symbol,
             linked_trade_id=body.linked_trade_id,
             max_fires=1,
@@ -227,6 +232,7 @@ async def api_create_oco(
                 "product": body.product,
                 "also_cancel_rule": sl_rule.id,
             },
+            instrument_token=instrument_token,
             symbol=body.symbol,
             linked_trade_id=body.linked_trade_id,
             max_fires=1,
