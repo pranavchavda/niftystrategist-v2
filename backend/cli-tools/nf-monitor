@@ -44,6 +44,14 @@ def _parse_expires(value: str) -> datetime:
             print_error(f"Invalid expires value: {value}. Use 'today' or ISO datetime (e.g. 2025-01-15T10:00:00)")
 
 
+def _fmt_ist(dt: datetime | None) -> str | None:
+    """Format a naive UTC datetime as an IST string for display."""
+    if dt is None:
+        return None
+    ist = dt + timedelta(hours=5, minutes=30)
+    return f"{ist.strftime('%Y-%m-%d %H:%M')} IST"
+
+
 def _rule_to_dict(rule) -> dict:
     """Convert a DB rule object to a JSON-serializable dict."""
     d = {
@@ -59,9 +67,9 @@ def _rule_to_dict(rule) -> dict:
         "linked_order_id": rule.linked_order_id,
         "fire_count": rule.fire_count,
         "max_fires": rule.max_fires,
-        "expires_at": str(rule.expires_at) if rule.expires_at else None,
-        "fired_at": str(rule.fired_at) if rule.fired_at else None,
-        "created_at": str(rule.created_at) if rule.created_at else None,
+        "expires_at": _fmt_ist(rule.expires_at) if rule.expires_at else None,
+        "fired_at": _fmt_ist(rule.fired_at) if rule.fired_at else None,
+        "created_at": _fmt_ist(rule.created_at) if rule.created_at else None,
     }
     # Add computed fields for trailing stop rules
     if rule.trigger_type == "trailing_stop":
@@ -88,7 +96,7 @@ def _log_to_dict(log) -> dict:
         "trigger_snapshot": log.trigger_snapshot,
         "action_taken": log.action_taken,
         "action_result": log.action_result,
-        "created_at": str(log.created_at) if log.created_at else None,
+        "created_at": _fmt_ist(log.created_at) if log.created_at else None,
     }
 
 
@@ -223,7 +231,7 @@ def cmd_add_rule(args):
         print(f"  Trigger: {trigger_type} → {trigger_config}")
         print(f"  Action:  {action_type} → {action_config}")
         if expires_at:
-            print(f"  Expires: {expires_at}")
+            print(f"  Expires: {_fmt_ist(expires_at)}")
         if args.max_fires:
             print(f"  Max fires: {args.max_fires}")
 
@@ -346,7 +354,7 @@ def cmd_add_oco(args):
         print(f"  SL Rule     #{sl_rule.id}: price {sl_cond_str} {args.sl} → {exit_side} {args.qty}")
         print(f"  Target Rule #{target_rule.id}: price {tgt_cond_str} {args.target} → {exit_side} {args.qty}")
         if expires_at:
-            print(f"  Expires: {expires_at}")
+            print(f"  Expires: {_fmt_ist(expires_at)}")
         if args.linked_trade:
             print(f"  Linked trade: #{args.linked_trade}")
 
@@ -455,7 +463,7 @@ def cmd_add_trailing(args):
         print(f"  Initial Stop: {stop_price:.2f}")
         print(f"  Exit:         {exit_side} {args.qty} ({args.product or 'I'})")
         if expires_at:
-            print(f"  Expires:      {expires_at}")
+            print(f"  Expires:      {_fmt_ist(expires_at)}")
 
 
 def cmd_list(args):
