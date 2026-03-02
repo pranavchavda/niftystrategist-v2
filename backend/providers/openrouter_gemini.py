@@ -1,8 +1,26 @@
+"""
+DEPRECATED (2026-03-02): These custom model classes are no longer used in production.
+
+Pydantic AI 1.47+ natively handles:
+- reasoning_content (DeepSeek/Kimi) via OpenRouterProvider profiles
+- reasoning_details (Gemini) via OpenRouterProvider profiles
+- Multi-turn thinking injection via _MapModelResponseContext
+
+The custom OpenRouterGeminiStreamedResponse had a critical bug: it replicated
+the parent's _get_event_iterator() method, which drifted from the actual parent
+class in Pydantic AI 1.47+. Specifically, handle_text_delta() changed from
+returning Optional[event] to Iterator[event], causing all text content to be
+silently swallowed (yielded generator objects instead of events).
+
+These classes are kept only for backward compatibility with test scripts.
+Production code now uses plain OpenAIChatModel with OpenRouterProvider.
+"""
 from __future__ import annotations
 
 from typing import Any, Literal, cast, AsyncIterable
 from contextlib import asynccontextmanager
 import logging
+import warnings
 
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, OpenAIStreamedResponse
 from pydantic_ai.messages import (
@@ -140,9 +158,15 @@ class OpenRouterGeminiModel(OpenAIChatModel):
     """
 
     def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "OpenRouterGeminiModel is deprecated. Use plain OpenAIChatModel with OpenRouterProvider instead. "
+            "Pydantic AI 1.47+ handles reasoning_content/reasoning_details natively.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__(*args, **kwargs)
         logger.info(f"[OpenRouterGeminiModel] Initialized for model: {self.model_name}")
-    
+
     @asynccontextmanager
     async def request_stream(
         self,
@@ -260,6 +284,12 @@ class OpenRouterKimiModel(OpenAIChatModel):
     """
 
     def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "OpenRouterKimiModel is deprecated. Use plain OpenAIChatModel with OpenRouterProvider instead. "
+            "Pydantic AI 1.47+ handles reasoning_content natively.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__(*args, **kwargs)
         logger.info(f"[OpenRouterKimiModel] Initialized for model: {self.model_name}")
 

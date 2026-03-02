@@ -10,6 +10,7 @@ This base class ensures all agents follow the PROJECT_BRIEF.md principles:
 
 from typing import Any, Dict, List, Optional, Type, TypeVar, Generic
 from abc import ABC, abstractmethod
+import dataclasses
 import logging
 import os
 from pydantic import BaseModel
@@ -20,7 +21,6 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider  # Proper OpenRouter support with reasoning field
 from pydantic_ai.profiles.openai import OpenAIModelProfile
-from providers.openrouter_gemini import OpenRouterGeminiModel, OpenRouterKimiModel
 
 logger = logging.getLogger(__name__)
 
@@ -295,42 +295,26 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
 
         model_settings = ModelSettings(**model_settings_kwargs)
 
-        # Use OpenRouterGeminiModel for models that need reasoning_content/reasoning_details preserved
-        # This includes: Gemini (reasoning_details), DeepSeek/Kimi (reasoning_content)
-        # The custom model class handles injecting these fields back into assistant messages
-        # which is REQUIRED for multi-turn conversations with thinking-enabled models
-        if config.use_openrouter and 'gemini' in model_name.lower():
-            logger.info(f"Using custom OpenRouterGeminiModel for {model_name} (reasoning_details support)")
-            return OpenRouterGeminiModel(
-                model_name,
-                provider=provider,
-                settings=model_settings
-            )
-
-        # DeepSeek models use reasoning_content field and need strict tools disabled
-        # Use OpenRouterGeminiModel to preserve reasoning in multi-turn tool calls
+        # DeepSeek models need strict tool definitions disabled.
+        # Use dataclasses.replace to override ONLY that field while preserving
+        # the provider's default profile (which includes thinking_field, send_back_thinking, etc.)
+        # Previously we used a custom OpenRouterGeminiModel class, but Pydantic AI 1.47+
+        # handles reasoning_content/reasoning_details natively via OpenRouterProvider profiles.
         if config.use_openrouter and 'deepseek' in model_name.lower():
-            logger.info(f"Using custom OpenRouterGeminiModel for {model_name} (reasoning_content support)")
-            profile = OpenAIModelProfile(openai_supports_strict_tool_definition=False)
-            logger.info(f"Also using custom profile for {model_name} (strict tools disabled)")
-            return OpenRouterGeminiModel(
+            default_profile = provider.model_profile(model_name)
+            profile = dataclasses.replace(default_profile, openai_supports_strict_tool_definition=False)
+            logger.info(f"Using native OpenAIChatModel for {model_name} (strict tools disabled, thinking handled by provider profile)")
+            return OpenAIChatModel(
                 model_name,
                 provider=provider,
                 settings=model_settings,
                 profile=profile
             )
 
-        # Kimi/Moonshot models: Use minimal OpenRouterKimiModel
-        # Only injects reasoning_content for multi-turn, doesn't change streaming
-        # This preserves Kimi's native tool calling while fixing the multi-turn error
-        if config.use_openrouter and ('kimi' in model_name.lower() or 'moonshot' in model_name.lower()):
-            logger.info(f"Using OpenRouterKimiModel for {model_name} (reasoning_content injection only)")
-            return OpenRouterKimiModel(
-                model_name,
-                provider=provider,
-                settings=model_settings
-            )
-
+        # Gemini, Kimi/Moonshot, and all other OpenRouter models:
+        # Pydantic AI 1.47+ OpenRouterProvider natively handles reasoning fields
+        # (reasoning_content for DeepSeek/Kimi, reasoning for OpenRouter standard)
+        # No custom model classes needed.
         return OpenAIChatModel(
             model_name,
             provider=provider,
