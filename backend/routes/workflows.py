@@ -781,13 +781,16 @@ async def update_custom_workflow(
         await session.commit()
         await session.refresh(workflow)
 
-        # Update scheduler
-        scheduler = get_scheduler()
-        if scheduler:
-            if workflow.enabled:
-                await scheduler.add_or_update_custom_workflow(workflow)
-            else:
-                await scheduler.remove_custom_workflow(workflow.id)
+        # Update scheduler (best-effort — don't fail the update if scheduler errors)
+        try:
+            scheduler = get_scheduler()
+            if scheduler:
+                if workflow.enabled:
+                    await scheduler.add_or_update_custom_workflow(workflow)
+                else:
+                    await scheduler.remove_custom_workflow(workflow.id)
+        except Exception as e:
+            logger.warning(f"Failed to update scheduler for workflow {workflow_id}: {e}")
 
         return workflow
 

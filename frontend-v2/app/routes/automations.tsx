@@ -70,6 +70,14 @@ export function clientLoader() {
 // Available icons for custom workflows
 const WORKFLOW_ICONS = ['🤖', '📧', '📊', '🔍', '📝', '⚡', '🎯', '📈', '🛒', '💼', '🔔', '📱'];
 
+// Helper: parse API datetime strings as UTC (backend stores naive UTC timestamps)
+function parseUTCDate(dateStr: string | null): Date | null {
+  if (!dateStr) return null;
+  // Append 'Z' if no timezone suffix, so the browser treats it as UTC
+  const s = dateStr.endsWith('Z') || dateStr.includes('+') ? dateStr : dateStr + 'Z';
+  return new Date(s);
+}
+
 export default function AutomationsRoute() {
   const { authToken } = useOutletContext<AuthContext>();
   const [workflowTypes, setWorkflowTypes] = useState<WorkflowType[]>([]);
@@ -231,11 +239,14 @@ export default function AutomationsRoute() {
         body: JSON.stringify({})
       });
 
-      const result = await res.json();
-
       if (!res.ok) {
-        throw new Error(result.detail || 'Failed to run workflow');
+        const text = await res.text();
+        let errorMessage = 'Failed to run workflow';
+        try { errorMessage = JSON.parse(text).detail || errorMessage; } catch {}
+        throw new Error(errorMessage);
       }
+
+      const result = await res.json();
 
       // Refresh history for this workflow
       const historyRes = await fetch(`/api/workflows/${type}/history?limit=5`, {
@@ -290,11 +301,14 @@ export default function AutomationsRoute() {
         }
       });
 
-      const result = await res.json();
-
       if (!res.ok) {
-        throw new Error(result.detail || 'Failed to run workflow');
+        const text = await res.text();
+        let errorMessage = 'Failed to run workflow';
+        try { errorMessage = JSON.parse(text).detail || errorMessage; } catch {}
+        throw new Error(errorMessage);
       }
+
+      const result = await res.json();
 
       // Refresh history for this workflow
       const historyRes = await fetch(`/api/workflows/custom/${workflowId}/history?limit=5`, {
@@ -350,11 +364,15 @@ export default function AutomationsRoute() {
   // Open modal for editing workflow
   const openEditModal = (workflow: CustomWorkflow) => {
     setEditingWorkflow(workflow);
-    // Convert ISO datetime to datetime-local format (YYYY-MM-DDTHH:mm)
+    // Convert ISO datetime to datetime-local format (YYYY-MM-DDTHH:mm) in local timezone
     let scheduledAtLocal = '';
     if (workflow.scheduled_at) {
-      const dt = new Date(workflow.scheduled_at);
-      scheduledAtLocal = dt.toISOString().slice(0, 16);
+      const dt = parseUTCDate(workflow.scheduled_at);
+      if (dt) {
+        // Format as local datetime for the datetime-local input
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        scheduledAtLocal = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+      }
     }
     setModalData({
       name: workflow.name,
@@ -410,8 +428,15 @@ export default function AutomationsRoute() {
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || 'Failed to save workflow');
+        const text = await res.text();
+        let errorMessage = 'Failed to save workflow';
+        try {
+          const data = JSON.parse(text);
+          errorMessage = data.detail || errorMessage;
+        } catch {
+          errorMessage = text || `HTTP ${res.status}`;
+        }
+        throw new Error(errorMessage);
       }
 
       const saved = await res.json();
@@ -485,7 +510,8 @@ export default function AutomationsRoute() {
   // Format date for display
   const formatDate = (dateStr: string | null): string => {
     if (!dateStr) return 'Never';
-    const date = new Date(dateStr);
+    const date = parseUTCDate(dateStr);
+    if (!date) return 'Never';
     const now = new Date();
     const diff = now.getTime() - date.getTime();
 
@@ -846,7 +872,7 @@ export default function AutomationsRoute() {
                           {workflow.frequency === 'manual' ? 'Manual only' :
                            workflow.frequency === 'once' ? (
                              workflow.scheduled_at
-                               ? `One-time: ${new Date(workflow.scheduled_at).toLocaleString()}`
+                               ? `One-time: ${(parseUTCDate(workflow.scheduled_at) || new Date()).toLocaleString()}`
                                : 'One-time (completed)'
                            ) :
                            workflow.frequency === 'hourly' ? 'Every hour' :
