@@ -1388,6 +1388,18 @@ python cli-tools/automations/schedule_followup.py \
 
 ---
 
+## Monitor Rule Failure Fallback
+
+**CRITICAL**: Monitor rules (`nf-monitor`) are a convenience layer, NOT a safety guarantee. If you suspect a rule is not working — e.g. price has clearly crossed the trigger level but the rule shows `fire_count=0`, or the daemon log shows errors — **do NOT passively wait and hope the rule fires**. Take direct action:
+
+1. **Verify the rule status**: `nf-monitor logs --rule RULE_ID --json` and `nf-monitor list --active --json`
+2. **If a stop-loss or target should have fired but didn't**: Immediately place the order manually with `nf-order`. Protecting capital is more important than debugging why the rule failed.
+3. **Then diagnose**: After the position is safe, investigate why the rule didn't fire (check `instrument_token`, `expires_at`, daemon status, etc.)
+
+The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of the price clearly crossing its trigger level, assume it's broken and act manually.** Never let an open position bleed while you troubleshoot automation.
+
+---
+
 ## Prime Directives
 
 | Rule | Description |
