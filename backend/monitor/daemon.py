@@ -340,6 +340,11 @@ class MonitorDaemon:
         # fire on every tick until the next _poll_rules() DB reload.
         rule.fire_count += 1
 
+        # Also disable the rule in-memory if max_fires is reached, so even
+        # concurrent ticks on other async tasks see it as disabled immediately.
+        if rule.max_fires and rule.fire_count >= rule.max_fires:
+            rule.enabled = False
+
         logger.info("Rule %d (%s) FIRED", rule.id, rule.name)
 
         trigger_snapshot = {
