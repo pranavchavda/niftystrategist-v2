@@ -181,6 +181,9 @@ class Conversation(Base):
     forked_from_id = Column(String, ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
     fork_summary = Column(Text, nullable=True)  # Comprehensive summary of parent conversation
 
+    # Compaction tracking
+    last_compacted_at = Column(DateTime, nullable=True)  # When thread was last compacted
+
     # Relationships
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
     memories = relationship("Memory", back_populates="conversation")

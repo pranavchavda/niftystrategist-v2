@@ -75,6 +75,7 @@ function ChatView({ authToken, onConversationChange }) {
   const [streamTimeline, setStreamTimeline] = useState([]);
   const [interruptReason, setInterruptReason] = useState("");
   const [isForkingConversation, setIsForkingConversation] = useState(false);
+  const [isCompactingThread, setIsCompactingThread] = useState(false);
   // Token usage tracking
   const [tokenUsage, setTokenUsage] = useState(null);
   // HITL (Human-in-the-Loop) approval state
@@ -96,10 +97,30 @@ function ChatView({ authToken, onConversationChange }) {
   // Store sendMessage in ref to create a stable callback for renderedMessages
   const sendMessageRef = useRef(null);
 
+  // Track previous isLoading to detect response completion
+  const prevIsLoadingRef = useRef(false);
+
   // Debug: Log isLoading state changes
   useEffect(() => {
     console.log("[ChatView] isLoading state changed:", isLoading);
   }, [isLoading]);
+
+  // Auto-compaction detection: after a response finishes, if message count
+  // is high (>= 100), wait for server-side auto-compaction then reload
+  useEffect(() => {
+    const wasLoading = prevIsLoadingRef.current;
+    prevIsLoadingRef.current = isLoading;
+
+    if (wasLoading && !isLoading && threadId && messages.length >= 100) {
+      console.log(`[ChatView] Response complete with ${messages.length} messages - checking for auto-compaction`);
+      const timer = setTimeout(() => {
+        // Reload conversation to pick up auto-compacted messages
+        loadConversation(threadId);
+      }, 8000); // Wait 8s for server-side compaction to complete
+
+      return () => clearTimeout(timer);
+    }
+  }, [isLoading]); // Intentionally minimal deps — only fires on isLoading change
 
   // Debug: log mount/unmount
   useEffect(() => {
@@ -1662,7 +1683,47 @@ function ChatView({ authToken, onConversationChange }) {
     }
   }, [threadId, authToken, messages, isForkingConversation, navigate, onConversationChange]);
 
+  const handleCompactThread = useCallback(async () => {
+    if (!threadId || isCompactingThread || messages.length < 4) return;
 
+    if (!window.confirm(
+      `Compact this thread? This will summarize all ${messages.length} messages into a single context message. The original messages will be replaced. This cannot be undone.`
+    )) {
+      return;
+    }
+
+    setIsCompactingThread(true);
+
+    try {
+      const response = await fetch(
+        `/api/conversations/${threadId}/compact`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`Compacted thread ${threadId}: ${result.original_message_count} messages → summary`);
+
+        // Reload the conversation to show the compacted version
+        loadConversation(threadId);
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        console.error("Failed to compact thread:", response.status, errorData);
+        alert(errorData.detail || "Failed to compact thread. Please try again.");
+      }
+    } catch (error) {
+      console.error("Error compacting thread:", error);
+      alert("Error compacting thread. Please try again.");
+    } finally {
+      setIsCompactingThread(false);
+    }
+  }, [threadId, authToken, messages, isCompactingThread, loadConversation]);
 
   const handleSendMessage = useCallback((text) => {
     sendMessage(text);
@@ -1866,8 +1927,10 @@ function ChatView({ authToken, onConversationChange }) {
               <ActionsDropdown
                 onViewTools={() => setShowToolsSidebar(!showToolsSidebar)}
                 onForkConversation={handleForkConversation}
+                onCompactThread={handleCompactThread}
                 onExtractMemories={handleExtractMemories}
                 isForkingConversation={isForkingConversation}
+                isCompactingThread={isCompactingThread}
                 isExtractingMemories={isExtractingMemories}
                 extractionSuccess={extractionSuccess}
                 useTodo={useTodo}

@@ -134,6 +134,14 @@ class ForkConversationResponse(BaseModel):
     fork_summary: str
 
 
+class CompactConversationResponse(BaseModel):
+    """Compact conversation response"""
+    conversation_id: str
+    original_message_count: int
+    compact_summary_length: int
+    compacted_at: str
+
+
 # Database manager will be injected from main.py
 _db_manager = None
 
@@ -270,6 +278,7 @@ async def get_conversation(
         "is_starred": conversation.is_starred,
         "is_archived": conversation.is_archived,
         "summary": conversation.summary,
+        "last_compacted_at": conversation.last_compacted_at.isoformat() + 'Z' if conversation.last_compacted_at else None,
         "messages": messages,
         "tasks": [],  # Placeholder for tasks
         "fetchedTaskMarkdown": None,  # Placeholder for task markdown
@@ -922,6 +931,99 @@ async def fork_conversation(
         new_title=new_conversation.title,
         fork_summary=fork_summary
     )
+
+
+# Auto-compaction threshold: 50 message pairs = 100 messages
+COMPACTION_THRESHOLD = 100  # messages (approx 50 user+assistant pairs)
+
+
+@router.post("/{conversation_id}/compact", response_model=CompactConversationResponse)
+async def compact_conversation(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Compact a conversation in-place by summarizing all messages into a single
+    system message, then deleting the originals. Unlike fork, this preserves
+    the same thread ID so all bookmarks, awakening rules, etc. remain valid.
+
+    Uses the same hybrid LLM→TOON pipeline as fork for 90-95% token reduction.
+    """
+    logger.info(f"Compacting conversation {conversation_id} for user {user.email}")
+
+    # Get conversation with all messages
+    conversation = await ConversationOps.get_conversation(
+        db, conversation_id, user.email, include_messages=True
+    )
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if not conversation.messages or len(conversation.messages) < 4:
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation too short to compact (minimum 4 messages)"
+        )
+
+    messages = conversation.messages
+
+    # Generate compact summary using same pipeline as fork
+    from utils.toon_converter import create_hybrid_fork_summary
+
+    logger.info(f"Generating compact summary for {len(messages)} messages")
+    compact_summary = await create_hybrid_fork_summary(
+        messages,
+        conversation.title or "Untitled Conversation",
+        use_gemini=False,
+        use_langextract=False
+    )
+
+    # Replace all messages with the summary
+    summary_message_id = f"msg_{uuid.uuid4().hex[:12]}"
+    original_count, summary_msg = await ConversationOps.compact_conversation(
+        db,
+        thread_id=conversation_id,
+        user_id=user.email,
+        compact_summary=compact_summary,
+        summary_message_id=summary_message_id
+    )
+
+    compacted_at = summary_msg.timestamp.isoformat() + 'Z' if summary_msg.timestamp else datetime.utcnow().isoformat() + 'Z'
+
+    logger.info(f"Successfully compacted {conversation_id}: {original_count} messages → 1 summary ({len(compact_summary)} chars)")
+
+    return CompactConversationResponse(
+        conversation_id=conversation_id,
+        original_message_count=original_count,
+        compact_summary_length=len(compact_summary),
+        compacted_at=compacted_at
+    )
+
+
+async def check_auto_compaction_needed(
+    db: AsyncSession,
+    conversation_id: str,
+    user_email: str
+) -> bool:
+    """
+    Check if a conversation has exceeded the auto-compaction threshold.
+
+    Returns True if the conversation has more than COMPACTION_THRESHOLD messages
+    and should be auto-compacted.
+    """
+    from sqlalchemy import select, func
+    from database.models import Message, Conversation
+
+    # Count messages in conversation
+    count_result = await db.execute(
+        select(func.count(Message.id)).where(
+            Message.conversation_id == conversation_id
+        )
+    )
+    message_count = count_result.scalar()
+
+    return message_count >= COMPACTION_THRESHOLD
 
 
 # Response model for token usage
