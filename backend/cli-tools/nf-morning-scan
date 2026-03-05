@@ -1,0 +1,787 @@
+#!/usr/bin/env python3
+"""Morning Momentum Scanner — find high-probability intraday trade candidates.
+
+Combines three institutional signals:
+  1. Gap detection (overnight interest)
+  2. Relative strength vs Nifty (leader detection)
+  3. Volume expansion / RVOL-T (institutional footprint)
+
+Plus momentum indicators (RSI, VWAP alignment) for final scoring.
+
+Designed to run shortly after market open (9:20-9:30 IST) on Nifty 100 stocks.
+"""
+
+import argparse
+import asyncio
+import json
+import sys
+import os
+import time
+from datetime import datetime, timedelta
+
+# Add backend/ to path
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import (  # noqa: E402
+    SYMBOLS,
+    format_change,
+    format_inr,
+    format_volume,
+    init_client,
+    print_error,
+    print_json,
+)
+
+import upstox_client  # noqa: E402
+from upstox_client.rest import ApiException  # noqa: E402
+from services.upstox_client import UpstoxClient  # noqa: E402
+from services.instruments_cache import (  # noqa: E402
+    ensure_loaded as ensure_instruments,
+    get_instrument_key,
+    NIFTY_100_SYMBOLS,
+    NIFTY_50_SYMBOLS,
+)
+from models.analysis import OHLCVData  # noqa: E402
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+import ta as ta_lib  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Batch quote fetching (single API call for all Nifty 100 + index)
+# ---------------------------------------------------------------------------
+
+def _build_symbol_universe() -> list[str]:
+    """Return the full Nifty 100 symbol list, resolved via instruments cache."""
+    ensure_instruments()
+    symbols = sorted(NIFTY_100_SYMBOLS)
+    # Verify all symbols exist in the instruments cache
+    valid = []
+    for sym in symbols:
+        # Nifty 50 stocks have hardcoded ISINs; Next 50 need cache lookup
+        isin = UpstoxClient.SYMBOL_TO_ISIN.get(sym)
+        ikey = get_instrument_key(sym) if not isin else f"NSE_EQ|{isin}"
+        if ikey:
+            valid.append(sym)
+    return valid
+
+
+async def fetch_all_quotes(
+    client: UpstoxClient, symbols: list[str]
+) -> tuple[dict[str, dict], dict | None]:
+    """Fetch quotes for all given stocks + Nifty 50 index via batch API calls.
+
+    Upstox limits batch quotes to ~50 instrument keys per call,
+    so we split into chunks if needed.
+
+    Returns:
+        (stock_quotes, nifty_quote) where stock_quotes is {symbol: quote_dict}
+    """
+    await client._ensure_valid_token()
+    if not client.access_token:
+        raise ValueError("No Upstox access token configured.")
+
+    ensure_instruments()
+
+    # Build instrument key mapping
+    nifty_key = UpstoxClient.INDEX_KEYS["NIFTY 50"]
+    symbol_for_key: dict[str, str] = {}  # instrument_key -> symbol
+    all_inst_keys: list[str] = []
+
+    for sym in symbols:
+        isin = UpstoxClient.SYMBOL_TO_ISIN.get(sym)
+        key = f"NSE_EQ|{isin}" if isin else get_instrument_key(sym)
+        if key:
+            all_inst_keys.append(key)
+            symbol_for_key[key] = sym
+
+    # Split into batches of 50 (Upstox limit), include index in first batch
+    BATCH_SIZE = 50
+    batches: list[list[str]] = []
+    for i in range(0, len(all_inst_keys), BATCH_SIZE):
+        batches.append(all_inst_keys[i : i + BATCH_SIZE])
+    # Add Nifty index to the first batch
+    if batches:
+        batches[0].insert(0, nifty_key)
+    else:
+        batches = [[nifty_key]]
+
+    api_client = upstox_client.ApiClient(client._configuration)
+    quote_api = upstox_client.MarketQuoteApi(api_client)
+
+    stock_quotes: dict[str, dict] = {}
+    nifty_quote: dict | None = None
+
+    for batch in batches:
+        response = quote_api.get_full_market_quote(
+            symbol=",".join(batch),
+            api_version="v2",
+        )
+
+        if not response.data:
+            continue
+
+        for resp_key, quote_data in response.data.items():
+            ltp = quote_data.last_price
+            ohlc = quote_data.ohlc
+            close = ohlc.close if ohlc else None
+            open_price = ohlc.open if ohlc else None
+            high = ohlc.high if ohlc else None
+            low = ohlc.low if ohlc else None
+            volume = getattr(quote_data, 'volume', None) or getattr(quote_data, 'volume_traded', None)
+            net_change = getattr(quote_data, 'net_change', None)
+
+            if net_change is not None and close:
+                pct_change = (net_change / close) * 100
+            elif close and ltp:
+                net_change = ltp - close
+                pct_change = (net_change / close) * 100
+            else:
+                net_change = net_change or 0
+                pct_change = 0
+
+            quote = {
+                "ltp": ltp,
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume or 0,
+                "net_change": net_change,
+                "pct_change": round(pct_change, 2),
+            }
+
+            # Check if this is the Nifty index
+            nifty_resp_key = nifty_key.replace("|", ":")
+            if resp_key == nifty_resp_key:
+                nifty_quote = quote
+                continue
+
+            # Match to stock symbol via "NSE_EQ:SYMBOL" response key format
+            for ikey, sym in symbol_for_key.items():
+                sym_resp_key = f"NSE_EQ:{sym}"
+                if resp_key == sym_resp_key:
+                    stock_quotes[sym] = quote
+                    break
+            else:
+                # Try instrument key format match (colon→pipe)
+                orig_key = resp_key.replace(":", "|")
+                if orig_key in symbol_for_key:
+                    stock_quotes[symbol_for_key[orig_key]] = quote
+
+    return stock_quotes, nifty_quote
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Quick scan (gap, relative strength, basic volume)
+# ---------------------------------------------------------------------------
+
+def compute_gap(quote: dict) -> float:
+    """Gap % = (open - prev_close) / prev_close * 100."""
+    open_price = quote.get("open")
+    close = quote.get("close")  # previous close
+    if open_price and close and close != 0:
+        return round((open_price - close) / close * 100, 2)
+    return 0.0
+
+
+def compute_relative_strength(stock_pct: float, nifty_pct: float) -> float:
+    """Stock return minus Nifty return."""
+    return round(stock_pct - nifty_pct, 2)
+
+
+def phase1_score(gap_pct: float, rel_strength: float, stock_pct: float) -> int:
+    """Quick score from gap + relative strength + momentum direction."""
+    score = 0
+
+    # Gap score (absolute value — both gap up and gap down are interesting)
+    abs_gap = abs(gap_pct)
+    if abs_gap >= 2:
+        score += 2
+    elif abs_gap >= 1:
+        score += 1
+
+    # Relative strength (directional — outperforming is good for longs)
+    abs_rs = abs(rel_strength)
+    if abs_rs >= 1:
+        score += 2
+    elif abs_rs >= 0.5:
+        score += 1
+
+    # Momentum direction alignment (gap direction = move direction)
+    if gap_pct != 0 and stock_pct != 0:
+        if (gap_pct > 0 and stock_pct > 0) or (gap_pct < 0 and stock_pct < 0):
+            score += 1  # Gap and current move in same direction
+
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Deep analysis on top candidates (RSI, VWAP, RVOL-T)
+# ---------------------------------------------------------------------------
+
+async def fetch_intraday_candles(client: UpstoxClient, symbol: str) -> list[OHLCVData]:
+    """Fetch today's 15-min candles for a symbol."""
+    try:
+        return await client.get_historical_data(symbol, interval="15minute", days=1)
+    except Exception as e:
+        print(f"  Warning: Could not fetch candles for {symbol}: {e}", file=sys.stderr)
+        return []
+
+
+async def fetch_historical_volume(client: UpstoxClient, symbol: str) -> list[OHLCVData]:
+    """Fetch 20 days of 15-min candles for RVOL-T calculation."""
+    try:
+        return await client.get_historical_data(symbol, interval="15minute", days=20)
+    except Exception as e:
+        print(f"  Warning: Could not fetch historical candles for {symbol}: {e}", file=sys.stderr)
+        return []
+
+
+def compute_vwap(candles: list[OHLCVData]) -> float | None:
+    """Session VWAP from intraday candles."""
+    if not candles:
+        return None
+    df = pd.DataFrame([c.model_dump() for c in candles])
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp")
+
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    cumulative_tp_vol = (typical_price * df["volume"]).cumsum()
+    cumulative_vol = df["volume"].cumsum()
+
+    last_vol = cumulative_vol.iloc[-1]
+    if last_vol == 0:
+        return None
+    return round(float(cumulative_tp_vol.iloc[-1] / last_vol), 2)
+
+
+def compute_rsi(candles: list[OHLCVData]) -> float | None:
+    """RSI(14) from candles."""
+    if len(candles) < 15:
+        return None
+    df = pd.DataFrame([c.model_dump() for c in candles])
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    rsi = ta_lib.momentum.RSIIndicator(df["close"], window=14)
+    val = rsi.rsi().iloc[-1]
+    return None if np.isnan(val) else round(float(val), 1)
+
+
+def compute_rvol_t(today_candles: list[OHLCVData], hist_candles: list[OHLCVData]) -> float | None:
+    """Relative Volume by Time (RVOL-T).
+
+    Compares today's volume at the current time-of-day bucket
+    against the average volume at the same time-of-day over the last 20 days.
+    """
+    if not today_candles or not hist_candles:
+        return None
+
+    # Get the latest candle's time bucket (hour:minute)
+    today_df = pd.DataFrame([c.model_dump() for c in today_candles])
+    today_df["timestamp"] = pd.to_datetime(today_df["timestamp"])
+    today_df = today_df.sort_values("timestamp")
+
+    if today_df.empty:
+        return None
+
+    # Use cumulative volume up to current time
+    today_total_vol = today_df["volume"].sum()
+    today_last_ts = today_df["timestamp"].iloc[-1]
+    today_time = today_last_ts.time()
+
+    # Historical: compute average cumulative volume up to the same time-of-day
+    hist_df = pd.DataFrame([c.model_dump() for c in hist_candles])
+    hist_df["timestamp"] = pd.to_datetime(hist_df["timestamp"])
+    hist_df = hist_df.sort_values("timestamp")
+    hist_df["date"] = hist_df["timestamp"].dt.date
+    hist_df["time"] = hist_df["timestamp"].dt.time
+
+    # Exclude today
+    today_date = today_last_ts.date()
+    hist_df = hist_df[hist_df["date"] != today_date]
+
+    if hist_df.empty:
+        return None
+
+    # For each historical day, sum volume up to today_time
+    daily_vols = []
+    for date, group in hist_df.groupby("date"):
+        day_vol = group[group["time"] <= today_time]["volume"].sum()
+        if day_vol > 0:
+            daily_vols.append(day_vol)
+
+    if not daily_vols:
+        return None
+
+    avg_vol = sum(daily_vols) / len(daily_vols)
+    if avg_vol == 0:
+        return None
+
+    return round(today_total_vol / avg_vol, 2)
+
+
+def compute_volume_expansion(today_candles: list[OHLCVData], hist_candles: list[OHLCVData]) -> float | None:
+    """Simple volume expansion: today's total volume / avg daily volume (20-day).
+
+    Fallback when RVOL-T can't be computed.
+    """
+    if not today_candles:
+        return None
+
+    today_vol = sum(c.volume for c in today_candles)
+
+    if hist_candles:
+        hist_df = pd.DataFrame([c.model_dump() for c in hist_candles])
+        hist_df["timestamp"] = pd.to_datetime(hist_df["timestamp"])
+        hist_df["date"] = hist_df["timestamp"].dt.date
+
+        today_date = pd.to_datetime(today_candles[-1].timestamp).date()
+        hist_df = hist_df[hist_df["date"] != today_date]
+
+        if not hist_df.empty:
+            daily_vols = hist_df.groupby("date")["volume"].sum()
+            avg_vol = daily_vols.mean()
+            if avg_vol > 0:
+                return round(today_vol / avg_vol, 2)
+
+    return None
+
+
+def phase2_score(
+    rsi: float | None,
+    vwap: float | None,
+    ltp: float,
+    rvol_t: float | None,
+    vol_expansion: float | None,
+) -> int:
+    """Score from deep analysis indicators."""
+    score = 0
+
+    # Volume score (prefer RVOL-T, fall back to basic expansion)
+    vol = rvol_t if rvol_t is not None else vol_expansion
+    if vol is not None:
+        if vol >= 2.0:
+            score += 2
+        elif vol >= 1.5:
+            score += 1
+
+    # RSI score
+    if rsi is not None:
+        if rsi >= 60:
+            score += 1
+        elif rsi <= 40:
+            score += 1  # Also interesting for short-side
+
+    # VWAP alignment
+    if vwap is not None and ltp:
+        if ltp > vwap:
+            score += 1  # Trading above VWAP = bullish
+
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Opening range detection
+# ---------------------------------------------------------------------------
+
+def detect_opening_range(candles: list[OHLCVData]) -> dict | None:
+    """Detect opening range (first 15 min) and check for breakout."""
+    if not candles:
+        return None
+
+    df = pd.DataFrame([c.model_dump() for c in candles])
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp")
+
+    if df.empty:
+        return None
+
+    # First candle = opening range (15-min interval)
+    or_high = float(df.iloc[0]["high"])
+    or_low = float(df.iloc[0]["low"])
+    current_high = float(df["high"].max())
+    current_low = float(df["low"].min())
+    last_close = float(df.iloc[-1]["close"])
+
+    breakout = None
+    if last_close > or_high:
+        breakout = "bullish"
+    elif last_close < or_low:
+        breakout = "bearish"
+
+    return {
+        "or_high": or_high,
+        "or_low": or_low,
+        "breakout": breakout,
+        "current_price": last_close,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Setup detection (what kind of trade pattern is forming)
+# ---------------------------------------------------------------------------
+
+def detect_setup(
+    quote: dict,
+    vwap: float | None,
+    opening_range: dict | None,
+    gap_pct: float,
+    rel_strength: float,
+) -> str:
+    """Detect the likely trade setup."""
+    ltp = quote.get("ltp", 0)
+
+    if opening_range and opening_range["breakout"] == "bullish":
+        return "ORB breakout"
+    if opening_range and opening_range["breakout"] == "bearish":
+        return "ORB breakdown"
+
+    if vwap and ltp:
+        # Price pulled back to VWAP from above (within 0.3%)
+        if ltp > vwap and (ltp - vwap) / vwap * 100 < 0.3:
+            return "VWAP pullback"
+        # Below VWAP rejection
+        if ltp < vwap and (vwap - ltp) / vwap * 100 < 0.3:
+            return "VWAP rejection"
+
+    if abs(gap_pct) >= 1.5 and abs(rel_strength) >= 1:
+        if gap_pct > 0:
+            return "Momentum continuation"
+        else:
+            return "Gap fade candidate"
+
+    if abs(rel_strength) >= 1:
+        return "Relative strength leader" if rel_strength > 0 else "Relative weakness"
+
+    return "Watching"
+
+
+# ---------------------------------------------------------------------------
+# Main scan logic
+# ---------------------------------------------------------------------------
+
+async def run_scan(
+    top_n: int = 10,
+    min_score: int = 0,
+    deep_count: int = 15,
+    as_json: bool = False,
+    verbose: bool = False,
+    debug_symbol: str | None = None,
+) -> list[dict]:
+    """Run the full morning scan."""
+    client = init_client()
+    t0 = time.time()
+
+    # Build symbol universe
+    universe = _build_symbol_universe()
+
+    # Phase 1: Batch fetch all quotes
+    if verbose:
+        print(f"Phase 1: Fetching quotes for {len(universe)} Nifty 100 stocks...", file=sys.stderr)
+
+    stock_quotes, nifty_quote = await fetch_all_quotes(client, universe)
+
+    if not stock_quotes:
+        print_error("No quotes received. Market may be closed or token expired.")
+
+    nifty_pct = nifty_quote["pct_change"] if nifty_quote else 0.0
+
+    if verbose:
+        print(f"  Got {len(stock_quotes)} quotes. Nifty: {nifty_pct:+.2f}%", file=sys.stderr)
+
+    # Score all stocks (Phase 1)
+    candidates = []
+    for sym, quote in stock_quotes.items():
+        gap_pct = compute_gap(quote)
+        rel_strength = compute_relative_strength(quote["pct_change"], nifty_pct)
+        p1_score = phase1_score(gap_pct, rel_strength, quote["pct_change"])
+
+        candidates.append({
+            "symbol": sym,
+            "quote": quote,
+            "gap_pct": gap_pct,
+            "rel_strength": rel_strength,
+            "phase1_score": p1_score,
+        })
+
+    # Sort by phase1 score descending, then by abs(rel_strength)
+    candidates.sort(key=lambda c: (c["phase1_score"], abs(c["rel_strength"])), reverse=True)
+
+    # If debugging a single symbol, force it into top candidates
+    if debug_symbol:
+        debug_sym = debug_symbol.upper()
+        deep_count = max(deep_count, 1)
+        # Move debug symbol to front
+        candidates = [c for c in candidates if c["symbol"] == debug_sym] + \
+                     [c for c in candidates if c["symbol"] != debug_sym]
+
+    # Phase 2: Deep analysis on top candidates
+    top_candidates = candidates[:deep_count]
+
+    if verbose:
+        print(f"Phase 2: Deep analysis on top {len(top_candidates)} candidates...", file=sys.stderr)
+
+    # Fetch intraday + historical candles concurrently for top candidates
+    async def analyze_candidate(c: dict) -> dict:
+        sym = c["symbol"]
+        quote = c["quote"]
+
+        # Fetch candles concurrently
+        today_candles, hist_candles = await asyncio.gather(
+            fetch_intraday_candles(client, sym),
+            fetch_historical_volume(client, sym),
+        )
+
+        # Compute indicators
+        rsi = compute_rsi(hist_candles) if hist_candles else None
+        vwap = compute_vwap(today_candles)
+        rvol_t = compute_rvol_t(today_candles, hist_candles)
+        vol_expansion = compute_volume_expansion(today_candles, hist_candles)
+        opening_range = detect_opening_range(today_candles)
+
+        p2_score = phase2_score(rsi, vwap, quote["ltp"], rvol_t, vol_expansion)
+        total_score = c["phase1_score"] + p2_score
+
+        setup = detect_setup(quote, vwap, opening_range, c["gap_pct"], c["rel_strength"])
+
+        result = {
+            **c,
+            "rsi": rsi,
+            "vwap": vwap,
+            "above_vwap": quote["ltp"] > vwap if vwap and quote["ltp"] else None,
+            "rvol_t": rvol_t,
+            "vol_expansion": vol_expansion,
+            "opening_range": opening_range,
+            "phase2_score": p2_score,
+            "total_score": total_score,
+            "setup": setup,
+        }
+
+        if verbose:
+            vol_label = f"RVOL-T: {rvol_t}x" if rvol_t else f"VolExp: {vol_expansion}x" if vol_expansion else "Vol: N/A"
+            print(f"  {sym:<12} P1:{c['phase1_score']} P2:{p2_score} Total:{total_score}  "
+                  f"Gap:{c['gap_pct']:+.1f}%  RS:{c['rel_strength']:+.1f}%  "
+                  f"RSI:{rsi or 'N/A'}  {vol_label}  [{setup}]", file=sys.stderr)
+
+        return result
+
+    # Run deep analysis concurrently (batch of 5 at a time to avoid rate limits)
+    analyzed = []
+    batch_size = 5
+    for i in range(0, len(top_candidates), batch_size):
+        batch = top_candidates[i:i + batch_size]
+        results = await asyncio.gather(*[analyze_candidate(c) for c in batch])
+        analyzed.extend(results)
+
+    # Add remaining candidates (no deep analysis) with null phase2 fields
+    for c in candidates[deep_count:]:
+        analyzed.append({
+            **c,
+            "rsi": None,
+            "vwap": None,
+            "above_vwap": None,
+            "rvol_t": None,
+            "vol_expansion": None,
+            "opening_range": None,
+            "phase2_score": 0,
+            "total_score": c["phase1_score"],
+            "setup": "Not analyzed",
+        })
+
+    # Sort by total score, then phase1 score
+    analyzed.sort(key=lambda c: (c["total_score"], c["phase1_score"], abs(c["rel_strength"])), reverse=True)
+
+    # Filter by min score
+    if min_score > 0:
+        analyzed = [c for c in analyzed if c["total_score"] >= min_score]
+
+    elapsed = time.time() - t0
+
+    # Build final results
+    final = analyzed[:top_n]
+
+    if verbose:
+        print(f"\nScan complete in {elapsed:.1f}s", file=sys.stderr)
+
+    return final, nifty_quote, nifty_pct, elapsed
+
+
+# ---------------------------------------------------------------------------
+# Output formatters
+# ---------------------------------------------------------------------------
+
+def format_json_output(results: list[dict], nifty_quote: dict | None, nifty_pct: float, elapsed: float):
+    """Format scan results as JSON."""
+    output = {
+        "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S IST"),
+        "elapsed_seconds": round(elapsed, 1),
+        "market_context": {
+            "nifty_50": nifty_quote.get("ltp") if nifty_quote else None,
+            "nifty_change_pct": nifty_pct,
+        },
+        "candidates": [],
+    }
+
+    for r in results:
+        q = r["quote"]
+        candidate = {
+            "symbol": r["symbol"],
+            "price": q["ltp"],
+            "score": r["total_score"],
+            "gap_pct": r["gap_pct"],
+            "rel_strength_pct": r["rel_strength"],
+            "change_pct": q["pct_change"],
+            "volume": q["volume"],
+            "rsi": r.get("rsi"),
+            "vwap": r.get("vwap"),
+            "above_vwap": r.get("above_vwap"),
+            "rvol_t": r.get("rvol_t"),
+            "vol_expansion": r.get("vol_expansion"),
+            "setup": r.get("setup"),
+        }
+        if r.get("opening_range"):
+            candidate["opening_range"] = r["opening_range"]
+        output["candidates"].append(candidate)
+
+    print_json(output)
+
+
+def format_human_output(results: list[dict], nifty_quote: dict | None, nifty_pct: float, elapsed: float):
+    """Format scan results for human reading."""
+    now = datetime.now().strftime("%H:%M IST")
+
+    print(f"\n{'=' * 65}")
+    print(f"  Morning Momentum Scan  |  {now}")
+    print(f"{'=' * 65}")
+
+    # Market context
+    nifty_val = format_inr(nifty_quote["ltp"]) if nifty_quote else "N/A"
+    nifty_chg = format_change(nifty_pct)
+    print(f"\n  Nifty 50: {nifty_val}  {nifty_chg}")
+    print()
+
+    if not results:
+        print("  No candidates found matching your criteria.")
+        print(f"\n  Scan completed in {elapsed:.1f}s")
+        return
+
+    # Top 3 watchlist
+    top3 = results[:3]
+    print("  Suggested Watchlist")
+    print("  " + "-" * 50)
+    for i, r in enumerate(top3, 1):
+        setup = r.get("setup", "Watching")
+        score = r["total_score"]
+        print(f"  {i}. {r['symbol']:<12} Score: {score}  |  {setup}")
+    print()
+
+    # Full table
+    print(f"  {'Symbol':<12} {'Price':>10} {'Score':>6} {'Gap':>7} {'RS':>7} "
+          f"{'RVOL-T':>7} {'RSI':>5} {'VWAP':>6} {'Setup'}")
+    print("  " + "-" * 85)
+
+    for r in results:
+        q = r["quote"]
+        sym = r["symbol"]
+        price = format_inr(q["ltp"])
+        score = r["total_score"]
+        gap = f"{r['gap_pct']:+.1f}%"
+        rs = f"{r['rel_strength']:+.1f}%"
+
+        rvol = r.get("rvol_t")
+        vol_exp = r.get("vol_expansion")
+        if rvol is not None:
+            vol_str = f"{rvol:.1f}x"
+        elif vol_exp is not None:
+            vol_str = f"{vol_exp:.1f}x*"
+        else:
+            vol_str = "  —"
+
+        rsi = r.get("rsi")
+        rsi_str = f"{rsi:.0f}" if rsi is not None else " —"
+
+        above_vwap = r.get("above_vwap")
+        if above_vwap is True:
+            vwap_str = "Above"
+        elif above_vwap is False:
+            vwap_str = "Below"
+        else:
+            vwap_str = "  —"
+
+        setup = r.get("setup", "")
+
+        print(f"  {sym:<12} {price:>10} {score:>6} {gap:>7} {rs:>7} "
+              f"{vol_str:>7} {rsi_str:>5} {vwap_str:>6}  {setup}")
+
+    print()
+    print(f"  * = basic volume expansion (RVOL-T unavailable)")
+    print(f"  Scan completed in {elapsed:.1f}s")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-morning-scan",
+        description="Morning Momentum Scanner — find high-probability intraday trade candidates",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-morning-scan                     Full scan, top 10 candidates
+  nf-morning-scan --top 5             Show only top 5
+  nf-morning-scan --min-score 4       Only show strong candidates
+  nf-morning-scan --json              Machine-readable output
+  nf-morning-scan --verbose           Show scan progress
+  nf-morning-scan --debug TATAMOTORS  Debug indicators for one stock
+
+Scans all Nifty 100 stocks (Nifty 50 + Nifty Next 50).
+
+Scoring (0-8):
+  Gap:     +1 (>=1%), +2 (>=2%)
+  RelStr:  +1 (>=0.5% vs Nifty), +2 (>=1%)
+  Volume:  +1 (RVOL-T >=1.5x), +2 (>=2x)
+  RSI:     +1 (>=60 or <=40)
+  VWAP:    +1 (price above VWAP)
+  Align:   +1 (gap and move in same direction)
+
+Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
+""",
+    )
+    parser.add_argument("--top", type=int, default=10, metavar="N", help="Number of top candidates to show (default: 10)")
+    parser.add_argument("--min-score", type=int, default=0, metavar="N", help="Minimum total score to display (default: 0)")
+    parser.add_argument("--deep", type=int, default=15, metavar="N", help="Number of stocks to deep-analyze (default: 15)")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--verbose", action="store_true", help="Show scan progress to stderr")
+    parser.add_argument("--debug", metavar="SYMBOL", help="Debug mode: show all indicators for one stock")
+
+    args = parser.parse_args()
+
+    try:
+        results, nifty_quote, nifty_pct, elapsed = asyncio.run(
+            run_scan(
+                top_n=args.top,
+                min_score=args.min_score,
+                deep_count=args.deep,
+                as_json=args.json,
+                verbose=args.verbose or bool(args.debug),
+                debug_symbol=args.debug,
+            )
+        )
+    except Exception as e:
+        print_error(f"Scan failed: {e}")
+
+    if args.json:
+        format_json_output(results, nifty_quote, nifty_pct, elapsed)
+    else:
+        format_human_output(results, nifty_quote, nifty_pct, elapsed)
+
+
+if __name__ == "__main__":
+    main()

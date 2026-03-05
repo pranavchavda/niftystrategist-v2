@@ -41,6 +41,23 @@ NIFTY_50_SYMBOLS: set[str] = {
     "TATACONSUM", "TECHM", "TITAN", "ULTRACEMCO", "UPL",
 }
 
+# Nifty Next 50 constituents (51st-100th by market cap, reviewed semi-annually)
+NIFTY_NEXT_50_SYMBOLS: set[str] = {
+    "ABB", "ADANIENSOL", "ADANIGREEN", "ADANIPOWER", "AMBUJACEM",
+    "BAJAJHFL", "BAJAJHLDNG", "BANKBARODA", "BOSCHLTD", "CANBK",
+    "CGPOWER", "CHOLAFIN", "DLF", "DMART", "ENRIN",
+    "GAIL", "GODREJCP", "HAL", "HAVELLS", "HINDZINC",
+    "HYUNDAI", "ICICIGI", "INDHOTEL", "IOC", "IRFC",
+    "JINDALSTEL", "JSWENERGY", "LICI", "LODHA", "LTM",
+    "MAZDOCK", "MOTHERSON", "NAUKRI", "PFC", "PIDILITIND",
+    "PNB", "RECLTD", "SIEMENS", "SOLARINDS", "TATAPOWER",
+    "TORNTPHARM", "TVSMOTOR", "UNITDSPR", "VBL", "VEDL",
+    "ZYDUSLIFE",
+}
+
+# Combined Nifty 100 = Nifty 50 + Nifty Next 50
+NIFTY_100_SYMBOLS: set[str] = NIFTY_50_SYMBOLS | NIFTY_NEXT_50_SYMBOLS
+
 # In-memory lookup tables (populated by ensure_loaded)
 _symbol_to_instrument_key: dict[str, str] = {}
 _symbol_to_name: dict[str, str] = {}
