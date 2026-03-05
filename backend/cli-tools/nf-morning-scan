@@ -48,6 +48,7 @@ from models.analysis import OHLCVData  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import ta as ta_lib  # noqa: E402
+import requests  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -611,10 +612,99 @@ async def run_scan(
 
 
 # ---------------------------------------------------------------------------
+# Phase 3: News context via Perplexity Sonar API
+# ---------------------------------------------------------------------------
+
+def _get_perplexity_key() -> str | None:
+    """Get Perplexity API key from env (try both common names)."""
+    return os.environ.get("PERPLEXITY_API_KEY") or os.environ.get("PPLX_API_KEY")
+
+
+def fetch_news_context(
+    top_symbols: list[str],
+    nifty_pct: float,
+    verbose: bool = False,
+) -> dict | None:
+    """Query Perplexity Sonar for market news relevant to today's top movers.
+
+    Returns dict with keys: market_context, stock_news, catalysts
+    or None if API unavailable.
+    """
+    api_key = _get_perplexity_key()
+    if not api_key:
+        if verbose:
+            print("  Skipping news: no PERPLEXITY_API_KEY or PPLX_API_KEY set", file=sys.stderr)
+        return None
+
+    symbols_str = ", ".join(top_symbols[:5])
+    market_dir = "up" if nifty_pct > 0 else "down" if nifty_pct < 0 else "flat"
+
+    prompt = f"""Today the Indian stock market (Nifty 50) is {market_dir} {abs(nifty_pct):.1f}%.
+
+The top momentum stocks this morning are: {symbols_str}
+
+In 3-5 concise bullet points, provide:
+1. Key market-moving news for Indian markets today (global cues, RBI, macro, geopolitics)
+2. Any specific news or catalysts for these stocks: {symbols_str}
+3. Sector themes driving today's action
+
+Be specific and factual. Focus only on today's and last night's developments. No generic advice."""
+
+    try:
+        if verbose:
+            print("Phase 3: Fetching market news context...", file=sys.stderr)
+
+        response = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "sonar",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a concise Indian stock market analyst. "
+                        "Provide brief, factual news context. No disclaimers or investment advice.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        content = ""
+        citations = []
+        if "choices" in result and result["choices"]:
+            content = result["choices"][0].get("message", {}).get("content", "")
+        if "citations" in result:
+            citations = result["citations"]
+
+        if verbose:
+            print("  News context fetched.", file=sys.stderr)
+
+        return {"content": content, "citations": citations}
+
+    except Exception as e:
+        if verbose:
+            print(f"  News fetch failed: {e}", file=sys.stderr)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Output formatters
 # ---------------------------------------------------------------------------
 
-def format_json_output(results: list[dict], nifty_quote: dict | None, nifty_pct: float, elapsed: float):
+def format_json_output(
+    results: list[dict],
+    nifty_quote: dict | None,
+    nifty_pct: float,
+    elapsed: float,
+    news: dict | None = None,
+):
     """Format scan results as JSON."""
     output = {
         "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S IST"),
@@ -625,6 +715,11 @@ def format_json_output(results: list[dict], nifty_quote: dict | None, nifty_pct:
         },
         "candidates": [],
     }
+
+    if news:
+        output["news"] = news.get("content", "")
+        if news.get("citations"):
+            output["news_citations"] = news["citations"]
 
     for r in results:
         q = r["quote"]
@@ -650,7 +745,13 @@ def format_json_output(results: list[dict], nifty_quote: dict | None, nifty_pct:
     print_json(output)
 
 
-def format_human_output(results: list[dict], nifty_quote: dict | None, nifty_pct: float, elapsed: float):
+def format_human_output(
+    results: list[dict],
+    nifty_quote: dict | None,
+    nifty_pct: float,
+    elapsed: float,
+    news: dict | None = None,
+):
     """Format scan results for human reading."""
     now = datetime.now().strftime("%H:%M IST")
 
@@ -719,6 +820,23 @@ def format_human_output(results: list[dict], nifty_quote: dict | None, nifty_pct
 
     print()
     print(f"  * = basic volume expansion (RVOL-T unavailable)")
+
+    # News context
+    if news and news.get("content"):
+        print()
+        print(f"  {'=' * 65}")
+        print(f"  Market News Context")
+        print(f"  {'=' * 65}")
+        # Indent each line of the news content
+        for line in news["content"].strip().split("\n"):
+            print(f"  {line}")
+        if news.get("citations"):
+            print()
+            print(f"  Sources:")
+            for i, cite in enumerate(news["citations"][:5], 1):
+                print(f"    [{i}] {cite}")
+
+    print()
     print(f"  Scan completed in {elapsed:.1f}s")
     print()
 
@@ -735,6 +853,7 @@ def main():
         epilog="""
 Examples:
   nf-morning-scan                     Full scan, top 10 candidates
+  nf-morning-scan --news              Include market news context
   nf-morning-scan --top 5             Show only top 5
   nf-morning-scan --min-score 4       Only show strong candidates
   nf-morning-scan --json              Machine-readable output
@@ -760,6 +879,7 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", action="store_true", help="Show scan progress to stderr")
     parser.add_argument("--debug", metavar="SYMBOL", help="Debug mode: show all indicators for one stock")
+    parser.add_argument("--news", action="store_true", help="Include market news context via Perplexity Sonar API")
 
     args = parser.parse_args()
 
@@ -777,10 +897,18 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     except Exception as e:
         print_error(f"Scan failed: {e}")
 
+    # Phase 3: News context (runs after scan, doesn't slow down the core scan)
+    news = None
+    if args.news:
+        top_symbols = [r["symbol"] for r in results[:5]]
+        news = fetch_news_context(
+            top_symbols, nifty_pct, verbose=args.verbose or bool(args.debug)
+        )
+
     if args.json:
-        format_json_output(results, nifty_quote, nifty_pct, elapsed)
+        format_json_output(results, nifty_quote, nifty_pct, elapsed, news=news)
     else:
-        format_human_output(results, nifty_quote, nifty_pct, elapsed)
+        format_human_output(results, nifty_quote, nifty_pct, elapsed, news=news)
 
 
 if __name__ == "__main__":

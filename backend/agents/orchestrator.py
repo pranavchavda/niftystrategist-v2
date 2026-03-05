@@ -1232,7 +1232,7 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-quote --search TERM` — Search any NSE stock by name/symbol (8000+ available)
 
 **Morning Scanner:**
-- `python cli-tools/nf-morning-scan [--top N] [--min-score N] [--json]` — Morning momentum scan: ranks all Nifty 100 stocks by gap, relative strength vs Nifty, RVOL-T (volume by time-of-day), RSI, VWAP. Best run 9:20-9:30 IST. Outputs top trade candidates with setups (ORB breakout, VWAP pullback, momentum continuation).
+- `python cli-tools/nf-morning-scan [--top N] [--min-score N] [--news] [--json]` — Morning momentum scan: ranks all Nifty 100 stocks by gap, relative strength vs Nifty, RVOL-T (volume by time-of-day), RSI, VWAP. Best run 9:20-9:30 IST. Outputs top trade candidates with setups (ORB breakout, VWAP pullback, momentum continuation). Use --news to include market news context via Perplexity.
 - `python cli-tools/nf-morning-scan --debug SYMBOL` — Debug all indicators for a single stock
 
 **Technical Analysis:**
