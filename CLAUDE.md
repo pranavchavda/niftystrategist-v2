@@ -36,7 +36,9 @@ cd frontend-v2 && pnpm install && pnpm run dev
 - **CI/CD**: Push to `main` auto-deploys via GitHub Actions (`.github/workflows/deploy.yml`)
 - **Manual**: `./deploy/deploy.sh <server-ip>` — builds frontend, rsyncs to prod, restarts service
 - **Production server**: `172.105.40.112` — Caddy reverse proxy → uvicorn on port 8000
+- **Prod path**: `/opt/niftystrategist/` (backend at `/opt/niftystrategist/backend/`, venv inside)
 - **Service**: `niftystrategist` systemd unit, runs as `deploy` user, root needed for restart
+- **SSH**: `ssh deploy@172.105.40.112`
 
 ## Architecture
 
