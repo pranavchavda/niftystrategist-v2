@@ -1120,3 +1120,411 @@ class UpstoxClient:
                 "success": False,
                 "message": f"Failed to cancel order: {e}"
             }
+
+    # ── Funds & Margin ──────────────────────────────────────────────
+
+    async def get_funds_and_margin(self) -> dict:
+        """Get available funds and margin details.
+
+        Returns dict with 'equity' and 'commodity' segments, each containing
+        available_margin, used_margin, payin_amount, etc.
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            user_api = upstox_client.UserApi(api_client)
+            response = user_api.get_user_fund_margin(api_version="v2")
+
+            result = {}
+            if response.data:
+                for segment in ("equity", "commodity"):
+                    seg_data = response.data.get(segment)
+                    if seg_data:
+                        result[segment] = {
+                            "available_margin": getattr(seg_data, "available_margin", 0) or 0,
+                            "used_margin": getattr(seg_data, "used_margin", 0) or 0,
+                            "payin_amount": getattr(seg_data, "payin_amount", 0) or 0,
+                            "span_margin": getattr(seg_data, "span_margin", 0) or 0,
+                            "adhoc_margin": getattr(seg_data, "adhoc_margin", 0) or 0,
+                            "notional_cash": getattr(seg_data, "notional_cash", 0) or 0,
+                            "exposure_margin": getattr(seg_data, "exposure_margin", 0) or 0,
+                        }
+            return result
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch funds: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch funds: {e}")
+
+    # ── User Profile ────────────────────────────────────────────────
+
+    async def get_profile(self) -> dict:
+        """Get user profile details (name, email, broker, active segments)."""
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            user_api = upstox_client.UserApi(api_client)
+            response = user_api.get_profile(api_version="v2")
+
+            if not response.data:
+                raise ValueError("No profile data returned.")
+
+            d = response.data
+            return {
+                "user_id": getattr(d, "user_id", None),
+                "user_name": getattr(d, "user_name", None),
+                "email": getattr(d, "email", None),
+                "phone": getattr(d, "phone", None) or getattr(d, "phone_number", None),
+                "broker": getattr(d, "broker", None),
+                "user_type": getattr(d, "user_type", None),
+                "is_active": getattr(d, "is_active", None),
+                "active_segments": getattr(d, "active_segments", []) or [],
+                "exchanges": getattr(d, "exchanges", []) or [],
+                "poa": getattr(d, "poa", None),
+            }
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch profile: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch profile: {e}")
+
+    # ── Today's Trades ──────────────────────────────────────────────
+
+    async def get_trades_for_day(self) -> list[dict]:
+        """Get all executed trades for the current day."""
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            order_api = upstox_client.OrderApi(api_client)
+            response = order_api.get_trade_history(api_version="v2")
+            trades_data = response.data if response.data else []
+
+            trades = []
+            for t in trades_data:
+                trades.append({
+                    "trade_id": getattr(t, "trade_id", None),
+                    "order_id": getattr(t, "order_id", None),
+                    "symbol": getattr(t, "tradingsymbol", None) or getattr(t, "trading_symbol", None),
+                    "exchange": getattr(t, "exchange", None),
+                    "transaction_type": getattr(t, "transaction_type", None),
+                    "quantity": getattr(t, "quantity", 0),
+                    "average_price": getattr(t, "average_price", 0),
+                    "product": getattr(t, "product", None),
+                    "order_type": getattr(t, "order_type", None),
+                    "trade_timestamp": str(getattr(t, "fill_timestamp", None) or getattr(t, "trade_timestamp", "") or ""),
+                })
+            return trades
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch trades: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch trades: {e}")
+
+    # ── Historical Trade P&L ────────────────────────────────────────
+
+    async def get_historical_trades(self, segment: str = "EQ",
+                                     start_date: str = None, end_date: str = None,
+                                     page: int = 1, page_size: int = 50) -> dict:
+        """Get historical trades with P&L from the charges API.
+
+        Args:
+            segment: EQ or FO
+            start_date: YYYY-MM-DD (defaults to 30 days ago)
+            end_date: YYYY-MM-DD (defaults to today)
+            page: Page number
+            page_size: Results per page
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        if not end_date:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            charge_api = upstox_client.ChargeApi(api_client)
+            response = charge_api.get_historical_trades(
+                segment=segment,
+                start_date=start_date,
+                end_date=end_date,
+                page_number=page,
+                page_size=page_size,
+                api_version="v2",
+            )
+
+            data = response.data if response.data else {}
+            trades = []
+            trade_list = data if isinstance(data, list) else getattr(data, "trades", []) or []
+            for t in trade_list:
+                if isinstance(t, dict):
+                    trades.append(t)
+                else:
+                    trades.append({
+                        "trade_id": getattr(t, "trade_id", None),
+                        "symbol": getattr(t, "tradingsymbol", None) or getattr(t, "scrip_name", None),
+                        "transaction_type": getattr(t, "transaction_type", None) or getattr(t, "trade_type", None),
+                        "quantity": getattr(t, "quantity", 0),
+                        "price": getattr(t, "price", 0) or getattr(t, "trade_price", 0),
+                        "trade_date": str(getattr(t, "trade_date", "") or ""),
+                    })
+            return {"trades": trades, "segment": segment, "start_date": start_date, "end_date": end_date}
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch historical trades: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch historical trades: {e}")
+
+    # ── Trade P&L with Charges ──────────────────────────────────────
+
+    async def get_trade_charges(self, segment: str = "EQ", financial_year: str = None,
+                                 from_date: str = None, to_date: str = None) -> dict:
+        """Get trade P&L with brokerage/charges breakdown.
+
+        Args:
+            segment: EQ or FO
+            financial_year: e.g. '2526' for FY 2025-26
+            from_date: dd-mm-yyyy format
+            to_date: dd-mm-yyyy format
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        if not financial_year:
+            now = datetime.now()
+            fy_start = now.year if now.month >= 4 else now.year - 1
+            financial_year = f"{str(fy_start)[-2:]}{str(fy_start + 1)[-2:]}"
+
+        if not to_date:
+            to_date = datetime.now().strftime("%d-%m-%Y")
+        if not from_date:
+            from_date = (datetime.now() - timedelta(days=30)).strftime("%d-%m-%Y")
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            charge_api = upstox_client.ChargeApi(api_client)
+            response = charge_api.get_trade_charges(
+                segment=segment,
+                financial_year=financial_year,
+                from_date=from_date,
+                to_date=to_date,
+                api_version="v2",
+            )
+
+            data = response.data if response.data else {}
+            if isinstance(data, dict):
+                return data
+            # SDK object — extract relevant fields
+            return {
+                "charges_breakdown": getattr(data, "charges_breakdown", None),
+                "total": getattr(data, "total", None),
+                "trades": getattr(data, "trades", []),
+            }
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch trade charges: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch trade charges: {e}")
+
+    # ── Brokerage Estimate ──────────────────────────────────────────
+
+    async def get_brokerage(self, symbol: str, quantity: int,
+                             transaction_type: str = "BUY",
+                             product: str = "D", price: float = 0) -> dict:
+        """Get pre-trade brokerage estimate for a given order.
+
+        Args:
+            symbol: Stock symbol
+            quantity: Order quantity
+            transaction_type: BUY or SELL
+            product: D (delivery) or I (intraday)
+            price: Limit price (0 = use LTP)
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        instrument_key = self._get_instrument_key(symbol)
+
+        # If no price provided, fetch LTP
+        if price <= 0:
+            quote = await self.get_quote(symbol)
+            price = quote["ltp"]
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            charge_api = upstox_client.ChargeApi(api_client)
+            response = charge_api.get_brokerage(
+                instrument_token=instrument_key,
+                quantity=quantity,
+                product=product,
+                transaction_type=transaction_type,
+                price=price,
+                api_version="v2",
+            )
+
+            data = response.data if response.data else {}
+            if isinstance(data, dict):
+                return {"symbol": symbol, "quantity": quantity, "price": price, **data}
+            # SDK object
+            return {
+                "symbol": symbol,
+                "quantity": quantity,
+                "price": price,
+                "total": getattr(data, "total", None),
+                "brokerage": getattr(data, "brokerage", None),
+                "charges": {
+                    "gst": getattr(data, "gst", None) or getattr(data, "taxes", {}).get("gst") if hasattr(data, "taxes") else None,
+                    "stt": getattr(data, "stt", None),
+                    "stamp_duty": getattr(data, "stamp_duty", None),
+                    "transaction_charges": getattr(data, "transaction_charges", None),
+                    "sebi_turnover": getattr(data, "sebi_turnover", None),
+                    "clearing_charges": getattr(data, "clearing_charges", None),
+                },
+                "dp_charges": getattr(data, "dp_charges", None),
+            }
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch brokerage: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch brokerage: {e}")
+
+    # ── Option Greeks (v3 API) ──────────────────────────────────────
+
+    async def get_option_greeks(self, instrument_keys: list[str]) -> dict:
+        """Get live option greeks for given instrument keys.
+
+        Uses Upstox v3 MarketQuoteV3Api. Max 50 instruments per call.
+
+        Args:
+            instrument_keys: List of F&O instrument keys (e.g., ['NSE_FO|43885'])
+
+        Returns:
+            Dict keyed by instrument_key with greeks data.
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        if len(instrument_keys) > 50:
+            raise ValueError("Max 50 instrument keys per call.")
+
+        keys_str = ",".join(instrument_keys)
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            quote_api = upstox_client.MarketQuoteV3Api(api_client)
+            response = quote_api.get_market_quote_option_greek(instrument_key=keys_str)
+
+            results = {}
+            if response.data:
+                for key, data in (response.data.items() if isinstance(response.data, dict) else [(k, v) for k, v in getattr(response.data, 'items', lambda: [])()]):
+                    if isinstance(data, dict):
+                        results[key] = data
+                    else:
+                        results[key] = {
+                            "instrument_token": getattr(data, "instrument_token", None),
+                            "last_price": getattr(data, "last_price", None),
+                            "volume": getattr(data, "volume", None),
+                            "oi": getattr(data, "oi", None),
+                            "iv": getattr(data, "iv", None),
+                            "delta": getattr(data, "delta", None),
+                            "gamma": getattr(data, "gamma", None),
+                            "theta": getattr(data, "theta", None),
+                            "vega": getattr(data, "vega", None),
+                        }
+            return results
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch option greeks: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch option greeks: {e}")
+
+    # ── Live Option Chain (API, not cache) ──────────────────────────
+
+    async def get_option_chain_live(self, symbol: str, expiry_date: str) -> list[dict]:
+        """Get live option chain with greeks from Upstox API.
+
+        Args:
+            symbol: Index/stock name (NIFTY, BANKNIFTY, RELIANCE, etc.)
+            expiry_date: YYYY-MM-DD format
+
+        Returns:
+            List of strike-level dicts with call/put data including greeks.
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        # Map symbol to instrument key for option chain
+        symbol = symbol.upper()
+        index_map = {
+            "NIFTY": "NSE_INDEX|Nifty 50",
+            "NIFTY50": "NSE_INDEX|Nifty 50",
+            "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+            "NIFTYBANK": "NSE_INDEX|Nifty Bank",
+            "FINNIFTY": "NSE_INDEX|Nifty Fin Service",
+            "MIDCPNIFTY": "NSE_INDEX|NIFTY MID SELECT",
+        }
+        instrument_key = index_map.get(symbol)
+        if not instrument_key:
+            # Try equity instrument key
+            instrument_key = self._get_instrument_key(symbol)
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            options_api = upstox_client.OptionsApi(api_client)
+            response = options_api.get_put_call_option_chain(
+                instrument_key=instrument_key,
+                expiry_date=expiry_date,
+            )
+
+            chain = []
+            if response.data:
+                items = response.data if isinstance(response.data, list) else [response.data]
+                for item in items:
+                    if isinstance(item, dict):
+                        chain.append(item)
+                    else:
+                        entry = {
+                            "strike_price": getattr(item, "strike_price", None),
+                            "underlying_spot_price": getattr(item, "underlying_spot_price", None),
+                            "pcr": getattr(item, "pcr", None),
+                        }
+                        for side in ("call_options", "put_options"):
+                            side_data = getattr(item, side, None)
+                            if side_data:
+                                greeks = getattr(side_data, "option_greeks", None)
+                                market = getattr(side_data, "market_data", None)
+                                key = "call" if "call" in side else "put"
+                                entry[key] = {
+                                    "ltp": getattr(market, "ltp", None) if market else None,
+                                    "volume": getattr(market, "volume", None) if market else None,
+                                    "oi": getattr(market, "oi", None) if market else None,
+                                    "bid_price": getattr(market, "bid_price", None) if market else None,
+                                    "ask_price": getattr(market, "ask_price", None) if market else None,
+                                    "iv": getattr(greeks, "iv", None) if greeks else None,
+                                    "delta": getattr(greeks, "delta", None) if greeks else None,
+                                    "gamma": getattr(greeks, "gamma", None) if greeks else None,
+                                    "theta": getattr(greeks, "theta", None) if greeks else None,
+                                    "vega": getattr(greeks, "vega", None) if greeks else None,
+                                }
+                        chain.append(entry)
+            return chain
+
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch option chain: {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch option chain: {e}")

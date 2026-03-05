@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""View Upstox account profile and active segments."""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import init_client, print_error, print_json, run_async  # noqa: E402
+
+
+def show_profile(as_json: bool):
+    """Show user profile details."""
+    client = init_client()
+    try:
+        profile = run_async(client.get_profile())
+    except Exception as e:
+        print_error(f"Failed to get profile: {e}")
+
+    if as_json:
+        print_json(profile)
+        return
+
+    mode = "Paper" if client.paper_trading else "Live"
+    print(f"👤 Upstox Profile [{mode}]\n")
+    print(f"  User ID:     {profile.get('user_id', 'N/A')}")
+    print(f"  Name:        {profile.get('user_name', 'N/A')}")
+    print(f"  Email:       {profile.get('email', 'N/A')}")
+    print(f"  Phone:       {profile.get('phone', 'N/A')}")
+    print(f"  Broker:      {profile.get('broker', 'N/A')}")
+    print(f"  User Type:   {profile.get('user_type', 'N/A')}")
+    print(f"  Active:      {'Yes' if profile.get('is_active') else 'No'}")
+    print(f"  POA:         {'Yes' if profile.get('poa') else 'No'}")
+
+    segments = profile.get("active_segments", [])
+    if segments:
+        print(f"\n  Active Segments: {', '.join(segments)}")
+
+    exchanges = profile.get("exchanges", [])
+    if exchanges:
+        print(f"  Exchanges:       {', '.join(exchanges)}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-profile",
+        description="View Upstox account profile and active segments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-profile              Show account profile
+  nf-profile --json       JSON output
+""",
+    )
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+    show_profile(args.json)
+
+
+if __name__ == "__main__":
+    main()

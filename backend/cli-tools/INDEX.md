@@ -10,6 +10,11 @@ CLI tools for stock market data and trading operations. Run from `backend/` dire
 | `nf-quote` | Get live quotes and historical data | Yes | `python cli-tools/nf-quote RELIANCE` |
 | `nf-analyze` | Technical analysis (RSI, MACD, signals) | Yes | `python cli-tools/nf-analyze RELIANCE` |
 | `nf-portfolio` | View holdings, positions, P&L | Yes | `python cli-tools/nf-portfolio` |
+| `nf-funds` | Available margin, buying power | Yes | `python cli-tools/nf-funds` |
+| `nf-profile` | User profile, active segments | Yes | `python cli-tools/nf-profile` |
+| `nf-trades` | Today's trades, historical P&L | Yes | `python cli-tools/nf-trades` |
+| `nf-brokerage` | Pre-trade charges estimate | Yes | `python cli-tools/nf-brokerage RELIANCE 10` |
+| `nf-options` | Option chain, greeks, buy/sell | Yes | `python cli-tools/nf-options chain NIFTY` |
 | `nf-order` | Place, list, cancel orders | Yes | `python cli-tools/nf-order buy RELIANCE 10` |
 | `nf-watchlist` | Manage watchlist with price alerts | Yes | `python cli-tools/nf-watchlist` |
 
@@ -161,3 +166,118 @@ python cli-tools/nf-watchlist alerts                             # Check alerts 
 
 - Shows live prices and change since added
 - Triggers alerts when current price crosses target buy/sell levels
+
+---
+
+### nf-funds
+
+View available funds, margin, and buying power across equity and commodity segments.
+
+```
+python cli-tools/nf-funds [--json]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-funds              # Funds summary
+python cli-tools/nf-funds --json       # JSON output
+```
+
+- Shows available margin, used margin, SPAN, exposure margin per segment
+- Funds API may be unavailable 12 AM - 5:30 AM IST
+
+---
+
+### nf-profile
+
+View Upstox account profile, active segments, and exchanges.
+
+```
+python cli-tools/nf-profile [--json]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-profile              # Profile summary
+python cli-tools/nf-profile --json       # JSON output
+```
+
+- Shows user ID, name, email, broker, active segments (EQ, FO, etc.)
+
+---
+
+### nf-trades
+
+View today's executed trades and historical trade P&L with charges.
+
+```
+python cli-tools/nf-trades [--json]
+python cli-tools/nf-trades history [--segment EQ|FO] [--days N] [--json]
+python cli-tools/nf-trades charges [--segment EQ|FO] [--json]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-trades                              # Today's trades
+python cli-tools/nf-trades --json                       # JSON output
+python cli-tools/nf-trades history                      # Last 30 days EQ
+python cli-tools/nf-trades history --segment FO --days 90  # F&O 90 days
+python cli-tools/nf-trades charges                      # P&L with charges
+python cli-tools/nf-trades charges --segment FO         # F&O charges
+```
+
+- Today's trades show individual executions (an order may have multiple trades)
+- Charges breakdown: brokerage, STT, GST, stamp duty, SEBI turnover, etc.
+
+---
+
+### nf-brokerage
+
+Pre-trade brokerage and charges estimate before placing an order.
+
+```
+python cli-tools/nf-brokerage SYMBOL QTY [--side BUY|SELL] [--product D|I] [--price P] [--json]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-brokerage RELIANCE 10                    # Buy delivery estimate
+python cli-tools/nf-brokerage RELIANCE 10 --side SELL        # Sell estimate
+python cli-tools/nf-brokerage INFY 50 --product I            # Intraday estimate
+python cli-tools/nf-brokerage TCS 5 --price 3500             # At specific price
+python cli-tools/nf-brokerage RELIANCE 10 --json             # JSON output
+```
+
+- If no `--price`, uses current market price automatically
+- Shows total charges as % of trade value
+
+---
+
+### nf-options
+
+Options trading tool for Nifty/Bank Nifty and stock F&O.
+
+```
+python cli-tools/nf-options chain SYMBOL [--expiry EXP] [--json]
+python cli-tools/nf-options live-chain SYMBOL YYYY-MM-DD [--json]
+python cli-tools/nf-options greeks SYMBOL [--expiry EXP] [--strikes S1 S2] [--type CE|PE] [--json]
+python cli-tools/nf-options expiries SYMBOL [--json]
+python cli-tools/nf-options quote SYMBOL EXPIRY STRIKE CE|PE [--json]
+python cli-tools/nf-options buy|sell SYMBOL EXPIRY STRIKE CE|PE LOTS [--price P] [--type MARKET|LIMIT] [--dry-run] [--json]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-options chain NIFTY                          # Option chain (cache)
+python cli-tools/nf-options live-chain NIFTY 2026-03-13          # Live chain w/ greeks
+python cli-tools/nf-options greeks NIFTY --expiry 17FEB          # All greeks for expiry
+python cli-tools/nf-options greeks NIFTY --strikes 25000 25500 --type CE  # Filtered
+python cli-tools/nf-options expiries BANKNIFTY                   # Upcoming expiries
+python cli-tools/nf-options buy NIFTY 17FEB26 25500 PE 1         # Buy 1 lot
+python cli-tools/nf-options sell NIFTY 17FEB26 25500 CE 2 --dry-run  # Preview sell
+```
+
+- `chain`: Uses cached instruments (fast, but prices may be stale)
+- `live-chain`: Calls Upstox Put/Call API — real-time prices + greeks
+- `greeks`: Uses Upstox v3 API for delta, gamma, theta, vega, IV (max 50 strikes)
+- `buy`/`sell` are HITL-protected when called from the orchestrator

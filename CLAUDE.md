@@ -72,7 +72,12 @@ All trading operations use CLI scripts in `backend/cli-tools/`, invoked by the o
 | `nf-quote` | Live quotes, historical OHLCV, list symbols |
 | `nf-analyze` | Technical analysis (RSI, MACD, signals), comparison |
 | `nf-portfolio` | Holdings, positions, position size calculator |
+| `nf-funds` | Available margin, buying power, segment-wise funds |
+| `nf-profile` | User profile, active segments, exchanges |
+| `nf-trades` | Today's trades, historical trade P&L, charges breakdown |
+| `nf-brokerage` | Pre-trade brokerage & charges estimate |
 | `nf-order` | Place/cancel/list orders (--dry-run supported) |
+| `nf-options` | Option chain, live chain with greeks, option greeks (v3 API), buy/sell |
 | `nf-watchlist` | Watchlist CRUD with price alerts |
 | `nf-monitor` | Monitor rule CRUD, list/enable/disable/delete rules |
 

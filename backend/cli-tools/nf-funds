@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""View available funds, margin, and buying power."""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import format_inr, init_client, print_error, print_json, run_async  # noqa: E402
+
+
+def show_funds(as_json: bool):
+    """Show funds and margin details."""
+    client = init_client()
+    try:
+        funds = run_async(client.get_funds_and_margin())
+    except Exception as e:
+        print_error(f"Failed to get funds: {e}")
+
+    if as_json:
+        print_json(funds)
+        return
+
+    mode = "Paper" if client.paper_trading else "Live"
+    print(f"💰 Funds & Margin [{mode}]\n")
+
+    for segment_name in ("equity", "commodity"):
+        seg = funds.get(segment_name)
+        if not seg:
+            continue
+
+        label = segment_name.upper()
+        available = seg.get("available_margin", 0)
+        used = seg.get("used_margin", 0)
+        total = available + used
+
+        print(f"  ── {label} ──")
+        print(f"  Available Margin: {format_inr(available)}")
+        print(f"  Used Margin:      {format_inr(used)}")
+        print(f"  Total:            {format_inr(total)}")
+        print(f"  Payin Amount:     {format_inr(seg.get('payin_amount', 0))}")
+
+        # Show breakdown if non-zero
+        span = seg.get("span_margin", 0)
+        exposure = seg.get("exposure_margin", 0)
+        if span or exposure:
+            print(f"  SPAN Margin:      {format_inr(span)}")
+            print(f"  Exposure Margin:  {format_inr(exposure)}")
+
+        notional = seg.get("notional_cash", 0)
+        adhoc = seg.get("adhoc_margin", 0)
+        if notional:
+            print(f"  Notional Cash:    {format_inr(notional)}")
+        if adhoc:
+            print(f"  Adhoc Margin:     {format_inr(adhoc)}")
+        print()
+
+    if not funds:
+        print("  No fund data available. Funds API may be unavailable (12 AM - 5:30 AM IST).")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-funds",
+        description="View available funds, margin, and buying power",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-funds              Show funds and margin summary
+  nf-funds --json       JSON output
+""",
+    )
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+    show_funds(args.json)
+
+
+if __name__ == "__main__":
+    main()

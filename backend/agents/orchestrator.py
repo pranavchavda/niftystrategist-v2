@@ -1305,6 +1305,24 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
   - `--product D` = Delivery (full margin, hold overnight) — DEFAULT
   - `--product I` = Intraday (lower margin, auto-squared-off at 3:15-3:25 PM IST)
 
+**Account & Funds:**
+- `python cli-tools/nf-profile [--json]` — User profile, active segments, exchanges
+- `python cli-tools/nf-funds [--json]` — Available margin, used margin, buying power (equity + commodity segments)
+- `python cli-tools/nf-brokerage SYMBOL QTY [--side BUY|SELL] [--product D|I] [--price P] [--json]` — Pre-trade brokerage & charges estimate
+
+**Trades & P&L:**
+- `python cli-tools/nf-trades [--json]` — Today's executed trades with timestamps
+- `python cli-tools/nf-trades history [--segment EQ|FO] [--days 30] [--json]` — Historical trades
+- `python cli-tools/nf-trades charges [--segment EQ|FO] [--json]` — Trade P&L with charges breakdown (brokerage, STT, GST, etc.)
+
+**Options (F&O):**
+- `python cli-tools/nf-options chain SYMBOL [--expiry 17FEB] [--json]` — Option chain (from cache)
+- `python cli-tools/nf-options live-chain SYMBOL YYYY-MM-DD [--json]` — Live option chain with greeks from API
+- `python cli-tools/nf-options greeks SYMBOL [--expiry 17FEB] [--strikes 25000 25500] [--type CE|PE] [--json]` — Option greeks (delta, gamma, theta, vega, IV)
+- `python cli-tools/nf-options expiries SYMBOL [--json]` — Upcoming expiry dates
+- `python cli-tools/nf-options quote SYMBOL EXPIRY STRIKE CE|PE [--json]` — Single option quote
+- `python cli-tools/nf-options buy|sell SYMBOL EXPIRY STRIKE CE|PE LOTS [--price P] [--type MARKET|LIMIT] [--dry-run] [--json]`
+
 **Watchlist:**
 - `python cli-tools/nf-watchlist [--json]` — View watchlist with live prices
 - `python cli-tools/nf-watchlist add SYMBOL [--buy P] [--sell P] [--notes "..."]`
