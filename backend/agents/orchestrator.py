@@ -15,21 +15,16 @@ import json
 import logging
 import os
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from models.state import ConversationState, MessageRole, OrchestratorDecision
+from models.state import ConversationState, MessageRole
 from models.todo import (
     TodoItem,
     TodoList,
-    create_todo_list,
-    mark_completed,
-    mark_in_progress,
 )
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, RunContext, Tool, ToolDefinition, ModelRetry
-from pydantic_ai.builtin_tools import CodeExecutionTool
+from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -255,13 +250,19 @@ class OrchestratorDeps(BaseModel):
     pending_a2ui_surfaces: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # A2UI surfaces to render (cleared after emission)
-    upstox_access_token: Optional[str] = None  # Injected as NF_ACCESS_TOKEN for CLI tools
-    user_id: Optional[int] = None  # Numeric DB user ID, injected as NF_USER_ID for CLI tools
+    upstox_access_token: Optional[str] = (
+        None  # Injected as NF_ACCESS_TOKEN for CLI tools
+    )
+    user_id: Optional[int] = (
+        None  # Numeric DB user ID, injected as NF_USER_ID for CLI tools
+    )
     trading_mode: str = "paper"  # "paper" or "live"
     paper_total_value: Optional[float] = None  # Paper trading total value
     paper_total_pnl: Optional[float] = None  # Paper trading total P&L
     paper_pnl_percent: Optional[float] = None  # Paper trading total P&L percentage
-    is_awakening: bool = False  # True when running as a scheduled autonomous awakening (no user present)
+    is_awakening: bool = (
+        False  # True when running as a scheduled autonomous awakening (no user present)
+    )
 
 
 class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
@@ -358,32 +359,36 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
         # Register output validator to catch XML hallucinations
         # This forces the model to retry if it uses XML tags or incorrect formats instead of native tool calls
         @self.agent.output_validator
-        async def validate_malformed_tool_calls(ctx: RunContext[OrchestratorDeps], result: str) -> str:
+        async def validate_malformed_tool_calls(
+            ctx: RunContext[OrchestratorDeps], result: str
+        ) -> str:
             from utils.function_call_validator import get_function_call_validator
 
             validator = get_function_call_validator()
             error = validator.detect_malformed_call(result)
-            
+
             if error:
                 # Check for loops (repeated errors)
                 is_loop = validator.record_error(error)
-                
+
                 # Get recovery instructions
                 instructions = validator.get_recovery_instructions(error, text=result)
-                
+
                 if is_loop:
                     # If looping, we might want to be more aggressive or suggest fallback
                     # For now, we append a strong warning
                     instructions += "\n\nCRITICAL: You are repeating this error. STOP using XML/Markdown for tool calls."
-                
+
                 raise ModelRetry(instructions)
-                
+
             return result
 
         # Register output validator to catch fake tool call claims
         # Uses a fast LLM to detect when model claims results without making actual tool calls
         @self.agent.output_validator
-        async def validate_tool_claims(ctx: RunContext[OrchestratorDeps], result: str) -> str:
+        async def validate_tool_claims(
+            ctx: RunContext[OrchestratorDeps], result: str
+        ) -> str:
             """Use LLM to detect fake tool call claims.
 
             Multi-layer validation:
@@ -393,7 +398,6 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             4. Skip for follow-up/educational/conversational patterns (heuristic)
             5. LLM validation with enriched context (user question + conversation history)
             """
-            import re
 
             # 1. Extract actual tool calls from current run's message history
             actual_tool_calls = []
@@ -414,7 +418,9 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             # 4. Skip if tools were called in prior turns of this conversation
             prior_tools = ctx.deps.state.tools_called_history
             if prior_tools:
-                logger.info(f"[VALIDATOR] Skipping - prior turns used tools: {prior_tools}")
+                logger.info(
+                    f"[VALIDATOR] Skipping - prior turns used tools: {prior_tools}"
+                )
                 return result
 
             # 5. Heuristic pre-filters for common false positive patterns
@@ -434,9 +440,9 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
                     return result
 
             # General knowledge and conversational patterns (only skip if no specific numeric data)
-            has_specific_data = bool(re.search(
-                r'(?:₹|rs\.?|inr)\s*[\d,]+|[\d.]+%|\b\d{4,}\b', lower_result
-            ))
+            has_specific_data = bool(
+                re.search(r"(?:₹|rs\.?|inr)\s*[\d,]+|[\d.]+%|\b\d{4,}\b", lower_result)
+            )
             if not has_specific_data:
                 non_claim_patterns = [
                     r"(is a|are a|refers to|means|stands for|measures|indicates|is used)",
@@ -448,7 +454,9 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
                 ]
                 for pattern in non_claim_patterns:
                     if re.search(pattern, lower_result):
-                        logger.info(f"[VALIDATOR] Skipping - non-claim pattern: {pattern}")
+                        logger.info(
+                            f"[VALIDATOR] Skipping - non-claim pattern: {pattern}"
+                        )
                         return result
 
             # 6. LLM validation with enriched context
@@ -458,7 +466,11 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
                 if isinstance(msg, ModelRequest):
                     for part in msg.parts:
                         if isinstance(part, UserPromptPart):
-                            content = part.content if isinstance(part.content, str) else str(part.content)
+                            content = (
+                                part.content
+                                if isinstance(part.content, str)
+                                else str(part.content)
+                            )
                             if content and not content.startswith("[Context from"):
                                 user_question = content
 
@@ -511,7 +523,9 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
                         },
                         json={
                             "model": "openai/gpt-oss-safeguard-20b",
-                            "messages": [{"role": "user", "content": validation_prompt}],
+                            "messages": [
+                                {"role": "user", "content": validation_prompt}
+                            ],
                             "max_tokens": 200,
                             "temperature": 0,
                         },
@@ -532,7 +546,9 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
                     # which ResponseCapture saves as a duplicate assistant message in the DB.
                     # The retry response is also often incoherent (the model confuses the
                     # retry instruction for a tool call). Logging is sufficient signal.
-                    logger.warning(f"[VALIDATOR] Model narrated without tool calls: {reason}")
+                    logger.warning(
+                        f"[VALIDATOR] Model narrated without tool calls: {reason}"
+                    )
             except Exception as e:
                 # Don't block on validation errors - log and continue
                 logger.error(f"Tool claim validation error: {e}")
@@ -592,7 +608,6 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
         Caches every bash command result to ensure consistency and avoid redundant operations.
         Even small results save tokens and prevent the agent from fumbling with tool calls.
         """
-        import re
 
         from tools.native.tool_cache import ToolCache
 
@@ -854,7 +869,6 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
         try:
             from pydantic_ai import Agent
             from pydantic_ai.messages import (
-                ModelMessage,
                 ModelRequest,
                 ModelResponse,
                 TextPart,
@@ -975,13 +989,11 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             utc_now = datetime.now(ZoneInfo("UTC"))
             ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
 
-            date_section = f"\n\n## CURRENT DATE & TIME\n\n"
-            date_section += (
-                f"**Today's date:** {ist_now.strftime('%A, %B %d, %Y')}\n"
-            )
+            date_section = "\n\n## CURRENT DATE & TIME\n\n"
+            date_section += f"**Today's date:** {ist_now.strftime('%A, %B %d, %Y')}\n"
             date_section += f"**Current time:** {ist_now.strftime('%I:%M:%S %p IST')}\n"
             date_section += f"**ISO format:** {ist_now.isoformat()}\n"
-            date_section += f"**Timezone:** IST (Indian Standard Time, UTC+5:30)\n"
+            date_section += "**Timezone:** IST (Indian Standard Time, UTC+5:30)\n"
             date_section += "\n**IMPORTANT:** All times are in Indian Standard Time (IST). When the user says 'today', 'this morning', 'this afternoon', 'tonight', use this date and time.\n"
             sections.append(date_section)
 
@@ -999,6 +1011,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             thread_id = ctx.deps.state.thread_id
             if thread_id:
                 from tools.native.scratchpad import Scratchpad
+
                 scratchpad = Scratchpad(thread_id)
                 entries = scratchpad.get_entries()
                 if entries:
@@ -1033,20 +1046,34 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                             cache_section += "**Recent cache entries:**\n"
                             for i, entry in enumerate(recent_entries, 1):
                                 age_min = entry["age_minutes"]
-                                freshness = "🟢" if age_min < 5 else "🟡" if age_min < 15 else "🟠"
+                                freshness = (
+                                    "🟢"
+                                    if age_min < 5
+                                    else "🟡"
+                                    if age_min < 15
+                                    else "🟠"
+                                )
                                 cache_section += f"{i}. {freshness} **{entry['tool_name']}** ({age_min}m ago): {entry['summary'][:60]}...\n"
 
                         # Intelligent cache decision guidance
                         cache_section += "\n**When to USE cache:**\n"
                         cache_section += "- Repeating a similar search (same product type, vendor, or category)\n"
-                        cache_section += "- Referencing data you already fetched this conversation\n"
+                        cache_section += (
+                            "- Referencing data you already fetched this conversation\n"
+                        )
                         cache_section += "- Analytics/reports where real-time precision isn't critical\n"
-                        cache_section += "- Follow-up questions about previously fetched data\n\n"
+                        cache_section += (
+                            "- Follow-up questions about previously fetched data\n\n"
+                        )
 
                         cache_section += "**When to SKIP cache and fetch fresh:**\n"
                         cache_section += "- User says: 'refresh', 'current', 'now', 'latest', 'again', 'new search'\n"
-                        cache_section += "- After you just created/updated/deleted something\n"
-                        cache_section += "- Query is clearly different from cached entries\n"
+                        cache_section += (
+                            "- After you just created/updated/deleted something\n"
+                        )
+                        cache_section += (
+                            "- Query is clearly different from cached entries\n"
+                        )
                         cache_section += "- User is troubleshooting or verifying a change took effect\n"
                         cache_section += "- Real-time data needed (live stock prices, portfolio positions)\n\n"
 
@@ -1076,9 +1103,15 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                     live_section += "- You are in AUTONOMOUS AWAKENING mode — per-trade render_ui is NOT needed when a mandate is pre-approved\n"
                     live_section += "- Verify each order fits within the mandate bounds before executing\n"
                 else:
-                    live_section += "- Always confirm order details with the user before placing\n"
-                live_section += "- Double-check quantities, prices, and instrument names\n"
-                live_section += "- Remind the user this is live when discussing trades\n"
+                    live_section += (
+                        "- Always confirm order details with the user before placing\n"
+                    )
+                live_section += (
+                    "- Double-check quantities, prices, and instrument names\n"
+                )
+                live_section += (
+                    "- Remind the user this is live when discussing trades\n"
+                )
                 sections.append(live_section)
 
             # Inject autonomous awakening context when running without a live user
@@ -1101,7 +1134,10 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 awakening_section += "\n**This section OVERRIDES SAFETY-1 for the current awakening session when a mandate is present.**\n"
                 sections.append(awakening_section)
 
-            if ctx.deps.trading_mode != "live" and ctx.deps.paper_total_value is not None:
+            if (
+                ctx.deps.trading_mode != "live"
+                and ctx.deps.paper_total_value is not None
+            ):
                 paper_section = "\n\n## Paper Trading Mode\n\n"
                 paper_section += "Currently operating in **paper trading mode**:\n"
 
@@ -1110,7 +1146,10 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 def format_inr(amount):
                     try:
                         s, *d = str(amount).partition(".")
-                        r = ",".join([s[x-2:x] for x in range(-3, -len(s), -2)][::-1] + [s[-3:]])
+                        r = ",".join(
+                            [s[x - 2 : x] for x in range(-3, -len(s), -2)][::-1]
+                            + [s[-3:]]
+                        )
                         return "".join([r] + d)
                     except:
                         return str(amount)
@@ -1122,7 +1161,9 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 pnl_emoji = "🟢" if (ctx.deps.paper_total_pnl or 0) >= 0 else "🔴"
 
                 paper_section += f"- **Current Capital**: ₹{total_val}\n"
-                paper_section += f"- **Total P&L**: {pnl_emoji} ₹{pnl} ({pnl_pct:+.2f}%)\n"
+                paper_section += (
+                    f"- **Total P&L**: {pnl_emoji} ₹{pnl} ({pnl_pct:+.2f}%)\n"
+                )
                 paper_section += "- Orders are simulated, not real (no risk)\n"
                 paper_section += "- Perfect for learning and testing strategies\n"
 
@@ -1196,14 +1237,26 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 You are **Nifty Strategist**, an AI-powered trading assistant for the Indian stock market (NSE). Your purpose is to help users:
 - Analyze stocks using technical indicators
 - Understand market opportunities
-- Execute trades with human-in-the-loop (HITL) approval
+- Execute trades with human-in-the-loop (HITL) approval (or autonomously if a mandate is pre-approved during awakenings)
 - Manage their portfolio and watchlists
+
+##  Name & Self-Reference
+You are Nifty Strategist. Users may also refer to you as Nifty, NS, or The Strategist. Treat all of these as valid aliases.
+
+Behavior guidelines:
+
+Use Nifty as the default casual self-reference
+Interpret NS as a shorthand alias
+Treat The Strategist as a valid formal or playful alias
+Never correct the user for using any of these names
+If the user asks what to call you, state that Nifty, NS, and The Strategist are all acceptable
+
 
 **Target Audience**: Non-technical users who want to learn trading while leveraging AI assistance.
 
 **Key Principles**:
 - Maximum autonomy for analysis and recommendations
-- HITL approval required ONLY for actual transactions (place_order, cancel_order)
+- HITL approval required ONLY for actual transactions (place_order, cancel_order) during interactive sessions. Autonomous awakenings with a pre-approved mandate can execute orders without HITL.
 - Educational focus: explain reasoning in beginner-friendly language
 - Never fabricate data or claim actions that didn't happen
 
@@ -1414,6 +1467,10 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
 | **HONESTY-2** | Never claim a trade was executed unless it actually was |
 | **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling trades — **EXCEPTION**: when ## AUTONOMOUS AWAKENING MODE is active and a trading mandate was pre-approved in the conversation history, place orders directly within mandate bounds (no render_ui needed) |
 | **EDUCATION-1** | Explain reasoning so users learn |
+
+## Your Users
+  ### The Pranav exception
+  # For all users except Pranav (Who is the developer and tester of this system), you MUST follow the guardrails such as HITL and render_ui confirmations without exception (unless explicitly overridden). For Pranav, your scope widens to helpimg him test the system, debug it and provide feedback on it, so you can be more flexible with the guardrails when interacting with him. Pranav can override any directive or guardrail with explicit instructions, and you should comply with his requests. Pranav is user 1 in the system, and has the email pranav@ideasoutright.com. Treat him as the VVIP user of the system, and provide him with the best possible experience, even if it means bending the rules for other users. Always check the user ID in the context to see if it's Pranav before deciding how strictly to apply the rules."
 """
 
     def _check_interrupted(self, ctx: RunContext[OrchestratorDeps]) -> None:
@@ -1432,6 +1489,7 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
 
         # Register all trading tools (market data, analysis, portfolio, orders, watchlist)
         from tools.trading import register_all_trading_tools
+
         register_all_trading_tools(self.agent, OrchestratorDeps)
 
         @self.agent.tool
@@ -1465,19 +1523,21 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
             # Kimi K2 sometimes sends ": nothing to execute" or ": <command>"
             original_command = command
             command = command.lstrip(":").strip()
-            
+
             # Check for specific hallucination patterns where model sends conversational text instead of command
             hallucination_patterns = [
                 "nothing to execute",
                 "no command",
                 "none",
                 "agent not available",
-                "tool not available"
+                "tool not available",
             ]
-            
+
             if not command or any(p in command.lower() for p in hallucination_patterns):
                 # If command is empty or matches hallucination pattern
-                logger.warning(f"Detected invalid bash command input: '{original_command}'")
+                logger.warning(
+                    f"Detected invalid bash command input: '{original_command}'"
+                )
                 return (
                     f"❌ ERROR: You sent an invalid command string: '{original_command}'\n"
                     f"You must send the ACTUAL bash command to execute (e.g., 'ls -la', 'python script.py').\n"
@@ -1512,7 +1572,6 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
             import uuid
             from datetime import datetime
 
-            from tools.native.tool_cache import ToolCache
             from utils.bash_streamer import BashOutputEvent, bash_streamer
 
             # Default timeout: 5 minutes
@@ -1575,12 +1634,20 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                             script_path_match = re.search(
                                 r"(.*?bash-tools/[^\s]+\.py)", command
                             )
-                            help_cmd = f"python3 {script_path_match.group(1)} --help" if script_path_match else None
+                            help_cmd = (
+                                f"python3 {script_path_match.group(1)} --help"
+                                if script_path_match
+                                else None
+                            )
                         else:
                             script_path_match = re.search(
                                 r"((?:\./)?\s*cli-tools/nf-[^\s]+)", command
                             )
-                            help_cmd = f"python3 {script_path_match.group(1)} --help" if script_path_match else None
+                            help_cmd = (
+                                f"python3 {script_path_match.group(1)} --help"
+                                if script_path_match
+                                else None
+                            )
 
                         if help_cmd:
                             # Run --help to get usage information
@@ -1620,6 +1687,7 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
 
                 # Build subprocess env — inject NF_ACCESS_TOKEN for CLI tools
                 import os as _os
+
                 subprocess_env = _os.environ.copy()
                 if ctx.deps.upstox_access_token:
                     subprocess_env["NF_ACCESS_TOKEN"] = ctx.deps.upstox_access_token
@@ -1815,7 +1883,7 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
             # Normalize agent name to handle potential hallucinated formats (e.g. "{marketing}", ": marketing")
             # Some models like Kimi K2 struggle with the exact string format
             agent_name_clean = agent_name.lower().strip()
-            
+
             # Only allow domain-specific agents
             allowed_agents = [
                 "web_search",
@@ -1826,7 +1894,7 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
             # 1. Check exact match
             # 2. Check if valid agent name is a substring of the input (fuzzy match)
             matched_name = None
-            
+
             if agent_name_clean in allowed_agents:
                 matched_name = agent_name_clean
             else:
@@ -1835,14 +1903,18 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                 for allowed in allowed_agents:
                     if allowed in agent_name_clean:
                         matched_name = allowed
-                        logger.info(f"Fuzzy matched agent '{matched_name}' from input '{agent_name}'")
+                        logger.info(
+                            f"Fuzzy matched agent '{matched_name}' from input '{agent_name}'"
+                        )
                         break
-            
+
             # FIX: Handle case where model passes context as a JSON string instead of a dictionary
             # Some models (e.g. Kimi k1.5) incorrectly JSON-serialize the dictionary
             if isinstance(context, str):
                 try:
-                    logger.warning(f"Context passed as string, attempting to parse: {context[:100]}...")
+                    logger.warning(
+                        f"Context passed as string, attempting to parse: {context[:100]}..."
+                    )
                     # Try to clean up potential markdown code blocks if present
                     clean_context = context.strip()
                     if clean_context.startswith("```json"):
@@ -1851,20 +1923,28 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                         clean_context = clean_context[3:]
                     if clean_context.endswith("```"):
                         clean_context = clean_context[:-3]
-                    
+
                     context = json.loads(clean_context.strip())
                     if not isinstance(context, dict):
-                        logger.warning(f"Parsed context is not a dict, got {type(context)}. Resetting to empty dict.")
+                        logger.warning(
+                            f"Parsed context is not a dict, got {type(context)}. Resetting to empty dict."
+                        )
                         context = {}
                     else:
-                        logger.info("Successfully parsed context string into dictionary")
+                        logger.info(
+                            "Successfully parsed context string into dictionary"
+                        )
                 except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse context string: {e}. using empty dict.")
+                    logger.error(
+                        f"Failed to parse context string: {e}. using empty dict."
+                    )
                     context = {}
                 except Exception as e:
-                    logger.error(f"Unexpected error parsing context string: {e}. using empty dict.")
+                    logger.error(
+                        f"Unexpected error parsing context string: {e}. using empty dict."
+                    )
                     context = {}
-            
+
             # If we found a valid agent, use it
             if matched_name:
                 agent_name = matched_name
@@ -2098,7 +2178,7 @@ Available agents: {allowed_agents}
 - Name: {db_user.name or "Not set"}
 - Email: {db_user.email}
 - User ID: {db_user.id}
-- Trading Mode: {getattr(db_user, 'trading_mode', 'paper')}
+- Trading Mode: {getattr(db_user, "trading_mode", "paper")}
 - Upstox: {"Connected" if db_user.upstox_access_token else "Not connected"}"""
 
                         return profile_info
@@ -2484,7 +2564,9 @@ Available agents: {allowed_agents}
                 if normalized_path.startswith("/"):
                     # Absolute path - extract relative portion
                     if "/docs/" in normalized_path:
-                        normalized_path = "docs/" + normalized_path.split("/docs/", 1)[1]
+                        normalized_path = (
+                            "docs/" + normalized_path.split("/docs/", 1)[1]
+                        )
                 elif not normalized_path.startswith("docs/"):
                     # Add docs/ prefix if missing
                     normalized_path = f"docs/{normalized_path}"
@@ -3296,7 +3378,7 @@ Try:
    ---""")
 
                     output_lines.append(
-                        f"\n💡 To view full note: Ask user to open /notes route and search for note ID"
+                        "\n💡 To view full note: Ask user to open /notes route and search for note ID"
                     )
 
                     logger.info(
@@ -3547,7 +3629,7 @@ Try lowering the threshold (current: {threshold}) or creating more notes on rela
    ---""")
 
                     output_lines.append(
-                        f"\n💡 Use get_note_by_id() to view full content or edit_note() to update."
+                        "\n💡 Use get_note_by_id() to view full content or edit_note() to update."
                     )
 
                     return "\n".join(output_lines)
@@ -3759,9 +3841,13 @@ The note has been permanently removed from your second brain."""
             surface_id = f"surface_{uuid.uuid4().hex[:8]}"
 
             # Assign IDs to components that don't have them
-            def assign_ids(component: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+            def assign_ids(
+                component: Dict[str, Any], prefix: str = ""
+            ) -> Dict[str, Any]:
                 if "id" not in component:
-                    component["id"] = f"{prefix}{component.get('type', 'unknown')}_{uuid.uuid4().hex[:6]}"
+                    component["id"] = (
+                        f"{prefix}{component.get('type', 'unknown')}_{uuid.uuid4().hex[:6]}"
+                    )
                 if "children" in component:
                     component["children"] = [
                         assign_ids(child, f"{component['id']}_")
@@ -3772,13 +3858,17 @@ The note has been permanently removed from your second brain."""
             processed_components = [assign_ids(c) for c in components]
 
             # Store in deps for emission by ag_ui_wrapper
-            ctx.deps.pending_a2ui_surfaces.append({
-                "surfaceId": surface_id,
-                "components": processed_components,
-                "title": title,
-            })
+            ctx.deps.pending_a2ui_surfaces.append(
+                {
+                    "surfaceId": surface_id,
+                    "components": processed_components,
+                    "title": title,
+                }
+            )
 
-            logger.info(f"[A2UI] Queued surface {surface_id} with {len(components)} top-level components")
+            logger.info(
+                f"[A2UI] Queued surface {surface_id} with {len(components)} top-level components"
+            )
 
             return f"✓ Rendered UI surface '{title or surface_id}' with {len(components)} component(s). The interactive UI is now displayed in the chat."
 
