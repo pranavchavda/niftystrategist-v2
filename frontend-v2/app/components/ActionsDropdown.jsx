@@ -6,19 +6,22 @@ import {
     SparklesIcon,
     CheckCircleIcon,
     ListBulletIcon,
+    ArrowsPointingInIcon,
 } from '@heroicons/react/24/outline';
 
 /**
  * Actions dropdown component for chat controls
- * Consolidates: Tools, Fork, Extract, Auto Mode, TODO Mode
+ * Consolidates: Tools, Fork, Compact, Extract, Auto Mode, TODO Mode
  */
 const ActionsDropdown = ({
     // Callbacks
     onViewTools,
     onForkConversation,
+    onCompactThread,
     onExtractMemories,
     // State
     isForkingConversation = false,
+    isCompactingThread = false,
     isExtractingMemories = false,
     extractionSuccess = false,
     useTodo = false,
@@ -109,6 +112,25 @@ const ActionsDropdown = ({
                                     </div>
                                     <div className="text-xs text-zinc-500 dark:text-zinc-400">
                                         Start fresh with this context
+                                    </div>
+                                </div>
+                            </button>
+                        )}
+
+                        {/* Compact Thread */}
+                        {showForkAndExtract && (
+                            <button
+                                onClick={() => handleActionClick(onCompactThread)}
+                                disabled={isCompactingThread}
+                                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <ArrowsPointingInIcon className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+                                <div className="flex-1 text-left">
+                                    <div className="font-medium">
+                                        {isCompactingThread ? 'Compacting...' : 'Compact Thread'}
+                                    </div>
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                        Summarize messages in place
                                     </div>
                                 </div>
                             </button>

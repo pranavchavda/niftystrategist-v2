@@ -246,6 +246,78 @@ class ConversationOps:
         logger.info(f"Forked conversation {source_thread_id} -> {new_thread_id} for user {user_id}")
         return new_conversation
 
+    @staticmethod
+    async def compact_conversation(
+        session: AsyncSession,
+        thread_id: str,
+        user_id: str,
+        compact_summary: str,
+        summary_message_id: str
+    ) -> tuple[int, "Message"]:
+        """
+        Compact a conversation in-place by replacing all messages with a summary.
+
+        Deletes all existing messages and inserts a single system message
+        containing the compressed context. The conversation keeps its ID.
+
+        Args:
+            session: Database session
+            thread_id: Conversation to compact
+            user_id: User who owns the conversation
+            compact_summary: The compressed context summary
+            summary_message_id: Unique message ID for the summary message
+
+        Returns:
+            Tuple of (count of deleted messages, the new summary Message)
+        """
+        # Verify conversation belongs to user
+        conv_query = select(Conversation).where(
+            and_(
+                Conversation.id == thread_id,
+                Conversation.user_id == user_id
+            )
+        )
+        conv_result = await session.execute(conv_query)
+        conversation = conv_result.scalar_one_or_none()
+
+        if not conversation:
+            raise ValueError(f"Conversation {thread_id} not found for user {user_id}")
+
+        # Count messages before deletion
+        count_query = select(func.count(Message.id)).where(
+            Message.conversation_id == thread_id
+        )
+        count_result = await session.execute(count_query)
+        original_count = count_result.scalar()
+
+        # Delete all messages
+        delete_query = delete(Message).where(
+            Message.conversation_id == thread_id
+        )
+        await session.execute(delete_query)
+
+        # Insert compacted summary as system message
+        summary_message = Message(
+            conversation_id=thread_id,
+            message_id=summary_message_id,
+            role="system",
+            content=f"**Thread compacted ({original_count} messages → summary):**\n\n{compact_summary}",
+            attachments=[],
+            tool_calls=[],
+            extra_metadata={"compaction": True, "original_message_count": original_count}
+        )
+        session.add(summary_message)
+
+        # Update conversation metadata
+        conversation.last_compacted_at = utc_now_naive()
+        conversation.updated_at = utc_now_naive()
+
+        await session.commit()
+        await session.refresh(summary_message)
+
+        logger.info(f"Compacted conversation {thread_id}: {original_count} messages → 1 summary")
+        return original_count, summary_message
+
 
 class MessageOps:
     """Operations for managing messages"""

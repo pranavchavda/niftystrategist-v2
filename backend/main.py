@@ -36,6 +36,7 @@ from auth import (
 )
 # Database imports
 from database import DatabaseManager, Conversation, Message, MemoryOps
+from database.operations import ConversationOps
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -322,9 +323,82 @@ async def save_assistant_message_to_db(
                 }
             )
 
+            # Check if auto-compaction is needed (fire and forget)
+            try:
+                from api.conversations import COMPACTION_THRESHOLD
+                from sqlalchemy import func as sa_func
+                count_result = await db.execute(
+                    select(sa_func.count(Message.id)).where(
+                        Message.conversation_id == thread_id
+                    )
+                )
+                msg_count = count_result.scalar()
+                if msg_count >= COMPACTION_THRESHOLD:
+                    logger.info(f"Auto-compaction triggered for {thread_id}: {msg_count} messages >= {COMPACTION_THRESHOLD} threshold")
+                    asyncio.create_task(
+                        _auto_compact_conversation(thread_id, conv.user_id, msg_count)
+                    )
+            except Exception as compact_err:
+                logger.warning(f"Auto-compaction check failed (non-fatal): {compact_err}")
+
     except Exception as e:
         logger.error(f"Failed to save assistant message to database: {e}")
         # Don't fail the request if DB save fails
+
+
+async def _auto_compact_conversation(thread_id: str, user_id: str, message_count: int):
+    """
+    Background task to auto-compact a conversation that exceeded the threshold.
+    Runs asynchronously after assistant message save.
+    """
+    try:
+        logger.info(f"[AUTO-COMPACT] Starting auto-compaction for {thread_id} ({message_count} messages)")
+
+        async with db_manager.async_session() as db:
+            # Re-verify conversation and get messages
+            conversation = await ConversationOps.get_conversation(
+                db, thread_id, user_id, include_messages=True
+            )
+
+            if not conversation or not conversation.messages:
+                logger.warning(f"[AUTO-COMPACT] Conversation {thread_id} not found or empty, skipping")
+                return
+
+            # Skip if already recently compacted (within last hour — prevents rapid re-compaction)
+            if conversation.last_compacted_at:
+                from datetime import timedelta
+                one_hour_ago = utc_now_naive() - timedelta(hours=1)
+                if conversation.last_compacted_at > one_hour_ago:
+                    logger.info(f"[AUTO-COMPACT] Skipping {thread_id}, already compacted at {conversation.last_compacted_at}")
+                    return
+
+            messages = conversation.messages
+
+            # Generate compact summary
+            from utils.toon_converter import create_hybrid_fork_summary
+            compact_summary = await create_hybrid_fork_summary(
+                messages,
+                conversation.title or "Untitled Conversation",
+                use_gemini=False,
+                use_langextract=False
+            )
+
+            # Perform compaction
+            import uuid
+            summary_message_id = f"msg_{uuid.uuid4().hex[:12]}"
+            original_count, _ = await ConversationOps.compact_conversation(
+                db,
+                thread_id=thread_id,
+                user_id=user_id,
+                compact_summary=compact_summary,
+                summary_message_id=summary_message_id
+            )
+
+            logger.info(f"[AUTO-COMPACT] Successfully compacted {thread_id}: {original_count} messages → 1 summary")
+
+    except Exception as e:
+        logger.error(f"[AUTO-COMPACT] Failed to auto-compact {thread_id}: {e}", exc_info=True)
+        # Auto-compaction failure is non-fatal
 
 
 # Load environment variables

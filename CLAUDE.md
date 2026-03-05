@@ -148,6 +148,31 @@ FastAPI (web)                    MonitorDaemon (separate process)
 
 **API datetime gotcha:** Frontend sends ISO strings with `Z` (timezone-aware). The `_strip_tz()` helper in `api/monitor.py` strips tzinfo before DB insert since columns are naive TIMESTAMP.
 
+## Thread Compaction (In-Place Context Compression)
+
+Unlike forking (which creates a new thread), compaction replaces all messages in the **same thread** with a single compressed summary. This preserves the thread ID so bookmarks, awakening rules, and monitor links remain valid.
+
+**Two modes:**
+1. **Manual** — User clicks "Compact Thread" in the Actions dropdown. Confirmation dialog warns it's irreversible.
+2. **Auto-compaction** — Triggers automatically after a thread exceeds 100 messages (~50 user+assistant pairs). Fires as a background task after assistant message save, with a 1-hour cooldown to prevent rapid re-compaction.
+
+**How it works:**
+1. `POST /api/conversations/{id}/compact` (manual) or `_auto_compact_conversation()` (auto) loads all messages
+2. Generates summary via the same hybrid LLM→TOON pipeline used for fork (`create_hybrid_fork_summary()` in `toon_converter.py`)
+3. `ConversationOps.compact_conversation()` deletes all messages and inserts a single system message with the summary
+4. Sets `last_compacted_at` on the conversation record
+5. Frontend reloads the thread to show the compacted version
+
+**Key files:**
+- `backend/api/conversations.py` — `compact_conversation` endpoint + `check_auto_compaction_needed()` + `COMPACTION_THRESHOLD`
+- `backend/database/operations.py` — `ConversationOps.compact_conversation()`
+- `backend/main.py` — `_auto_compact_conversation()` background task, triggered from `save_assistant_message_to_db()`
+- `frontend-v2/app/components/ActionsDropdown.jsx` — "Compact Thread" menu item
+- `frontend-v2/app/views/ChatView.jsx` — `handleCompactThread()` + auto-compaction reload detection
+- `backend/migrations/016_add_thread_compaction.sql` — `last_compacted_at` column
+
+**Constants:** `COMPACTION_THRESHOLD = 100` (messages). Auto-compaction cooldown: 1 hour.
+
 ## Thread Awakening (Scheduled Follow-Ups)
 
 Agents can schedule one-shot follow-ups bound to an existing conversation thread. When fired, the awakening loads the full thread history and runs the agent autonomously, writing the response back into the same thread.
