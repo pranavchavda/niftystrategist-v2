@@ -696,6 +696,7 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
         )
         db_user = result.scalar_one_or_none()
         if not db_user:
+            logger.warning("TOTP auto-refresh: user %d not found in DB", user_id)
             return None
 
         # Check TOTP credentials exist
@@ -704,6 +705,14 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
             db_user.upstox_pin,
             db_user.upstox_totp_secret,
         ]):
+            logger.warning(
+                "TOTP auto-refresh: missing credentials for user %d "
+                "(mobile=%s, pin=%s, totp=%s)",
+                user_id,
+                bool(db_user.upstox_mobile),
+                bool(db_user.upstox_pin),
+                bool(db_user.upstox_totp_secret),
+            )
             return None
 
         # Check cooldown

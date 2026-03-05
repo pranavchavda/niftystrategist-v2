@@ -1263,6 +1263,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-monitor enable|disable|delete RULE_ID [--json]`
 - `python cli-tools/nf-monitor logs [--rule RULE_ID] [--limit 20] [--json]` — Rule firing history
 
+**NEVER run `nf-monitor start` or `nf-monitor stop`** — the monitor daemon is managed by systemd. Starting it via execute_bash creates a conflicting instance that crashes the production daemon.
+
 For full documentation: `cat cli-tools/INDEX.md`
 
 ### Utility Tools

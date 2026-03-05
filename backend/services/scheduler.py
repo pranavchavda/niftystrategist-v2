@@ -61,6 +61,9 @@ class WorkflowScheduler:
         # Load all enabled workflows
         await self._load_enabled_workflows()
 
+        # Add proactive TOTP token refresh job (3:35 AM IST = 22:05 UTC)
+        self._add_totp_refresh_job()
+
         # Start the scheduler
         self.scheduler.start()
         self._started = True
@@ -322,6 +325,65 @@ class WorkflowScheduler:
             return job.next_run_time
 
         return None
+
+    def _add_totp_refresh_job(self):
+        """Add a daily job to proactively refresh Upstox tokens via TOTP.
+
+        Runs at 22:05 UTC (3:35 AM IST) — shortly after Upstox tokens
+        expire at ~22:00 UTC (3:30 AM IST). This ensures tokens are
+        refreshed even if no user request or daemon poll triggers it.
+        """
+        job_id = "totp_token_refresh"
+
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        self.scheduler.add_job(
+            func=self._refresh_all_totp_tokens,
+            trigger=CronTrigger(hour=22, minute=5),  # 22:05 UTC = 3:35 AM IST
+            id=job_id,
+            name="Proactive TOTP token refresh (3:35 AM IST)",
+            replace_existing=True,
+        )
+        logger.info("Scheduled proactive TOTP token refresh at 22:05 UTC (3:35 AM IST)")
+
+    async def _refresh_all_totp_tokens(self):
+        """Refresh Upstox tokens for all users with TOTP credentials."""
+        from database.models import User as DBUser
+        from database.session import get_db_session
+
+        logger.info("Proactive TOTP refresh: starting for all eligible users")
+
+        try:
+            async with get_db_session() as session:
+                result = await session.execute(
+                    select(DBUser.id).where(
+                        DBUser.upstox_mobile.isnot(None),
+                        DBUser.upstox_totp_secret.isnot(None),
+                    )
+                )
+                user_ids = [row[0] for row in result.all()]
+
+            if not user_ids:
+                logger.info("Proactive TOTP refresh: no users with TOTP credentials")
+                return
+
+            logger.info("Proactive TOTP refresh: found %d eligible users", len(user_ids))
+
+            from api.upstox_oauth import auto_refresh_upstox_token
+
+            for uid in user_ids:
+                try:
+                    token = await auto_refresh_upstox_token(uid)
+                    if token:
+                        logger.info("Proactive TOTP refresh: SUCCESS for user %d", uid)
+                    else:
+                        logger.warning("Proactive TOTP refresh: FAILED for user %d (returned None)", uid)
+                except Exception as e:
+                    logger.error("Proactive TOTP refresh: exception for user %d: %s", uid, e)
+
+        except Exception as e:
+            logger.exception("Proactive TOTP refresh: fatal error: %s", e)
 
     def get_scheduled_jobs(self) -> list:
         """Get all scheduled jobs for debugging/monitoring"""

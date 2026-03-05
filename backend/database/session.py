@@ -26,6 +26,7 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
+    pool_pre_ping=True,
     connect_args=connect_args
 )
 
