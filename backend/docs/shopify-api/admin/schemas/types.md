@@ -1,1 +1,0 @@
-I've retrieved a list of GraphQL types from the Shopify Admin API. Do you want to explore any specific types or perform other operations?
