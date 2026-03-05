@@ -620,40 +620,9 @@ def _get_perplexity_key() -> str | None:
     return os.environ.get("PERPLEXITY_API_KEY") or os.environ.get("PPLX_API_KEY")
 
 
-def fetch_news_context(
-    top_symbols: list[str],
-    nifty_pct: float,
-    verbose: bool = False,
-) -> dict | None:
-    """Query Perplexity Sonar for market news relevant to today's top movers.
-
-    Returns dict with keys: market_context, stock_news, catalysts
-    or None if API unavailable.
-    """
-    api_key = _get_perplexity_key()
-    if not api_key:
-        if verbose:
-            print("  Skipping news: no PERPLEXITY_API_KEY or PPLX_API_KEY set", file=sys.stderr)
-        return None
-
-    symbols_str = ", ".join(top_symbols[:5])
-    market_dir = "up" if nifty_pct > 0 else "down" if nifty_pct < 0 else "flat"
-
-    prompt = f"""Today the Indian stock market (Nifty 50) is {market_dir} {abs(nifty_pct):.1f}%.
-
-The top momentum stocks this morning are: {symbols_str}
-
-In 3-5 concise bullet points, provide:
-1. Key market-moving news for Indian markets today (global cues, RBI, macro, geopolitics)
-2. Any specific news or catalysts for these stocks: {symbols_str}
-3. Sector themes driving today's action
-
-Be specific and factual. Focus only on today's and last night's developments. No generic advice."""
-
+def _sonar_query(api_key: str, system_prompt: str, user_prompt: str) -> dict | None:
+    """Make a single Sonar API call. Returns {content, citations} or None."""
     try:
-        if verbose:
-            print("Phase 3: Fetching market news context...", file=sys.stderr)
-
         response = requests.post(
             "https://api.perplexity.ai/chat/completions",
             headers={
@@ -663,35 +632,101 @@ Be specific and factual. Focus only on today's and last night's developments. No
             json={
                 "model": "sonar",
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a concise Indian stock market analyst. "
-                        "Provide brief, factual news context. No disclaimers or investment advice.",
-                    },
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
             },
-            timeout=15,
+            timeout=20,
         )
         response.raise_for_status()
         result = response.json()
-
         content = ""
         citations = []
         if "choices" in result and result["choices"]:
             content = result["choices"][0].get("message", {}).get("content", "")
         if "citations" in result:
             citations = result["citations"]
-
-        if verbose:
-            print("  News context fetched.", file=sys.stderr)
-
         return {"content": content, "citations": citations}
-
-    except Exception as e:
-        if verbose:
-            print(f"  News fetch failed: {e}", file=sys.stderr)
+    except Exception:
         return None
+
+
+def fetch_news_context(
+    top_symbols: list[str],
+    nifty_pct: float,
+    verbose: bool = False,
+) -> dict | None:
+    """Query Perplexity Sonar for market overview + per-stock news.
+
+    Uses the financial_news_tracker prompt pattern for structured,
+    high-quality analysis per stock.
+
+    Returns dict with keys: market_overview, stock_reports[]
+    or None if API unavailable.
+    """
+    api_key = _get_perplexity_key()
+    if not api_key:
+        if verbose:
+            print("  Skipping news: no PERPLEXITY_API_KEY or PPLX_API_KEY set", file=sys.stderr)
+        return None
+
+    if verbose:
+        print("Phase 3: Fetching market news context...", file=sys.stderr)
+
+    system_prompt = (
+        "You are a professional financial analyst with expertise in Indian stock markets. "
+        "Your task is to provide comprehensive financial news updates and market analysis. "
+        "Focus on accuracy, relevance, and actionable insights. Always cite recent sources "
+        "and provide balanced analysis."
+    )
+
+    # Query 1: Market overview
+    market_dir = "up" if nifty_pct > 0 else "down" if nifty_pct < 0 else "flat"
+    market_prompt = f"""Provide a comprehensive market update for Indian stock markets (NSE/BSE) today.
+Nifty 50 is currently {market_dir} {abs(nifty_pct):.1f}%.
+
+Please include:
+1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW)
+2. Overall market sentiment (BULLISH/BEARISH/NEUTRAL) and analysis
+3. Key market drivers and risks
+4. Sector themes driving today's action
+5. Global cues (US markets, Asia, crude oil, dollar/rupee)
+
+Focus on the most significant developments from last night and this morning."""
+
+    if verbose:
+        print("  Fetching market overview...", file=sys.stderr)
+    market_result = _sonar_query(api_key, system_prompt, market_prompt)
+
+    # Query 2+: Per-stock analysis for top 3 candidates
+    stock_reports = []
+    symbols_to_query = top_symbols[:3]
+    for sym in symbols_to_query:
+        if verbose:
+            print(f"  Fetching news for {sym}...", file=sys.stderr)
+
+        stock_prompt = f"""Provide a comprehensive financial news update and analysis for NSE:{sym} today.
+
+Please include:
+1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW)
+2. Overall market sentiment and analysis for this stock
+3. Key drivers: any catalysts, order wins, earnings, sector tailwinds
+4. Risks or concerns
+5. Key price levels, valuation context, and institutional activity
+
+Focus on the most significant and recent developments from the last 24 hours."""
+
+        result = _sonar_query(api_key, system_prompt, stock_prompt)
+        if result:
+            stock_reports.append({"symbol": sym, **result})
+
+    if verbose:
+        print(f"  News context fetched ({1 + len(stock_reports)} queries).", file=sys.stderr)
+
+    return {
+        "market_overview": market_result,
+        "stock_reports": stock_reports,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -717,9 +752,19 @@ def format_json_output(
     }
 
     if news:
-        output["news"] = news.get("content", "")
-        if news.get("citations"):
-            output["news_citations"] = news["citations"]
+        if news.get("market_overview"):
+            output["market_news"] = news["market_overview"].get("content", "")
+            if news["market_overview"].get("citations"):
+                output["market_news_citations"] = news["market_overview"]["citations"]
+        if news.get("stock_reports"):
+            output["stock_news"] = [
+                {
+                    "symbol": sr["symbol"],
+                    "analysis": sr.get("content", ""),
+                    "citations": sr.get("citations", []),
+                }
+                for sr in news["stock_reports"]
+            ]
 
     for r in results:
         q = r["quote"]
@@ -822,19 +867,36 @@ def format_human_output(
     print(f"  * = basic volume expansion (RVOL-T unavailable)")
 
     # News context
-    if news and news.get("content"):
-        print()
-        print(f"  {'=' * 65}")
-        print(f"  Market News Context")
-        print(f"  {'=' * 65}")
-        # Indent each line of the news content
-        for line in news["content"].strip().split("\n"):
-            print(f"  {line}")
-        if news.get("citations"):
+    if news:
+        # Market overview
+        overview = news.get("market_overview")
+        if overview and overview.get("content"):
             print()
-            print(f"  Sources:")
-            for i, cite in enumerate(news["citations"][:5], 1):
-                print(f"    [{i}] {cite}")
+            print(f"  {'=' * 65}")
+            print(f"  Market Overview")
+            print(f"  {'=' * 65}")
+            for line in overview["content"].strip().split("\n"):
+                print(f"  {line}")
+            if overview.get("citations"):
+                print()
+                print(f"  Sources:")
+                for i, cite in enumerate(overview["citations"][:5], 1):
+                    print(f"    [{i}] {cite}")
+
+        # Per-stock reports
+        for sr in news.get("stock_reports", []):
+            if sr.get("content"):
+                print()
+                print(f"  {'-' * 65}")
+                print(f"  {sr['symbol']} — News & Analysis")
+                print(f"  {'-' * 65}")
+                for line in sr["content"].strip().split("\n"):
+                    print(f"  {line}")
+                if sr.get("citations"):
+                    print()
+                    print(f"  Sources:")
+                    for i, cite in enumerate(sr["citations"][:5], 1):
+                        print(f"    [{i}] {cite}")
 
     print()
     print(f"  Scan completed in {elapsed:.1f}s")
