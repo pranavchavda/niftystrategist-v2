@@ -39,23 +39,40 @@ def show_brokerage(symbol: str, quantity: int, side: str, product: str,
     print(f"  Product: {'Delivery' if product == 'D' else 'Intraday'}")
     print(f"  Trade Value: {format_inr(trade_value)}")
 
-    # Total brokerage
-    total = result.get("total")
-    brokerage = result.get("brokerage")
+    # Navigate nested charges structure (API returns {charges: {total, brokerage, taxes, ...}})
+    charges = result.get("charges", result)  # May be nested or flat
+    if isinstance(charges, dict) and "total" in charges:
+        data = charges
+    else:
+        data = result
+
+    brokerage = data.get("brokerage")
+    total = data.get("total")
+
     if brokerage is not None:
         print(f"\n  Brokerage:            {format_inr(brokerage)}")
 
-    # Charges breakdown
-    charges = result.get("charges", {})
-    if charges and isinstance(charges, dict):
-        for label, value in charges.items():
+    # Taxes
+    taxes = data.get("taxes", {})
+    if taxes and isinstance(taxes, dict):
+        for label, value in taxes.items():
+            if value is not None:
+                display = label.replace("_", " ").upper()
+                print(f"  {display:<24}{format_inr(value)}")
+
+    # Other charges
+    other = data.get("other_taxes", {}) or data.get("other_charges", {})
+    if other and isinstance(other, dict):
+        for label, value in other.items():
             if value is not None:
                 display = label.replace("_", " ").title()
                 print(f"  {display:<24}{format_inr(value)}")
 
-    dp = result.get("dp_charges")
-    if dp is not None:
-        print(f"  DP Charges:           {format_inr(dp)}")
+    # DP plan
+    dp_plan = data.get("dp_plan", {})
+    if isinstance(dp_plan, dict) and dp_plan.get("name"):
+        dp_label = f"DP ({dp_plan['name']})"
+        print(f"  {dp_label:<24}{format_inr(dp_plan.get('min_expense', 0))}")
 
     if total is not None:
         print(f"\n  ── Total Charges:     {format_inr(total)}")

@@ -107,26 +107,32 @@ def show_charges(segment: str, from_date: str, to_date: str,
 
     print(f"💸 Trade P&L & Charges ({segment})\n")
 
-    # Print whatever structure we got back
-    if isinstance(result, dict):
-        breakdown = result.get("charges_breakdown")
-        if breakdown:
-            print("  Charges Breakdown:")
-            if isinstance(breakdown, dict):
-                for k, v in breakdown.items():
-                    print(f"    {k:<25} {format_inr(v) if isinstance(v, (int, float)) else v}")
-            else:
-                print(f"    {breakdown}")
-
-        total = result.get("total")
-        if total is not None:
-            print(f"\n  Total Charges: {format_inr(total)}")
-
-        trades = result.get("trades", [])
-        if trades:
-            print(f"\n  Trades: {len(trades)} entries")
-    else:
+    if not isinstance(result, dict):
         print(f"  {result}")
+        return
+
+    breakdown = result.get("charges_breakdown", result)
+    if not isinstance(breakdown, dict):
+        print(f"  {result}")
+        return
+
+    total = breakdown.get("total")
+    brokerage = breakdown.get("brokerage")
+
+    if brokerage is not None:
+        print(f"  Brokerage:              {format_inr(brokerage)}")
+
+    # Flatten nested dicts (taxes, charges)
+    for section_key in ("taxes", "charges"):
+        section = breakdown.get(section_key, {})
+        if isinstance(section, dict):
+            for k, v in section.items():
+                if v is not None and isinstance(v, (int, float)):
+                    label = k.replace("_", " ").title()
+                    print(f"  {label:<25} {format_inr(v)}")
+
+    if total is not None:
+        print(f"\n  ── Total Charges:       {format_inr(total)}")
 
 
 def main():

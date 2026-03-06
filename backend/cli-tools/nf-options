@@ -312,8 +312,12 @@ def show_greeks(symbol: str, expiry: str, strikes: list = None,
     for ts, data in cache.items():
         if data["name"] != symbol_upper:
             continue
-        if expiry and expiry.upper() not in ts:
-            continue
+        if expiry:
+            # Match against both tradingsymbol and the expiry field (YYYY-MM-DD)
+            expiry_up = expiry.upper()
+            cache_expiry = data.get("expiry", "")
+            if expiry_up not in ts and cache_expiry != expiry and expiry_up not in cache_expiry:
+                continue
         if option_type and data["option_type"] != option_type.upper():
             continue
         if strikes and data["strike"] not in strikes:
@@ -364,14 +368,15 @@ def show_greeks(symbol: str, expiry: str, strikes: list = None,
 
     for strike, otype, gdata, info in rows:
         ltp = gdata.get("last_price") or 0
-        iv = gdata.get("iv") or 0
+        iv_raw = gdata.get("iv") or 0
+        iv_pct = iv_raw * 100 if iv_raw < 1 else iv_raw  # API returns decimal (0.20 = 20%)
         delta = gdata.get("delta") or 0
         gamma = gdata.get("gamma") or 0
         theta = gdata.get("theta") or 0
         vega = gdata.get("vega") or 0
         oi = gdata.get("oi") or 0
         print(
-            f"{strike:>8.0f} {otype:<4} {format_inr(ltp):>10} {iv:>7.2f}% "
+            f"{strike:>8.0f} {otype:<4} {format_inr(ltp):>10} {iv_pct:>6.1f}% "
             f"{delta:>+8.4f} {gamma:>8.4f} {theta:>+8.2f} {vega:>8.2f} {oi:>10,.0f}"
         )
 

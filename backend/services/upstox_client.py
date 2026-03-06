@@ -1220,7 +1220,7 @@ class UpstoxClient:
                     "average_price": getattr(t, "average_price", 0),
                     "product": getattr(t, "product", None),
                     "order_type": getattr(t, "order_type", None),
-                    "trade_timestamp": str(getattr(t, "fill_timestamp", None) or getattr(t, "trade_timestamp", "") or ""),
+                    "trade_timestamp": str(getattr(t, "exchange_timestamp", None) or getattr(t, "order_timestamp", None) or ""),
                 })
             return trades
 
@@ -1254,30 +1254,31 @@ class UpstoxClient:
 
         try:
             api_client = upstox_client.ApiClient(self._configuration)
-            charge_api = upstox_client.ChargeApi(api_client)
-            response = charge_api.get_historical_trades(
-                segment=segment,
+            post_trade_api = upstox_client.PostTradeApi(api_client)
+            response = post_trade_api.get_trades_by_date_range(
                 start_date=start_date,
                 end_date=end_date,
                 page_number=page,
                 page_size=page_size,
-                api_version="v2",
             )
 
-            data = response.data if response.data else {}
+            data = response.data if response.data else []
             trades = []
-            trade_list = data if isinstance(data, list) else getattr(data, "trades", []) or []
+            trade_list = data if isinstance(data, list) else [data]
             for t in trade_list:
                 if isinstance(t, dict):
                     trades.append(t)
-                else:
+                elif t is not None:
                     trades.append({
                         "trade_id": getattr(t, "trade_id", None),
-                        "symbol": getattr(t, "tradingsymbol", None) or getattr(t, "scrip_name", None),
+                        "order_id": getattr(t, "order_id", None),
+                        "symbol": getattr(t, "tradingsymbol", None) or getattr(t, "trading_symbol", None) or getattr(t, "scrip_name", None),
+                        "exchange": getattr(t, "exchange", None),
                         "transaction_type": getattr(t, "transaction_type", None) or getattr(t, "trade_type", None),
                         "quantity": getattr(t, "quantity", 0),
-                        "price": getattr(t, "price", 0) or getattr(t, "trade_price", 0),
-                        "trade_date": str(getattr(t, "trade_date", "") or ""),
+                        "price": getattr(t, "average_price", 0) or getattr(t, "price", 0) or getattr(t, "trade_price", 0),
+                        "product": getattr(t, "product", None),
+                        "trade_date": str(getattr(t, "exchange_timestamp", None) or getattr(t, "order_timestamp", None) or ""),
                     })
             return {"trades": trades, "segment": segment, "start_date": start_date, "end_date": end_date}
 
@@ -1314,24 +1315,24 @@ class UpstoxClient:
 
         try:
             api_client = upstox_client.ApiClient(self._configuration)
-            charge_api = upstox_client.ChargeApi(api_client)
-            response = charge_api.get_trade_charges(
+            pnl_api = upstox_client.TradeProfitAndLossApi(api_client)
+            response = pnl_api.get_profit_and_loss_charges(
                 segment=segment,
                 financial_year=financial_year,
-                from_date=from_date,
-                to_date=to_date,
                 api_version="v2",
             )
 
             data = response.data if response.data else {}
             if isinstance(data, dict):
                 return data
-            # SDK object — extract relevant fields
-            return {
-                "charges_breakdown": getattr(data, "charges_breakdown", None),
-                "total": getattr(data, "total", None),
-                "trades": getattr(data, "trades", []),
-            }
+            # SDK object — try to_dict()
+            try:
+                return data.to_dict() if hasattr(data, "to_dict") else {"raw": str(data)}
+            except Exception:
+                return {
+                    "charges_breakdown": getattr(data, "charges_breakdown", None),
+                    "total": getattr(data, "total", None),
+                }
 
         except ApiException as e:
             raise ValueError(f"Failed to fetch trade charges: {e.status} - {e.reason}. {e.body}")
@@ -1378,23 +1379,39 @@ class UpstoxClient:
             data = response.data if response.data else {}
             if isinstance(data, dict):
                 return {"symbol": symbol, "quantity": quantity, "price": price, **data}
-            # SDK object
-            return {
-                "symbol": symbol,
-                "quantity": quantity,
-                "price": price,
-                "total": getattr(data, "total", None),
-                "brokerage": getattr(data, "brokerage", None),
-                "charges": {
-                    "gst": getattr(data, "gst", None) or getattr(data, "taxes", {}).get("gst") if hasattr(data, "taxes") else None,
-                    "stt": getattr(data, "stt", None),
-                    "stamp_duty": getattr(data, "stamp_duty", None),
-                    "transaction_charges": getattr(data, "transaction_charges", None),
-                    "sebi_turnover": getattr(data, "sebi_turnover", None),
-                    "clearing_charges": getattr(data, "clearing_charges", None),
-                },
-                "dp_charges": getattr(data, "dp_charges", None),
-            }
+
+            # SDK BrokerageWrapperData: data.charges is a dict with nested structure
+            charges_raw = getattr(data, "charges", None)
+            if isinstance(charges_raw, dict):
+                taxes = charges_raw.get("taxes", {}) or {}
+                other = charges_raw.get("other_taxes", {}) or {}
+                dp_plan = charges_raw.get("dp_plan", {}) or {}
+                return {
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "price": price,
+                    "total": charges_raw.get("total"),
+                    "brokerage": charges_raw.get("brokerage"),
+                    "taxes": {
+                        "gst": taxes.get("gst"),
+                        "stt": taxes.get("stt"),
+                        "stamp_duty": taxes.get("stamp_duty"),
+                    },
+                    "other_charges": {
+                        "transaction": other.get("transaction"),
+                        "clearing": other.get("clearing"),
+                        "sebi_turnover": other.get("sebi_turnover"),
+                    },
+                    "dp_plan": dp_plan.get("name"),
+                    "dp_min_expense": dp_plan.get("min_expense"),
+                }
+
+            # Fallback: try to_dict()
+            try:
+                raw = data.to_dict() if hasattr(data, "to_dict") else {"raw": str(data)}
+                return {"symbol": symbol, "quantity": quantity, "price": price, **raw}
+            except Exception:
+                return {"symbol": symbol, "quantity": quantity, "price": price}
 
         except ApiException as e:
             raise ValueError(f"Failed to fetch brokerage: {e.status} - {e.reason}. {e.body}")
@@ -1431,20 +1448,20 @@ class UpstoxClient:
             results = {}
             if response.data:
                 for key, data in (response.data.items() if isinstance(response.data, dict) else [(k, v) for k, v in getattr(response.data, 'items', lambda: [])()]):
-                    if isinstance(data, dict):
-                        results[key] = data
-                    else:
-                        results[key] = {
-                            "instrument_token": getattr(data, "instrument_token", None),
-                            "last_price": getattr(data, "last_price", None),
-                            "volume": getattr(data, "volume", None),
-                            "oi": getattr(data, "oi", None),
-                            "iv": getattr(data, "iv", None),
-                            "delta": getattr(data, "delta", None),
-                            "gamma": getattr(data, "gamma", None),
-                            "theta": getattr(data, "theta", None),
-                            "vega": getattr(data, "vega", None),
-                        }
+                    parsed = {
+                        "instrument_token": getattr(data, "instrument_token", None) if not isinstance(data, dict) else data.get("instrument_token"),
+                        "last_price": getattr(data, "last_price", None) if not isinstance(data, dict) else data.get("last_price"),
+                        "volume": getattr(data, "volume", None) if not isinstance(data, dict) else data.get("volume"),
+                        "oi": getattr(data, "oi", None) if not isinstance(data, dict) else data.get("oi"),
+                        "iv": getattr(data, "iv", None) if not isinstance(data, dict) else data.get("iv"),
+                        "delta": getattr(data, "delta", None) if not isinstance(data, dict) else data.get("delta"),
+                        "gamma": getattr(data, "gamma", None) if not isinstance(data, dict) else data.get("gamma"),
+                        "theta": getattr(data, "theta", None) if not isinstance(data, dict) else data.get("theta"),
+                        "vega": getattr(data, "vega", None) if not isinstance(data, dict) else data.get("vega"),
+                    }
+                    # Use instrument_token (pipe format) as key to match input keys
+                    result_key = parsed.get("instrument_token") or key
+                    results[result_key] = parsed
             return results
 
         except ApiException as e:
