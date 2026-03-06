@@ -3,6 +3,16 @@
  * Will be replaced with real API calls in Phase 2+
  */
 
+export interface PositionCharges {
+  total: number;
+  costPct: number;
+  brokerage: number;
+  stt: number;
+  gst: number;
+  stampDuty: number;
+  other: number;
+}
+
 export interface Position {
   symbol: string;
   company: string;
@@ -16,6 +26,7 @@ export interface Position {
   holdDays: number | null;
   stopLoss?: number;
   target?: number;
+  charges?: PositionCharges;
 }
 
 export interface WatchlistItem {
@@ -62,6 +73,7 @@ export interface MarketIndex {
 
 export interface DailyScorecard {
   trades: number;
+  roundTrips?: number;
   won: number;
   lost: number;
   winRate: number;
@@ -72,6 +84,41 @@ export interface DailyScorecard {
   profitFactor: number;
   streak: number;
   streakType: 'win' | 'loss' | 'neutral';
+  totalBuyValue?: number;
+  totalSellValue?: number;
+  netPnl?: number;
+}
+
+export interface FundsSegment {
+  available_margin: number;
+  used_margin: number;
+  payin: number;
+  span?: number;
+  exposure?: number;
+  notional_cash?: number;
+  adhoc?: number;
+}
+
+export interface FundsData {
+  equity?: FundsSegment;
+  commodity?: FundsSegment;
+}
+
+export interface LiveTrade {
+  trade_id: string;
+  order_id: string;
+  symbol: string;
+  exchange: string;
+  transaction_type: 'BUY' | 'SELL';
+  quantity: number;
+  average_price: number;
+  product: string;
+  trade_timestamp: string;
+}
+
+export interface TradesData {
+  trades: LiveTrade[];
+  count: number;
 }
 
 // --- Mock Data ---

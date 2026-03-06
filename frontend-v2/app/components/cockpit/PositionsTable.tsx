@@ -7,7 +7,7 @@ import {
   ChevronRightIcon,
 } from 'lucide-react';
 import { Badge } from '../catalyst/badge';
-import type { Position } from './mock-data';
+import type { Position, TradesData, LiveTrade } from './mock-data';
 
 const fmt = (n: number) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n);
@@ -18,15 +18,16 @@ const fmtDecimal = (n: number) =>
 interface PositionsTableProps {
   positions: Position[];
   holdings: Position[];
+  trades: TradesData | null;
   onSymbolSelect: (symbol: string) => void;
   onAskAI: (symbol: string, context: object) => void;
 }
 
-type Tab = 'positions' | 'holdings';
+type Tab = 'positions' | 'holdings' | 'trades';
 type SortKey = 'symbol' | 'pnl' | 'pnlPct' | 'dayChangePct' | 'holdDays';
 type SortDir = 'asc' | 'desc';
 
-export default function PositionsTable({ positions, holdings, onSymbolSelect, onAskAI }: PositionsTableProps) {
+export default function PositionsTable({ positions, holdings, trades, onSymbolSelect, onAskAI }: PositionsTableProps) {
   const [activeTab, setActiveTab] = useState<Tab>('positions');
   const [sortKey, setSortKey] = useState<SortKey>('pnlPct');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -84,149 +85,230 @@ export default function PositionsTable({ positions, holdings, onSymbolSelect, on
           >
             Holdings ({holdings.length})
           </button>
+          {trades && trades.count > 0 && (
+            <button
+              onClick={() => setActiveTab('trades')}
+              className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
+                activeTab === 'trades'
+                  ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                  : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              Trades ({trades.count})
+            </button>
+          )}
         </div>
 
         {/* Summary */}
-        <div className="flex items-center gap-4 text-xs">
-          <span className="hidden lg:inline text-zinc-500">Invested: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(totalInvested)}</span></span>
-          <span className="hidden lg:inline text-zinc-500">Current: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(totalCurrent)}</span></span>
-          <span className={`font-bold tabular-nums ${totalPnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-            {totalPnl >= 0 ? '+' : ''}{fmt(totalPnl)} ({totalPnl >= 0 ? '+' : ''}{totalPnlPct.toFixed(2)}%)
-          </span>
-        </div>
+        {activeTab !== 'trades' && (
+          <div className="flex items-center gap-4 text-xs">
+            <span className="hidden lg:inline text-zinc-500">Invested: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(totalInvested)}</span></span>
+            <span className="hidden lg:inline text-zinc-500">Current: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(totalCurrent)}</span></span>
+            <span className={`font-bold tabular-nums ${totalPnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+              {totalPnl >= 0 ? '+' : ''}{fmt(totalPnl)} ({totalPnl >= 0 ? '+' : ''}{totalPnlPct.toFixed(2)}%)
+            </span>
+          </div>
+        )}
+        {activeTab === 'trades' && trades && (
+          <div className="flex items-center gap-4 text-xs text-zinc-500">
+            <span>Buy: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(trades.trades.filter(t => t.transaction_type === 'BUY').reduce((s, t) => s + t.average_price * t.quantity, 0))}</span></span>
+            <span>Sell: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(trades.trades.filter(t => t.transaction_type === 'SELL').reduce((s, t) => s + t.average_price * t.quantity, 0))}</span></span>
+          </div>
+        )}
       </div>
 
       {/* Table */}
       <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
-        {sorted.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-zinc-400">
-            <p className="text-sm">No {activeTab === 'positions' ? 'open positions' : 'holdings'}</p>
-            <p className="text-xs mt-1">Start trading to see your {activeTab} here</p>
-          </div>
-        ) : (
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-zinc-50/95 dark:bg-zinc-900/95 backdrop-blur-sm z-10">
-              <tr className="border-b border-zinc-200/50 dark:border-zinc-800/50">
-                <th className="text-left py-2 px-3 font-semibold text-zinc-500 dark:text-zinc-400 w-8"></th>
-                <th className="group text-left py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('symbol')}>
-                  <div className="flex items-center gap-1">Symbol <SortIcon col="symbol" /></div>
-                </th>
-                <th className="hidden lg:table-cell text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Qty</th>
-                <th className="hidden xl:table-cell text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Avg Price</th>
-                <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">LTP</th>
-                <th className="group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('pnl')}>
-                  <div className="flex items-center justify-end gap-1">P&L <SortIcon col="pnl" /></div>
-                </th>
-                <th className="group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('pnlPct')}>
-                  <div className="flex items-center justify-end gap-1">P&L % <SortIcon col="pnlPct" /></div>
-                </th>
-                <th className="hidden xl:table-cell group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('dayChangePct')}>
-                  <div className="flex items-center justify-end gap-1">Day <SortIcon col="dayChangePct" /></div>
-                </th>
-                <th className="hidden xl:table-cell group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('holdDays')}>
-                  <div className="flex items-center justify-end gap-1">Days <SortIcon col="holdDays" /></div>
-                </th>
-                <th className="text-right py-2 px-3 font-semibold text-zinc-500 dark:text-zinc-400">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((pos) => {
-                const isExpanded = expandedRow === pos.symbol;
-                const rowBg = pos.pnl >= 0
-                  ? 'hover:bg-green-50/30 dark:hover:bg-green-950/10'
-                  : 'hover:bg-red-50/30 dark:hover:bg-red-950/10';
+        {activeTab === 'trades' ? (
+          /* Trades Table */
+          !trades || trades.count === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-zinc-400">
+              <p className="text-sm">No trades today</p>
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-zinc-50/95 dark:bg-zinc-900/95 backdrop-blur-sm z-10">
+                <tr className="border-b border-zinc-200/50 dark:border-zinc-800/50">
+                  <th className="text-left py-2 px-3 font-semibold text-zinc-500 dark:text-zinc-400">Time</th>
+                  <th className="text-left py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Symbol</th>
+                  <th className="text-center py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Side</th>
+                  <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Qty</th>
+                  <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Price</th>
+                  <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Value</th>
+                  <th className="hidden lg:table-cell text-left py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Product</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.trades.map((t, i) => {
+                  const ts = t.trade_timestamp || '';
+                  const timeStr = ts.includes('T') ? ts.split('T')[1]?.slice(0, 8) : ts.slice(-8);
+                  const value = t.average_price * t.quantity;
+                  const isBuy = t.transaction_type === 'BUY';
 
-                return (
-                  <React.Fragment key={pos.symbol}>
-                    {/* Main Row */}
-                    <tr className={`group border-b border-zinc-100 dark:border-zinc-800/50 transition-colors ${rowBg}`}>
-                      <td className="py-2.5 px-3 w-8">
-                        <button
-                          onClick={() => setExpandedRow(isExpanded ? null : pos.symbol)}
-                          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
-                        >
-                          <ChevronRightIcon className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-                        </button>
-                      </td>
-                      <td
-                        className="py-2.5 px-2 cursor-pointer"
-                        onClick={() => onSymbolSelect(pos.symbol)}
-                      >
+                  return (
+                    <tr key={`${t.trade_id}-${i}`} className="group border-b border-zinc-100 dark:border-zinc-800/50 transition-colors hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20">
+                      <td className="py-2 px-3 text-zinc-500 tabular-nums">{timeStr}</td>
+                      <td className="py-2 px-2 cursor-pointer" onClick={() => onSymbolSelect(t.symbol)}>
                         <span className="font-bold text-zinc-800 dark:text-zinc-200 hover:text-amber-600 dark:hover:text-amber-400 transition-colors">
-                          {pos.symbol}
+                          {t.symbol}
                         </span>
                       </td>
-                      <td className="hidden lg:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">
-                        {pos.qty}
+                      <td className="py-2 px-2 text-center">
+                        <Badge color={isBuy ? 'green' : 'red'}>{t.transaction_type}</Badge>
                       </td>
-                      <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">
-                        {fmtDecimal(pos.avgPrice)}
-                      </td>
-                      <td className="py-2.5 px-2 text-right font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums">
-                        {fmtDecimal(pos.ltp)}
-                      </td>
-                      <td className={`py-2.5 px-2 text-right font-bold tabular-nums ${pos.pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                        {pos.pnl >= 0 ? '+' : ''}{fmt(pos.pnl)}
-                      </td>
-                      <td className={`py-2.5 px-2 text-right font-semibold tabular-nums ${pos.pnlPct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                        {pos.pnlPct >= 0 ? '+' : ''}{pos.pnlPct.toFixed(2)}%
-                      </td>
-                      <td className={`hidden xl:table-cell py-2.5 px-2 text-right tabular-nums ${pos.dayChangePct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {pos.dayChangePct >= 0 ? '+' : ''}{pos.dayChangePct.toFixed(2)}%
-                      </td>
-                      <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-500 tabular-nums">
-                        {pos.holdDays != null ? `${pos.holdDays}d` : '—'}
-                      </td>
-                      <td className="py-2.5 px-3 text-right">
-                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={() => onAskAI(pos.symbol, { type: 'position', data: pos })}
-                            className="p-1 rounded hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors"
-                            title="Ask AI"
-                          >
-                            <SparklesIcon className="h-3.5 w-3.5 text-amber-600" />
-                          </button>
-                          {activeTab === 'positions' && (
-                            <button
-                              className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
-                              title="Exit Position"
-                            >
-                              <LogOutIcon className="h-3.5 w-3.5 text-red-500" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
+                      <td className="py-2 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">{t.quantity}</td>
+                      <td className="py-2 px-2 text-right text-zinc-800 dark:text-zinc-200 font-semibold tabular-nums">{fmtDecimal(t.average_price)}</td>
+                      <td className="py-2 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">{fmt(value)}</td>
+                      <td className="hidden lg:table-cell py-2 px-2 text-zinc-500">{t.product === 'D' ? 'Delivery' : t.product === 'I' ? 'Intraday' : t.product}</td>
                     </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )
+        ) : (
+          /* Positions / Holdings Table */
+          sorted.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-zinc-400">
+              <p className="text-sm">No {activeTab === 'positions' ? 'open positions' : 'holdings'}</p>
+              <p className="text-xs mt-1">Start trading to see your {activeTab} here</p>
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-zinc-50/95 dark:bg-zinc-900/95 backdrop-blur-sm z-10">
+                <tr className="border-b border-zinc-200/50 dark:border-zinc-800/50">
+                  <th className="text-left py-2 px-3 font-semibold text-zinc-500 dark:text-zinc-400 w-8"></th>
+                  <th className="group text-left py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('symbol')}>
+                    <div className="flex items-center gap-1">Symbol <SortIcon col="symbol" /></div>
+                  </th>
+                  <th className="hidden lg:table-cell text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Qty</th>
+                  <th className="hidden xl:table-cell text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Avg Price</th>
+                  <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">LTP</th>
+                  <th className="group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('pnl')}>
+                    <div className="flex items-center justify-end gap-1">P&L <SortIcon col="pnl" /></div>
+                  </th>
+                  <th className="group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('pnlPct')}>
+                    <div className="flex items-center justify-end gap-1">P&L % <SortIcon col="pnlPct" /></div>
+                  </th>
+                  <th className="hidden xl:table-cell group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('dayChangePct')}>
+                    <div className="flex items-center justify-end gap-1">Day <SortIcon col="dayChangePct" /></div>
+                  </th>
+                  <th className="hidden xl:table-cell group text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400 cursor-pointer select-none" onClick={() => toggleSort('holdDays')}>
+                    <div className="flex items-center justify-end gap-1">Days <SortIcon col="holdDays" /></div>
+                  </th>
+                  <th className="text-right py-2 px-3 font-semibold text-zinc-500 dark:text-zinc-400">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((pos) => {
+                  const isExpanded = expandedRow === pos.symbol;
+                  const rowBg = pos.pnl >= 0
+                    ? 'hover:bg-green-50/30 dark:hover:bg-green-950/10'
+                    : 'hover:bg-red-50/30 dark:hover:bg-red-950/10';
 
-                    {/* Expanded Detail */}
-                    {isExpanded && (
-                      <tr>
-                        <td colSpan={10} className="px-8 py-2.5 bg-zinc-50/50 dark:bg-zinc-800/20 border-b border-zinc-200/50 dark:border-zinc-800/50 animate-slide-in-bottom">
-                          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px]">
-                            <span className="text-zinc-500">Company: <span className="text-zinc-700 dark:text-zinc-300 font-medium">{pos.company}</span></span>
-                            {pos.stopLoss && (
-                              <span className="text-zinc-500">SL: <span className="text-red-500 font-semibold tabular-nums">{fmtDecimal(pos.stopLoss)}</span></span>
-                            )}
-                            {pos.target && (
-                              <span className="text-zinc-500">Target: <span className="text-green-500 font-semibold tabular-nums">{fmtDecimal(pos.target)}</span></span>
-                            )}
-                            <span className="text-zinc-500">Value: <span className="text-zinc-700 dark:text-zinc-300 font-semibold tabular-nums">{fmt(pos.ltp * pos.qty)}</span></span>
-                            {pos.stopLoss && (
-                              <span className="text-zinc-500">
-                                Risk: <Badge color={Math.abs((pos.ltp - pos.stopLoss) / pos.ltp * 100) < 2 ? 'red' : 'amber'}>
-                                  {((pos.ltp - pos.stopLoss) / pos.ltp * 100).toFixed(1)}% to SL
-                                </Badge>
-                              </span>
+                  return (
+                    <React.Fragment key={pos.symbol}>
+                      <tr className={`group border-b border-zinc-100 dark:border-zinc-800/50 transition-colors ${rowBg}`}>
+                        <td className="py-2.5 px-3 w-8">
+                          <button
+                            onClick={() => setExpandedRow(isExpanded ? null : pos.symbol)}
+                            className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                          >
+                            <ChevronRightIcon className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                          </button>
+                        </td>
+                        <td
+                          className="py-2.5 px-2 cursor-pointer"
+                          onClick={() => onSymbolSelect(pos.symbol)}
+                        >
+                          <span className="font-bold text-zinc-800 dark:text-zinc-200 hover:text-amber-600 dark:hover:text-amber-400 transition-colors">
+                            {pos.symbol}
+                          </span>
+                        </td>
+                        <td className="hidden lg:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">
+                          {pos.qty}
+                        </td>
+                        <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">
+                          {fmtDecimal(pos.avgPrice)}
+                        </td>
+                        <td className="py-2.5 px-2 text-right font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums">
+                          {fmtDecimal(pos.ltp)}
+                        </td>
+                        <td className={`py-2.5 px-2 text-right font-bold tabular-nums ${pos.pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {pos.pnl >= 0 ? '+' : ''}{fmt(pos.pnl)}
+                        </td>
+                        <td className={`py-2.5 px-2 text-right font-semibold tabular-nums ${pos.pnlPct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {pos.pnlPct >= 0 ? '+' : ''}{pos.pnlPct.toFixed(2)}%
+                        </td>
+                        <td className={`hidden xl:table-cell py-2.5 px-2 text-right tabular-nums ${pos.dayChangePct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {pos.dayChangePct >= 0 ? '+' : ''}{pos.dayChangePct.toFixed(2)}%
+                        </td>
+                        <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-500 tabular-nums">
+                          {pos.holdDays != null ? `${pos.holdDays}d` : '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => onAskAI(pos.symbol, { type: 'position', data: pos })}
+                              className="p-1 rounded hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors"
+                              title="Ask AI"
+                            >
+                              <SparklesIcon className="h-3.5 w-3.5 text-amber-600" />
+                            </button>
+                            {activeTab === 'positions' && (
+                              <button
+                                className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
+                                title="Exit Position"
+                              >
+                                <LogOutIcon className="h-3.5 w-3.5 text-red-500" />
+                              </button>
                             )}
                           </div>
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={10} className="px-8 py-2.5 bg-zinc-50/50 dark:bg-zinc-800/20 border-b border-zinc-200/50 dark:border-zinc-800/50 animate-slide-in-bottom">
+                            <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px]">
+                              <span className="text-zinc-500">Company: <span className="text-zinc-700 dark:text-zinc-300 font-medium">{pos.company}</span></span>
+                              {pos.stopLoss && (
+                                <span className="text-zinc-500">SL: <span className="text-red-500 font-semibold tabular-nums">{fmtDecimal(pos.stopLoss)}</span></span>
+                              )}
+                              {pos.target && (
+                                <span className="text-zinc-500">Target: <span className="text-green-500 font-semibold tabular-nums">{fmtDecimal(pos.target)}</span></span>
+                              )}
+                              <span className="text-zinc-500">Value: <span className="text-zinc-700 dark:text-zinc-300 font-semibold tabular-nums">{fmt(pos.ltp * pos.qty)}</span></span>
+                              {pos.stopLoss && (
+                                <span className="text-zinc-500">
+                                  Risk: <Badge color={Math.abs((pos.ltp - pos.stopLoss) / pos.ltp * 100) < 2 ? 'red' : 'amber'}>
+                                    {((pos.ltp - pos.stopLoss) / pos.ltp * 100).toFixed(1)}% to SL
+                                  </Badge>
+                                </span>
+                              )}
+                              {pos.charges && (
+                                <span className="text-zinc-500">
+                                  Est. Charges: <span className="text-amber-600 dark:text-amber-400 font-semibold tabular-nums">{fmtDecimal(pos.charges.total)}</span>
+                                  <span className="text-zinc-400 ml-1">({pos.charges.costPct.toFixed(2)}% of value)</span>
+                                </span>
+                              )}
+                              {pos.charges && pos.pnl !== 0 && (
+                                <span className="text-zinc-500">
+                                  Net after charges: <span className={`font-semibold tabular-nums ${(pos.pnl - pos.charges.total) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                    {(pos.pnl - pos.charges.total) >= 0 ? '+' : ''}{fmt(pos.pnl - pos.charges.total)}
+                                  </span>
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          )
         )}
       </div>
     </div>

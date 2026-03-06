@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""View today's executed trades and historical trade P&L."""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import format_inr, init_client, print_error, print_json, run_async  # noqa: E402
+
+
+def show_todays_trades(as_json: bool):
+    """Show all executed trades for today."""
+    client = init_client()
+    try:
+        trades = run_async(client.get_trades_for_day())
+    except Exception as e:
+        print_error(f"Failed to get trades: {e}")
+
+    if as_json:
+        print_json({"trades": trades, "count": len(trades)})
+        return
+
+    mode = "Paper" if client.paper_trading else "Live"
+    print(f"📋 Today's Trades [{mode}]\n")
+
+    if not trades:
+        print("  No trades executed today.")
+        return
+
+    print(f"{'Time':<12} {'Symbol':<14} {'Side':<5} {'Qty':>5} {'Price':>12} {'Product':<5} {'Order ID'}")
+    print("-" * 80)
+    for t in trades:
+        ts = t.get("trade_timestamp", "")
+        # Extract time portion
+        time_str = ts.split("T")[1][:8] if "T" in ts else ts[-8:] if len(ts) > 8 else ts
+        side = t.get("transaction_type", "")
+        emoji = "🟢" if side == "BUY" else "🔴"
+        print(
+            f"{time_str:<12} {t.get('symbol', ''):<14} {emoji}{side:<4} "
+            f"{t.get('quantity', 0):>5} {format_inr(t.get('average_price', 0)):>12} "
+            f"{t.get('product', ''):>5} {t.get('order_id', '')}"
+        )
+
+    # Summary
+    total_buy = sum(t.get("average_price", 0) * t.get("quantity", 0)
+                    for t in trades if t.get("transaction_type") == "BUY")
+    total_sell = sum(t.get("average_price", 0) * t.get("quantity", 0)
+                     for t in trades if t.get("transaction_type") == "SELL")
+    print(f"\n  Total Buy Value:  {format_inr(total_buy)}")
+    print(f"  Total Sell Value: {format_inr(total_sell)}")
+    print(f"  Trade Count:      {len(trades)}")
+
+
+def show_historical(segment: str, start_date: str, end_date: str,
+                    page: int, page_size: int, as_json: bool):
+    """Show historical trades."""
+    client = init_client()
+    try:
+        result = run_async(client.get_historical_trades(
+            segment=segment, start_date=start_date, end_date=end_date,
+            page=page, page_size=page_size,
+        ))
+    except Exception as e:
+        print_error(f"Failed to get historical trades: {e}")
+
+    if as_json:
+        print_json(result)
+        return
+
+    trades = result.get("trades", [])
+    print(f"📜 Historical Trades ({result.get('segment', segment)})")
+    print(f"   Period: {result.get('start_date')} → {result.get('end_date')}\n")
+
+    if not trades:
+        print("  No trades found for this period.")
+        return
+
+    for t in trades:
+        if isinstance(t, dict):
+            sym = t.get("symbol") or t.get("scrip_name", "?")
+            side = t.get("transaction_type") or t.get("trade_type", "?")
+            qty = t.get("quantity", 0)
+            price = t.get("price") or t.get("trade_price", 0)
+            date = t.get("trade_date", "")
+            print(f"  {date}  {sym:<14} {side:<5} {qty:>5} @ {format_inr(price)}")
+
+
+def show_charges(segment: str, from_date: str, to_date: str,
+                 financial_year: str, as_json: bool):
+    """Show trade P&L with charges breakdown."""
+    client = init_client()
+    try:
+        result = run_async(client.get_trade_charges(
+            segment=segment, financial_year=financial_year,
+            from_date=from_date, to_date=to_date,
+        ))
+    except Exception as e:
+        print_error(f"Failed to get trade charges: {e}")
+
+    if as_json:
+        print_json(result)
+        return
+
+    print(f"💸 Trade P&L & Charges ({segment})\n")
+
+    if not isinstance(result, dict):
+        print(f"  {result}")
+        return
+
+    breakdown = result.get("charges_breakdown", result)
+    if not isinstance(breakdown, dict):
+        print(f"  {result}")
+        return
+
+    total = breakdown.get("total")
+    brokerage = breakdown.get("brokerage")
+
+    if brokerage is not None:
+        print(f"  Brokerage:              {format_inr(brokerage)}")
+
+    # Flatten nested dicts (taxes, charges)
+    for section_key in ("taxes", "charges"):
+        section = breakdown.get(section_key, {})
+        if isinstance(section, dict):
+            for k, v in section.items():
+                if v is not None and isinstance(v, (int, float)):
+                    label = k.replace("_", " ").title()
+                    print(f"  {label:<25} {format_inr(v)}")
+
+    if total is not None:
+        print(f"\n  ── Total Charges:       {format_inr(total)}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-trades",
+        description="View today's trades and historical trade P&L",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-trades                                    Today's executed trades
+  nf-trades --json                             JSON output
+  nf-trades history                            Last 30 days EQ trades
+  nf-trades history --segment FO --days 90     F&O trades for 90 days
+  nf-trades charges                            Trade P&L with charges
+  nf-trades charges --segment FO               F&O charges breakdown
+""",
+    )
+
+    sub = parser.add_subparsers(dest="command")
+
+    # Default: today's trades (no subcommand)
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # history subcommand
+    p_hist = sub.add_parser("history", help="Historical trades")
+    p_hist.add_argument("--segment", default="EQ", choices=["EQ", "FO"], help="Segment (default: EQ)")
+    p_hist.add_argument("--start", metavar="YYYY-MM-DD", help="Start date")
+    p_hist.add_argument("--end", metavar="YYYY-MM-DD", help="End date")
+    p_hist.add_argument("--days", type=int, default=30, help="Number of days back (default: 30)")
+    p_hist.add_argument("--page", type=int, default=1, help="Page number")
+    p_hist.add_argument("--page-size", type=int, default=50, help="Results per page")
+    p_hist.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # charges subcommand
+    p_chg = sub.add_parser("charges", help="Trade P&L with charges breakdown")
+    p_chg.add_argument("--segment", default="EQ", choices=["EQ", "FO"], help="Segment (default: EQ)")
+    p_chg.add_argument("--from", dest="from_date", metavar="DD-MM-YYYY", help="From date")
+    p_chg.add_argument("--to", dest="to_date", metavar="DD-MM-YYYY", help="To date")
+    p_chg.add_argument("--fy", metavar="YYYY", help="Financial year (e.g., 2526)")
+    p_chg.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if args.command == "history":
+        from datetime import datetime, timedelta
+        start = args.start or (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
+        end = args.end or datetime.now().strftime("%Y-%m-%d")
+        show_historical(args.segment, start, end, args.page, args.page_size, args.json)
+    elif args.command == "charges":
+        show_charges(args.segment, args.from_date, args.to_date, args.fy, args.json)
+    else:
+        show_todays_trades(args.json)
+
+
+if __name__ == "__main__":
+    main()

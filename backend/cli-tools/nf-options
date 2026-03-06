@@ -2,8 +2,10 @@
 """Options trading tool for Nifty/Bank Nifty F&O.
 
 Supports:
-- Option chain lookup
+- Option chain lookup (from cache or live API)
 - Get option quotes
+- Option greeks (delta, gamma, theta, vega, IV) via Upstox v3 API
+- Live option chain with greeks via Upstox put/call API
 - Place BUY/SELL option orders
 
 NOTE: place and cancel subcommands are HITL-protected — they require
@@ -298,6 +300,134 @@ def show_expiries(symbol: str, as_json: bool = False):
         print(f"  {i}. {exp} ({day_name})")
 
 
+def show_greeks(symbol: str, expiry: str, strikes: list = None,
+                option_type: str = None, as_json: bool = False):
+    """Show option greeks for instruments."""
+    cache = _load_options_cache()
+    symbol_upper = symbol.upper()
+
+    # Find matching instruments
+    instrument_keys = []
+    key_to_info = {}
+    for ts, data in cache.items():
+        if data["name"] != symbol_upper:
+            continue
+        if expiry:
+            # Match against both tradingsymbol and the expiry field (YYYY-MM-DD)
+            expiry_up = expiry.upper()
+            cache_expiry = data.get("expiry", "")
+            if expiry_up not in ts and cache_expiry != expiry and expiry_up not in cache_expiry:
+                continue
+        if option_type and data["option_type"] != option_type.upper():
+            continue
+        if strikes and data["strike"] not in strikes:
+            continue
+        inst_key = data["instrument_key"]
+        if inst_key:
+            instrument_keys.append(inst_key)
+            key_to_info[inst_key] = data
+
+    if not instrument_keys:
+        print_error(f"No options found for {symbol_upper} with given filters")
+
+    # Limit to 50 (API max)
+    if len(instrument_keys) > 50:
+        instrument_keys = instrument_keys[:50]
+
+    client = init_client()
+    try:
+        greeks = run_async(client.get_option_greeks(instrument_keys))
+    except Exception as e:
+        print_error(f"Failed to get option greeks: {e}")
+
+    if as_json:
+        # Merge cache info with greeks
+        result = []
+        for key, gdata in greeks.items():
+            info = key_to_info.get(key, {})
+            result.append({
+                "tradingsymbol": info.get("tradingsymbol", ""),
+                "strike": info.get("strike", 0),
+                "option_type": info.get("option_type", ""),
+                "expiry": info.get("expiry", ""),
+                "lot_size": info.get("lot_size", 0),
+                **gdata,
+            })
+        print_json({"symbol": symbol_upper, "greeks": result})
+        return
+
+    print(f"📊 Option Greeks: {symbol_upper}\n")
+    print(f"{'Strike':>8} {'Type':<4} {'LTP':>10} {'IV':>8} {'Delta':>8} {'Gamma':>8} {'Theta':>8} {'Vega':>8} {'OI':>10}")
+    print("-" * 85)
+
+    rows = []
+    for key, gdata in greeks.items():
+        info = key_to_info.get(key, {})
+        rows.append((info.get("strike", 0), info.get("option_type", ""), gdata, info))
+    rows.sort(key=lambda x: (x[0], x[1]))
+
+    for strike, otype, gdata, info in rows:
+        ltp = gdata.get("last_price") or 0
+        iv_raw = gdata.get("iv") or 0
+        iv_pct = iv_raw * 100 if iv_raw < 1 else iv_raw  # API returns decimal (0.20 = 20%)
+        delta = gdata.get("delta") or 0
+        gamma = gdata.get("gamma") or 0
+        theta = gdata.get("theta") or 0
+        vega = gdata.get("vega") or 0
+        oi = gdata.get("oi") or 0
+        print(
+            f"{strike:>8.0f} {otype:<4} {format_inr(ltp):>10} {iv_pct:>6.1f}% "
+            f"{delta:>+8.4f} {gamma:>8.4f} {theta:>+8.2f} {vega:>8.2f} {oi:>10,.0f}"
+        )
+
+
+def show_live_chain(symbol: str, expiry: str, as_json: bool = False):
+    """Show live option chain with greeks from Upstox API."""
+    client = init_client()
+    try:
+        chain = run_async(client.get_option_chain_live(symbol, expiry))
+    except Exception as e:
+        print_error(f"Failed to get live option chain: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "expiry": expiry, "chain": chain})
+        return
+
+    print(f"📊 Live Option Chain: {symbol.upper()} (Expiry: {expiry})\n")
+
+    spot = chain[0].get("underlying_spot_price") if chain else None
+    if spot:
+        print(f"  Spot: {format_inr(spot)}\n")
+
+    # Header
+    print(f"{'CE IV':>7} {'CE Δ':>7} {'CE LTP':>10} {'CE OI':>10}  {'Strike':>8}  {'PE LTP':>10} {'PE OI':>10} {'PE Δ':>7} {'PE IV':>7}")
+    print("-" * 95)
+
+    for item in chain:
+        strike = item.get("strike_price", 0)
+        call = item.get("call", {}) or {}
+        put = item.get("put", {}) or {}
+
+        c_ltp = call.get("ltp") or 0
+        c_oi = call.get("oi") or 0
+        c_iv = call.get("iv") or 0
+        c_delta = call.get("delta") or 0
+
+        p_ltp = put.get("ltp") or 0
+        p_oi = put.get("oi") or 0
+        p_iv = put.get("iv") or 0
+        p_delta = put.get("delta") or 0
+
+        # Highlight ATM strike
+        marker = " ◄" if spot and abs(strike - spot) < (spot * 0.005) else ""
+
+        print(
+            f"{c_iv:>6.1f}% {c_delta:>+6.3f} {format_inr(c_ltp):>10} {c_oi:>10,.0f}  "
+            f"{strike:>8.0f}{marker}  "
+            f"{format_inr(p_ltp):>10} {p_oi:>10,.0f} {p_delta:>+6.3f} {p_iv:>6.1f}%"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-options",
@@ -305,8 +435,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  nf-options chain NIFTY                          Show NIFTY option chain
+  nf-options chain NIFTY                          Show NIFTY option chain (from cache)
   nf-options chain NIFTY --expiry 17FEB           Show specific expiry
+  nf-options live-chain NIFTY 2026-03-13          Live chain with greeks from API
+  nf-options greeks NIFTY --expiry 17FEB --strikes 25000 25500  Option greeks
+  nf-options greeks NIFTY --expiry 17FEB --type CE  Only call greeks
   nf-options expiries NIFTY                       Show upcoming expiries
   nf-options quote NIFTY 17FEB26 25500 PE         Get option quote
   nf-options buy NIFTY 17FEB26 25500 PE 1         Buy 1 lot (dry-run in paper mode)
@@ -337,6 +470,20 @@ Examples:
     p_quote.add_argument("option_type", choices=["CE", "PE", "ce", "pe"], help="Call (CE) or Put (PE)")
     p_quote.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # greeks
+    p_greeks = sub.add_parser("greeks", help="Option greeks (delta, gamma, theta, vega, IV)")
+    p_greeks.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_greeks.add_argument("--expiry", help="Filter by expiry (e.g., 17FEB, 17FEB26)")
+    p_greeks.add_argument("--strikes", type=float, nargs="+", help="Specific strike prices")
+    p_greeks.add_argument("--type", dest="opt_type", choices=["CE", "PE"], help="Filter by CE or PE")
+    p_greeks.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # live-chain
+    p_live = sub.add_parser("live-chain", help="Live option chain with greeks from API")
+    p_live.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY, or stock symbol)")
+    p_live.add_argument("expiry", help="Expiry date (YYYY-MM-DD format)")
+    p_live.add_argument("--json", action="store_true", help="Output as JSON")
+
     # buy / sell
     for cmd in ("buy", "sell"):
         p = sub.add_parser(cmd, help=f"{cmd.title()} option")
@@ -358,6 +505,10 @@ Examples:
 
     if args.command == "chain":
         show_chain(args.symbol, args.expiry, args.json)
+    elif args.command == "greeks":
+        show_greeks(args.symbol, args.expiry, args.strikes, args.opt_type, args.json)
+    elif args.command == "live-chain":
+        show_live_chain(args.symbol, args.expiry, args.json)
     elif args.command == "expiries":
         show_expiries(args.symbol, args.json)
     elif args.command == "quote":

@@ -100,11 +100,11 @@ async def _get_db() -> AsyncSession:
 # GET /market-status
 # ---------------------------------------------------------------------------
 @router.get("/market-status")
-async def cockpit_market_status():
+async def cockpit_market_status(user: User = Depends(get_current_user)):
     """Return current NSE market status (Upstox API with IST-based fallback)."""
     upstox_status = None
     try:
-        client = _get_upstox_client()
+        client = await _get_client_for_user(user)
         api_result = await client.get_market_status_api()
         if api_result:
             upstox_status = api_result.get("status")
@@ -145,11 +145,53 @@ async def cockpit_portfolio(user: User = Depends(get_current_user)):
 
 
 # ---------------------------------------------------------------------------
+# Trade cost estimation (Upstox standard rates)
+# ---------------------------------------------------------------------------
+def _estimate_charges(sell_value: float, buy_value: float, is_intraday: bool) -> dict:
+    """Estimate trading charges using standard Upstox rate structure.
+
+    Returns estimated total charges and breakdown for a round-trip trade.
+    """
+    turnover = buy_value + sell_value
+
+    # Brokerage: flat Rs 30/order for intraday (Upstox Plus plan), Rs 0 for delivery
+    brokerage = 60.0 if is_intraday else 0.0  # 2 legs (buy + sell)
+
+    # STT: 0.025% on sell side (intraday), 0.1% on sell side (delivery)
+    stt = sell_value * (0.00025 if is_intraday else 0.001)
+
+    # Transaction charges (NSE): ~0.00345% of turnover
+    txn_charges = turnover * 0.0000345
+
+    # GST: 18% on (brokerage + transaction charges)
+    gst = (brokerage + txn_charges) * 0.18
+
+    # SEBI turnover fee: 0.0001% of turnover
+    sebi = turnover * 0.000001
+
+    # Stamp duty: 0.003% of buy value (intraday), 0.015% (delivery)
+    stamp = buy_value * (0.00003 if is_intraday else 0.00015)
+
+    total = brokerage + stt + txn_charges + gst + sebi + stamp
+    cost_pct = (total / turnover * 100) if turnover > 0 else 0
+
+    return {
+        "total": round(total, 2),
+        "costPct": round(cost_pct, 4),
+        "brokerage": round(brokerage, 2),
+        "stt": round(stt, 2),
+        "gst": round(gst, 2),
+        "stampDuty": round(stamp, 2),
+        "other": round(txn_charges + sebi, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /positions
 # ---------------------------------------------------------------------------
 @router.get("/positions")
 async def cockpit_positions(user: User = Depends(get_current_user)):
-    """Return positions and holdings with company names."""
+    """Return positions and holdings with company names and estimated charges."""
     client = await _get_client_for_user(user)
     try:
         portfolio = await client.get_portfolio()
@@ -160,6 +202,9 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
 
         for pos in portfolio.positions:
             company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
+            buy_val = pos.average_price * pos.quantity
+            sell_val = pos.current_price * pos.quantity
+            charges = _estimate_charges(sell_val, buy_val, is_intraday=False)
             holdings.append({
                 "symbol": pos.symbol,
                 "company": company,
@@ -172,10 +217,14 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
                 "dayChangePct": pos.day_change_percentage,
                 "holdDays": None,
                 "product": pos.product or "D",
+                "charges": charges,
             })
 
         for pos in portfolio.intraday_positions:
             company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
+            buy_val = pos.average_price * abs(pos.quantity)
+            sell_val = pos.current_price * abs(pos.quantity)
+            charges = _estimate_charges(sell_val, buy_val, is_intraday=True)
             positions.append({
                 "symbol": pos.symbol,
                 "company": company,
@@ -188,6 +237,7 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
                 "dayChangePct": pos.day_change_percentage,
                 "holdDays": None,
                 "product": "I",
+                "charges": charges,
             })
 
         # In paper mode, all positions are simulated (treat as intraday/positions)
@@ -332,27 +382,11 @@ async def cockpit_chart(
 # GET /scorecard
 # ---------------------------------------------------------------------------
 @router.get("/scorecard")
-async def cockpit_scorecard(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(_get_db),
-):
-    """Return today's trading scorecard."""
+async def cockpit_scorecard(user: User = Depends(get_current_user)):
+    """Return today's trading scorecard from live Upstox trades."""
     try:
-        # Today's date range (UTC, since DB uses naive UTC timestamps)
-        today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
-
-        result = await db.execute(
-            select(Trade)
-            .where(
-                and_(
-                    Trade.user_id == user.id,
-                    Trade.status == "completed",
-                    Trade.executed_at >= today_start,
-                )
-            )
-            .order_by(Trade.executed_at)
-        )
-        trades = result.scalars().all()
+        client = await _get_client_for_user(user)
+        trades = await client.get_trades_for_day()
 
         if not trades:
             return {
@@ -367,40 +401,77 @@ async def cockpit_scorecard(
                 "profitFactor": 0,
                 "streak": 0,
                 "streakType": "neutral",
+                "totalBuyValue": 0,
+                "totalSellValue": 0,
+                "netPnl": 0,
             }
 
-        winners = [t for t in trades if (t.pnl or 0) > 0]
-        losers = [t for t in trades if (t.pnl or 0) < 0]
+        total_buy = sum(
+            t.get("average_price", 0) * t.get("quantity", 0)
+            for t in trades if t.get("transaction_type") == "BUY"
+        )
+        total_sell = sum(
+            t.get("average_price", 0) * t.get("quantity", 0)
+            for t in trades if t.get("transaction_type") == "SELL"
+        )
+
+        # Group by symbol to compute per-symbol P&L from paired BUY/SELL trades
+        from collections import defaultdict
+        symbol_trades = defaultdict(lambda: {"buy_value": 0, "buy_qty": 0, "sell_value": 0, "sell_qty": 0})
+        for t in trades:
+            sym = t.get("symbol", "?")
+            side = t.get("transaction_type", "")
+            qty = t.get("quantity", 0)
+            val = t.get("average_price", 0) * qty
+            if side == "BUY":
+                symbol_trades[sym]["buy_value"] += val
+                symbol_trades[sym]["buy_qty"] += qty
+            elif side == "SELL":
+                symbol_trades[sym]["sell_value"] += val
+                symbol_trades[sym]["sell_qty"] += qty
+
+        # Compute P&L only for symbols with both buy and sell (round-trip trades)
+        pnls = []
+        for sym, data in symbol_trades.items():
+            paired_qty = min(data["buy_qty"], data["sell_qty"])
+            if paired_qty > 0:
+                avg_buy = data["buy_value"] / data["buy_qty"] if data["buy_qty"] else 0
+                avg_sell = data["sell_value"] / data["sell_qty"] if data["sell_qty"] else 0
+                pnl = (avg_sell - avg_buy) * paired_qty
+                pnls.append(pnl)
+
+        winners = [p for p in pnls if p > 0]
+        losers = [p for p in pnls if p < 0]
         won = len(winners)
         lost = len(losers)
-        total = len(trades)
+        total_round_trips = won + lost + len([p for p in pnls if p == 0])
 
-        avg_winner = sum(t.pnl for t in winners) / won if won else 0
-        avg_loser = abs(sum(t.pnl for t in losers) / lost) if lost else 0
-        biggest_win = max((t.pnl for t in winners), default=0)
-        biggest_loss = abs(min((t.pnl for t in losers), default=0))
-        total_wins = sum(t.pnl for t in winners)
-        total_losses = abs(sum(t.pnl for t in losers))
-        profit_factor = (total_wins / total_losses) if total_losses > 0 else 0
+        avg_winner = sum(winners) / won if won else 0
+        avg_loser = abs(sum(losers) / lost) if lost else 0
+        biggest_win = max(winners, default=0)
+        biggest_loss = abs(min(losers, default=0))
+        total_wins = sum(winners)
+        total_losses_val = abs(sum(losers))
+        profit_factor = (total_wins / total_losses_val) if total_losses_val > 0 else 0
 
-        # Calculate streak
+        # Streak from pnls list
         streak = 0
         streak_type = "neutral"
-        for t in reversed(trades):
-            pnl = t.pnl or 0
+        for p in reversed(pnls):
             if streak == 0:
-                streak_type = "win" if pnl > 0 else ("loss" if pnl < 0 else "neutral")
+                streak_type = "win" if p > 0 else ("loss" if p < 0 else "neutral")
                 streak = 1
-            elif (streak_type == "win" and pnl > 0) or (streak_type == "loss" and pnl < 0):
+            elif (streak_type == "win" and p > 0) or (streak_type == "loss" and p < 0):
                 streak += 1
             else:
                 break
 
         return {
-            "trades": total,
+            "trades": len(trades),
+            "roundTrips": total_round_trips,
             "won": won,
             "lost": lost,
-            "winRate": round(won / total * 100, 1) if total else 0,
+            "winRate": round(won / total_round_trips * 100, 1) if total_round_trips else 0,
             "avgWinner": round(avg_winner, 2),
             "avgLoser": round(avg_loser, 2),
             "biggestWin": round(biggest_win, 2),
@@ -408,12 +479,45 @@ async def cockpit_scorecard(
             "profitFactor": round(profit_factor, 2),
             "streak": streak,
             "streakType": streak_type,
+            "totalBuyValue": round(total_buy, 2),
+            "totalSellValue": round(total_sell, 2),
+            "netPnl": round(sum(pnls), 2),
         }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error computing scorecard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# GET /funds
+# ---------------------------------------------------------------------------
+@router.get("/funds")
+async def cockpit_funds(user: User = Depends(get_current_user)):
+    """Return funds and margin breakdown from Upstox."""
+    client = await _get_client_for_user(user)
+    try:
+        funds = await client.get_funds_and_margin()
+        return funds
+    except Exception as e:
+        logger.error(f"Error fetching funds: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# GET /trades
+# ---------------------------------------------------------------------------
+@router.get("/trades")
+async def cockpit_trades(user: User = Depends(get_current_user)):
+    """Return today's executed trades from Upstox."""
+    client = await _get_client_for_user(user)
+    try:
+        trades = await client.get_trades_for_day()
+        return {"trades": trades, "count": len(trades)}
+    except Exception as e:
+        logger.error(f"Error fetching trades: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
