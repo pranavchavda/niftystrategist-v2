@@ -5,6 +5,8 @@ import type {
   WatchlistItem,
   MarketIndex,
   DailyScorecard,
+  FundsData,
+  TradesData,
 } from '../components/cockpit/mock-data';
 
 interface MarketStatus {
@@ -25,6 +27,8 @@ export interface CockpitData {
   watchlists: Record<string, WatchlistItem[]>;
   indices: MarketIndex[];
   scorecard: DailyScorecard | null;
+  funds: FundsData | null;
+  trades: TradesData | null;
   marketStatus: MarketStatus | null;
   isLoading: boolean;
   error: string | null;
@@ -49,6 +53,8 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
   const [watchlists, setWatchlists] = useState<Record<string, WatchlistItem[]>>({});
   const [indices, setIndices] = useState<MarketIndex[]>([]);
   const [scorecard, setScorecard] = useState<DailyScorecard | null>(null);
+  const [funds, setFunds] = useState<FundsData | null>(null);
+  const [trades, setTrades] = useState<TradesData | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,15 +68,17 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
 
     // Fetch all endpoints in parallel — each is independent
     const results = await Promise.allSettled([
-      fetch(`${API_BASE}/market-status`).then(r => r.ok ? r.json() : null),
+      fetchJSON(`${API_BASE}/market-status`, authToken),
       fetchJSON(`${API_BASE}/portfolio`, authToken),
       fetchJSON(`${API_BASE}/positions`, authToken),
       fetchJSON(`${API_BASE}/indices`, authToken),
       fetchJSON(`${API_BASE}/watchlist`, authToken),
       fetchJSON(`${API_BASE}/scorecard`, authToken),
+      fetchJSON(`${API_BASE}/funds`, authToken),
+      fetchJSON(`${API_BASE}/trades`, authToken),
     ]);
 
-    // Market status (no auth)
+    // Market status
     if (results[0].status === 'fulfilled' && results[0].value) {
       setMarketStatus(results[0].value);
     }
@@ -101,6 +109,16 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
     // Scorecard
     if (results[5].status === 'fulfilled') {
       setScorecard(results[5].value);
+    }
+
+    // Funds
+    if (results[6].status === 'fulfilled') {
+      setFunds(results[6].value);
+    }
+
+    // Trades
+    if (results[7].status === 'fulfilled') {
+      setTrades(results[7].value);
     }
 
     // Check if all failed
@@ -143,6 +161,8 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
     watchlists,
     indices,
     scorecard,
+    funds,
+    trades,
     marketStatus,
     isLoading,
     error,

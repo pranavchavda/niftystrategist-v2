@@ -144,6 +144,7 @@ const Dashboard = ({ authToken }) => {
       {/* Top Strip - Portfolio Summary */}
       <TopStrip
         portfolio={cockpitData.portfolio}
+        funds={cockpitData.funds}
         marketOpen={marketOpen}
         onRefresh={cockpitData.refresh}
         autoRefresh={autoRefresh}
@@ -269,6 +270,7 @@ const Dashboard = ({ authToken }) => {
             <PositionsTable
               positions={cockpitData.positions}
               holdings={cockpitData.holdings}
+              trades={cockpitData.trades}
               onSymbolSelect={handleSymbolSelect}
               onAskAI={handleAskAI}
             />

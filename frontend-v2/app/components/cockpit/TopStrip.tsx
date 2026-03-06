@@ -8,7 +8,7 @@ import {
   AlertTriangleIcon,
 } from 'lucide-react';
 import { Badge } from '../catalyst/badge';
-import type { PortfolioSummary } from './mock-data';
+import type { PortfolioSummary, FundsData } from './mock-data';
 
 const fmt = (n: number) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n);
@@ -27,6 +27,7 @@ function timeAgo(date: Date | null): string {
 
 interface TopStripProps {
   portfolio: PortfolioSummary | null;
+  funds: FundsData | null;
   marketOpen: boolean;
   onRefresh: () => void;
   autoRefresh?: boolean;
@@ -35,7 +36,7 @@ interface TopStripProps {
   isLoading?: boolean;
 }
 
-export default function TopStrip({ portfolio, marketOpen, onRefresh, autoRefresh, onToggleAutoRefresh, lastUpdated, isLoading }: TopStripProps) {
+export default function TopStrip({ portfolio, funds, marketOpen, onRefresh, autoRefresh, onToggleAutoRefresh, lastUpdated, isLoading }: TopStripProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [agoText, setAgoText] = useState('');
 
@@ -114,12 +115,22 @@ export default function TopStrip({ portfolio, marketOpen, onRefresh, autoRefresh
           </div>
         </div>
 
-        {/* Cash - hidden below lg */}
+        {/* Funds - hidden below lg */}
         <div className="hidden lg:flex items-center gap-2 px-4 border-r border-zinc-200/50 dark:border-zinc-800/50 flex-shrink-0">
           <div className="flex items-baseline gap-1.5">
-            <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 tracking-wide uppercase">Cash</span>
-            <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(portfolio.availableCash)}</span>
+            <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 tracking-wide uppercase">
+              {funds?.equity ? 'Margin' : 'Cash'}
+            </span>
+            <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">
+              {fmt(funds?.equity?.available_margin ?? portfolio.availableCash)}
+            </span>
           </div>
+          {funds?.equity && funds.equity.used_margin > 0 && (
+            <div className="hidden xl:flex items-baseline gap-1.5">
+              <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 uppercase">Used</span>
+              <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 tabular-nums">{fmt(funds.equity.used_margin)}</span>
+            </div>
+          )}
         </div>
       </div>
 

@@ -891,12 +891,22 @@ class UpstoxClient:
                             last_price = getattr(pos, 'last_price', 0) or 0
                             close_price = getattr(pos, 'close_price', 0) or 0
 
-                            if avg_price and last_price:
-                                intra_pnl = (last_price - avg_price) * qty
-                                intra_pnl_pct = ((last_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+                            # Use Upstox's own P&L fields — they handle
+                            # long/short sign correctly. Our manual computation
+                            # was buggy: (last_price - avg_price) * qty inverts
+                            # the sign when qty is negative (short positions).
+                            upstox_pnl = getattr(pos, 'pnl', None)
+                            upstox_realised = getattr(pos, 'realised', 0) or 0
+                            upstox_unrealised = getattr(pos, 'unrealised', 0) or 0
+
+                            if upstox_pnl is not None:
+                                intra_pnl = float(upstox_pnl)
                             else:
-                                intra_pnl = 0.0
-                                intra_pnl_pct = 0.0
+                                # Fallback: compute with abs(qty) to avoid sign bug
+                                intra_pnl = (last_price - avg_price) * abs(qty) if (avg_price and last_price) else 0.0
+
+                            invested = avg_price * abs(qty)
+                            intra_pnl_pct = (intra_pnl / invested * 100) if invested > 0 else 0.0
 
                             if close_price and last_price:
                                 intra_day_chg = last_price - close_price
@@ -904,6 +914,14 @@ class UpstoxClient:
                             else:
                                 intra_day_chg = 0.0
                                 intra_day_chg_pct = 0.0
+
+                            logger.debug(
+                                f"Intraday position {sym}: qty={qty}, avg={avg_price}, "
+                                f"ltp={last_price}, upstox_pnl={upstox_pnl}, "
+                                f"realised={upstox_realised}, unrealised={upstox_unrealised}, "
+                                f"day_buy_qty={getattr(pos, 'day_buy_quantity', '?')}, "
+                                f"day_sell_qty={getattr(pos, 'day_sell_quantity', '?')}"
+                            )
 
                             intraday_positions.append(
                                 PortfolioPosition(
@@ -1220,7 +1238,7 @@ class UpstoxClient:
                     "average_price": getattr(t, "average_price", 0),
                     "product": getattr(t, "product", None),
                     "order_type": getattr(t, "order_type", None),
-                    "trade_timestamp": str(getattr(t, "exchange_timestamp", None) or getattr(t, "order_timestamp", None) or ""),
+                    "trade_timestamp": str(getattr(t, "order_timestamp", None) or getattr(t, "exchange_timestamp", None) or ""),
                 })
             return trades
 
@@ -1316,10 +1334,16 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             pnl_api = upstox_client.TradeProfitAndLossApi(api_client)
+            kwargs = {}
+            if from_date:
+                kwargs["from_date"] = from_date
+            if to_date:
+                kwargs["to_date"] = to_date
             response = pnl_api.get_profit_and_loss_charges(
                 segment=segment,
                 financial_year=financial_year,
                 api_version="v2",
+                **kwargs,
             )
 
             data = response.data if response.data else {}
