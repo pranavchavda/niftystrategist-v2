@@ -83,10 +83,11 @@ All trading operations use CLI scripts in `backend/cli-tools/`, invoked by the o
 
 Conventions: `--json` for structured output, `--help` on every tool, `--dry-run` for orders. Subprocess env vars: `NF_ACCESS_TOKEN`, `NF_USER_ID`. CWD is `backend/`.
 
-### Streaming & HITL
+### Streaming & Trade Confirmation
 
-- **AG-UI**: `utils/ag_ui_wrapper.py` — SSE event stream with HITL event merging. The `enhanced_ag_ui_stream()` function merges the Pydantic AI stream with a separate HITL poller task (100ms intervals).
-- **HITL**: `utils/hitl_streamer.py` — pauses agent execution for user approval on `place_order` and `cancel_order`.
+- **AG-UI**: `utils/ag_ui_wrapper.py` — SSE event stream. The `enhanced_ag_ui_stream()` function merges the Pydantic AI stream with event pollers.
+- **Trade confirmation**: System-prompt-based via `render_ui` — agent shows a confirmation card before placing/cancelling orders. Not programmatically enforced; relies on SAFETY-1 rule in orchestrator system prompt. Overridable per-user (e.g., awakening mandates).
+- **Vestigial programmatic HITL**: `utils/hitl_manager.py`, `hitl_streamer.py`, `hitl_decorator.py`, `stream_merger.py`, `routes/hitl.py` — unused infrastructure from EspressoBot. Removal plan: `docs/plans/hitl-removal-plan.md`.
 
 ### Database Patterns
 
