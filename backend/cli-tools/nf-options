@@ -7,6 +7,9 @@ Supports:
 - Option greeks (delta, gamma, theta, vega, IV) via Upstox v3 API
 - Live option chain with greeks via Upstox put/call API
 - Place BUY/SELL option orders
+- F&O charges estimation
+- F&O positions viewer
+- Trade planner (strike selection, lot sizing, affordability)
 
 NOTE: place and cancel subcommands are HITL-protected — they require
 user approval when called from the orchestrator via execute_bash.
@@ -165,50 +168,246 @@ def show_chain(symbol: str, expiry: str = None, as_json: bool = False):
         print(f"{strike:>10.0f} {format_inr(ce_price):>12} {format_inr(pe_price):>12} {expiry:>12}")
 
 
+def estimate_fno_charges(premium: float, quantity: int, side: str,
+                         exit_premium: float = None) -> dict:
+    """Estimate F&O charges using standard Upstox rate structure.
+
+    F&O rates differ from equity:
+    - Brokerage: flat Rs 20/order (Upstox, options)
+    - STT: 0.0625% on sell-side premium (options)
+    - Transaction charges (NSE F&O): ~0.053% of premium turnover
+    - GST: 18% on (brokerage + transaction charges)
+    - SEBI: 0.0001% of premium turnover
+    - Stamp duty: 0.003% of buy-side premium
+    """
+    buy_value = premium * quantity if side == "BUY" else 0
+    sell_value = premium * quantity if side == "SELL" else 0
+    turnover = buy_value + sell_value
+
+    brokerage = 20.0  # Per order, flat
+
+    # STT on options: 0.0625% on sell premium only
+    # For buyers, STT is charged only on exercise (not on square-off in some cases)
+    # But for estimation, we charge on sell side
+    stt = sell_value * 0.000625
+
+    # NSE F&O transaction charges: ~0.053% of premium turnover
+    txn_charges = turnover * 0.00053
+
+    # GST: 18% on (brokerage + transaction charges)
+    gst = (brokerage + txn_charges) * 0.18
+
+    # SEBI fee: 0.0001% of turnover
+    sebi = turnover * 0.000001
+
+    # Stamp duty: 0.003% on buy side
+    stamp = buy_value * 0.00003
+
+    total = brokerage + stt + txn_charges + gst + sebi + stamp
+
+    result = {
+        "premium": premium,
+        "quantity": quantity,
+        "side": side,
+        "turnover": round(turnover, 2),
+        "brokerage": round(brokerage, 2),
+        "stt": round(stt, 2),
+        "transaction_charges": round(txn_charges, 2),
+        "gst": round(gst, 2),
+        "sebi": round(sebi, 2),
+        "stamp_duty": round(stamp, 2),
+        "total": round(total, 2),
+        "cost_pct": round((total / turnover * 100) if turnover > 0 else 0, 4),
+    }
+
+    # Round-trip estimate if exit premium provided
+    if exit_premium is not None:
+        exit_result = estimate_fno_charges(exit_premium, quantity, "SELL" if side == "BUY" else "BUY")
+        round_trip_total = total + exit_result["total"]
+        result["round_trip"] = {
+            "entry_charges": round(total, 2),
+            "exit_charges": round(exit_result["total"], 2),
+            "total_charges": round(round_trip_total, 2),
+            "exit_premium": exit_premium,
+        }
+
+    return result
+
+
+def show_charges(symbol: str, expiry: str, strike: float, option_type: str,
+                 lots: int, side: str, price: float = None, exit_price: float = None,
+                 as_json: bool = False):
+    """Show estimated charges for an options trade."""
+    option = find_option(symbol, expiry, strike, option_type)
+    if not option:
+        print_error(f"Option not found: {symbol} {expiry} {strike} {option_type}")
+
+    lot_size = option["lot_size"]
+    quantity = lots * lot_size
+
+    # Use provided price or cache price
+    premium = price or option.get("last_price", 0)
+    if not premium:
+        print_error("No premium available. Provide --price or ensure cache has last_price.")
+
+    charges = estimate_fno_charges(premium, quantity, side.upper(), exit_price)
+
+    # Add contract context
+    charges["contract"] = {
+        "underlying": symbol.upper(),
+        "tradingsymbol": option["tradingsymbol"],
+        "expiry": option["expiry"],
+        "strike": strike,
+        "option_type": option_type.upper(),
+        "lot_size": lot_size,
+        "lots": lots,
+        "total_quantity": quantity,
+    }
+
+    if as_json:
+        print_json({"ok": True, "data": charges, "warnings": [], "errors": []})
+        return
+
+    print(f"💰 F&O Charges Estimate\n")
+    print(f"  {side.upper()} {lots} lot(s) = {quantity} units of {option['tradingsymbol']}")
+    print(f"  Strike: {strike} {option_type.upper()} | Expiry: {option['expiry']}")
+    print(f"  Premium: {format_inr(premium)} | Turnover: {format_inr(charges['turnover'])}")
+    print()
+    print(f"  Brokerage:            {format_inr(charges['brokerage'])}")
+    print(f"  STT:                  {format_inr(charges['stt'])}")
+    print(f"  Transaction Charges:  {format_inr(charges['transaction_charges'])}")
+    print(f"  GST:                  {format_inr(charges['gst'])}")
+    print(f"  SEBI Fee:             {format_inr(charges['sebi'])}")
+    print(f"  Stamp Duty:           {format_inr(charges['stamp_duty'])}")
+    print(f"  ── Total:             {format_inr(charges['total'])} ({charges['cost_pct']:.4f}%)")
+
+    if "round_trip" in charges:
+        rt = charges["round_trip"]
+        print(f"\n  Round-trip ({format_inr(premium)} → {format_inr(exit_price)}):")
+        print(f"  Entry charges:        {format_inr(rt['entry_charges'])}")
+        print(f"  Exit charges:         {format_inr(rt['exit_charges'])}")
+        print(f"  ── Total round-trip:  {format_inr(rt['total_charges'])}")
+        # Break-even for long options
+        if side.upper() == "BUY":
+            be_premium = premium + rt['total_charges'] / quantity
+            print(f"  Break-even premium:   {format_inr(be_premium)}")
+
+
 def place_option_order(symbol: str, expiry: str, strike: float, option_type: str,
                        action: str, quantity_lots: int, price: float = None,
                        order_type: str = "MARKET", dry_run: bool = False, as_json: bool = False):
     """Place an option order."""
     option = find_option(symbol, expiry, strike, option_type)
-    
+
     if not option:
         print_error(f"Option not found: {symbol} {expiry} {strike} {option_type}")
-    
+
     lot_size = option["lot_size"]
     quantity = quantity_lots * lot_size
     instrument_key = option["instrument_key"]
     tradingsymbol = option["tradingsymbol"]
-    
+
     client = init_client()
-    
-    # Get current price if not specified
+
+    # Try to get live LTP for better pricing
+    live_ltp = None
+    try:
+        greeks = run_async(client.get_option_greeks([instrument_key]))
+        if greeks:
+            gdata = list(greeks.values())[0]
+            live_ltp = gdata.get("last_price")
+    except Exception:
+        pass
+
+    # Use provided price, or live LTP, or cache price
     if not price:
-        price = option.get("last_price", 0)
-    
+        price = live_ltp or option.get("last_price", 0)
+
     if dry_run:
+        estimated_value = price * quantity
+        charges = estimate_fno_charges(price, quantity, action.upper())
+
+        # Check funds
+        funds_info = None
+        warnings = []
+        try:
+            funds = run_async(client.get_funds_and_margin())
+            equity = funds.get("equity", {})
+            available = equity.get("available_margin", 0)
+            funds_info = {
+                "available_margin": available,
+                "used_margin": equity.get("used_margin", 0),
+            }
+            if action.upper() == "BUY" and estimated_value > available:
+                warnings.append(f"Insufficient funds: need {format_inr(estimated_value)}, have {format_inr(available)}")
+        except Exception:
+            warnings.append("Could not fetch funds — unable to check sufficiency")
+
+        # Break-even
+        break_even = None
+        if action.upper() == "BUY":
+            break_even = price + charges["total"] / quantity if quantity > 0 else None
+        elif action.upper() == "SELL":
+            break_even = price - charges["total"] / quantity if quantity > 0 else None
+
         result = {
+            "ok": True,
             "dry_run": True,
-            "symbol": tradingsymbol,
+            "underlying": symbol.upper(),
+            "tradingsymbol": tradingsymbol,
             "instrument_key": instrument_key,
-            "action": action,
-            "quantity_lots": quantity_lots,
-            "quantity_units": quantity,
-            "lot_size": lot_size,
+            "expiry": option["expiry"],
+            "strike": strike,
+            "option_type": option_type.upper(),
+            "action": action.upper(),
             "order_type": order_type,
-            "price": price,
-            "estimated_value": price * quantity,
+            "lots": quantity_lots,
+            "lot_size": lot_size,
+            "quantity": quantity,
+            "premium": price,
+            "live_ltp": live_ltp,
+            "estimated_value": round(estimated_value, 2),
+            "estimated_charges": charges["total"],
+            "charges_breakdown": {
+                "brokerage": charges["brokerage"],
+                "stt": charges["stt"],
+                "transaction_charges": charges["transaction_charges"],
+                "gst": charges["gst"],
+                "sebi": charges["sebi"],
+                "stamp_duty": charges["stamp_duty"],
+            },
+            "break_even_premium": round(break_even, 2) if break_even else None,
+            "funds": funds_info,
+            "max_loss": round(estimated_value + charges["total"], 2) if action.upper() == "BUY" else "unlimited (naked sell)",
+            "warnings": warnings,
+            "errors": [],
         }
+
         if as_json:
             print_json(result)
         else:
             print(f"🔍 Dry Run — order NOT placed\n")
-            print(f"  {action} {quantity_lots} lot(s) = {quantity} units of {tradingsymbol}")
+            print(f"  {action.upper()} {quantity_lots} lot(s) = {quantity} units of {tradingsymbol}")
             print(f"  Instrument: {instrument_key}")
-            print(f"  Strike: {strike} | Expiry: {option['expiry']}")
+            print(f"  Strike: {strike} {option_type.upper()} | Expiry: {option['expiry']}")
             print(f"  Order Type: {order_type}")
-            if price:
-                print(f"  Price: {format_inr(price)}")
-            print(f"  Est. Value: {format_inr(result['estimated_value'])}")
+            print(f"  Premium: {format_inr(price)}" + (f" (live)" if live_ltp else " (cached)"))
+            print(f"  Est. Value: {format_inr(estimated_value)}")
+            print(f"  Est. Charges: {format_inr(charges['total'])} ({charges['cost_pct']:.4f}%)")
+            if break_even:
+                print(f"  Break-even: {format_inr(break_even)}")
+            if action.upper() == "BUY":
+                print(f"  Max Loss: {format_inr(estimated_value + charges['total'])} (premium + charges)")
+            else:
+                print(f"  Max Loss: Unlimited (naked sell)")
+            if funds_info:
+                print(f"\n  Available Margin: {format_inr(funds_info['available_margin'])}")
+                if action.upper() == "BUY":
+                    sufficient = funds_info['available_margin'] >= estimated_value
+                    label = "YES" if sufficient else "NO — insufficient funds"
+                    print(f"  Funds Sufficient: {label}")
+            for w in warnings:
+                print(f"\n  ⚠️  {w}")
         return
     
     # Place live order
@@ -428,6 +627,330 @@ def show_live_chain(symbol: str, expiry: str, as_json: bool = False):
         )
 
 
+def _parse_option_tradingsymbol(tradingsymbol: str) -> dict | None:
+    """Parse an option tradingsymbol like BANKNIFTY26MAR48000CE into components.
+
+    Returns dict with underlying, expiry_hint, strike, option_type, or None if not parseable.
+    NSE formats: BANKNIFTY26MAR48000CE, NIFTY2631925500PE, RELIANCE26MAR2500CE
+    """
+    import re
+    # Pattern: SYMBOL + expiry_code (2 digits + letters, non-greedy) + strike (3+ digits) + CE/PE
+    m = re.match(r'^([A-Z&-]+?)(\d{2}\w+?)(\d{3,})(CE|PE)$', tradingsymbol)
+    if m:
+        return {
+            "underlying": m.group(1),
+            "expiry_hint": m.group(2),
+            "strike": float(m.group(3)),
+            "option_type": m.group(4),
+        }
+    return None
+
+
+def show_fno_positions(as_json: bool = False):
+    """Show all F&O positions from Upstox positions API."""
+    client = init_client()
+
+    try:
+        import upstox_client as uc
+        api_client = uc.ApiClient(client._configuration)
+        portfolio_api = uc.PortfolioApi(api_client)
+        pos_response = portfolio_api.get_positions(api_version="v2")
+    except Exception as e:
+        print_error(f"Failed to get positions: {e}")
+
+    fno_positions = []
+    for pos in (pos_response.data or []):
+        exchange = getattr(pos, 'exchange', '') or ''
+        instrument_type = getattr(pos, 'instrument_type', '') or ''
+        instrument_token = getattr(pos, 'instrument_token', '') or ''
+
+        # F&O positions: exchange contains FO, or instrument_type is OPTIDX/OPTSTK/FUTIDX/FUTSTK
+        is_fno = (
+            'FO' in exchange
+            or instrument_type in ('OPTIDX', 'OPTSTK', 'FUTIDX', 'FUTSTK')
+            or 'NSE_FO' in instrument_token
+        )
+        if not is_fno:
+            continue
+
+        qty = getattr(pos, 'quantity', 0) or 0
+        tradingsymbol = (getattr(pos, 'tradingsymbol', None) or getattr(pos, 'trading_symbol', '') or '').upper()
+        avg_price = getattr(pos, 'average_price', 0) or getattr(pos, 'buy_price', 0) or 0
+        last_price = getattr(pos, 'last_price', 0) or 0
+        product = getattr(pos, 'product', '') or ''
+        upstox_pnl = getattr(pos, 'pnl', None)
+        realised = getattr(pos, 'realised', 0) or 0
+        unrealised = getattr(pos, 'unrealised', 0) or 0
+        buy_qty = getattr(pos, 'day_buy_quantity', 0) or 0
+        sell_qty = getattr(pos, 'day_sell_quantity', 0) or 0
+        buy_price = getattr(pos, 'day_buy_price', 0) or getattr(pos, 'buy_price', 0) or 0
+        sell_price = getattr(pos, 'day_sell_price', 0) or getattr(pos, 'sell_price', 0) or 0
+        multiplier = getattr(pos, 'multiplier', 1) or 1
+
+        if upstox_pnl is not None:
+            pnl = float(upstox_pnl)
+        else:
+            pnl = (last_price - avg_price) * abs(qty) if (avg_price and last_price) else 0.0
+
+        invested = avg_price * abs(qty)
+        pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+
+        # Parse contract details from tradingsymbol
+        parsed = _parse_option_tradingsymbol(tradingsymbol)
+
+        # Determine lot size from cache if possible
+        lot_size = None
+        cache = _load_options_cache()
+        cache_entry = cache.get(tradingsymbol)
+        if cache_entry:
+            lot_size = cache_entry.get("lot_size")
+
+        lots = abs(qty) // lot_size if lot_size and lot_size > 0 else None
+
+        position = {
+            "tradingsymbol": tradingsymbol,
+            "instrument_token": instrument_token,
+            "exchange": exchange,
+            "instrument_type": instrument_type,
+            "product": product,
+            "quantity": qty,
+            "lots": lots,
+            "lot_size": lot_size,
+            "average_price": round(avg_price, 2),
+            "last_price": round(last_price, 2),
+            "pnl": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "realised_pnl": round(realised, 2),
+            "unrealised_pnl": round(unrealised, 2),
+            "buy_qty": buy_qty,
+            "sell_qty": sell_qty,
+            "buy_price": round(buy_price, 2),
+            "sell_price": round(sell_price, 2),
+            "multiplier": multiplier,
+        }
+        if parsed:
+            position["underlying"] = parsed["underlying"]
+            position["strike"] = parsed["strike"]
+            position["option_type"] = parsed["option_type"]
+            position["expiry_hint"] = parsed["expiry_hint"]
+
+        fno_positions.append(position)
+
+    if as_json:
+        print_json({
+            "ok": True,
+            "data": {"positions": fno_positions, "count": len(fno_positions)},
+            "warnings": [],
+            "errors": [],
+        })
+        return
+
+    if not fno_positions:
+        print("No F&O positions found.")
+        return
+
+    mode = "Paper" if client.paper_trading else "Live"
+    print(f"📊 F&O Positions [{mode}]\n")
+    print(f"{'Symbol':<28} {'Qty':>6} {'Lots':>5} {'Avg':>10} {'LTP':>10} {'P&L':>12} {'%':>8}")
+    print("-" * 85)
+
+    total_pnl = 0.0
+    for p in fno_positions:
+        arrow = "▲" if p["pnl"] >= 0 else "▼"
+        lots_str = str(p["lots"]) if p["lots"] is not None else "?"
+        sym = p["tradingsymbol"]
+        if len(sym) > 26:
+            sym = sym[:24] + ".."
+        print(
+            f"{sym:<28} {p['quantity']:>6} {lots_str:>5} "
+            f"{format_inr(p['average_price']):>10} {format_inr(p['last_price']):>10} "
+            f"{arrow} {format_inr(p['pnl']):>10} {p['pnl_pct']:>+7.2f}%"
+        )
+        total_pnl += p["pnl"]
+
+    print("-" * 85)
+    arrow = "▲" if total_pnl >= 0 else "▼"
+    print(f"{'Total':>28} {'':>6} {'':>5} {'':>10} {'':>10} {arrow} {format_inr(total_pnl):>10}")
+
+
+def plan_trade(symbol: str, expiry: str, side: str = "buy", bias: str = None,
+               capital: float = None, lots: int = None, as_json: bool = False):
+    """Plan an options trade — suggest strikes, compute affordability, show candidates."""
+    cache = _load_options_cache()
+    symbol = symbol.upper()
+
+    # Collect all options for this symbol and expiry
+    matching = []
+    for ts, data in cache.items():
+        if data["name"] != symbol:
+            continue
+        if expiry:
+            cache_expiry = data.get("expiry", "")
+            if expiry not in cache_expiry and expiry.upper() not in ts:
+                continue
+        matching.append(data)
+
+    if not matching:
+        print_error(f"No options found for {symbol} expiry {expiry}. Run 'nf-options expiries {symbol}' to see valid expiries.")
+
+    lot_size = matching[0]["lot_size"]
+
+    # Get live spot price if possible
+    client = init_client()
+    spot = None
+    try:
+        chain = run_async(client.get_option_chain_live(symbol, expiry))
+        if chain:
+            spot = chain[0].get("underlying_spot_price")
+    except Exception:
+        pass
+
+    # Group by strike and option type
+    strikes_data = {}
+    for opt in matching:
+        key = (opt["strike"], opt["option_type"])
+        strikes_data[key] = opt
+
+    # Determine which option types to show based on bias
+    if bias == "bullish":
+        show_types = ["CE"]
+    elif bias == "bearish":
+        show_types = ["PE"]
+    else:
+        show_types = ["CE", "PE"]
+
+    # Find ATM strike
+    all_strikes = sorted(set(opt["strike"] for opt in matching))
+    atm_strike = None
+    if spot:
+        atm_strike = min(all_strikes, key=lambda s: abs(s - spot))
+
+    # Build candidate contracts
+    candidates = []
+    for opt_type in show_types:
+        for s in all_strikes:
+            data = strikes_data.get((s, opt_type))
+            if not data:
+                continue
+
+            premium = data.get("last_price", 0)
+            if premium <= 0:
+                continue
+
+            cost_per_lot = premium * lot_size
+            max_lots = int(capital / cost_per_lot) if capital and cost_per_lot > 0 else None
+
+            # Moneyness
+            moneyness = "ATM"
+            if spot:
+                diff = s - spot
+                if opt_type == "CE":
+                    if diff < -spot * 0.005:
+                        moneyness = "ITM"
+                    elif diff > spot * 0.005:
+                        moneyness = "OTM"
+                else:  # PE
+                    if diff > spot * 0.005:
+                        moneyness = "ITM"
+                    elif diff < -spot * 0.005:
+                        moneyness = "OTM"
+
+            # Charges for 1 lot
+            charges = estimate_fno_charges(premium, lot_size, side.upper())
+
+            candidate = {
+                "strike": s,
+                "option_type": opt_type,
+                "premium": premium,
+                "lot_size": lot_size,
+                "cost_per_lot": round(cost_per_lot, 2),
+                "charges_per_lot": charges["total"],
+                "break_even": round(premium + charges["total"] / lot_size, 2) if side.upper() == "BUY" else round(premium - charges["total"] / lot_size, 2),
+                "moneyness": moneyness,
+                "max_lots_affordable": max_lots,
+                "tradingsymbol": data["tradingsymbol"],
+                "instrument_key": data["instrument_key"],
+            }
+            if max_lots is not None:
+                candidate["total_cost"] = round(cost_per_lot * min(max_lots, lots or 1), 2)
+            candidates.append(candidate)
+
+    # Sort by distance from ATM
+    if spot:
+        candidates.sort(key=lambda c: abs(c["strike"] - spot))
+    else:
+        candidates.sort(key=lambda c: c["strike"])
+
+    # Limit to reasonable range (10 strikes around ATM)
+    candidates = candidates[:20]
+
+    result = {
+        "ok": True,
+        "data": {
+            "underlying": symbol,
+            "expiry": expiry,
+            "spot": spot,
+            "atm_strike": atm_strike,
+            "lot_size": lot_size,
+            "side": side.upper(),
+            "bias": bias,
+            "capital": capital,
+            "requested_lots": lots,
+            "candidates": candidates,
+        },
+        "warnings": [],
+        "errors": [],
+    }
+
+    if not spot:
+        result["warnings"].append("Could not fetch live spot price — moneyness is approximate")
+    if not candidates:
+        result["errors"].append("No candidate contracts found with non-zero premium")
+
+    if as_json:
+        print_json(result)
+        return
+
+    print(f"📋 Options Trade Plan: {symbol} ({expiry})\n")
+    if spot:
+        print(f"  Spot: {format_inr(spot)}  |  ATM Strike: {atm_strike}  |  Lot Size: {lot_size}")
+    else:
+        print(f"  Spot: N/A (market may be closed)  |  Lot Size: {lot_size}")
+    if capital:
+        print(f"  Capital: {format_inr(capital)}  |  Side: {side.upper()}")
+    if bias:
+        print(f"  Bias: {bias.upper()}")
+    print()
+
+    print(f"{'Strike':>8} {'Type':<4} {'Moneyness':<5} {'Premium':>10} {'Cost/Lot':>12} {'Charges':>10} {'B/E':>10}", end="")
+    if capital:
+        print(f" {'Max Lots':>9}", end="")
+    print()
+    print("-" * (75 + (10 if capital else 0)))
+
+    for c in candidates:
+        print(
+            f"{c['strike']:>8.0f} {c['option_type']:<4} {c['moneyness']:<5} "
+            f"{format_inr(c['premium']):>10} {format_inr(c['cost_per_lot']):>12} "
+            f"{format_inr(c['charges_per_lot']):>10} {format_inr(c['break_even']):>10}",
+            end=""
+        )
+        if capital:
+            ml = c.get("max_lots_affordable")
+            print(f" {ml if ml is not None else '?':>9}", end="")
+        print()
+
+    # Highlight best picks
+    if candidates and side.upper() == "BUY":
+        affordable = [c for c in candidates if c.get("max_lots_affordable") and c["max_lots_affordable"] >= 1] if capital else candidates
+        if affordable:
+            atm_picks = [c for c in affordable if c["moneyness"] == "ATM"]
+            if atm_picks:
+                pick = atm_picks[0]
+                print(f"\n  Suggested: {pick['tradingsymbol']} @ {format_inr(pick['premium'])}")
+                print(f"  Cost: {format_inr(pick['cost_per_lot'])}/lot | Max loss: {format_inr(pick['cost_per_lot'] + pick['charges_per_lot'])}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-options",
@@ -443,9 +966,13 @@ Examples:
   nf-options expiries NIFTY                       Show upcoming expiries
   nf-options quote NIFTY 17FEB26 25500 PE         Get option quote
   nf-options buy NIFTY 17FEB26 25500 PE 1         Buy 1 lot (dry-run in paper mode)
-  nf-options buy NIFTY 17FEB26 25500 PE 1 --dry-run  Preview order
+  nf-options buy NIFTY 17FEB26 25500 PE 1 --dry-run  Preview order with charges & funds
   nf-options sell NIFTY 17FEB26 25500 CE 2        Sell 2 lots
   nf-options buy NIFTY 17FEB26 25500 PE 1 --price 150 --type LIMIT  Limit order
+  nf-options charges BANKNIFTY 2026-03-12 48000 CE 1 --side BUY     Charges estimate
+  nf-options charges BANKNIFTY 2026-03-12 48000 CE 1 --exit-price 250  Round-trip estimate
+  nf-options positions                            Show all F&O positions
+  nf-options plan BANKNIFTY --expiry 2026-03-12 --bias bullish --capital 10000  Trade planner
 """,
     )
 
@@ -497,6 +1024,32 @@ Examples:
         p.add_argument("--dry-run", action="store_true", help="Preview without executing")
         p.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # charges
+    p_charges = sub.add_parser("charges", help="Estimate F&O charges for an options trade")
+    p_charges.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_charges.add_argument("expiry", help="Expiry date (DDMMMYY or YYYY-MM-DD)")
+    p_charges.add_argument("strike", type=float, help="Strike price")
+    p_charges.add_argument("option_type", choices=["CE", "PE", "ce", "pe"], help="Call (CE) or Put (PE)")
+    p_charges.add_argument("lots", type=int, help="Number of lots")
+    p_charges.add_argument("--side", default="BUY", choices=["BUY", "SELL"], help="Transaction side (default: BUY)")
+    p_charges.add_argument("--price", type=float, help="Premium price (default: use cache/live price)")
+    p_charges.add_argument("--exit-price", type=float, help="Exit premium for round-trip estimate")
+    p_charges.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # positions
+    p_positions = sub.add_parser("positions", help="Show all F&O positions")
+    p_positions.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # plan
+    p_plan = sub.add_parser("plan", help="Plan an options trade (strike selection, affordability)")
+    p_plan.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_plan.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
+    p_plan.add_argument("--side", default="buy", choices=["buy", "sell"], help="Trade side (default: buy)")
+    p_plan.add_argument("--bias", choices=["bullish", "bearish"], help="Market bias (filters CE/PE)")
+    p_plan.add_argument("--capital", type=float, help="Available capital in rupees")
+    p_plan.add_argument("--lots", type=int, help="Desired number of lots")
+    p_plan.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -536,6 +1089,30 @@ Examples:
             price=args.price,
             order_type=args.order_type,
             dry_run=args.dry_run,
+            as_json=args.json,
+        )
+    elif args.command == "charges":
+        show_charges(
+            symbol=args.symbol,
+            expiry=args.expiry,
+            strike=args.strike,
+            option_type=args.option_type,
+            lots=args.lots,
+            side=args.side,
+            price=args.price,
+            exit_price=args.exit_price,
+            as_json=args.json,
+        )
+    elif args.command == "positions":
+        show_fno_positions(as_json=args.json)
+    elif args.command == "plan":
+        plan_trade(
+            symbol=args.symbol,
+            expiry=args.expiry,
+            side=args.side,
+            bias=args.bias,
+            capital=args.capital,
+            lots=args.lots,
             as_json=args.json,
         )
 

@@ -66,6 +66,7 @@ class PlaceOrderAction(BaseModel):
     order_type: Literal["MARKET", "LIMIT"] = "MARKET"
     product: Literal["D", "I"] = "I"
     price: float | None = None
+    instrument_token: str | None = None  # F&O: pre-resolved instrument key (bypasses equity lookup)
 
 
 class CancelOrderAction(BaseModel):
