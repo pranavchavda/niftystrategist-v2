@@ -77,9 +77,9 @@ All trading operations use CLI scripts in `backend/cli-tools/`, invoked by the o
 | `nf-trades` | Today's trades, historical trade P&L, charges breakdown |
 | `nf-brokerage` | Pre-trade brokerage & charges estimate |
 | `nf-order` | Place/cancel/list orders (--dry-run supported) |
-| `nf-options` | Option chain, live chain with greeks, option greeks (v3 API), buy/sell |
+| `nf-options` | Option chain, live chain with greeks, option greeks (v3 API), buy/sell, F&O charges, F&O positions, trade planner |
 | `nf-watchlist` | Watchlist CRUD with price alerts |
-| `nf-monitor` | Monitor rule CRUD, list/enable/disable/delete rules |
+| `nf-monitor` | Monitor rule CRUD (equity AND F&O option contracts), list/enable/disable/delete rules |
 
 Conventions: `--json` for structured output, `--help` on every tool, `--dry-run` for orders. Subprocess env vars: `NF_ACCESS_TOKEN`, `NF_USER_ID`. CWD is `backend/`.
 

@@ -18,6 +18,55 @@ if _backend_dir not in sys.path:
 from base import init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
+def _resolve_option_instrument(underlying: str, expiry: str, strike: float,
+                                option_type: str) -> tuple[str, str]:
+    """Resolve an option contract to (tradingsymbol, instrument_key).
+
+    Uses the nf-options cache. Returns (tradingsymbol, instrument_key) or
+    calls print_error (exits) if not found.
+    """
+    # Import nf-options cache machinery
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+    # Load the options cache directly (same code as nf-options)
+    import csv
+    cache_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache", "nse_instruments.csv")
+    if not os.path.exists(cache_path):
+        print_error("Instruments cache not found. Run nf-quote first to download.")
+
+    # Search for the option
+    underlying = underlying.upper()
+    option_type = option_type.upper()
+    candidates = []
+
+    with open(cache_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get("instrument_type") not in ("OPTIDX", "OPTSTK"):
+                continue
+            if row.get("name") != underlying:
+                continue
+            if float(row.get("strike") or 0) != strike:
+                continue
+            if row.get("option_type") != option_type:
+                continue
+            cache_expiry = row.get("expiry", "")
+            # Match expiry: YYYY-MM-DD exact, or partial match
+            if expiry in cache_expiry or cache_expiry == expiry:
+                candidates.append(row)
+
+    if not candidates:
+        print_error(
+            f"Option not found: {underlying} {expiry} {strike} {option_type}. "
+            f"Run 'nf-options expiries {underlying}' to see valid expiries."
+        )
+
+    # Take first match (sorted by expiry proximity)
+    candidates.sort(key=lambda r: r.get("expiry", ""))
+    best = candidates[0]
+    return best.get("tradingsymbol", ""), best.get("instrument_key", "")
+
+
 def _get_user_id() -> int:
     """Get user ID from environment."""
     return int(os.environ.get("NF_USER_ID", "999"))
@@ -112,10 +161,19 @@ def cmd_add_rule(args):
 
     user_id = _get_user_id()
 
-    # Validate symbol if provided
+    # Validate symbol if provided — support both equity and option contracts
     symbol = None
     instrument_token = None
-    if args.symbol:
+    is_option = bool(getattr(args, 'underlying', None) and getattr(args, 'strike', None) and getattr(args, 'opt_type', None))
+
+    if is_option:
+        tradingsymbol, instrument_token = _resolve_option_instrument(
+            args.underlying, getattr(args, 'expiry_date', '') or '', args.strike, args.opt_type
+        )
+        symbol = tradingsymbol
+        if not instrument_token:
+            print_error(f"Could not resolve instrument key for {args.underlying} {getattr(args, 'expiry_date', '')} {args.strike} {args.opt_type}")
+    elif args.symbol:
         symbol = validate_symbol(args.symbol)
         # Look up instrument token for price/indicator triggers (needed for WebSocket subscription)
         instrument_token = get_instrument_key(symbol)
@@ -172,7 +230,7 @@ def cmd_add_rule(args):
 
     if action_type == "place_order":
         if not symbol:
-            print_error("place_order action requires --symbol")
+            print_error("place_order action requires --symbol or --underlying/--strike/--option-type")
         if not args.side or not args.qty:
             print_error("place_order action requires --side and --qty")
         action_config = {
@@ -184,6 +242,8 @@ def cmd_add_rule(args):
         }
         if args.limit_price is not None:
             action_config["price"] = args.limit_price
+        if is_option:
+            action_config["instrument_token"] = instrument_token
 
     elif action_type == "cancel_order":
         if not args.cancel_order_id:
@@ -242,16 +302,33 @@ def cmd_add_oco(args):
     Supports both LONG and SHORT positions via --side:
       --side SELL (default): Exit a LONG position. SL fires when price drops (lte), target fires when price rises (gte).
       --side BUY:            Exit a SHORT position. SL fires when price rises (gte), target fires when price drops (lte).
+
+    For option contracts, use --underlying/--expiry/--strike/--option-type instead of --symbol.
+    The monitor will track the option PREMIUM price, not the underlying spot price.
     """
     from database.session import get_db_context
     from monitor.crud import create_rule, update_rule
     from services.instruments_cache import get_instrument_key
 
     user_id = _get_user_id()
-    symbol = validate_symbol(args.symbol)
-    instrument_token = get_instrument_key(symbol)
-    if not instrument_token:
-        print_error(f"Could not find instrument key for {symbol}")
+
+    # Determine if this is an option contract or equity
+    is_option = bool(args.underlying and args.strike and args.opt_type)
+
+    if is_option:
+        tradingsymbol, instrument_token = _resolve_option_instrument(
+            args.underlying, args.expiry_date or "", args.strike, args.opt_type
+        )
+        symbol = tradingsymbol  # Use tradingsymbol as the rule symbol
+        if not instrument_token:
+            print_error(f"Could not resolve instrument key for {args.underlying} {args.expiry_date} {args.strike} {args.opt_type}")
+    else:
+        if not args.symbol:
+            print_error("Either --symbol (for equity) or --underlying/--strike/--option-type (for options) is required")
+        symbol = validate_symbol(args.symbol)
+        instrument_token = get_instrument_key(symbol)
+        if not instrument_token:
+            print_error(f"Could not find instrument key for {symbol}")
 
     # Determine exit side and trigger directions
     exit_side = (args.side or "SELL").upper()
@@ -270,6 +347,17 @@ def cmd_add_oco(args):
     if args.expires:
         expires_at = _parse_expires(args.expires)
 
+    # Build action_config — include instrument_token for F&O contracts
+    base_action_config = {
+        "symbol": symbol,
+        "transaction_type": exit_side,
+        "quantity": args.qty,
+        "order_type": "MARKET",
+        "product": args.product,
+    }
+    if is_option:
+        base_action_config["instrument_token"] = instrument_token
+
     async def _create_oco():
         async with get_db_context() as session:
             # Step 1: Create the SL rule (placeholder cancel_rule target)
@@ -284,13 +372,7 @@ def cmd_add_oco(args):
                     "reference": "ltp",
                 },
                 action_type="place_order",
-                action_config={
-                    "symbol": symbol,
-                    "transaction_type": exit_side,
-                    "quantity": args.qty,
-                    "order_type": "MARKET",
-                    "product": args.product,
-                },
+                action_config=base_action_config.copy(),
                 instrument_token=instrument_token,
                 symbol=symbol,
                 linked_trade_id=args.linked_trade,
@@ -299,6 +381,8 @@ def cmd_add_oco(args):
             )
 
             # Step 2: Create the target rule (cancels SL rule on fire)
+            target_action = base_action_config.copy()
+            target_action["also_cancel_rule"] = sl_rule.id
             target_rule = await create_rule(
                 session=session,
                 user_id=user_id,
@@ -310,14 +394,7 @@ def cmd_add_oco(args):
                     "reference": "ltp",
                 },
                 action_type="place_order",
-                action_config={
-                    "symbol": symbol,
-                    "transaction_type": exit_side,
-                    "quantity": args.qty,
-                    "order_type": "MARKET",
-                    "product": args.product,
-                    "also_cancel_rule": sl_rule.id,
-                },
+                action_config=target_action,
                 instrument_token=instrument_token,
                 symbol=symbol,
                 linked_trade_id=args.linked_trade,
@@ -365,16 +442,33 @@ def cmd_add_trailing(args):
     Supports both LONG and SHORT positions via --side:
       --side SELL (default): Exit a LONG. Trail tracks highest price, fires when price drops below trail.
       --side BUY:            Exit a SHORT. Trail tracks lowest price, fires when price rises above trail.
+
+    For option contracts, use --underlying/--expiry/--strike/--option-type instead of --symbol.
+    The monitor will trail the option PREMIUM price, not the underlying spot price.
     """
     from database.session import get_db_context
     from monitor.crud import create_rule
     from services.instruments_cache import get_instrument_key
 
     user_id = _get_user_id()
-    symbol = validate_symbol(args.symbol)
-    instrument_token = get_instrument_key(symbol)
-    if not instrument_token:
-        print_error(f"Could not find instrument key for {symbol}")
+
+    # Determine if this is an option contract or equity
+    is_option = bool(args.underlying and args.strike and args.opt_type)
+
+    if is_option:
+        tradingsymbol, instrument_token = _resolve_option_instrument(
+            args.underlying, args.expiry_date or "", args.strike, args.opt_type
+        )
+        symbol = tradingsymbol
+        if not instrument_token:
+            print_error(f"Could not resolve instrument key for {args.underlying} {args.expiry_date} {args.strike} {args.opt_type}")
+    else:
+        if not args.symbol:
+            print_error("Either --symbol (for equity) or --underlying/--strike/--option-type (for options) is required")
+        symbol = validate_symbol(args.symbol)
+        instrument_token = get_instrument_key(symbol)
+        if not instrument_token:
+            print_error(f"Could not find instrument key for {symbol}")
 
     exit_side = (args.side or "SELL").upper()
     if exit_side not in ("BUY", "SELL"):
@@ -384,8 +478,16 @@ def cmd_add_trailing(args):
     client = init_client()
 
     async def _get_ltp():
-        quote = await client.get_quote(symbol)
-        return quote["ltp"]
+        if is_option:
+            # For F&O, use greeks API with the instrument_key
+            greeks = await client.get_option_greeks([instrument_token])
+            if greeks:
+                gdata = list(greeks.values())[0]
+                return gdata.get("last_price")
+            return None
+        else:
+            quote = await client.get_quote(symbol)
+            return quote["ltp"]
 
     ltp = run_async(_get_ltp())
     if ltp is None:
@@ -423,6 +525,8 @@ def cmd_add_trailing(args):
         "order_type": "MARKET",
         "product": args.product or "I",
     }
+    if is_option:
+        action_config["instrument_token"] = instrument_token
 
     expires_at = None
     if args.expires:
@@ -644,33 +748,35 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # --- Equity ---
   nf-monitor add-rule --name "RELIANCE SL" --symbol RELIANCE \\
     --trigger price --condition lte --price 2400 \\
     --action place_order --side SELL --qty 10 --product I --json
 
-  # OCO for a LONG position (default --side SELL):
   nf-monitor add-oco --symbol RELIANCE --qty 10 --product I \\
     --sl 2400 --target 2700 --expires today --json
 
-  # OCO for a SHORT position (--side BUY to buy-to-cover):
-  nf-monitor add-oco --symbol ICICIBANK --qty 80 --product I --side BUY \\
-    --sl 1400 --target 1370 --expires today --json
-
-  # Trailing stop for a LONG position:
   nf-monitor add-trailing --symbol RELIANCE --qty 10 --trail-percent 15 \\
     --product D --expires today --json
 
-  # Trailing stop for a SHORT position (tracks lowest price):
-  nf-monitor add-trailing --symbol INFY --qty 60 --side BUY \\
-    --trail-percent 1.5 --product I --expires today --json
+  # --- F&O Options (use --underlying/--expiry/--strike/--option-type) ---
+  nf-monitor add-oco --underlying BANKNIFTY --expiry 2026-03-12 --strike 48000 \\
+    --option-type CE --qty 30 --sl 180 --target 260 --product D --json
 
+  nf-monitor add-trailing --underlying BANKNIFTY --expiry 2026-03-12 --strike 48000 \\
+    --option-type CE --qty 30 --trail-percent 15 --product D --json
+
+  nf-monitor add-rule --name "NIFTY PE SL" --underlying NIFTY --expiry 2026-03-13 \\
+    --strike 25000 --option-type PE --trigger price --condition lte --price 100 \\
+    --action place_order --side SELL --qty 75 --product D --json
+
+  # --- Management ---
   nf-monitor list --active --json
   nf-monitor enable 5
   nf-monitor disable 5
   nf-monitor delete 5
   nf-monitor logs --rule 5 --limit 10 --json
   nf-monitor start --paper            # Start daemon in paper mode
-  nf-monitor start --poll-interval 10 # Start daemon with faster polling
 """,
     )
 
@@ -679,7 +785,11 @@ Examples:
     # ---- add-rule ----
     p_add = sub.add_parser("add-rule", help="Create a monitoring rule")
     p_add.add_argument("--name", required=True, help="Human-readable rule name")
-    p_add.add_argument("--symbol", help="Stock symbol (validated)")
+    p_add.add_argument("--symbol", help="Stock symbol (for equity)")
+    p_add.add_argument("--underlying", help="Option underlying (NIFTY, BANKNIFTY, etc.)")
+    p_add.add_argument("--expiry", dest="expiry_date", help="Option expiry (YYYY-MM-DD)")
+    p_add.add_argument("--strike", type=float, help="Option strike price")
+    p_add.add_argument("--option-type", dest="opt_type", choices=["CE", "PE"], help="CE (Call) or PE (Put)")
 
     # Trigger
     p_add.add_argument("--trigger", required=True,
@@ -734,23 +844,43 @@ Examples:
     p_add.add_argument("--json", action="store_true", help="Output as JSON")
 
     # ---- add-oco ----
-    p_oco = sub.add_parser("add-oco", help="Create stop-loss + target OCO pair")
-    p_oco.add_argument("--symbol", required=True, help="Stock symbol")
-    p_oco.add_argument("--qty", type=int, required=True, help="Order quantity")
+    p_oco = sub.add_parser("add-oco", help="Create stop-loss + target OCO pair",
+                           formatter_class=argparse.RawDescriptionHelpFormatter,
+                           epilog="""
+Option contract example:
+  nf-monitor add-oco --underlying BANKNIFTY --expiry 2026-03-12 --strike 48000 \\
+    --option-type CE --qty 30 --sl 180 --target 260 --product D --json
+""")
+    p_oco.add_argument("--symbol", help="Stock symbol (for equity)")
+    p_oco.add_argument("--underlying", help="Option underlying (NIFTY, BANKNIFTY, etc.)")
+    p_oco.add_argument("--expiry", dest="expiry_date", help="Option expiry (YYYY-MM-DD)")
+    p_oco.add_argument("--strike", type=float, help="Option strike price")
+    p_oco.add_argument("--option-type", dest="opt_type", choices=["CE", "PE"], help="CE (Call) or PE (Put)")
+    p_oco.add_argument("--qty", type=int, required=True, help="Order quantity (units, not lots)")
     p_oco.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], default="SELL",
                        help="Exit side: SELL for long positions (default), BUY for short positions")
     p_oco.add_argument("--product", choices=["D", "I"], default="I",
                        help="Product type: D=Delivery, I=Intraday (default: I)")
-    p_oco.add_argument("--sl", type=float, required=True, help="Stop-loss price")
-    p_oco.add_argument("--target", type=float, required=True, help="Target price")
+    p_oco.add_argument("--sl", type=float, required=True, help="Stop-loss price (premium for options)")
+    p_oco.add_argument("--target", type=float, required=True, help="Target price (premium for options)")
     p_oco.add_argument("--linked-trade", type=int, help="Linked trade ID")
     p_oco.add_argument("--expires", help="Expiry: 'today' or ISO datetime")
     p_oco.add_argument("--json", action="store_true", help="Output as JSON")
 
     # ---- add-trailing ----
-    p_trail = sub.add_parser("add-trailing", help="Create a trailing stop-loss rule")
-    p_trail.add_argument("--symbol", required=True, help="Stock symbol")
-    p_trail.add_argument("--qty", type=int, required=True, help="Quantity to exit when triggered")
+    p_trail = sub.add_parser("add-trailing", help="Create a trailing stop-loss rule",
+                             formatter_class=argparse.RawDescriptionHelpFormatter,
+                             epilog="""
+Option contract example:
+  nf-monitor add-trailing --underlying BANKNIFTY --expiry 2026-03-12 --strike 48000 \\
+    --option-type CE --qty 30 --trail-percent 15 --product D --json
+""")
+    p_trail.add_argument("--symbol", help="Stock symbol (for equity)")
+    p_trail.add_argument("--underlying", help="Option underlying (NIFTY, BANKNIFTY, etc.)")
+    p_trail.add_argument("--expiry", dest="expiry_date", help="Option expiry (YYYY-MM-DD)")
+    p_trail.add_argument("--strike", type=float, help="Option strike price")
+    p_trail.add_argument("--option-type", dest="opt_type", choices=["CE", "PE"], help="CE (Call) or PE (Put)")
+    p_trail.add_argument("--qty", type=int, required=True, help="Quantity to exit when triggered (units, not lots)")
     p_trail.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], default="SELL",
                          help="Exit side: SELL for long positions (default), BUY for short positions")
     p_trail.add_argument("--trail-percent", type=float, required=True,

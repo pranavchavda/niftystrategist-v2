@@ -97,7 +97,12 @@ class ActionExecutor:
         return action_result
 
     async def _execute_place_order(self, rule: MonitorRule, config: dict) -> dict:
-        """Place an order using UpstoxClient."""
+        """Place an order using UpstoxClient.
+
+        For F&O contracts, action_config should include 'instrument_token' with
+        the pre-resolved instrument key (e.g., 'NSE_FO|43885'). This bypasses
+        the equity symbol→key lookup which doesn't handle option tradingsymbols.
+        """
         action = PlaceOrderAction(**config)
 
         if self._paper_mode:
@@ -105,20 +110,50 @@ class ActionExecutor:
 
         client = await self._get_client(rule.user_id)
         try:
-            trade_result = await client.place_order(
-                symbol=action.symbol,
-                transaction_type=action.transaction_type,
-                quantity=action.quantity,
-                order_type=action.order_type,
-                product=action.product,
-                price=action.price if action.price is not None else 0,
-            )
-            return {
-                "success": trade_result.success,
-                "order_id": trade_result.order_id,
-                "message": trade_result.message,
-                "status": trade_result.status,
-            }
+            if action.instrument_token:
+                # F&O path: use instrument_token directly via Upstox SDK
+                import upstox_client
+                api_client = upstox_client.ApiClient(client._configuration)
+                order_api = upstox_client.OrderApiV3(api_client)
+
+                is_amo = not client._is_market_open()
+                body = upstox_client.PlaceOrderV3Request(
+                    quantity=action.quantity,
+                    product=action.product,
+                    validity="DAY",
+                    price=action.price if action.order_type == "LIMIT" else 0,
+                    trigger_price=0,
+                    instrument_token=action.instrument_token,
+                    order_type=action.order_type,
+                    transaction_type=action.transaction_type,
+                    disclosed_quantity=0,
+                    is_amo=is_amo,
+                )
+                response = order_api.place_order(body)
+                order_ids = response.data.order_ids if response.data else []
+                order_id = order_ids[0] if order_ids else None
+                return {
+                    "success": True,
+                    "order_id": order_id,
+                    "message": f"F&O order placed: {action.transaction_type} {action.quantity} of {action.symbol}",
+                    "status": "PLACED",
+                }
+            else:
+                # Equity path: use client.place_order which resolves symbol internally
+                trade_result = await client.place_order(
+                    symbol=action.symbol,
+                    transaction_type=action.transaction_type,
+                    quantity=action.quantity,
+                    order_type=action.order_type,
+                    product=action.product,
+                    price=action.price if action.price is not None else 0,
+                )
+                return {
+                    "success": trade_result.success,
+                    "order_id": trade_result.order_id,
+                    "message": trade_result.message,
+                    "status": trade_result.status,
+                }
         except Exception as e:
             logger.error("place_order failed for rule %d: %s", rule.id, e)
             return {"success": False, "error": str(e)}

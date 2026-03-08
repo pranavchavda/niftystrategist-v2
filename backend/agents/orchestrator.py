@@ -1321,7 +1321,10 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-options greeks SYMBOL [--expiry 17FEB] [--strikes 25000 25500] [--type CE|PE] [--json]` — Option greeks (delta, gamma, theta, vega, IV)
 - `python cli-tools/nf-options expiries SYMBOL [--json]` — Upcoming expiry dates
 - `python cli-tools/nf-options quote SYMBOL EXPIRY STRIKE CE|PE [--json]` — Single option quote
-- `python cli-tools/nf-options buy|sell SYMBOL EXPIRY STRIKE CE|PE LOTS [--price P] [--type MARKET|LIMIT] [--dry-run] [--json]`
+- `python cli-tools/nf-options buy|sell SYMBOL EXPIRY STRIKE CE|PE LOTS [--price P] [--type MARKET|LIMIT] [--dry-run] [--json]` — dry-run includes charges, funds check, break-even
+- `python cli-tools/nf-options charges SYMBOL EXPIRY STRIKE CE|PE LOTS [--side BUY|SELL] [--price P] [--exit-price P] [--json]` — F&O charges estimate (brokerage, STT, GST, etc.), optional round-trip with --exit-price
+- `python cli-tools/nf-options positions [--json]` — View all open F&O positions with P&L
+- `python cli-tools/nf-options plan SYMBOL --expiry YYYY-MM-DD [--side buy|sell] [--bias bullish|bearish] [--capital N] [--lots N] [--json]` — Trade planner: suggests strikes, computes affordability, shows candidates near ATM
 
 **Watchlist:**
 - `python cli-tools/nf-watchlist [--json]` — View watchlist with live prices
@@ -1334,6 +1337,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-monitor add-rule --name "..." --symbol SYM --trigger price --condition lte --price 2400 --action place_order --side SELL --qty 10 --product I --max-fires 1 --expires today --json`
 - `python cli-tools/nf-monitor add-oco --symbol SYM --qty 10 --product I --sl 2400 --target 2700 [--side SELL|BUY] [--linked-trade TX] [--expires today] --json` — OCO pair: --side SELL (default) exits LONG, --side BUY exits SHORT (flips trigger conditions + exit direction)
 - `python cli-tools/nf-monitor add-trailing --symbol SYM --qty N --trail-percent PCT [--side SELL|BUY] [--product D|I] [--expires today] [--json]` — Trailing stop: --side SELL (default) exits LONG (tracks highest), --side BUY exits SHORT (tracks lowest)
+- F&O option contracts: use `--underlying BANKNIFTY --expiry 2026-03-12 --strike 48000 --option-type CE` instead of `--symbol` for options monitoring. SL/target/trailing prices refer to option PREMIUM, not underlying spot.
+  Example: `python cli-tools/nf-monitor add-oco --underlying BANKNIFTY --expiry 2026-03-12 --strike 48000 --option-type CE --qty 30 --sl 180 --target 260 --product D --json`
 - `python cli-tools/nf-monitor list [--active] [--json]` — View rules
 - `python cli-tools/nf-monitor enable|disable|delete RULE_ID [--json]`
 - `python cli-tools/nf-monitor logs [--rule RULE_ID] [--limit 20] [--json]` — Rule firing history
