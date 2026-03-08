@@ -14,7 +14,12 @@ from typing import Dict, List, Optional, Any
 
 import re
 import requests
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+# Load .env so API keys are available when run directly from terminal
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_backend_dir, ".env"))
 
 
 # Common NSE symbols that need disambiguation (global name conflicts)

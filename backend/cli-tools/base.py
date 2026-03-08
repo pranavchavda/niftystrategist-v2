@@ -10,6 +10,10 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+# Load .env so CLI tools can access API keys when run directly from terminal
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(os.path.join(_backend_dir, ".env"))
+
 from services.upstox_client import UpstoxClient  # noqa: E402
 from services.instruments_cache import (  # noqa: E402
     ensure_loaded as _ensure_instruments,
