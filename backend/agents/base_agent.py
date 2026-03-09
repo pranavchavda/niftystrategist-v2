@@ -15,7 +15,7 @@ import logging
 import os
 from pydantic import BaseModel
 from pydantic_ai import Agent, Tool, ModelSettings
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -73,7 +73,8 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
         self.description = config.description
 
         # Set up the model with OpenRouter or direct OpenAI
-        self.model = self._setup_model(config)
+        # Returns (model, model_settings) tuple — settings needed for Agent constructor
+        self.model, self.model_settings = self._setup_model(config)
 
         # Create the Pydantic AI agent
         # Use instructions instead of system_prompt per Pydantic AI docs
@@ -89,7 +90,8 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             'output_type': output_type,
             'instructions': self._get_system_prompt(),  # Static base instructions
             'retries': config.max_retries,
-            'history_processors': self._get_history_processors()  # Context window management
+            'history_processors': self._get_history_processors(),  # Context window management
+            'model_settings': self.model_settings,  # Reasoning settings etc. must be on Agent
         }
 
         # Add toolsets if provided
@@ -138,10 +140,11 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             # For gateway models, return the model STRING directly
             # Pydantic AI's Agent class will handle gateway routing automatically
             # No need to create a custom provider - this is the documented way!
-            return config.model_name  # e.g., "gateway/groq:openai/gpt-oss-120b"
+            return config.model_name, None  # e.g., "gateway/groq:openai/gpt-oss-120b"
 
         # Check if this is an Anthropic model (Claude)
         is_anthropic = 'claude' in config.model_name.lower()
+        use_responses_api = False  # Will be set True for OpenAI models (GPT-5.x etc.)
 
         if is_anthropic:
             # Use direct Anthropic API for Claude models
@@ -187,7 +190,7 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
                 config.model_name,
                 provider=provider,
                 settings=model_settings
-            )
+            ), model_settings
 
         elif config.use_openrouter:
             # Use OpenRouterProvider for proper OpenRouter support
@@ -210,6 +213,8 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             # OpenRouter uses format: provider/model
             model_name = f"openai/{config.model_name}" if not "/" in config.model_name else config.model_name
             logger.info(f"Using model: {model_name} via OpenRouterProvider")
+            # Use Responses API for OpenAI models via OpenRouter (supported since Jan 2026)
+            use_responses_api = model_name.startswith('openai/')
         else:
             # Direct OpenAI API
             # First check OS environment, then fall back to dotenv if needed
@@ -227,6 +232,8 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
                 api_key=api_key
             )
             model_name = config.model_name
+            # Flag direct OpenAI for Responses API usage below
+            use_responses_api = True
 
         # Create model settings with temperature and max_tokens
         # Add reasoning_effort for models that support it
@@ -246,9 +253,21 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             model_settings_kwargs['reasoning_effort'] = 'medium'
             logger.info(f"Enabling reasoning for {model_name} with effort: medium")
         elif 'gpt-5' in model_name.lower():
-            # GPT-5 always uses reasoning, but let's explicitly enable it
-            model_settings_kwargs['reasoning'] = {'effort': 'high'}
-            logger.info(f"Enabling reasoning for {model_name} with effort: high")
+            # GPT-5 always uses reasoning
+            if use_responses_api:
+                # Responses API uses openai_ prefixed settings for reasoning
+                # BOTH effort and summary are required — summary alone won't trigger reasoning
+                model_settings_kwargs['openai_reasoning_effort'] = 'high'
+                model_settings_kwargs['openai_reasoning_summary'] = 'detailed'
+                # Disable reasoning IDs — sliding window history processor can truncate
+                # messages, causing "Item 'rs_123' provided without required following item" errors
+                model_settings_kwargs['openai_send_reasoning_ids'] = False
+                # Temperature is not supported when reasoning is enabled
+                model_settings_kwargs.pop('temperature', None)
+                logger.info(f"Enabling reasoning for {model_name} via Responses API (effort: high, summary: detailed)")
+            else:
+                model_settings_kwargs['reasoning'] = {'effort': 'high'}
+                logger.info(f"Enabling reasoning for {model_name} with effort: high")
         elif 'openai/gpt-oss-120b' in model_name.lower():
             model_settings_kwargs['reasoning'] = {'effort': 'high'}
             logger.info(f"Enabling reasoning for {model_name} with effort: high")
@@ -293,7 +312,10 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             # Pydantic AI should handle this automatically
             logger.info(f"Using Claude model {model_name} with thinking support")
 
-        model_settings = ModelSettings(**model_settings_kwargs)
+        if use_responses_api:
+            model_settings = OpenAIResponsesModelSettings(**model_settings_kwargs)
+        else:
+            model_settings = ModelSettings(**model_settings_kwargs)
 
         # DeepSeek models need strict tool definitions disabled.
         # Use dataclasses.replace to override ONLY that field while preserving
@@ -309,7 +331,18 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
                 provider=provider,
                 settings=model_settings,
                 profile=profile
-            )
+            ), model_settings
+
+        # Use OpenAI Responses API for OpenAI models (GPT-5.x etc.)
+        # Responses API provides better tool calling, reasoning, and server-side state
+        # Supported by both direct OpenAI and OpenRouter (since Jan 2026 Open Responses spec)
+        if use_responses_api:
+            logger.info(f"Using OpenAIResponsesModel (Responses API) for {model_name}")
+            return OpenAIResponsesModel(
+                model_name,
+                provider=provider,
+                settings=model_settings
+            ), model_settings
 
         # Gemini, Kimi/Moonshot, and all other OpenRouter models:
         # Pydantic AI 1.47+ OpenRouterProvider natively handles reasoning fields
@@ -319,7 +352,7 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             model_name,
             provider=provider,
             settings=model_settings
-        )
+        ), model_settings
 
     @abstractmethod
     def _get_system_prompt(self) -> str:
