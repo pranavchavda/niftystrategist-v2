@@ -1,136 +1,36 @@
 #!/usr/bin/env python3
-"""Check NSE market status — open/closed, time to next event, holidays."""
+"""Check NSE market status — open/closed, time to next event.
+
+Uses Upstox market status API as source of truth (handles holidays correctly).
+Falls back to time-based calculation if no valid token is available.
+"""
 
 import argparse
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+import os
 
-# IST = UTC+5:30
-IST = timezone(timedelta(hours=5, minutes=30))
+# Add backend/ to sys.path
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
-# NSE market hours (IST)
-PREOPEN_START = (9, 0)   # 9:00 AM
-MARKET_OPEN = (9, 15)    # 9:15 AM
-MARKET_CLOSE = (15, 30)  # 3:30 PM
-
-# NSE holidays 2026 (dates in MM-DD format)
-# Source: NSE holiday calendar
-NSE_HOLIDAYS_2026 = [
-    "01-26",  # Republic Day
-    "02-17",  # Mahashivratri (Maha Shivaratri)
-    "03-10",  # Holi
-    "03-31",  # Id-Ul-Fitr (Ramadan)
-    "04-02",  # Ram Navami
-    "04-14",  # Dr. Ambedkar Jayanti
-    "04-18",  # Good Friday
-    "05-01",  # Maharashtra Day
-    "06-07",  # Id-Ul-Adha (Bakra Id)
-    "07-07",  # Muharram
-    "08-15",  # Independence Day
-    "08-19",  # Janmashtami (Vaikuntha Ekadashi approx)
-    "09-05",  # Milad-Un-Nabi (Prophet's Birthday)
-    "10-02",  # Mahatma Gandhi Jayanti
-    "10-20",  # Dussehra
-    "10-21",  # Dussehra (additional)
-    "11-09",  # Diwali (Laxmi Pujan)
-    "11-10",  # Diwali Balipratipada
-    "11-27",  # Guru Nanak Jayanti
-    "12-25",  # Christmas
-]
-
-WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+from base import init_client, run_async
+from utils.market_status import get_market_status, format_duration, _ist_now
 
 
-def is_holiday(dt: datetime) -> bool:
-    """Check if given IST date is an NSE holiday."""
-    date_str = dt.strftime("%m-%d")
-    return date_str in NSE_HOLIDAYS_2026
-
-
-def get_next_trading_day(dt: datetime) -> datetime:
-    """Get the next trading day (skipping weekends and holidays)."""
-    candidate = dt + timedelta(days=1)
-    candidate = candidate.replace(hour=9, minute=15, second=0, microsecond=0)
-    while candidate.weekday() >= 5 or is_holiday(candidate):
-        candidate += timedelta(days=1)
-    return candidate
-
-
-def format_duration(td: timedelta) -> str:
-    """Format a timedelta as '2h 15m' or '45m'."""
-    total_minutes = int(td.total_seconds() / 60)
-    if total_minutes < 0:
-        return "0m"
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-    if hours > 0:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m"
-
-
-def get_market_status() -> dict:
-    """Determine current NSE market status."""
-    now = datetime.now(IST)
-    weekday = now.weekday()  # 0=Mon, 6=Sun
-
-    today_preopen = now.replace(hour=PREOPEN_START[0], minute=PREOPEN_START[1], second=0, microsecond=0)
-    today_open = now.replace(hour=MARKET_OPEN[0], minute=MARKET_OPEN[1], second=0, microsecond=0)
-    today_close = now.replace(hour=MARKET_CLOSE[0], minute=MARKET_CLOSE[1], second=0, microsecond=0)
-
-    holiday = is_holiday(now)
-    weekend = weekday >= 5
-
-    if weekend or holiday:
-        next_day = get_next_trading_day(now)
-        reason = "weekend" if weekend else "holiday"
-        return {
-            "status": "closed",
-            "reason": reason,
-            "next_open": next_day.strftime("%a %b %d at 9:15 AM IST"),
-            "next_open_in": format_duration(next_day - now),
-            "current_time_ist": now.strftime("%I:%M %p IST"),
-        }
-
-    # Weekday, not a holiday
-    if now < today_preopen:
-        # Before pre-open
-        return {
-            "status": "closed",
-            "reason": "before_hours",
-            "next_event": "pre-open",
-            "next_event_time": "9:00 AM IST",
-            "next_event_in": format_duration(today_preopen - now),
-            "current_time_ist": now.strftime("%I:%M %p IST"),
-        }
-    elif now < today_open:
-        # Pre-open session
-        return {
-            "status": "pre-open",
-            "reason": "pre_open_session",
-            "next_event": "market open",
-            "next_event_time": "9:15 AM IST",
-            "next_event_in": format_duration(today_open - now),
-            "current_time_ist": now.strftime("%I:%M %p IST"),
-        }
-    elif now < today_close:
-        # Market is open!
-        return {
-            "status": "open",
-            "closes_in": format_duration(today_close - now),
-            "close_time": "3:30 PM IST",
-            "current_time_ist": now.strftime("%I:%M %p IST"),
-        }
-    else:
-        # After market close
-        next_day = get_next_trading_day(now)
-        return {
-            "status": "closed",
-            "reason": "after_hours",
-            "next_open": next_day.strftime("%a %b %d at 9:15 AM IST"),
-            "next_open_in": format_duration(next_day - now),
-            "current_time_ist": now.strftime("%I:%M %p IST"),
-        }
+async def _get_upstox_status() -> str | None:
+    """Try to get market status from Upstox API."""
+    try:
+        client = init_client()
+        if not client.access_token:
+            return None
+        result = await client.get_market_status_api()
+        if result and result.get("status"):
+            return result["status"]
+    except Exception:
+        pass
+    return None
 
 
 def main():
@@ -147,7 +47,9 @@ Examples:
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
 
-    status = get_market_status()
+    # Try Upstox API first, fall back to time-based
+    upstox_status = run_async(_get_upstox_status())
+    status = get_market_status(upstox_api_status=upstox_status)
 
     if args.json:
         print(json.dumps(status, indent=2))
@@ -158,25 +60,35 @@ Examples:
     if s == "open":
         print(f"📈 Market is OPEN (closes in {status['closes_in']})")
         print(f"   Close time: {status['close_time']}")
-    elif s == "pre-open":
+    elif s == "pre_open":
         print(f"🟡 Pre-open session (market opens in {status['next_event_in']})")
     elif s == "closed":
         reason = status.get("reason", "")
         if reason == "weekend":
-            print(f"🔴 Market is CLOSED (weekend)")
-        elif reason == "holiday":
-            print(f"🔴 Market is CLOSED (holiday)")
+            print("🔴 Market is CLOSED (weekend)")
+        elif reason == "holiday_or_after_hours":
+            # Upstox said closed on a weekday — could be holiday or after hours
+            now = _ist_now()
+            if now.hour < 9:
+                print("🔴 Market is CLOSED (pre-market)")
+            elif now.hour >= 16:
+                print("🔴 Market is CLOSED (after hours)")
+            else:
+                print("🔴 Market is CLOSED (holiday)")
         elif reason == "before_hours":
             print(f"🔴 Market is CLOSED (pre-market starts in {status['next_event_in']})")
         elif reason == "after_hours":
-            print(f"🔴 Market is CLOSED (after hours)")
+            print("🔴 Market is CLOSED (after hours)")
         else:
-            print(f"🔴 Market is CLOSED")
+            print("🔴 Market is CLOSED")
 
         if "next_open" in status:
             print(f"   Next open: {status['next_open']} (in {status['next_open_in']})")
 
+    source = status.get("source", "unknown")
+    source_label = "Upstox API" if source == "upstox_api" else "time-based (no token)"
     print(f"   Current time: {status.get('current_time_ist', 'N/A')}")
+    print(f"   Source: {source_label}")
 
 
 if __name__ == "__main__":
