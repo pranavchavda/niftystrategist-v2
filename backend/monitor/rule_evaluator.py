@@ -384,5 +384,8 @@ def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
         if rule.action_type == "cancel_rule":
             cancel = CancelRuleAction(**rule.action_config)
             result.rules_to_cancel = [cancel.rule_id]
+        elif rule.action_config and "also_cancel_rule" in rule.action_config:
+            # OCO pattern: cancel sibling rule when this action fires
+            result.rules_to_cancel = [rule.action_config["also_cancel_rule"]]
 
     return result
