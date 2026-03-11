@@ -50,7 +50,7 @@ class MeanReversionTemplate(StrategyTemplate):
 
         # For sizing we need an approximate entry price
         entry_price = p.get("entry_price") or sl * (1.02 if is_long else 0.98)
-        qty = compute_quantity(capital, risk_pct, entry_price, sl)
+        qty = compute_quantity(capital, risk_pct, entry_price, sl, product=product)
 
         label = "Long (Oversold)" if is_long else "Short (Overbought)"
 

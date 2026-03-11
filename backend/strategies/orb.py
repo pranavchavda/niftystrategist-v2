@@ -66,7 +66,7 @@ class ORBTemplate(StrategyTemplate):
 
         if side in ("long", "both"):
             sl_long = range_low
-            qty_long = compute_quantity(capital, risk_pct, range_high, sl_long)
+            qty_long = compute_quantity(capital, risk_pct, range_high, sl_long, product=product)
             target_long = compute_target(range_high, sl_long, rr)
 
             # Long entry
@@ -123,7 +123,7 @@ class ORBTemplate(StrategyTemplate):
 
         if side in ("short", "both"):
             sl_short = range_high
-            qty_short = compute_quantity(capital, risk_pct, range_low, sl_short)
+            qty_short = compute_quantity(capital, risk_pct, range_low, sl_short, product=product)
             target_short = compute_target(range_low, sl_short, rr)
 
             # Short entry
@@ -181,8 +181,8 @@ class ORBTemplate(StrategyTemplate):
         # Auto square-off (covers both sides)
         # Use max qty between long and short
         max_qty = max(
-            compute_quantity(capital, risk_pct, range_high, range_low) if side in ("long", "both") else 0,
-            compute_quantity(capital, risk_pct, range_low, range_high) if side in ("short", "both") else 0,
+            compute_quantity(capital, risk_pct, range_high, range_low, product=product) if side in ("long", "both") else 0,
+            compute_quantity(capital, risk_pct, range_low, range_high, product=product) if side in ("short", "both") else 0,
         )
         rules.append(RuleSpec(
             name=f"{symbol} ORB Auto Square-Off @ {squareoff}",

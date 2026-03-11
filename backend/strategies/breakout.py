@@ -38,7 +38,7 @@ class BreakoutTemplate(StrategyTemplate):
         squareoff = p["squareoff_time"]
 
         target = p.get("target") or compute_target(entry, sl, rr)
-        qty = compute_quantity(capital, risk_pct, entry, sl)
+        qty = compute_quantity(capital, risk_pct, entry, sl, product=product)
 
         # Determine direction from entry vs SL
         is_long = entry > sl

@@ -41,7 +41,7 @@ class ScalpTemplate(StrategyTemplate):
         squareoff = p["squareoff_time"]
 
         target = p.get("target") or compute_target(entry, sl, rr)
-        qty = compute_quantity(capital, risk_pct, entry, sl)
+        qty = compute_quantity(capital, risk_pct, entry, sl, product=product)
 
         is_long = entry > sl
         side_entry = "BUY" if is_long else "SELL"

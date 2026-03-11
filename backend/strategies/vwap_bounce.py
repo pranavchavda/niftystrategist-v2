@@ -46,7 +46,7 @@ class VWAPBounceTemplate(StrategyTemplate):
         entry_price = vwap - band if is_long else vwap + band
 
         target = p.get("target") or compute_target(entry_price, sl, rr)
-        qty = compute_quantity(capital, risk_pct, entry_price, sl)
+        qty = compute_quantity(capital, risk_pct, entry_price, sl, product=product)
 
         side_entry = "BUY" if is_long else "SELL"
         side_exit = "SELL" if is_long else "BUY"
