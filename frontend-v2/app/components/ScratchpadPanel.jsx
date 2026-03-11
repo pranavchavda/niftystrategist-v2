@@ -296,8 +296,8 @@ export default function ScratchpadPanel() {
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">
                     {formatTimestamp(entry.timestamp)}
                   </span>
-                  {/* Edit/Delete buttons - only show for human entries and when not editing */}
-                  {entry.author !== 'agent' && editingIndex !== index && (
+                  {/* Edit/Delete buttons - show on hover when not editing */}
+                  {editingIndex !== index && (
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => startEdit(index, entry.content)}
