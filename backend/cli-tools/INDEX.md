@@ -18,6 +18,7 @@ CLI tools for stock market data and trading operations. Run from `backend/` dire
 | `nf-order` | Place, list, cancel orders | Yes | `python cli-tools/nf-order buy RELIANCE 10` |
 | `nf-watchlist` | Manage watchlist with price alerts | Yes | `python cli-tools/nf-watchlist` |
 | `nf-strategy` | Deploy strategy templates (algo trading) | Yes | `python cli-tools/nf-strategy deploy breakout --symbol RELIANCE --capital 50000 --entry 2450 --sl 2430 --json` |
+| `nf-backtest` | Backtest strategies against historical data | Yes | `python cli-tools/nf-backtest --strategy breakout --symbol RELIANCE --days 30 --entry-pct 1.0 --sl-pct 1.5 --json` |
 
 All tools support `--json` for structured output and `--help` for usage info.
 
@@ -316,3 +317,30 @@ python cli-tools/nf-strategy teardown --group-id <uuid> --json                  
 - All rules in a strategy share a `group_id` for easy management
 - Use `--dry-run` to preview rules before creating them
 - Default expiry is "today" (market close at 15:30 IST)
+
+---
+
+### nf-backtest
+
+Backtest strategy templates against historical data to validate performance before risking capital.
+
+```
+python cli-tools/nf-backtest --strategy TEMPLATE --symbol SYM [--days N] [--capital AMOUNT] [options] [--json]
+python cli-tools/nf-backtest --strategy TEMPLATE --symbols SYM1,SYM2 [options] [--json]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-backtest --strategy breakout --symbol RELIANCE --days 30 \
+  --entry-pct 1.0 --sl-pct 1.5 --json                                        # Breakout with % levels
+python cli-tools/nf-backtest --strategy orb --symbol HDFCBANK --days 20 --json # ORB (auto-detects range)
+python cli-tools/nf-backtest --strategy mean-reversion --symbol INFY \
+  --days 30 --sl-pct 2.0 --json                                               # Mean reversion
+python cli-tools/nf-backtest --strategy breakout --symbols RELIANCE,HDFCBANK,INFY \
+  --days 30 --entry-pct 1.0 --sl-pct 1.5 --json                              # Compare across symbols
+```
+
+- Simulates candle-by-candle using the same rule evaluator as the live monitor
+- Outputs: win rate, profit factor, Sharpe ratio, max drawdown, expectancy, trade list
+- ORB auto-detects opening range from first candle of each day
+- Use `--entry-pct` and `--sl-pct` for multi-day backtests (levels computed per day)

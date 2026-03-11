@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""Backtest strategy templates against historical data."""
+
+import argparse
+import sys
+import os
+from collections import defaultdict
+from datetime import datetime
+
+# Add backend/ to path
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import (  # noqa: E402
+    format_inr,
+    init_client,
+    print_error,
+    print_json,
+    run_async,
+    validate_symbol,
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="nf-backtest",
+        description="Backtest strategy templates against historical data.",
+    )
+    p.add_argument("--strategy", "-s", required=True,
+                   choices=["breakout", "orb", "mean-reversion", "vwap-bounce", "scalp"],
+                   help="Strategy template name")
+    p.add_argument("--symbol", type=str, help="Single symbol to backtest")
+    p.add_argument("--symbols", type=str,
+                   help="Comma-separated symbols for comparison")
+    p.add_argument("--days", "-d", type=int, default=30,
+                   help="Days of historical data (default: 30)")
+    p.add_argument("--capital", "-c", type=float, default=100_000,
+                   help="Initial capital (default: 100000)")
+    p.add_argument("--interval", type=str, default="15minute",
+                   choices=["1minute", "5minute", "15minute", "30minute"],
+                   help="Candle interval (default: 15minute)")
+
+    # Strategy-specific params
+    p.add_argument("--entry", type=float, help="Entry price (breakout)")
+    p.add_argument("--sl", type=float, help="Stop-loss price")
+    p.add_argument("--target", type=float, help="Target price (optional)")
+    p.add_argument("--range-high", type=float, help="ORB range high")
+    p.add_argument("--range-low", type=float, help="ORB range low")
+    p.add_argument("--risk-percent", type=float, default=2.0,
+                   help="Risk percent of capital (default: 2.0)")
+    p.add_argument("--rr-ratio", type=float, default=2.0,
+                   help="Reward:risk ratio (default: 2.0)")
+    p.add_argument("--trail-percent", type=float, default=1.5,
+                   help="Trailing stop percent (default: 1.5)")
+    p.add_argument("--side", type=str, default="both",
+                   choices=["long", "short", "both"],
+                   help="Trade direction (default: both)")
+
+    # Percentage-based params for multi-day backtesting
+    p.add_argument("--entry-pct", type=float,
+                   help="Entry at day open + N%% (for breakout across multiple days)")
+    p.add_argument("--sl-pct", type=float,
+                   help="SL distance from entry as %% (for multi-day)")
+
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+    return p
+
+
+async def fetch_candles(symbol: str, interval: str, days: int) -> list[dict]:
+    """Fetch historical candles via Upstox client."""
+    client = init_client()
+    ohlcv_list = await client.get_historical_data(symbol, interval=interval, days=days)
+    # Convert OHLCVData objects to dicts
+    candles = []
+    for c in ohlcv_list:
+        candles.append({
+            "timestamp": c.timestamp,
+            "open": c.open,
+            "high": c.high,
+            "low": c.low,
+            "close": c.close,
+            "volume": c.volume,
+        })
+    return candles
+
+
+def split_by_day(candles: list[dict]) -> dict[str, list[dict]]:
+    """Split candles into per-day groups."""
+    from backtesting.engine import BacktestEngine
+    days: dict[str, list[dict]] = defaultdict(list)
+    for c in candles:
+        ts = BacktestEngine._parse_timestamp(c["timestamp"])
+        day_key = ts.strftime("%Y-%m-%d")
+        days[day_key] = days.get(day_key, [])
+        days[day_key].append(c)
+    return dict(sorted(days.items()))
+
+
+def build_rules_for_day(
+    strategy_name: str,
+    symbol: str,
+    day_candles: list[dict],
+    args: argparse.Namespace,
+) -> list:
+    """Build strategy rules for a single day, auto-detecting ORB range etc."""
+    from strategies.templates import get_template
+
+    template = get_template(strategy_name)
+    if template is None:
+        print_error(f"Unknown strategy: {strategy_name}")
+
+    params: dict = {
+        "capital": args.capital,
+        "risk_percent": args.risk_percent,
+        "rr_ratio": args.rr_ratio,
+        "trail_percent": args.trail_percent,
+        "side": args.side,
+    }
+
+    if strategy_name == "orb":
+        if args.range_high and args.range_low:
+            params["range_high"] = args.range_high
+            params["range_low"] = args.range_low
+        else:
+            # Auto-detect from first candle of the day
+            if not day_candles:
+                return []
+            first = day_candles[0]
+            params["range_high"] = first["high"]
+            params["range_low"] = first["low"]
+
+    elif strategy_name == "breakout":
+        if args.entry and args.sl:
+            params["entry"] = args.entry
+            params["sl"] = args.sl
+        elif args.entry_pct is not None and args.sl_pct is not None:
+            if not day_candles:
+                return []
+            day_open = day_candles[0]["open"]
+            params["entry"] = round(day_open * (1 + args.entry_pct / 100), 2)
+            params["sl"] = round(params["entry"] * (1 - args.sl_pct / 100), 2)
+        else:
+            print_error("Breakout requires --entry + --sl, or --entry-pct + --sl-pct")
+
+        if args.target:
+            params["target"] = args.target
+
+    elif strategy_name == "mean-reversion":
+        if args.sl:
+            params["sl"] = args.sl
+        elif args.sl_pct is not None:
+            if not day_candles:
+                return []
+            day_open = day_candles[0]["open"]
+            if args.side == "short":
+                params["sl"] = round(day_open * (1 + args.sl_pct / 100), 2)
+            else:
+                params["sl"] = round(day_open * (1 - args.sl_pct / 100), 2)
+        else:
+            print_error("Mean-reversion requires --sl or --sl-pct")
+
+    elif strategy_name == "vwap-bounce":
+        if args.sl:
+            params["sl_distance"] = args.sl
+        elif args.sl_pct is not None:
+            params["sl_distance_pct"] = args.sl_pct
+
+    elif strategy_name == "scalp":
+        if args.sl:
+            params["sl_distance"] = args.sl
+
+    plan = template.plan(symbol, params)
+    return plan.rules
+
+
+def run_backtest(args: argparse.Namespace) -> None:
+    """Main backtest execution."""
+    from backtesting.engine import BacktestEngine, run_backtest_for_day
+    from backtesting.metrics import compute_metrics
+    from backtesting.simulator import Trade
+
+    symbols = []
+    if args.symbols:
+        symbols = [s.strip().upper() for s in args.symbols.split(",")]
+    elif args.symbol:
+        symbols = [args.symbol.upper()]
+    else:
+        print_error("Provide --symbol or --symbols")
+
+    # Validate symbols
+    for sym in symbols:
+        validate_symbol(sym)
+
+    all_results = {}
+
+    for sym in symbols:
+        # Fetch candles
+        candles = run_async(fetch_candles(sym, args.interval, args.days))
+        if not candles:
+            print(f"⚠️  No historical data for {sym}", file=sys.stderr)
+            continue
+
+        # Split by day for intraday strategies
+        day_groups = split_by_day(candles)
+        all_trades: list[Trade] = []
+
+        for day_key, day_candles in day_groups.items():
+            if len(day_candles) < 2:
+                continue
+
+            try:
+                rules = build_rules_for_day(args.strategy, sym, day_candles, args)
+            except ValueError as e:
+                print(f"⚠️  Skipping {day_key}: {e}", file=sys.stderr)
+                continue
+
+            if not rules:
+                continue
+
+            # For ORB: skip the first candle (it IS the range)
+            sim_candles = day_candles[1:] if args.strategy == "orb" else day_candles
+
+            result = run_backtest_for_day(
+                sim_candles, rules, sym, args.strategy, args.capital,
+            )
+            all_trades.extend(result.trades)
+
+        # Compute aggregate metrics
+        metrics = compute_metrics(all_trades, args.capital)
+
+        all_results[sym] = {
+            "symbol": sym,
+            "strategy": args.strategy,
+            "days": len(day_groups),
+            "candles": len(candles),
+            "interval": args.interval,
+            "trades": [_trade_to_dict(t) for t in all_trades],
+            "metrics": metrics,
+        }
+
+    if args.json:
+        if len(all_results) == 1:
+            print_json(list(all_results.values())[0])
+        else:
+            print_json(all_results)
+    else:
+        for sym, data in all_results.items():
+            _print_report(data, args.capital)
+            if len(all_results) > 1:
+                print()
+
+
+def _trade_to_dict(t) -> dict:
+    """Convert a Trade dataclass to a dict."""
+    return {
+        "symbol": t.symbol,
+        "side": t.side,
+        "entry_price": t.entry_price,
+        "entry_time": str(t.entry_time),
+        "exit_price": t.exit_price,
+        "exit_time": str(t.exit_time),
+        "quantity": t.quantity,
+        "pnl": t.pnl,
+        "pnl_pct": t.pnl_pct,
+        "exit_reason": t.exit_reason,
+        "holding_minutes": t.holding_minutes,
+    }
+
+
+def _print_report(data: dict, capital: float) -> None:
+    """Print formatted backtest report."""
+    m = data["metrics"]
+    sym = data["symbol"]
+    strat = data["strategy"]
+    days = data["days"]
+
+    header = f"Backtest Results: {strat} on {sym} ({days} days)"
+    print(header)
+    print("═" * len(header))
+    print()
+
+    # Performance Summary
+    print("Performance Summary")
+    print(f"  Total Trades:      {m['total_trades']}")
+    if m["total_trades"] > 0:
+        print(f"  Win Rate:          {m['win_rate']}% ({m['winners']}W / {m['losers']}L)")
+        sign = "+" if m["return_pct"] >= 0 else ""
+        print(f"  Net P&L:           {format_inr(m['net_pnl'])} ({sign}{m['return_pct']}%)")
+        pf = m["profit_factor"]
+        pf_str = "∞" if pf == "inf" else str(pf)
+        print(f"  Profit Factor:     {pf_str}")
+        print(f"  Sharpe Ratio:      {m['sharpe_ratio']}")
+        print(f"  Max Drawdown:      -{m['max_drawdown_pct']}%")
+    else:
+        print("  No trades executed.")
+        return
+
+    print()
+
+    # Trade Statistics
+    print("Trade Statistics")
+    print(f"  Avg Winner:        {format_inr(m['avg_winner'])}")
+    print(f"  Avg Loser:         {format_inr(m['avg_loser'])}")
+    print(f"  Best Trade:        {format_inr(m['best_trade'])}")
+    print(f"  Worst Trade:       {format_inr(m['worst_trade'])}")
+    print(f"  Avg Holding:       {m['avg_holding_minutes']} min")
+    print(f"  Max Consec Losses: {m['max_consecutive_losses']}")
+
+    print()
+    print(f"Expectancy:          {format_inr(m['expectancy'])} per trade")
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    run_backtest(args)
+
+
+if __name__ == "__main__":
+    main()

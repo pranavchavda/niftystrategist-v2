@@ -1358,6 +1358,21 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-strategy status --json` — Show all deployed strategies and their rules
 - `python cli-tools/nf-strategy teardown --group-id UUID --json` — Remove all rules from a strategy
 
+**Backtesting (validate strategies before deploying):**
+- `python cli-tools/nf-backtest --strategy TEMPLATE --symbol SYM --days 30 --capital 100000 [--entry-pct 1.0 --sl-pct 1.5] --json` — Backtest a strategy against historical data
+- `python cli-tools/nf-backtest --strategy orb --symbol SYM --days 20 --json` — ORB backtest (auto-detects opening range)
+- `python cli-tools/nf-backtest --strategy TEMPLATE --symbols SYM1,SYM2,SYM3 --days 30 --json` — Compare across multiple symbols
+- Use `--entry-pct` and `--sl-pct` for multi-day backtests where absolute prices vary daily
+- Outputs: win rate, profit factor, Sharpe ratio, max drawdown, expectancy, all trades
+
+**Compound triggers (multi-condition rules):**
+- `nf-monitor add-rule --trigger compound --operator and --sub-condition "price:gte:2450" --sub-condition "indicator:rsi:lte:30:5m" ...`
+- Condition formats: `price:COND:PRICE`, `indicator:NAME:COND:VALUE:TF`, `time:HH:MM`
+- New indicators available: `vwap`, `bollinger` (with band param: upper/lower/width/pctb), `supertrend` (returns 1.0 bullish / -1.0 bearish)
+
+**Morning scan with auto-deploy:**
+- `python cli-tools/nf-morning-scan --auto-deploy TEMPLATE --capital AMOUNT --top N [--dry-run] --json` — Scan + auto-deploy strategies on top candidates
+
 For full documentation: `cat cli-tools/INDEX.md`
 
 ### Utility Tools

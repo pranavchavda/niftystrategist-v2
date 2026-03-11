@@ -43,6 +43,79 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
             if avg_vol == 0:
                 return None
             return float(df["volume"].iloc[-1] / avg_vol)
+        elif indicator == "vwap":
+            # VWAP: cumulative(typical_price * volume) / cumulative(volume)
+            typical_price = (df["high"] + df["low"] + df["close"]) / 3
+            cum_tp_vol = (typical_price * df["volume"]).cumsum()
+            cum_vol = df["volume"].cumsum()
+            if cum_vol.iloc[-1] == 0:
+                return None
+            val = cum_tp_vol.iloc[-1] / cum_vol.iloc[-1]
+            return None if pd.isna(val) else float(val)
+        elif indicator == "bollinger":
+            period = params.get("period", 20)
+            std_dev = params.get("std_dev", 2.0)
+            band = params.get("band", "pctb")
+            if len(df) < period:
+                return None
+            bb = ta.volatility.BollingerBands(df["close"], window=period, window_dev=std_dev)
+            if band == "upper":
+                val = bb.bollinger_hband().iloc[-1]
+            elif band == "lower":
+                val = bb.bollinger_lband().iloc[-1]
+            elif band == "width":
+                mid = bb.bollinger_mavg().iloc[-1]
+                if pd.isna(mid) or mid == 0:
+                    return None
+                val = (bb.bollinger_hband().iloc[-1] - bb.bollinger_lband().iloc[-1]) / mid
+            else:  # pctb
+                val = bb.bollinger_pband().iloc[-1]
+            return None if pd.isna(val) else float(val)
+        elif indicator == "supertrend":
+            period = params.get("period", 10)
+            multiplier = params.get("multiplier", 3.0)
+            if len(df) < period + 1:
+                return None
+            # Compute ATR
+            high, low, close = df["high"], df["low"], df["close"]
+            tr = pd.concat([
+                high - low,
+                (high - close.shift(1)).abs(),
+                (low - close.shift(1)).abs(),
+            ], axis=1).max(axis=1)
+            atr = tr.rolling(window=period).mean()
+            hl2 = (high + low) / 2
+            # Upper and lower basic bands
+            basic_upper = hl2 + multiplier * atr
+            basic_lower = hl2 - multiplier * atr
+            # Initialize final bands and supertrend direction
+            final_upper = basic_upper.copy()
+            final_lower = basic_lower.copy()
+            supertrend = pd.Series(0.0, index=df.index)
+            for i in range(period, len(df)):
+                # Final upper band: use previous if current basic <= previous final
+                if basic_upper.iloc[i] < final_upper.iloc[i - 1] or close.iloc[i - 1] > final_upper.iloc[i - 1]:
+                    final_upper.iloc[i] = basic_upper.iloc[i]
+                else:
+                    final_upper.iloc[i] = final_upper.iloc[i - 1]
+                # Final lower band: use previous if current basic >= previous final
+                if basic_lower.iloc[i] > final_lower.iloc[i - 1] or close.iloc[i - 1] < final_lower.iloc[i - 1]:
+                    final_lower.iloc[i] = basic_lower.iloc[i]
+                else:
+                    final_lower.iloc[i] = final_lower.iloc[i - 1]
+                # Determine trend
+                if i == period:
+                    supertrend.iloc[i] = 1.0 if close.iloc[i] > final_upper.iloc[i] else -1.0
+                else:
+                    prev = supertrend.iloc[i - 1]
+                    if prev == 1.0 and close.iloc[i] < final_lower.iloc[i]:
+                        supertrend.iloc[i] = -1.0
+                    elif prev == -1.0 and close.iloc[i] > final_upper.iloc[i]:
+                        supertrend.iloc[i] = 1.0
+                    else:
+                        supertrend.iloc[i] = prev
+            val = supertrend.iloc[-1]
+            return None if pd.isna(val) or val == 0.0 else float(val)
     except Exception:
         return None
     return None

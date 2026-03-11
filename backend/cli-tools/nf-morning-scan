@@ -14,6 +14,7 @@ Designed to run shortly after market open (9:20-9:30 IST) on Nifty 100 stocks.
 import argparse
 import asyncio
 import json
+import subprocess
 import sys
 import os
 import time
@@ -904,6 +905,218 @@ def format_human_output(
 
 
 # ---------------------------------------------------------------------------
+# Phase 4: Auto-deploy strategies on top candidates
+# ---------------------------------------------------------------------------
+
+VALID_TEMPLATES = ("orb", "breakout", "mean-reversion", "vwap-bounce", "scalp")
+
+_CLI_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _build_strategy_params(
+    template: str,
+    candidate: dict,
+) -> dict:
+    """Derive strategy-specific params from scan data for a candidate.
+
+    Returns a dict of CLI arg names (without '--') to values.
+    """
+    quote = candidate["quote"]
+    ltp = quote["ltp"]
+    opening_range = candidate.get("opening_range")
+    vwap = candidate.get("vwap")
+    rsi = candidate.get("rsi")
+
+    # Determine trade side from scan signals
+    gap_pct = candidate.get("gap_pct", 0)
+    rel_strength = candidate.get("rel_strength", 0)
+    above_vwap = candidate.get("above_vwap")
+    bullish = (gap_pct > 0 or rel_strength > 0 or above_vwap is True)
+    side = "long" if bullish else "short"
+
+    params = {}
+
+    if template == "orb":
+        # Use opening range high/low from candle data
+        if opening_range:
+            params["range-high"] = opening_range["or_high"]
+            params["range-low"] = opening_range["or_low"]
+        else:
+            # Fallback: use today's high/low from quote as pseudo-range
+            params["range-high"] = quote.get("high", ltp * 1.005)
+            params["range-low"] = quote.get("low", ltp * 0.995)
+
+    elif template == "breakout":
+        params["entry"] = ltp
+        # SL: 1% below LTP for longs, 1% above for shorts
+        if side == "long":
+            params["sl"] = round(ltp * 0.99, 2)
+        else:
+            params["sl"] = round(ltp * 1.01, 2)
+        params["side"] = side
+
+    elif template == "mean-reversion":
+        params["side"] = side
+        # SL: 1.5% adverse from LTP
+        if side == "long":
+            params["sl"] = round(ltp * 0.985, 2)
+        else:
+            params["sl"] = round(ltp * 1.015, 2)
+        if rsi is not None:
+            params["rsi-entry"] = rsi  # current RSI as reference
+        params["entry-price"] = ltp
+
+    elif template == "vwap-bounce":
+        if vwap:
+            params["vwap"] = vwap
+        else:
+            # Use LTP as VWAP approximation
+            params["vwap"] = ltp
+        # SL below recent low or 1% below VWAP
+        low = quote.get("low", ltp * 0.99)
+        params["sl"] = round(min(low, (vwap or ltp) * 0.99), 2)
+
+    elif template == "scalp":
+        params["entry"] = ltp
+        # Tight SL: 0.5% from entry
+        if side == "long":
+            params["sl"] = round(ltp * 0.995, 2)
+        else:
+            params["sl"] = round(ltp * 1.005, 2)
+        params["side"] = side
+
+    return params
+
+
+def auto_deploy_strategies(
+    results: list[dict],
+    template: str,
+    capital: float,
+    risk_percent: float,
+    top_n: int,
+    dry_run: bool = False,
+    as_json: bool = False,
+    verbose: bool = False,
+) -> list[dict]:
+    """Deploy a strategy template on top N scan candidates via nf-strategy subprocess.
+
+    Returns list of deployment result dicts.
+    """
+    candidates = results[:top_n]
+    if not candidates:
+        if verbose:
+            print("  No candidates to deploy on.", file=sys.stderr)
+        return []
+
+    if verbose:
+        print(f"\nPhase 4: Auto-deploying '{template}' on top {len(candidates)} candidates "
+              f"(₹{capital:,.0f} each, {risk_percent}% risk)...", file=sys.stderr)
+
+    nf_strategy = os.path.join(_CLI_TOOLS_DIR, "nf-strategy")
+    deployments = []
+
+    for candidate in candidates:
+        sym = candidate["symbol"]
+        strategy_params = _build_strategy_params(template, candidate)
+
+        # Build subprocess command
+        cmd = [
+            sys.executable, nf_strategy,
+            "deploy", template,
+            "--symbol", sym,
+            "--capital", str(capital),
+            "--risk-percent", str(risk_percent),
+            "--json",
+        ]
+
+        # Add strategy-specific params
+        for key, val in strategy_params.items():
+            cmd.extend([f"--{key}", str(val)])
+
+        if dry_run:
+            cmd.append("--dry-run")
+
+        if verbose:
+            print(f"  Deploying {template} on {sym}...", file=sys.stderr)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ},
+                cwd=_backend_dir,
+            )
+
+            if result.returncode == 0:
+                try:
+                    deploy_result = json.loads(result.stdout)
+                    deploy_result["symbol"] = sym
+                    deployments.append(deploy_result)
+                    if verbose:
+                        rules_count = deploy_result.get("rules_count", "?")
+                        print(f"    {sym}: {rules_count} rules created", file=sys.stderr)
+                except json.JSONDecodeError:
+                    deployments.append({
+                        "symbol": sym,
+                        "error": "Failed to parse nf-strategy output",
+                        "stdout": result.stdout[:200],
+                    })
+            else:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                deployments.append({
+                    "symbol": sym,
+                    "error": error_msg[:200],
+                })
+                if verbose:
+                    print(f"    {sym}: FAILED — {error_msg[:100]}", file=sys.stderr)
+
+        except subprocess.TimeoutExpired:
+            deployments.append({
+                "symbol": sym,
+                "error": "Deployment timed out (30s)",
+            })
+        except Exception as e:
+            deployments.append({
+                "symbol": sym,
+                "error": str(e),
+            })
+
+    return deployments
+
+
+def format_deploy_summary(deployments: list[dict], template: str, dry_run: bool = False):
+    """Print a human-readable summary of auto-deploy results."""
+    label = "DRY RUN — " if dry_run else ""
+    print(f"\n  {'=' * 65}")
+    print(f"  {label}Auto-Deploy Summary: {template}")
+    print(f"  {'=' * 65}")
+
+    succeeded = [d for d in deployments if "error" not in d]
+    failed = [d for d in deployments if "error" in d]
+
+    if succeeded:
+        print(f"\n  {'Symbol':<12} {'Rules':>6} {'Group ID'}")
+        print("  " + "-" * 55)
+        for d in succeeded:
+            sym = d.get("symbol", "?")
+            rules_count = d.get("rules_count", "?")
+            group_id = d.get("group_id", "?")
+            print(f"  {sym:<12} {rules_count:>6} {group_id}")
+
+    if failed:
+        print(f"\n  Failed deployments:")
+        for d in failed:
+            print(f"    {d['symbol']}: {d['error']}")
+
+    print(f"\n  Total: {len(succeeded)} deployed, {len(failed)} failed")
+    if succeeded and not dry_run:
+        print(f"  View status: nf-strategy status")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -921,6 +1134,12 @@ Examples:
   nf-morning-scan --json              Machine-readable output
   nf-morning-scan --verbose           Show scan progress
   nf-morning-scan --debug TATAMOTORS  Debug indicators for one stock
+
+  # Auto-deploy ORB strategy on top 3 candidates
+  nf-morning-scan --auto-deploy orb --capital 50000 --top 3
+
+  # Dry-run auto-deploy (preview only)
+  nf-morning-scan --auto-deploy breakout --capital 100000 --top 5 --dry-run
 
 Scans all Nifty 100 stocks (Nifty 50 + Nifty Next 50).
 
@@ -943,7 +1162,22 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     parser.add_argument("--debug", metavar="SYMBOL", help="Debug mode: show all indicators for one stock")
     parser.add_argument("--news", action="store_true", help="Include market news context via Perplexity Sonar API")
 
+    # Auto-deploy options
+    parser.add_argument("--auto-deploy", metavar="TEMPLATE",
+                        choices=VALID_TEMPLATES,
+                        help="Deploy this strategy on top candidates (orb, breakout, mean-reversion, vwap-bounce, scalp)")
+    parser.add_argument("--capital", type=float, metavar="AMOUNT",
+                        help="Capital per strategy deployment (required with --auto-deploy)")
+    parser.add_argument("--risk-percent", type=float, default=2.0, metavar="PCT",
+                        help="Risk %% per trade (default: 2.0)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Preview strategy rules without creating them (used with --auto-deploy)")
+
     args = parser.parse_args()
+
+    # Validate auto-deploy requirements
+    if args.auto_deploy and not args.capital:
+        parser.error("--capital is required when using --auto-deploy")
 
     try:
         results, nifty_quote, nifty_pct, elapsed = asyncio.run(
@@ -971,6 +1205,35 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
         format_json_output(results, nifty_quote, nifty_pct, elapsed, news=news)
     else:
         format_human_output(results, nifty_quote, nifty_pct, elapsed, news=news)
+
+    # Phase 4: Auto-deploy strategies on top candidates
+    if args.auto_deploy:
+        deployments = auto_deploy_strategies(
+            results=results,
+            template=args.auto_deploy,
+            capital=args.capital,
+            risk_percent=args.risk_percent,
+            top_n=args.top,
+            dry_run=args.dry_run,
+            as_json=args.json,
+            verbose=args.verbose or bool(args.debug),
+        )
+
+        if args.json:
+            # Re-output with deployments included — print as separate JSON object
+            print_json({
+                "auto_deploy": {
+                    "template": args.auto_deploy,
+                    "capital_per_strategy": args.capital,
+                    "risk_percent": args.risk_percent,
+                    "dry_run": args.dry_run,
+                    "deployments": deployments,
+                    "succeeded": len([d for d in deployments if "error" not in d]),
+                    "failed": len([d for d in deployments if "error" in d]),
+                }
+            })
+        else:
+            format_deploy_summary(deployments, args.auto_deploy, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

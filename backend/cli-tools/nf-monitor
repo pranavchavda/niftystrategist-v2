@@ -67,6 +67,61 @@ def _resolve_option_instrument(underlying: str, expiry: str, strike: float,
     return best.get("tradingsymbol", ""), best.get("instrument_key", "")
 
 
+def _parse_condition(s: str) -> dict:
+    """Parse a compound condition string into a sub-trigger config dict.
+
+    Formats:
+      price:CONDITION:PRICE[:REFERENCE]
+      indicator:NAME:CONDITION:VALUE[:TIMEFRAME]
+      time:HH:MM
+    """
+    parts = s.split(":")
+    if not parts:
+        print_error(f"Empty condition string")
+
+    ctype = parts[0].lower()
+
+    if ctype == "price":
+        # price:CONDITION:PRICE[:REFERENCE]
+        if len(parts) < 3:
+            print_error(f"Price condition needs at least 3 parts (price:CONDITION:PRICE), got: {s}")
+        condition = parts[1]
+        if condition not in ("lte", "gte", "crosses_above", "crosses_below"):
+            print_error(f"Invalid price condition '{condition}' in: {s}")
+        try:
+            price = float(parts[2])
+        except ValueError:
+            print_error(f"Invalid price value '{parts[2]}' in: {s}")
+        reference = parts[3] if len(parts) > 3 else "ltp"
+        return {"type": "price", "condition": condition, "price": price, "reference": reference}
+
+    elif ctype == "indicator":
+        # indicator:NAME:CONDITION:VALUE[:TIMEFRAME]
+        if len(parts) < 4:
+            print_error(f"Indicator condition needs at least 4 parts (indicator:NAME:CONDITION:VALUE), got: {s}")
+        indicator = parts[1]
+        condition = parts[2]
+        if condition not in ("lte", "gte", "crosses_above", "crosses_below"):
+            print_error(f"Invalid indicator condition '{condition}' in: {s}")
+        try:
+            value = float(parts[3])
+        except ValueError:
+            print_error(f"Invalid indicator value '{parts[3]}' in: {s}")
+        timeframe = parts[4] if len(parts) > 4 else "5m"
+        return {"type": "indicator", "indicator": indicator, "condition": condition, "value": value, "timeframe": timeframe}
+
+    elif ctype == "time":
+        # time:HH:MM
+        if len(parts) < 2:
+            print_error(f"Time condition needs at least 2 parts (time:HH:MM), got: {s}")
+        # Rejoin remaining parts in case HH:MM was split
+        time_val = ":".join(parts[1:])
+        return {"type": "time", "at": time_val}
+
+    else:
+        print_error(f"Unknown condition type '{ctype}' in: {s}. Must be price, indicator, or time.")
+
+
 def _get_user_id() -> int:
     """Get user ID from environment."""
     return int(os.environ.get("NF_USER_ID", "999"))
@@ -221,6 +276,18 @@ def cmd_add_rule(args):
         trigger_config = {
             "order_id": args.order_id,
             "status": args.status,
+        }
+
+    elif trigger_type == "compound":
+        conditions = getattr(args, "sub_conditions", None) or []
+        if len(conditions) < 2:
+            print_error("Compound trigger requires at least 2 --sub-condition flags")
+        parsed = []
+        for c in conditions:
+            parsed.append(_parse_condition(c))
+        trigger_config = {
+            "operator": args.operator or "and",
+            "conditions": parsed,
         }
 
     else:
@@ -772,6 +839,25 @@ Examples:
     --strike 25000 --option-type PE --trigger price --condition lte --price 100 \\
     --action place_order --side SELL --qty 75 --product D --json
 
+  # --- Compound triggers (multiple conditions, AND/OR) ---
+  nf-monitor add-rule --name "RELIANCE multi-condition entry" --symbol RELIANCE \\
+    --trigger compound --operator and \\
+    --sub-condition "price:gte:2450" \\
+    --sub-condition "indicator:rsi:lte:30:5m" \\
+    --action place_order --side BUY --qty 10 --product I --max-fires 1 --json
+
+  nf-monitor add-rule --name "INFY time+price" --symbol INFY \\
+    --trigger compound --operator and \\
+    --sub-condition "time:14:30" \\
+    --sub-condition "price:gte:1800" \\
+    --action place_order --side BUY --qty 5 --product I --json
+
+  nf-monitor add-rule --name "TCS any condition" --symbol TCS \\
+    --trigger compound --operator or \\
+    --sub-condition "price:lte:3500" \\
+    --sub-condition "indicator:rsi:lte:25:15m" \\
+    --action place_order --side BUY --qty 5 --product D --json
+
   # --- Management ---
   nf-monitor list --active --json
   nf-monitor enable 5
@@ -795,8 +881,14 @@ Examples:
 
     # Trigger
     p_add.add_argument("--trigger", required=True,
-                       choices=["price", "time", "indicator", "order_status"],
+                       choices=["price", "time", "indicator", "order_status", "compound"],
                        help="Trigger type")
+    # Compound trigger args
+    p_add.add_argument("--operator", choices=["and", "or"], default="and",
+                       help="Compound operator (default: and)")
+    p_add.add_argument("--sub-condition", action="append", dest="sub_conditions",
+                       help="Compound sub-condition (repeatable). Formats: "
+                            "price:COND:PRICE[:REF], indicator:NAME:COND:VALUE[:TF], time:HH:MM")
     # Price trigger args
     p_add.add_argument("--condition", choices=["lte", "gte", "crosses_above", "crosses_below"],
                        help="Trigger condition")
@@ -810,7 +902,7 @@ Examples:
     p_add.add_argument("--market-only", action="store_true", default=True,
                        help="Only fire when market is open (default: true)")
     # Indicator trigger args
-    p_add.add_argument("--indicator", choices=["rsi", "macd", "ema_crossover", "volume_spike"],
+    p_add.add_argument("--indicator", choices=["rsi", "macd", "ema_crossover", "volume_spike", "vwap", "bollinger", "supertrend"],
                        help="Indicator name")
     p_add.add_argument("--timeframe", choices=["1m", "5m", "15m", "30m", "1h", "1d"],
                        help="Candle timeframe (default: 5m)")

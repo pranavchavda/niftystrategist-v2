@@ -33,7 +33,7 @@ class TimeTrigger(BaseModel):
 
 
 class IndicatorTrigger(BaseModel):
-    indicator: Literal["rsi", "macd", "ema_crossover", "volume_spike"]
+    indicator: Literal["rsi", "macd", "ema_crossover", "volume_spike", "vwap", "bollinger", "supertrend"]
     timeframe: Literal["1m", "5m", "15m", "30m", "1h", "1d"] = "5m"
     condition: Literal["lte", "gte", "crosses_above", "crosses_below"]
     value: float
