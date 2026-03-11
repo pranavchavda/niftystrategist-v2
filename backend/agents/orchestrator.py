@@ -1345,6 +1345,19 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 
 **NEVER run `nf-monitor start` or `nf-monitor stop`** — the monitor daemon is managed by systemd. Starting it via execute_bash creates a conflicting instance that crashes the production daemon.
 
+**Strategy Templates (algo trading):**
+- `python cli-tools/nf-strategy list --json` — List available strategy templates (orb, breakout, mean-reversion, vwap-bounce, scalp)
+- `python cli-tools/nf-strategy deploy TEMPLATE --symbol SYM --capital AMOUNT [options] --json` — Deploy a strategy (creates multiple linked monitor rules)
+  - ORB: `nf-strategy deploy orb --symbol SYM --capital 50000 --range-high 2460 --range-low 2440 --json`
+  - Breakout: `nf-strategy deploy breakout --symbol SYM --capital 50000 --entry 1650 --sl 1630 [--target 1690] --json`
+  - Mean Reversion: `nf-strategy deploy mean-reversion --symbol SYM --capital 50000 --sl 1850 [--side long|short] --json`
+  - VWAP Bounce: `nf-strategy deploy vwap-bounce --symbol SYM --capital 50000 --vwap 2450 --sl 2430 --json`
+  - Scalp: `nf-strategy deploy scalp --symbol SYM --capital 30000 --entry 2450 --sl 2445 [--max-entries 5] --json`
+  - Common options: `--risk-percent PCT --rr-ratio N --product D|I --trail-percent PCT --squareoff-time HH:MM --expires today|ISO`
+  - Use `--dry-run` to preview rules without creating them
+- `python cli-tools/nf-strategy status --json` — Show all deployed strategies and their rules
+- `python cli-tools/nf-strategy teardown --group-id UUID --json` — Remove all rules from a strategy
+
 For full documentation: `cat cli-tools/INDEX.md`
 
 ### Utility Tools
@@ -1416,12 +1429,18 @@ When analyzing:
 **IMPORTANT**: When a user says "intraday", "scalp", "day trade", or similar:
 1. First check if there's already an open intraday position: `python cli-tools/nf-portfolio --json` (check the `intraday_positions` array)
 2. Use `--product I` on nf-order (intraday margin, much cheaper than delivery)
-3. After placing the order, ALWAYS set up protective rules. Use `--side BUY` for SHORT positions and `--side SELL` (default) for LONG positions:
+3. **Prefer strategy templates** when the setup matches a known pattern. Instead of creating individual rules, deploy a complete strategy:
+   - ORB setup: `nf-strategy deploy orb --symbol SYM --capital AMOUNT --range-high H --range-low L --json`
+   - Breakout setup: `nf-strategy deploy breakout --symbol SYM --capital AMOUNT --entry E --sl SL --json`
+   - Mean reversion: `nf-strategy deploy mean-reversion --symbol SYM --capital AMOUNT --sl SL --json`
+   - Scalp setup: `nf-strategy deploy scalp --symbol SYM --capital AMOUNT --entry E --sl SL --json`
+   This auto-creates entry, SL, target, trailing stop, and auto square-off rules in one command.
+4. For custom setups (or after manual order placement), set up protective rules individually:
    - OCO pair (stop-loss + target): `nf-monitor add-oco --symbol SYM --qty QTY --product I --sl SL_PRICE --target TARGET_PRICE [--side SELL|BUY] --expires today --json`
    - Trailing stop-loss: `nf-monitor add-trailing --symbol SYM --qty QTY --trail-percent 15 --product I [--side SELL|BUY] --expires today --json`
    - Auto-square-off at 15:15 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:15 --action place_order --symbol SYM --side SELL|BUY --qty QTY --product I --max-fires 1 --expires today --json`
-4. Warn the user: intraday positions are auto-squared-off by the broker between 3:15-3:25 PM IST
-5. Recommend risk-reward ratio of at least 2:1 for intraday trades
+5. Warn the user: intraday positions are auto-squared-off by the broker between 3:15-3:25 PM IST
+6. Recommend risk-reward ratio of at least 2:1 for intraday trades
 6. Use 15-minute candles for intraday analysis (`--interval 15minute`)
 
 **Delivery orders** (default `--product D`): Used for swing trades, positional trades, or long-term investments. No auto-square-off. Higher margin required.

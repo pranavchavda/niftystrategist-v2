@@ -114,6 +114,8 @@ def _rule_to_dict(rule) -> dict:
         "symbol": rule.symbol,
         "linked_trade_id": rule.linked_trade_id,
         "linked_order_id": rule.linked_order_id,
+        "group_id": getattr(rule, "group_id", None),
+        "strategy_name": getattr(rule, "strategy_name", None),
         "fire_count": rule.fire_count,
         "max_fires": rule.max_fires,
         "expires_at": _fmt_ist(rule.expires_at) if rule.expires_at else None,

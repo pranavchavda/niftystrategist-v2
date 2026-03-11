@@ -17,6 +17,7 @@ CLI tools for stock market data and trading operations. Run from `backend/` dire
 | `nf-options` | Option chain, greeks, buy/sell | Yes | `python cli-tools/nf-options chain NIFTY` |
 | `nf-order` | Place, list, cancel orders | Yes | `python cli-tools/nf-order buy RELIANCE 10` |
 | `nf-watchlist` | Manage watchlist with price alerts | Yes | `python cli-tools/nf-watchlist` |
+| `nf-strategy` | Deploy strategy templates (algo trading) | Yes | `python cli-tools/nf-strategy deploy breakout --symbol RELIANCE --capital 50000 --entry 2450 --sl 2430 --json` |
 
 All tools support `--json` for structured output and `--help` for usage info.
 
@@ -281,3 +282,37 @@ python cli-tools/nf-options sell NIFTY 17FEB26 25500 CE 2 --dry-run  # Preview s
 - `live-chain`: Calls Upstox Put/Call API — real-time prices + greeks
 - `greeks`: Uses Upstox v3 API for delta, gamma, theta, vega, IV (max 50 strikes)
 - `buy`/`sell` are HITL-protected when called from the orchestrator
+
+---
+
+### nf-strategy
+
+Deploy pre-built trading strategy templates as linked monitor rule sets. Each template creates multiple rules (entry, SL, target, trailing stop, auto square-off) from a single command.
+
+```
+python cli-tools/nf-strategy list [--json]
+python cli-tools/nf-strategy deploy TEMPLATE --symbol SYM --capital AMOUNT [options] [--dry-run] [--json]
+python cli-tools/nf-strategy status [--json]
+python cli-tools/nf-strategy teardown --group-id UUID [--json]
+```
+
+**Available templates:** `orb`, `breakout`, `mean-reversion`, `vwap-bounce`, `scalp`
+
+**Examples:**
+```bash
+python cli-tools/nf-strategy list --json                                          # List templates
+python cli-tools/nf-strategy deploy orb --symbol RELIANCE --capital 50000 \
+  --range-high 2460 --range-low 2440 --dry-run --json                             # Preview ORB
+python cli-tools/nf-strategy deploy breakout --symbol HDFCBANK --capital 100000 \
+  --entry 1650 --sl 1630 --json                                                   # Deploy breakout
+python cli-tools/nf-strategy deploy mean-reversion --symbol INFY --capital 50000 \
+  --sl 1850 --side long --json                                                    # Deploy mean reversion
+python cli-tools/nf-strategy deploy scalp --symbol RELIANCE --capital 30000 \
+  --entry 2450 --sl 2445 --max-entries 5 --json                                   # Deploy scalp
+python cli-tools/nf-strategy status --json                                        # Show deployed strategies
+python cli-tools/nf-strategy teardown --group-id <uuid> --json                    # Remove strategy
+```
+
+- All rules in a strategy share a `group_id` for easy management
+- Use `--dry-run` to preview rules before creating them
+- Default expiry is "today" (market close at 15:30 IST)

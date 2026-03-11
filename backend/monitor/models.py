@@ -100,6 +100,9 @@ class MonitorRule(BaseModel):
     expires_at: datetime | None = None
     fired_at: datetime | None = None
 
+    group_id: str | None = None
+    strategy_name: str | None = None
+
     @property
     def should_evaluate(self) -> bool:
         if not self.enabled:

@@ -25,6 +25,8 @@ async def create_rule(
     linked_order_id: str | None = None,
     max_fires: int | None = None,
     expires_at: datetime | None = None,
+    group_id: str | None = None,
+    strategy_name: str | None = None,
 ) -> MonitorRuleDB:
     """Create a new monitor rule."""
     rule = MonitorRuleDB(
@@ -41,6 +43,8 @@ async def create_rule(
         linked_order_id=linked_order_id,
         max_fires=max_fires,
         expires_at=expires_at,
+        group_id=group_id,
+        strategy_name=strategy_name,
     )
     session.add(rule)
     await session.commit()
@@ -148,6 +152,55 @@ async def get_logs(
     return list(result.scalars().all())
 
 
+async def list_rules_by_group(
+    session: AsyncSession,
+    user_id: int,
+    group_id: str,
+) -> list[MonitorRuleDB]:
+    """List all rules belonging to a strategy group."""
+    stmt = (
+        select(MonitorRuleDB)
+        .where(MonitorRuleDB.user_id == user_id)
+        .where(MonitorRuleDB.group_id == group_id)
+        .order_by(MonitorRuleDB.created_at)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def delete_rules_by_group(
+    session: AsyncSession,
+    user_id: int,
+    group_id: str,
+) -> int:
+    """Delete all rules in a strategy group. Returns count deleted."""
+    stmt = (
+        delete(MonitorRuleDB)
+        .where(MonitorRuleDB.user_id == user_id)
+        .where(MonitorRuleDB.group_id == group_id)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.rowcount
+
+
+async def disable_rules_by_group(
+    session: AsyncSession,
+    user_id: int,
+    group_id: str,
+) -> int:
+    """Disable all rules in a strategy group. Returns count updated."""
+    stmt = (
+        update(MonitorRuleDB)
+        .where(MonitorRuleDB.user_id == user_id)
+        .where(MonitorRuleDB.group_id == group_id)
+        .values(enabled=False, updated_at=utc_now())
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.rowcount
+
+
 async def get_active_rules_for_daemon(session: AsyncSession) -> list[MonitorRuleDB]:
     """Get all enabled rules across all users (for the daemon to load)."""
     stmt = (
@@ -178,4 +231,6 @@ def db_rule_to_schema(db_rule: MonitorRuleDB) -> MonitorRuleSchema:
         max_fires=db_rule.max_fires,
         expires_at=db_rule.expires_at,
         fired_at=db_rule.fired_at,
+        group_id=db_rule.group_id,
+        strategy_name=db_rule.strategy_name,
     )

@@ -631,6 +631,10 @@ class MonitorRule(Base):
     expires_at = Column(DateTime, nullable=True)
     fired_at = Column(DateTime, nullable=True)
 
+    # Strategy grouping (set by nf-strategy deploy)
+    group_id = Column(String(50), nullable=True)
+    strategy_name = Column(String(50), nullable=True)
+
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
