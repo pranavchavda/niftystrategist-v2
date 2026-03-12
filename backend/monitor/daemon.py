@@ -53,6 +53,10 @@ class MonitorDaemon:
         self._running = False
 
         self._auth_refresh_locks: dict[int, asyncio.Lock] = {}
+        # Per-user locks to serialize tick processing.
+        # Without this, rapid WebSocket ticks can evaluate the same rule
+        # concurrently before fire_count is incremented, causing duplicates.
+        self._tick_locks: dict[int, asyncio.Lock] = {}
 
         self._user_manager = UserManager(
             on_tick=self._on_tick,
@@ -255,25 +259,34 @@ class MonitorDaemon:
     async def _on_tick(
         self, user_id: int, instrument_token: str, market_data: dict
     ) -> None:
-        """Called on every market data tick. Evaluate price/indicator/compound rules."""
-        session_obj = self._user_manager.get_session(user_id)
-        if session_obj is None:
-            return
+        """Called on every market data tick. Evaluate price/indicator/compound rules.
 
-        for rule in session_obj.rules:
-            if rule.trigger_type not in ("price", "indicator", "compound", "trailing_stop"):
-                continue
-            if rule.instrument_token != instrument_token:
-                continue
+        Serialized per-user via _tick_locks to prevent concurrent evaluation
+        of the same rule from rapid WebSocket ticks. Without this, a rule
+        with max_fires=1 can fire multiple times before fire_count is
+        incremented (the fire_count += 1 only protects sequential ticks,
+        not concurrent ones).
+        """
+        lock = self._tick_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            session_obj = self._user_manager.get_session(user_id)
+            if session_obj is None:
+                return
 
-            ctx = EvalContext(
-                market_data=market_data,
-                prev_prices=session_obj.prev_prices,
-                now=datetime.utcnow(),
-                indicator_values=session_obj.indicator_values,
-                prev_indicator_values=session_obj.prev_indicator_values,
-            )
-            await self._evaluate_and_execute(rule, ctx)
+            for rule in session_obj.rules:
+                if rule.trigger_type not in ("price", "indicator", "compound", "trailing_stop"):
+                    continue
+                if rule.instrument_token != instrument_token:
+                    continue
+
+                ctx = EvalContext(
+                    market_data=market_data,
+                    prev_prices=session_obj.prev_prices,
+                    now=datetime.utcnow(),
+                    indicator_values=session_obj.indicator_values,
+                    prev_indicator_values=session_obj.prev_indicator_values,
+                )
+                await self._evaluate_and_execute(rule, ctx)
 
     # ── Portfolio event routing ───────────────────────────────────────
 
