@@ -978,7 +978,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
         """Override base class to inject dynamic context (date, memories, user info, etc.)"""
 
         @self.agent.instructions
-        def inject_dynamic_context(ctx: RunContext[OrchestratorDeps]) -> str:
+        async def inject_dynamic_context(ctx: RunContext[OrchestratorDeps]) -> str:
             """Inject current date/time, user info, scratchpad, and user memories dynamically"""
             from datetime import datetime
             from zoneinfo import ZoneInfo
