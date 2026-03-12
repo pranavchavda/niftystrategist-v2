@@ -400,7 +400,7 @@ def cmd_add_oco(args):
             print_error(f"Could not find instrument key for {symbol}")
 
     # Determine exit side and trigger directions
-    exit_side = (args.side or "SELL").upper()
+    exit_side = args.side.upper()
     if exit_side == "SELL":
         # Exiting a LONG: SL fires below entry (price drops), target fires above (price rises)
         sl_condition = "lte"
@@ -539,7 +539,7 @@ def cmd_add_trailing(args):
         if not instrument_token:
             print_error(f"Could not find instrument key for {symbol}")
 
-    exit_side = (args.side or "SELL").upper()
+    exit_side = args.side.upper()
     if exit_side not in ("BUY", "SELL"):
         print_error(f"Invalid --side: {exit_side}. Must be BUY or SELL.")
 
@@ -951,8 +951,8 @@ Option contract example:
     p_oco.add_argument("--strike", type=float, help="Option strike price")
     p_oco.add_argument("--option-type", dest="opt_type", choices=["CE", "PE"], help="CE (Call) or PE (Put)")
     p_oco.add_argument("--qty", type=int, required=True, help="Order quantity (units, not lots)")
-    p_oco.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], default="SELL",
-                       help="Exit side: SELL for long positions (default), BUY for short positions")
+    p_oco.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], required=True,
+                       help="Exit side: SELL to exit LONG positions, BUY to exit SHORT positions")
     p_oco.add_argument("--product", choices=["D", "I"], default="I",
                        help="Product type: D=Delivery, I=Intraday (default: I)")
     p_oco.add_argument("--sl", type=float, required=True, help="Stop-loss price (premium for options)")
@@ -975,8 +975,8 @@ Option contract example:
     p_trail.add_argument("--strike", type=float, help="Option strike price")
     p_trail.add_argument("--option-type", dest="opt_type", choices=["CE", "PE"], help="CE (Call) or PE (Put)")
     p_trail.add_argument("--qty", type=int, required=True, help="Quantity to exit when triggered (units, not lots)")
-    p_trail.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], default="SELL",
-                         help="Exit side: SELL for long positions (default), BUY for short positions")
+    p_trail.add_argument("--side", choices=["BUY", "SELL", "buy", "sell"], required=True,
+                         help="Exit side: SELL to exit LONG positions, BUY to exit SHORT positions")
     p_trail.add_argument("--trail-percent", type=float, required=True,
                          help="Trail percentage from best price (e.g. 15 = 15%%)")
     p_trail.add_argument("--product", choices=["D", "I"], default="I",
