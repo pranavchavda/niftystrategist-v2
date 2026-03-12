@@ -27,8 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="nf-backtest",
         description="Backtest strategy templates against historical data.",
     )
+    from strategies.templates import list_templates
+    equity_names = [t["name"] for t in list_templates() if t.get("category", "equity") == "equity"]
     p.add_argument("--strategy", "-s", required=True,
-                   choices=["breakout", "orb", "mean-reversion", "vwap-bounce", "scalp"],
+                   choices=equity_names,
                    help="Strategy template name")
     p.add_argument("--symbol", type=str, help="Single symbol to backtest")
     p.add_argument("--symbols", type=str,

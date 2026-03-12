@@ -1354,6 +1354,12 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
   - VWAP Bounce: `nf-strategy deploy vwap-bounce --symbol SYM --capital 50000 --vwap 2450 --sl 2430 --json`
   - Scalp: `nf-strategy deploy scalp --symbol SYM --capital 30000 --entry 2450 --sl 2445 [--max-entries 5] --json`
   - Common options: `--risk-percent PCT --rr-ratio N --product D|I --trail-percent PCT --squareoff-time HH:MM --expires today|ISO`
+  - **F&O Options Strategies** (use --underlying instead of --symbol):
+  - Straddle: `nf-strategy deploy straddle --underlying NIFTY --expiry 2026-03-27 --strike 25000 --lots 1 [--direction sell|buy] --json`
+  - Strangle: `nf-strategy deploy strangle --underlying NIFTY --expiry 2026-03-27 --call-strike 25500 --put-strike 24500 --lots 1 --json`
+  - Bull Call Spread: `nf-strategy deploy bull-call-spread --underlying NIFTY --expiry 2026-03-27 --buy-strike 25000 --sell-strike 25500 --lots 1 --json`
+  - Bear Put Spread: `nf-strategy deploy bear-put-spread --underlying NIFTY --expiry 2026-03-27 --buy-strike 25000 --sell-strike 24500 --lots 1 --json`
+  - Iron Condor: `nf-strategy deploy iron-condor --underlying NIFTY --expiry 2026-03-27 --call-sell-strike 25500 --call-buy-strike 25700 --put-sell-strike 24500 --put-buy-strike 24300 --lots 1 --json`
   - Use `--dry-run` to preview rules without creating them
 - `python cli-tools/nf-strategy status --json` — Show all deployed strategies and their rules
 - `python cli-tools/nf-strategy teardown --group-id UUID --json` — Remove all rules from a strategy

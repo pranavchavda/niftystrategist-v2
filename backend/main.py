@@ -783,7 +783,7 @@ if logfire_enabled:
     instrument_app(app)
 
 # Import and configure conversation router with database
-from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit, monitor as monitor_api
+from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit, monitor as monitor_api, strategies as strategies_api, backtest as backtest_api
 from routes import admin_docs, uploads, admin, auth_routes, hitl, mcp_servers, scratchpad, voice, notes
 # Set the database manager in the conversations, memories, runs, auth_routes, and cockpit modules
 conversations._db_manager = db_manager
@@ -828,6 +828,10 @@ app.include_router(voice.router)
 app.include_router(notes.router)
 # Include Monitor rules router (trade monitor IFTTT rules)
 app.include_router(monitor_api.router, prefix="/api/monitor", tags=["monitor"])
+# Include Strategy templates router
+app.include_router(strategies_api.router)
+# Include Backtest router
+app.include_router(backtest_api.router)
 # Include Workflow automation router
 from routes import workflows as workflows_routes
 app.include_router(workflows_routes.router)

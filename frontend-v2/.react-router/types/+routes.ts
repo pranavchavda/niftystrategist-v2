@@ -61,6 +61,12 @@ type Pages = {
   "/monitor": {
     params: {};
   };
+  "/strategies": {
+    params: {};
+  };
+  "/backtest": {
+    params: {};
+  };
   "/user": {
     params: {};
   };
@@ -81,7 +87,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -105,7 +111,7 @@ type RouteFiles = {
   };
   "./routes/_auth.tsx": {
     id: "routes/_auth";
-    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/chat.$threadId.tsx": {
     id: "routes/chat.$threadId";
@@ -146,6 +152,14 @@ type RouteFiles = {
   "./routes/monitor.tsx": {
     id: "routes/monitor";
     page: "/monitor";
+  };
+  "./routes/strategies.tsx": {
+    id: "routes/strategies";
+    page: "/strategies";
+  };
+  "./routes/backtest.tsx": {
+    id: "routes/backtest";
+    page: "/backtest";
   };
   "./routes/user.tsx": {
     id: "routes/user";

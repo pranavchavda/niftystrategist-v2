@@ -38,6 +38,7 @@ class StrategyTemplate(ABC):
 
     name: str = ""
     description: str = ""
+    category: str = "equity"
     # Required params the user must provide
     required_params: list[str] = []
     # Optional params with defaults
@@ -66,6 +67,7 @@ class StrategyTemplate(ABC):
         return {
             "name": self.name,
             "description": self.description,
+            "category": self.category,
             "required_params": self.required_params,
             "optional_params": self.optional_params,
         }
@@ -95,8 +97,18 @@ def _register_all() -> None:
     from strategies.mean_reversion import MeanReversionTemplate
     from strategies.vwap_bounce import VWAPBounceTemplate
     from strategies.scalp import ScalpTemplate
+    from strategies.straddle import StraddleTemplate
+    from strategies.strangle import StrangleTemplate
+    from strategies.bull_call_spread import BullCallSpreadTemplate
+    from strategies.bear_put_spread import BearPutSpreadTemplate
+    from strategies.iron_condor import IronCondorTemplate
 
-    for cls in (ORBTemplate, BreakoutTemplate, MeanReversionTemplate, VWAPBounceTemplate, ScalpTemplate):
+    for cls in (
+        ORBTemplate, BreakoutTemplate, MeanReversionTemplate,
+        VWAPBounceTemplate, ScalpTemplate,
+        StraddleTemplate, StrangleTemplate, BullCallSpreadTemplate,
+        BearPutSpreadTemplate, IronCondorTemplate,
+    ):
         register(cls())
 
 

@@ -44,6 +44,12 @@ export default [
     // Trade Monitor (IFTTT-style rules)
     route('monitor', './routes/monitor.tsx'),
 
+    // Strategy Templates
+    route('strategies', './routes/strategies.tsx'),
+
+    // Backtester
+    route('backtest', './routes/backtest.tsx'),
+
     // User Profile
     route('user', './routes/user.tsx', [
       route('profile', './routes/user.profile.tsx'),

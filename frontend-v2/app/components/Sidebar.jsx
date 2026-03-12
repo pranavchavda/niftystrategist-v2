@@ -26,6 +26,8 @@ import {
   Zap,
   MenuIcon,
   StickyNote,
+  Layers,
+  FlaskConical,
 } from "lucide-react";
 import TradingModeToggle from "./TradingModeToggle";
 import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
@@ -505,6 +507,30 @@ export default function Sidebar({
                 >
                   <Shield className="w-4 h-4" />
                 </NavLink>
+                <NavLink
+                  to="/strategies"
+                  title="Strategies"
+                  className={({ isActive }) =>
+                    `p-2 rounded-lg transition-colors ${isActive
+                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`
+                  }
+                >
+                  <Layers className="w-4 h-4" />
+                </NavLink>
+                <NavLink
+                  to="/backtest"
+                  title="Backtester"
+                  className={({ isActive }) =>
+                    `p-2 rounded-lg transition-colors ${isActive
+                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`
+                  }
+                >
+                  <FlaskConical className="w-4 h-4" />
+                </NavLink>
                 {hasPermission(user, PERMISSIONS.GOOGLE_WORKSPACE_ACCESS) && (
                   <NavLink
                     to="/tasks"
@@ -792,6 +818,14 @@ export default function Sidebar({
                     <DropdownLabel>Trade Monitor</DropdownLabel>
                   </DropdownItem>
                 )}
+                <DropdownItem href="/strategies">
+                  <Layers data-slot="icon" />
+                  <DropdownLabel>Strategies</DropdownLabel>
+                </DropdownItem>
+                <DropdownItem href="/backtest">
+                  <FlaskConical data-slot="icon" />
+                  <DropdownLabel>Backtester</DropdownLabel>
+                </DropdownItem>
                 <DropdownDivider />
                 <DropdownItem href="/help">
                   <HelpCircle data-slot="icon" />

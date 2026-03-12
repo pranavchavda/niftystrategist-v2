@@ -367,6 +367,7 @@ class UpstoxClient:
         symbol: str,
         interval: Literal["1minute", "5minute", "15minute", "30minute", "day"] = "15minute",
         days: int = 30,
+        instrument_key: str | None = None,
     ) -> list[OHLCVData]:
         """
         Get historical OHLCV data for a symbol using SDK.
@@ -375,6 +376,8 @@ class UpstoxClient:
             symbol: Stock symbol (e.g., "RELIANCE", "INFY")
             interval: Candle interval
             days: Number of days of history
+            instrument_key: If provided, use directly (skips symbol resolution).
+                Useful for F&O instruments where the key is already known.
 
         Returns:
             List of OHLCV candles
@@ -388,7 +391,8 @@ class UpstoxClient:
                 f"No Upstox access token configured. Please connect your Upstox account in Settings."
             )
 
-        instrument_key = self._get_instrument_key(symbol)
+        if not instrument_key:
+            instrument_key = self._get_instrument_key(symbol)
         unit, interval_value = self.INTERVAL_MAP.get(interval, ("days", 1))
 
         # Calculate date range
@@ -431,14 +435,24 @@ class UpstoxClient:
                         last_day = candles_data[0][0][:10]
                         candles_data = [c for c in candles_data if c[0][:10] == last_day]
             else:
-                response = history_api.get_historical_candle_data1(
-                    instrument_key=instrument_key,
-                    unit=unit,
-                    interval=interval_value,
-                    to_date=to_date,
-                    from_date=from_date,
-                )
-                candles_data = response.data.candles if response.data else []
+                # Upstox limits: 1 month for 1-15min, 3 months for 30min.
+                # Chunk requests to stay within limits.
+                max_chunk_days = 25 if interval_value <= 15 else 80
+                candles_data = []
+                chunk_to = datetime.now()
+                chunk_from = chunk_to - timedelta(days=days)
+                while chunk_from < chunk_to:
+                    chunk_end = min(chunk_from + timedelta(days=max_chunk_days), chunk_to)
+                    response = history_api.get_historical_candle_data1(
+                        instrument_key=instrument_key,
+                        unit=unit,
+                        interval=interval_value,
+                        to_date=chunk_end.strftime("%Y-%m-%d"),
+                        from_date=chunk_from.strftime("%Y-%m-%d"),
+                    )
+                    chunk_candles = response.data.candles if response.data else []
+                    candles_data.extend(chunk_candles)
+                    chunk_from = chunk_end + timedelta(days=1)
 
             if not candles_data:
                 raise ValueError(f"No candle data returned for {symbol}. Market may be closed or symbol invalid.")
