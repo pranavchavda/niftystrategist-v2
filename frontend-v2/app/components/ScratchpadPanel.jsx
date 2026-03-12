@@ -29,7 +29,7 @@ export default function ScratchpadPanel() {
   const [isLoading, setIsLoading] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [error, setError] = useState(null);
-  const [editingIndex, setEditingIndex] = useState(null);
+  const [editingId, setEditingId] = useState(null);
   const [editContent, setEditContent] = useState('');
 
   // Get auth token from localStorage
@@ -122,11 +122,11 @@ export default function ScratchpadPanel() {
   };
 
   // Update entry
-  const handleUpdateEntry = async (index) => {
+  const handleUpdateEntry = async (entryId) => {
     if (!editContent.trim() || !threadId || !authToken) return;
 
     try {
-      const response = await fetch(`/api/scratchpad/${threadId}/${index}`, {
+      const response = await fetch(`/api/scratchpad/${threadId}/${entryId}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${authToken}`,
@@ -140,7 +140,7 @@ export default function ScratchpadPanel() {
       }
 
       // Cancel edit mode and refresh
-      setEditingIndex(null);
+      setEditingId(null);
       setEditContent('');
       await fetchEntries();
     } catch (err) {
@@ -150,12 +150,12 @@ export default function ScratchpadPanel() {
   };
 
   // Delete entry
-  const handleDeleteEntry = async (index) => {
+  const handleDeleteEntry = async (entryId) => {
     if (!window.confirm('Are you sure you want to delete this note?')) return;
     if (!threadId || !authToken) return;
 
     try {
-      const response = await fetch(`/api/scratchpad/${threadId}/${index}`, {
+      const response = await fetch(`/api/scratchpad/${threadId}/${entryId}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${authToken}`
@@ -175,14 +175,14 @@ export default function ScratchpadPanel() {
   };
 
   // Start editing
-  const startEdit = (index, content) => {
-    setEditingIndex(index);
+  const startEdit = (id, content) => {
+    setEditingId(id);
     setEditContent(content);
   };
 
   // Cancel editing
   const cancelEdit = () => {
-    setEditingIndex(null);
+    setEditingId(null);
     setEditContent('');
   };
 
@@ -284,7 +284,7 @@ export default function ScratchpadPanel() {
         <div className="space-y-3">
           {entries.map((entry, index) => (
             <div
-              key={index}
+              key={entry.id}
               className="group relative p-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 hover:border-zinc-300 dark:hover:border-zinc-600 transition-colors"
             >
               {/* Header: Author + Timestamp */}
@@ -297,17 +297,17 @@ export default function ScratchpadPanel() {
                     {formatTimestamp(entry.timestamp)}
                   </span>
                   {/* Edit/Delete buttons - show on hover when not editing */}
-                  {editingIndex !== index && (
+                  {editingId !== entry.id && (
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
-                        onClick={() => startEdit(index, entry.content)}
+                        onClick={() => startEdit(entry.id, entry.content)}
                         className="p-1 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
                         title="Edit"
                       >
                         <PencilIcon className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => handleDeleteEntry(index)}
+                        onClick={() => handleDeleteEntry(entry.id)}
                         className="p-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
                         title="Delete"
                       >
@@ -319,7 +319,7 @@ export default function ScratchpadPanel() {
               </div>
 
               {/* Content or Edit Mode */}
-              {editingIndex === index ? (
+              {editingId === entry.id ? (
                 <div className="space-y-2">
                   <Textarea
                     value={editContent}
@@ -330,7 +330,7 @@ export default function ScratchpadPanel() {
                   />
                   <div className="flex gap-2">
                     <Button
-                      onClick={() => handleUpdateEntry(index)}
+                      onClick={() => handleUpdateEntry(entry.id)}
                       variant="solid"
                       className="flex-1"
                     >

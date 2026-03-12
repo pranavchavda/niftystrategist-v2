@@ -36,7 +36,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from tools.native.scratchpad import Scratchpad
+from services.scratchpad_db import ScratchpadDB
 
 from .base_agent import AgentConfig, IntelligentBaseAgent
 
@@ -1010,10 +1010,10 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             # Inject scratchpad content if available
             thread_id = ctx.deps.state.thread_id
             if thread_id:
-                from tools.native.scratchpad import Scratchpad
+                from services.scratchpad_db import ScratchpadDB
 
-                scratchpad = Scratchpad(thread_id)
-                entries = scratchpad.get_entries()
+                scratchpad = ScratchpadDB(thread_id)
+                entries = await scratchpad.get_entries()
                 if entries:
                     scratchpad_section = "\n\n## SCRATCHPAD\n\n"
                     scratchpad_section += (
@@ -2529,8 +2529,9 @@ Available agents: {allowed_agents}
                 if not thread_id:
                     return "Error: Could not determine the thread ID."
 
-                scratchpad = Scratchpad(thread_id)
-                scratchpad.add_entry(content, author="agent")
+                from services.scratchpad_db import ScratchpadDB
+                scratchpad = ScratchpadDB(thread_id)
+                await scratchpad.add_entry(content, author="agent")
                 logger.info(
                     f"Agent wrote to scratchpad for thread {thread_id}: {content}"
                 )
