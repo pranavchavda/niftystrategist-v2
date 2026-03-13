@@ -195,7 +195,7 @@ async def api_active_strategies(
     for gid, rules in groups.items():
         strategies.append({
             "group_id": gid,
-            "strategy_name": getattr(rules[0], "strategy_name", None),
+            "template_name": getattr(rules[0], "strategy_name", None),
             "symbol": rules[0].symbol,
             "rules_count": len(rules),
             "active_count": sum(1 for r in rules if r.enabled),

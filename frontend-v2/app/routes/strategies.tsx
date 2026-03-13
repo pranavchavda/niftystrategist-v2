@@ -105,6 +105,7 @@ const TEMPLATE_DISPLAY_NAMES: Record<string, string> = {
 };
 
 function formatTemplateName(name: string): string {
+  if (!name) return 'Unknown';
   if (TEMPLATE_DISPLAY_NAMES[name]) return TEMPLATE_DISPLAY_NAMES[name];
   return name
     .split(/[-_]/)
