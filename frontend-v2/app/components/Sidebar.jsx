@@ -146,6 +146,7 @@ function ConversationItem({
                 {new Date(conversation.updated_at).toLocaleTimeString([], {
                   hour: "2-digit",
                   minute: "2-digit",
+                  timeZone: "Asia/Kolkata",
                 })}
               </div>
             </div>

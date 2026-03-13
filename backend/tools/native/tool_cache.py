@@ -275,7 +275,7 @@ class ToolCache:
         """Calculate age in minutes from ISO timestamp."""
         try:
             cached_time = datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00'))
-            age = datetime.now(timezone.utc) - cached_time.replace(tzinfo=None)
+            age = datetime.now(timezone.utc) - cached_time
             return int(age.total_seconds() / 60)
         except (ValueError, AttributeError):
             return 0

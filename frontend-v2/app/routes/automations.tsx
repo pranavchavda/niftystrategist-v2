@@ -519,11 +519,12 @@ export default function AutomationsRoute() {
     if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
     if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
 
-    return date.toLocaleDateString('en-US', {
+    return date.toLocaleDateString('en-IN', {
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
-      minute: '2-digit'
+      minute: '2-digit',
+      timeZone: 'Asia/Kolkata'
     });
   };
 
@@ -872,7 +873,7 @@ export default function AutomationsRoute() {
                           {workflow.frequency === 'manual' ? 'Manual only' :
                            workflow.frequency === 'once' ? (
                              workflow.scheduled_at
-                               ? `One-time: ${(parseUTCDate(workflow.scheduled_at) || new Date()).toLocaleString()}`
+                               ? `One-time: ${(parseUTCDate(workflow.scheduled_at) || new Date()).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
                                : 'One-time (completed)'
                            ) :
                            workflow.frequency === 'hourly' ? 'Every hour' :

@@ -415,7 +415,8 @@ function MessageBubble({
                   <div className="text-xs text-zinc-400 dark:text-zinc-500">
                     {new Date(message.timestamp).toLocaleTimeString([], {
                       hour: '2-digit',
-                      minute: '2-digit'
+                      minute: '2-digit',
+                      timeZone: 'Asia/Kolkata'
                     })}
                   </div>
                 )}
