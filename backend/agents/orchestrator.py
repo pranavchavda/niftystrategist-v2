@@ -263,6 +263,9 @@ class OrchestratorDeps(BaseModel):
     is_awakening: bool = (
         False  # True when running as a scheduled autonomous awakening (no user present)
     )
+    action_logger: Optional[Any] = (
+        None  # WorkflowActionLogger instance for logging tool calls during awakenings
+    )
 
 
 class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
@@ -1379,6 +1382,12 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 **Morning scan with auto-deploy:**
 - `python cli-tools/nf-morning-scan --auto-deploy TEMPLATE --capital AMOUNT --top N [--dry-run] --json` — Scan + auto-deploy strategies on top candidates
 
+**Workflow Action Logs (audit trail for awakening tool calls):**
+- `python cli-tools/nf-actions recent [--limit 20] [--tool nf-order] [--json]` — Recent actions across all awakenings
+- `python cli-tools/nf-actions run RUN_ID [--json]` — All tool calls for a specific workflow run
+- `python cli-tools/nf-actions symbol SYMBOL [--limit 20] [--json]` — Actions involving a specific symbol
+- Use this to investigate what happened during an awakening (e.g., which tool closed a position)
+
 For full documentation: `cat cli-tools/INDEX.md`
 
 ### Utility Tools
@@ -1875,6 +1884,20 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                         thread_id=thread_id,
                     )
 
+                    # Log tool call for workflow audit trail
+                    if ctx.deps.action_logger:
+                        try:
+                            _tool = script_name or command.split()[0]
+                            await ctx.deps.action_logger.log_tool_call(
+                                tool_name=_tool,
+                                tool_args={"command": command},
+                                tool_result={"output": result[:2000]},
+                                execution_status="success",
+                                duration_ms=execution_time_ms,
+                            )
+                        except Exception as log_err:
+                            logger.warning(f"Failed to log workflow action: {log_err}")
+
                     return result
                 else:
                     error_msg = f"Command failed with exit code {process.returncode}"
@@ -1898,6 +1921,20 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                             f"{error_msg}"
                         )
 
+                    # Log failed tool call for workflow audit trail
+                    if ctx.deps.action_logger:
+                        try:
+                            _tool = script_name or command.split()[0]
+                            await ctx.deps.action_logger.log_tool_call(
+                                tool_name=_tool,
+                                tool_args={"command": command},
+                                execution_status="failed",
+                                error_message=error_msg[:2000],
+                                duration_ms=execution_time_ms if 'execution_time_ms' in dir() else None,
+                            )
+                        except Exception as log_err:
+                            logger.warning(f"Failed to log workflow action: {log_err}")
+
                     return error_msg
 
             except Exception as e:
@@ -1913,6 +1950,19 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                         exit_code=-1,
                     )
                 )
+
+                # Log exception for workflow audit trail
+                if ctx.deps.action_logger:
+                    try:
+                        await ctx.deps.action_logger.log_tool_call(
+                            tool_name=script_name or command.split()[0],
+                            tool_args={"command": command},
+                            execution_status="failed",
+                            error_message=str(e)[:2000],
+                        )
+                    except Exception:
+                        pass
+
                 return f"Error executing command: {str(e)}"
 
         @self.agent.tool

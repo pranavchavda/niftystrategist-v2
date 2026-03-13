@@ -836,6 +836,10 @@ app.include_router(backtest_api.router)
 from routes import workflows as workflows_routes
 app.include_router(workflows_routes.router)
 
+# Include Workflow action logs router (audit trail for tool calls during awakenings)
+from api.workflow_actions import router as workflow_actions_router
+app.include_router(workflow_actions_router)
+
 # Configure CORS for frontend
 _cors_env = os.getenv("CORS_ORIGINS", "http://localhost:5173")
 _cors_origins = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]

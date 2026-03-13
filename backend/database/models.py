@@ -766,6 +766,46 @@ class WorkflowDefinition(Base):
     )
 
 
+class WorkflowActionLog(Base):
+    """Log of tool calls and actions executed during workflow runs.
+
+    Purpose: Track exactly what the agent did during scheduled events (awakenings, automations).
+    This provides complete audit trail and helps debug autonomous trading decisions.
+    """
+    __tablename__ = "workflow_action_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workflow_run_id = Column(Integer, ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Tool invocation details
+    tool_name = Column(String(50), nullable=False, index=True)  # e.g., 'nf-order', 'nf-portfolio', 'nf-analyze'
+    tool_args = Column(JSON, nullable=False)  # Command + args, e.g., {"command": "buy ADANIPOWER 487 --product I"}
+
+    # Execution result
+    tool_result = Column(JSON, nullable=True)  # Result/output from the tool
+    execution_status = Column(String(20), nullable=True, index=True)  # 'success', 'failed', 'pending'
+    error_message = Column(Text, nullable=True)
+
+    # Timing
+    started_at = Column(DateTime, default=utc_now, nullable=False, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    # Metadata for later analysis
+    sequence_order = Column(Integer, nullable=False)  # Order within the workflow
+    agent_reasoning = Column(Text, nullable=True)  # Why agent called this tool
+    market_context = Column(JSON, nullable=True)  # Market state at time of execution
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        Index('idx_workflow_action_logs_workflow', 'workflow_run_id'),
+        Index('idx_workflow_action_logs_user', 'user_id'),
+        Index('idx_workflow_action_logs_tool', 'tool_name'),
+    )
+
+
 # ==============================================================================
 # Database Connection Manager
 # ==============================================================================

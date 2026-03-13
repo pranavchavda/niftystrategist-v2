@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Query workflow action logs — audit trail for tool calls during awakenings."""
+
+import argparse
+import sys
+import os
+import json
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(_backend_dir, ".env"))
+
+import asyncio
+from sqlalchemy import text, select, desc, cast, String, and_, or_
+from database.session import get_db_session
+from database.models import WorkflowActionLog, WorkflowRun
+
+
+def get_user_id():
+    return int(os.environ.get("NF_USER_ID", "1"))
+
+
+async def _list_recent(user_id: int, limit: int, tool_name: str = None, as_json: bool = False):
+    """List recent workflow actions."""
+    async with get_db_session() as session:
+        query = select(WorkflowActionLog).where(
+            WorkflowActionLog.user_id == user_id
+        ).order_by(desc(WorkflowActionLog.started_at)).limit(limit)
+
+        if tool_name:
+            query = query.where(WorkflowActionLog.tool_name == tool_name)
+
+        result = await session.execute(query)
+        actions = result.scalars().all()
+
+        if as_json:
+            print(json.dumps({
+                "actions": [
+                    {
+                        "id": a.id,
+                        "workflow_run_id": a.workflow_run_id,
+                        "tool": a.tool_name,
+                        "args": a.tool_args,
+                        "status": a.execution_status,
+                        "result": a.tool_result,
+                        "error": a.error_message,
+                        "reasoning": a.agent_reasoning,
+                        "duration_ms": a.duration_ms,
+                        "started_at": str(a.started_at),
+                    }
+                    for a in actions
+                ],
+                "count": len(actions),
+            }, indent=2, default=str))
+            return
+
+        if not actions:
+            print("No workflow actions found.")
+            return
+
+        print(f"📋 Recent Workflow Actions (last {limit})\n")
+        for a in actions:
+            status_icon = "✅" if a.execution_status == "success" else "❌"
+            cmd = a.tool_args.get("command", "") if isinstance(a.tool_args, dict) else str(a.tool_args)
+            print(f"  {status_icon} [{a.started_at}] {a.tool_name}")
+            print(f"     Command: {cmd}")
+            if a.duration_ms:
+                print(f"     Duration: {a.duration_ms}ms")
+            if a.error_message:
+                print(f"     Error: {a.error_message[:100]}")
+            if a.agent_reasoning:
+                print(f"     Reasoning: {a.agent_reasoning[:100]}")
+            print(f"     Workflow Run: #{a.workflow_run_id}")
+            print()
+
+
+async def _show_run(user_id: int, run_id: int, as_json: bool = False):
+    """Show all actions for a specific workflow run."""
+    async with get_db_session() as session:
+        # Verify ownership
+        run_result = await session.execute(
+            select(WorkflowRun).where(
+                (WorkflowRun.id == run_id) & (WorkflowRun.user_id == user_id)
+            )
+        )
+        run = run_result.scalar_one_or_none()
+        if not run:
+            print(f"❌ Workflow run #{run_id} not found")
+            return
+
+        query = select(WorkflowActionLog).where(
+            WorkflowActionLog.workflow_run_id == run_id
+        ).order_by(WorkflowActionLog.sequence_order)
+
+        result = await session.execute(query)
+        actions = result.scalars().all()
+
+        if as_json:
+            print(json.dumps({
+                "workflow_run_id": run_id,
+                "workflow_type": run.workflow_type,
+                "started_at": str(run.started_at),
+                "completed_at": str(run.completed_at),
+                "status": run.status,
+                "actions": [
+                    {
+                        "sequence": a.sequence_order,
+                        "tool": a.tool_name,
+                        "args": a.tool_args,
+                        "status": a.execution_status,
+                        "result": a.tool_result,
+                        "error": a.error_message,
+                        "reasoning": a.agent_reasoning,
+                        "duration_ms": a.duration_ms,
+                        "started_at": str(a.started_at),
+                    }
+                    for a in actions
+                ],
+                "action_count": len(actions),
+            }, indent=2, default=str))
+            return
+
+        print(f"📋 Workflow Run #{run_id}")
+        print(f"   Type: {run.workflow_type}")
+        print(f"   Started: {run.started_at}")
+        print(f"   Status: {run.status}")
+        print(f"   Actions: {len(actions)}\n")
+
+        if not actions:
+            print("   No actions logged for this run.")
+            return
+
+        for a in actions:
+            status_icon = "✅" if a.execution_status == "success" else "❌"
+            cmd = a.tool_args.get("command", "") if isinstance(a.tool_args, dict) else str(a.tool_args)
+            print(f"  {a.sequence_order}. {status_icon} {a.tool_name}")
+            print(f"     Command: {cmd}")
+            if a.duration_ms:
+                print(f"     Duration: {a.duration_ms}ms")
+            if a.tool_result:
+                result_str = json.dumps(a.tool_result, default=str)
+                if len(result_str) > 120:
+                    result_str = result_str[:120] + "..."
+                print(f"     Result: {result_str}")
+            if a.error_message:
+                print(f"     Error: {a.error_message[:100]}")
+            print()
+
+
+async def _search_symbol(user_id: int, symbol: str, limit: int, as_json: bool = False):
+    """Search actions involving a specific symbol."""
+    async with get_db_session() as session:
+        query = select(WorkflowActionLog).where(
+            and_(
+                WorkflowActionLog.user_id == user_id,
+                or_(
+                    cast(WorkflowActionLog.tool_args, String).ilike(f"%{symbol}%"),
+                    cast(WorkflowActionLog.tool_result, String).ilike(f"%{symbol}%"),
+                ),
+            )
+        ).order_by(desc(WorkflowActionLog.started_at)).limit(limit)
+
+        result = await session.execute(query)
+        actions = result.scalars().all()
+
+        if as_json:
+            print(json.dumps({
+                "symbol": symbol,
+                "actions": [
+                    {
+                        "id": a.id,
+                        "workflow_run_id": a.workflow_run_id,
+                        "tool": a.tool_name,
+                        "args": a.tool_args,
+                        "status": a.execution_status,
+                        "result": a.tool_result,
+                        "reasoning": a.agent_reasoning,
+                        "duration_ms": a.duration_ms,
+                        "started_at": str(a.started_at),
+                    }
+                    for a in actions
+                ],
+                "count": len(actions),
+            }, indent=2, default=str))
+            return
+
+        if not actions:
+            print(f"No actions found for {symbol}.")
+            return
+
+        print(f"🔍 Actions involving {symbol} (last {limit})\n")
+        for a in actions:
+            status_icon = "✅" if a.execution_status == "success" else "❌"
+            cmd = a.tool_args.get("command", "") if isinstance(a.tool_args, dict) else str(a.tool_args)
+            print(f"  {status_icon} [{a.started_at}] {a.tool_name}")
+            print(f"     Command: {cmd}")
+            if a.tool_result:
+                result_str = json.dumps(a.tool_result, default=str)
+                if len(result_str) > 120:
+                    result_str = result_str[:120] + "..."
+                print(f"     Result: {result_str}")
+            print(f"     Workflow Run: #{a.workflow_run_id}")
+            print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Query workflow action logs (audit trail for awakening tool calls)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  nf-actions recent                          Last 20 actions
+  nf-actions recent --limit 50               Last 50 actions
+  nf-actions recent --tool nf-order          Only nf-order calls
+  nf-actions run 264                         All actions for workflow run #264
+  nf-actions symbol ADANIPOWER               Actions involving ADANIPOWER
+  nf-actions recent --json                   JSON output
+""",
+    )
+    parser.add_argument("--json", action="store_true", help="JSON output")
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    # recent
+    recent_parser = subparsers.add_parser("recent", help="List recent workflow actions")
+    recent_parser.add_argument("--limit", type=int, default=20, help="Number of actions (default: 20)")
+    recent_parser.add_argument("--tool", type=str, help="Filter by tool name (e.g., nf-order)")
+    recent_parser.add_argument("--json", action="store_true", help="JSON output")
+
+    # run
+    run_parser = subparsers.add_parser("run", help="Show actions for a specific workflow run")
+    run_parser.add_argument("run_id", type=int, help="Workflow run ID")
+    run_parser.add_argument("--json", action="store_true", help="JSON output")
+
+    # symbol
+    sym_parser = subparsers.add_parser("symbol", help="Search actions by symbol")
+    sym_parser.add_argument("symbol", type=str, help="Symbol to search for")
+    sym_parser.add_argument("--limit", type=int, default=20, help="Number of results (default: 20)")
+    sym_parser.add_argument("--json", action="store_true", help="JSON output")
+
+    args = parser.parse_args()
+    user_id = get_user_id()
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    if args.command == "recent":
+        asyncio.run(_list_recent(user_id, args.limit, args.tool, args.json))
+    elif args.command == "run":
+        asyncio.run(_show_run(user_id, args.run_id, args.json))
+    elif args.command == "symbol":
+        asyncio.run(_search_symbol(user_id, args.symbol, args.limit, args.json))
+
+
+if __name__ == "__main__":
+    main()
