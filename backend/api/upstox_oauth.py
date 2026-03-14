@@ -11,6 +11,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 
+import asyncio
+import time
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -24,6 +27,19 @@ from database.models import User as DBUser
 from utils.encryption import encrypt_token, decrypt_token
 
 logger = logging.getLogger(__name__)
+
+# ── TOTP refresh dedup ────────────────────────────────────────────
+# Per-user asyncio locks prevent concurrent TOTP attempts within the
+# same process (FastAPI or daemon).  The "recently refreshed" guard
+# in auto_refresh_upstox_token prevents cross-process duplicates by
+# checking DB expiry before attempting.
+_totp_refresh_locks: dict[int, asyncio.Lock] = {}
+
+# ── Status endpoint cache ─────────────────────────────────────────
+# Cache Upstox API validation results per user to avoid hammering
+# the Upstox profile endpoint on every page navigation.
+_status_cache: dict[int, tuple[bool, float]] = {}  # user_id -> (connected, timestamp)
+STATUS_CACHE_TTL = 300  # 5 minutes
 
 router = APIRouter(prefix="/api/auth/upstox", tags=["upstox-oauth"])
 
@@ -399,6 +415,7 @@ async def disconnect_upstox(user: User = Depends(get_current_user)):
 
         await session.commit()
 
+    _status_cache.pop(user.id, None)
     logger.info(f"Upstox disconnected for user {user.id}")
     return {"status": "success", "message": "Upstox account disconnected"}
 
@@ -430,22 +447,31 @@ async def get_upstox_status(user: User = Depends(get_current_user)):
 
         # If DB thinks token is valid, verify against Upstox API
         # (Upstox tokens expire at end of trading day regardless of expires_in)
+        # Use a per-user cache to avoid hitting Upstox on every page navigation.
         if connected and db_user.upstox_access_token:
-            try:
-                real_token = decrypt_token(db_user.upstox_access_token)
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(
-                        UPSTOX_PROFILE_URL,
-                        headers={"Authorization": f"Bearer {real_token}"},
-                    )
-                    if resp.status_code != 200:
-                        logger.info(f"Upstox token invalid for user {user.id} (API returned {resp.status_code})")
-                        connected = False
-                        token_expiry = None
-            except Exception as e:
-                logger.warning(f"Upstox token validation failed for user {user.id}: {e}")
-                # On network error, trust DB expiry rather than marking disconnected
-                pass
+            cached = _status_cache.get(user.id)
+            if cached and (time.time() - cached[1]) < STATUS_CACHE_TTL:
+                # Use cached validation result
+                if not cached[0]:
+                    connected = False
+                    token_expiry = None
+            else:
+                try:
+                    real_token = decrypt_token(db_user.upstox_access_token)
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        resp = await client.get(
+                            UPSTOX_PROFILE_URL,
+                            headers={"Authorization": f"Bearer {real_token}"},
+                        )
+                        if resp.status_code != 200:
+                            logger.info(f"Upstox token invalid for user {user.id} (API returned {resp.status_code})")
+                            connected = False
+                            token_expiry = None
+                        _status_cache[user.id] = (connected, time.time())
+                except Exception as e:
+                    logger.warning(f"Upstox token validation failed for user {user.id}: {e}")
+                    # On network error, trust DB expiry rather than marking disconnected
+                    pass
 
         # Token stale — try TOTP auto-refresh
         if not connected and db_user.upstox_mobile and db_user.upstox_totp_secret:
@@ -690,6 +716,18 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
     4. On success: stores new encrypted token + expiry in DB
     5. On failure: records last_failed_at for cooldown
     """
+    # Per-user lock prevents concurrent TOTP attempts in the same process
+    lock = _totp_refresh_locks.setdefault(user_id, asyncio.Lock())
+    if lock.locked():
+        logger.info("TOTP auto-refresh: already in progress for user %d, skipping", user_id)
+        return None
+
+    async with lock:
+        return await _auto_refresh_upstox_token_inner(user_id)
+
+
+async def _auto_refresh_upstox_token_inner(user_id: int) -> Optional[str]:
+    """Inner implementation of TOTP refresh, called under lock."""
     async with get_db_session() as session:
         result = await session.execute(
             select(DBUser).where(DBUser.id == user_id)
@@ -698,6 +736,20 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
         if not db_user:
             logger.warning("TOTP auto-refresh: user %d not found in DB", user_id)
             return None
+
+        # Guard: if token was recently refreshed (expiry >23h away), skip.
+        # This prevents cross-process duplicate refreshes (e.g. scheduler
+        # refreshed at 3:35 AM, then daemon polls at 3:35:15 AM).
+        if db_user.upstox_token_expiry:
+            remaining = db_user.upstox_token_expiry - datetime.utcnow()
+            if remaining > timedelta(hours=23):
+                logger.info(
+                    "TOTP auto-refresh: token for user %d was recently refreshed "
+                    "(expires in %s), skipping",
+                    user_id, remaining,
+                )
+                # Return the existing valid token
+                return decrypt_token(db_user.upstox_access_token) if db_user.upstox_access_token else None
 
         # Check TOTP credentials exist
         if not all([
@@ -774,6 +826,9 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
         db_user.upstox_token_expiry = datetime.utcnow() + timedelta(hours=24)
         db_user.upstox_totp_last_failed_at = None  # Clear cooldown
         await session.commit()
+
+        # Invalidate status cache so next status check sees the fresh token
+        _status_cache.pop(user_id, None)
 
         logger.info("TOTP auto-refresh successful for user %d", user_id)
         return new_token
