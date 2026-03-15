@@ -7,6 +7,9 @@ export default [
   // Login route (no auth required)
   route('login', './routes/login.tsx'),
 
+  // Password reset (no auth required)
+  route('reset-password', './routes/reset-password.tsx'),
+
   // Help page (no auth required)
   route('help', './routes/help.tsx'),
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from utils.datetime_utils import utc_now_naive
 import uuid
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Response, Depends
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Response, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -1307,6 +1307,95 @@ async def login(request: LoginRequest):
             "token_type": "bearer",
             "user": user_data
         }
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    token: str
+    new_password: str
+
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+    """
+    Send a password reset link to the user's email.
+    Always returns success to prevent email enumeration.
+    """
+    import secrets
+    import hashlib
+    from database.models import User as DBUser, utc_now
+    from sqlalchemy import select
+    from datetime import timedelta
+    from services.email import send_password_reset_email
+
+    async with db_manager.async_session() as db:
+        stmt = select(DBUser).where(DBUser.email == request.email)
+        result = await db.execute(stmt)
+        db_user = result.scalar_one_or_none()
+
+        if db_user:
+            # Generate token and store SHA-256 hash
+            raw_token = secrets.token_urlsafe(32)
+            token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+            db_user.password_reset_token = token_hash
+            db_user.password_reset_expires_at = utc_now() + timedelta(hours=1)
+            await db.commit()
+
+            # Build reset URL
+            frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+            reset_url = f"{frontend_url}/reset-password?token={raw_token}&email={request.email}"
+
+            # Send email in background
+            background_tasks.add_task(send_password_reset_email, request.email, reset_url)
+            logger.info(f"[Auth] Password reset requested for {request.email}")
+        else:
+            logger.info(f"[Auth] Password reset requested for non-existent email: {request.email}")
+
+    return {"message": "If an account with that email exists, a password reset link has been sent."}
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(request: ResetPasswordRequest):
+    """
+    Reset password using a valid reset token.
+    """
+    import hashlib
+    import bcrypt
+    from database.models import User as DBUser, utc_now
+    from sqlalchemy import select
+
+    if len(request.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    token_hash = hashlib.sha256(request.token.encode()).hexdigest()
+
+    async with db_manager.async_session() as db:
+        stmt = select(DBUser).where(DBUser.email == request.email)
+        result = await db.execute(stmt)
+        db_user = result.scalar_one_or_none()
+
+        if not db_user or not db_user.password_reset_token:
+            raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+
+        if db_user.password_reset_token != token_hash:
+            raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+
+        if not db_user.password_reset_expires_at or db_user.password_reset_expires_at < utc_now():
+            raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
+
+        # Update password and clear reset token
+        db_user.password_hash = bcrypt.hashpw(request.new_password.encode(), bcrypt.gensalt()).decode()
+        db_user.password_reset_token = None
+        db_user.password_reset_expires_at = None
+        await db.commit()
+
+        logger.info(f"[Auth] Password reset successfully for {request.email}")
+
+    return {"message": "Password has been reset successfully. You can now sign in."}
 
 
 @app.post("/api/auth/register")

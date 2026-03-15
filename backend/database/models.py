@@ -146,6 +146,10 @@ class User(Base):
     upstox_totp_secret = Column(Text, nullable=True)
     upstox_totp_last_failed_at = Column(DateTime, nullable=True)
 
+    # Password reset
+    password_reset_token = Column(String(128), nullable=True)
+    password_reset_expires_at = Column(DateTime, nullable=True)
+
     # Trading mode: 'paper' or 'live'
     trading_mode = Column(String(10), default="paper", nullable=False)
 

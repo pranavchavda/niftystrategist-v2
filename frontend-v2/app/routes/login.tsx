@@ -32,18 +32,32 @@ const isDevMode =
 
 export default function Login() {
   const [isRegister, setIsRegister] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setSuccess("");
     setLoading(true);
 
     try {
+      if (isForgotPassword) {
+        const response = await fetch("/api/auth/forgot-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+        const data = await response.json();
+        setSuccess(data.message || "If an account with that email exists, a reset link has been sent.");
+        return;
+      }
+
       const endpoint = isRegister ? "/api/auth/register" : "/api/auth/login";
       const body = isRegister
         ? { email, password, name }
@@ -61,7 +75,6 @@ export default function Login() {
           const errData = await response.json();
           message = errData.detail || message;
         } catch {
-          // Server returned non-JSON (e.g. "Internal Server Error")
           message = `Server error (${response.status}). Please try again later.`;
         }
         throw new Error(message);
@@ -120,10 +133,10 @@ export default function Login() {
           </div>
 
           <h1 className="mt-6 text-center text-3xl font-bold tracking-tight text-zinc-900 dark:text-white">
-            {isRegister ? "Create Account" : "Sign in"}
+            {isForgotPassword ? "Reset Password" : isRegister ? "Create Account" : "Sign in"}
           </h1>
           <p className="mt-3 text-center text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            AI-powered trading assistant for Indian stock markets
+            {isForgotPassword ? "Enter your email to receive a reset link" : "AI-powered trading assistant for Indian stock markets"}
           </p>
 
           {error && (
@@ -132,8 +145,14 @@ export default function Login() {
             </div>
           )}
 
+          {success && (
+            <div className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400">
+              {success}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-            {isRegister && (
+            {isRegister && !isForgotPassword && (
               <div>
                 <label htmlFor="name" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                   Name
@@ -165,41 +184,59 @@ export default function Login() {
               />
             </div>
 
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Password
-              </label>
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={6}
-                className="mt-1 block w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder-zinc-500"
-                placeholder="Min 6 characters"
-              />
-            </div>
+            {!isForgotPassword && (
+              <div>
+                <label htmlFor="password" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  className="mt-1 block w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder-zinc-500"
+                  placeholder="Min 6 characters"
+                />
+              </div>
+            )}
 
             <button
               type="submit"
               disabled={loading}
               className="w-full rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/25 transition-all duration-300 hover:-translate-y-0.5 hover:bg-blue-700 hover:shadow-xl disabled:opacity-50 disabled:hover:translate-y-0"
             >
-              {loading ? "Please wait..." : isRegister ? "Create Account" : "Sign In"}
+              {loading ? "Please wait..." : isForgotPassword ? "Send Reset Link" : isRegister ? "Create Account" : "Sign In"}
             </button>
           </form>
 
-          <div className="mt-6 text-center">
-            <button
-              onClick={() => {
-                setIsRegister(!isRegister);
-                setError("");
-              }}
-              className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-            >
-              {isRegister ? "Already have an account? Sign in" : "Don't have an account? Register"}
-            </button>
+          <div className="mt-6 flex flex-col items-center gap-2">
+            {isForgotPassword ? (
+              <button
+                onClick={() => { setIsForgotPassword(false); setError(""); setSuccess(""); }}
+                className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+              >
+                Back to Sign In
+              </button>
+            ) : (
+              <>
+                {!isRegister && (
+                  <button
+                    onClick={() => { setIsForgotPassword(true); setError(""); setSuccess(""); }}
+                    className="text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-300"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+                <button
+                  onClick={() => { setIsRegister(!isRegister); setError(""); setSuccess(""); }}
+                  className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                >
+                  {isRegister ? "Already have an account? Sign in" : "Don't have an account? Register"}
+                </button>
+              </>
+            )}
           </div>
 
           {isDevMode && (
