@@ -74,10 +74,13 @@ const PRICE_CONDITIONS = [
 ];
 
 const INDICATORS = [
-  { value: 'SMA', label: 'SMA (Simple Moving Avg)' },
-  { value: 'EMA', label: 'EMA (Exponential Moving Avg)' },
-  { value: 'RSI', label: 'RSI (Relative Strength Index)' },
-  { value: 'MACD', label: 'MACD' },
+  { value: 'rsi', label: 'RSI (Relative Strength Index)' },
+  { value: 'macd', label: 'MACD' },
+  { value: 'ema_crossover', label: 'EMA Cross (Fast/Slow)' },
+  { value: 'volume_spike', label: 'Volume Spike' },
+  { value: 'vwap', label: 'VWAP' },
+  { value: 'bollinger', label: 'Bollinger Bands' },
+  { value: 'supertrend', label: 'Supertrend' },
 ];
 
 const TIMEFRAMES = [
@@ -106,8 +109,12 @@ function triggerSummary(rule: MonitorRule): string {
       };
       return `Price ${condMap[tc.condition] || tc.condition} ${tc.price}`;
     }
-    case 'indicator':
-      return `${tc.indicator}(${tc.params?.period || ''}) ${tc.condition} ${tc.threshold}`;
+    case 'indicator': {
+      const paramStr = tc.indicator === 'ema_crossover'
+        ? `${tc.params?.fast || 9}/${tc.params?.slow || 21}`
+        : tc.params?.period || '';
+      return `${tc.indicator}(${paramStr}) ${tc.condition} ${tc.value ?? tc.threshold ?? ''}`;
+    }
     case 'time':
       return `At ${tc.at} IST`;
     case 'order_status':
@@ -292,7 +299,7 @@ export default function MonitorRoute() {
   const { authToken } = useOutletContext<AuthContext>();
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'rules' | 'oco' | 'logs'>('rules');
+  const [activeTab, setActiveTab] = useState<'rules' | 'oco' | 'strategies' | 'logs'>('rules');
 
   // Data state
   const [rules, setRules] = useState<MonitorRule[]>([]);
@@ -512,7 +519,7 @@ export default function MonitorRoute() {
   const updateTriggerType = (type: string) => {
     const defaults: Record<string, Record<string, any>> = {
       price: { condition: 'gte', price: 0, reference: 'ltp' },
-      indicator: { indicator: 'RSI', timeframe: '15m', params: { period: 14 }, condition: 'gte', threshold: 70 },
+      indicator: { indicator: 'rsi', timeframe: '15m', params: { period: 14 }, condition: 'gte', value: 70 },
       time: { time: '15:15', timezone: 'Asia/Kolkata' },
       order_status: { order_id: '', expected_status: 'complete' },
     };
@@ -605,6 +612,7 @@ export default function MonitorRoute() {
           {[
             { key: 'rules' as const, label: 'Rules', icon: Shield, count: rules.length },
             { key: 'oco' as const, label: 'OCO Builder', icon: Target },
+            { key: 'strategies' as const, label: 'Strategies', icon: TrendingUp },
             { key: 'logs' as const, label: 'Fire Log', icon: History, count: logs.length },
           ].map(tab => (
             <button
@@ -647,6 +655,16 @@ export default function MonitorRoute() {
             onSubmit={handleCreateOCO}
             saving={ocoSaving}
             authToken={authToken}
+          />
+        )}
+
+        {activeTab === 'strategies' && (
+          <StrategiesTab
+            authToken={authToken}
+            onRulesCreated={(newRules) => {
+              setRules(prev => [...newRules, ...prev]);
+              setActiveTab('rules');
+            }}
           />
         )}
 
@@ -1244,6 +1262,348 @@ function LogsTab({
 // ─── Create Rule Wizard ────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════
+// ─── Strategy Templates ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+
+interface StrategyTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: 'intraday' | 'fno';
+  rules: Array<{
+    name: string;
+    trigger_type: string;
+    trigger_config: Record<string, any>;
+    action_type: string;
+    action_config: Record<string, any>;
+    max_fires: number | null;
+  }>;
+}
+
+const STRATEGY_TEMPLATES: StrategyTemplate[] = [
+  {
+    id: 'ema_cross_intraday_long',
+    name: 'EMA Cross — Intraday Long',
+    description: 'Buy when fast EMA (9) crosses above slow EMA (21) on 5m candles. Designed for intraday equity with a single fire.',
+    category: 'intraday',
+    rules: [
+      {
+        name: 'EMA 9/21 Bullish Cross — BUY',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '5m', condition: 'crosses_above', value: 0, params: { fast: 9, slow: 21 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'BUY', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+    ],
+  },
+  {
+    id: 'ema_cross_intraday_short',
+    name: 'EMA Cross — Intraday Short',
+    description: 'Sell when fast EMA (9) crosses below slow EMA (21) on 5m candles. Use to exit intraday longs or initiate short positions.',
+    category: 'intraday',
+    rules: [
+      {
+        name: 'EMA 9/21 Bearish Cross — SELL',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '5m', condition: 'crosses_below', value: 0, params: { fast: 9, slow: 21 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'SELL', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+    ],
+  },
+  {
+    id: 'ema_cross_intraday_pair',
+    name: 'EMA Cross — Intraday Long + Exit',
+    description: 'Two rules: enter long on bullish EMA 9/21 cross, auto-exit on bearish cross. Both on 5m timeframe, intraday product.',
+    category: 'intraday',
+    rules: [
+      {
+        name: 'EMA 9/21 Bullish Cross — ENTRY BUY',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '5m', condition: 'crosses_above', value: 0, params: { fast: 9, slow: 21 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'BUY', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+      {
+        name: 'EMA 9/21 Bearish Cross — EXIT SELL',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '5m', condition: 'crosses_below', value: 0, params: { fast: 9, slow: 21 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'SELL', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+    ],
+  },
+  {
+    id: 'ema_cross_fno_long',
+    name: 'EMA Cross — F&O Call Entry',
+    description: 'Buy a call option when EMA 9/21 crosses above on 15m candles. Set your option instrument and lot size after deploying.',
+    category: 'fno',
+    rules: [
+      {
+        name: 'EMA 9/21 Bullish Cross — BUY CALL',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '15m', condition: 'crosses_above', value: 0, params: { fast: 9, slow: 21 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'BUY', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+    ],
+  },
+  {
+    id: 'ema_cross_fno_short',
+    name: 'EMA Cross — F&O Put Entry',
+    description: 'Buy a put option when EMA 9/21 crosses below on 15m candles. Set your option instrument and lot size after deploying.',
+    category: 'fno',
+    rules: [
+      {
+        name: 'EMA 9/21 Bearish Cross — BUY PUT',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '15m', condition: 'crosses_below', value: 0, params: { fast: 9, slow: 21 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'BUY', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+    ],
+  },
+  {
+    id: 'ema_cross_fno_scalp',
+    name: 'EMA Cross — F&O Scalp (Entry + Exit)',
+    description: 'Fast 5/13 EMA cross on 5m candles for quick F&O scalps. Entry on bullish cross, exit on bearish. Adjust lot size after deploying.',
+    category: 'fno',
+    rules: [
+      {
+        name: 'EMA 5/13 Bullish Cross — SCALP ENTRY',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '5m', condition: 'crosses_above', value: 0, params: { fast: 5, slow: 13 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'BUY', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+      {
+        name: 'EMA 5/13 Bearish Cross — SCALP EXIT',
+        trigger_type: 'indicator',
+        trigger_config: { indicator: 'ema_crossover', timeframe: '5m', condition: 'crosses_below', value: 0, params: { fast: 5, slow: 13 } },
+        action_type: 'place_order',
+        action_config: { transaction_type: 'SELL', quantity: 1, order_type: 'MARKET', product: 'I' },
+        max_fires: 1,
+      },
+    ],
+  },
+];
+
+function StrategiesTab({
+  authToken,
+  onRulesCreated,
+}: {
+  authToken: string;
+  onRulesCreated: (rules: MonitorRule[]) => void;
+}) {
+  const [deploying, setDeploying] = useState<string | null>(null);
+  const [deploySymbol, setDeploySymbol] = useState('');
+  const [deployInstrumentToken, setDeployInstrumentToken] = useState('');
+  const [deployQty, setDeployQty] = useState(1);
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyTemplate | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<'all' | 'intraday' | 'fno'>('all');
+  const [deployError, setDeployError] = useState<string | null>(null);
+
+  const filtered = categoryFilter === 'all'
+    ? STRATEGY_TEMPLATES
+    : STRATEGY_TEMPLATES.filter(s => s.category === categoryFilter);
+
+  const handleDeploy = async () => {
+    if (!selectedStrategy || !deploySymbol) return;
+    setDeploying(selectedStrategy.id);
+    setDeployError(null);
+    try {
+      const created: MonitorRule[] = [];
+      for (const ruleTpl of selectedStrategy.rules) {
+        const payload = {
+          name: `${deploySymbol} ${ruleTpl.name}`,
+          trigger_type: ruleTpl.trigger_type,
+          trigger_config: ruleTpl.trigger_config,
+          action_type: ruleTpl.action_type,
+          action_config: {
+            ...ruleTpl.action_config,
+            symbol: deploySymbol,
+            quantity: deployQty,
+          },
+          symbol: deploySymbol,
+          instrument_token: deployInstrumentToken || null,
+          max_fires: ruleTpl.max_fires,
+        };
+        const res = await fetch('/api/monitor/rules', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to create rule');
+        }
+        created.push(await res.json());
+      }
+      onRulesCreated(created);
+      setSelectedStrategy(null);
+      setDeploySymbol('');
+      setDeployInstrumentToken('');
+      setDeployQty(1);
+    } catch (err) {
+      setDeployError(err instanceof Error ? err.message : 'Failed to deploy strategy');
+    } finally {
+      setDeploying(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Category filter */}
+      <div className="flex items-center gap-2">
+        {(['all', 'intraday', 'fno'] as const).map(cat => (
+          <button
+            key={cat}
+            onClick={() => setCategoryFilter(cat)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              categoryFilter === cat
+                ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/30'
+                : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+            }`}
+          >
+            {cat === 'all' ? 'All' : cat === 'intraday' ? 'Intraday (Equity)' : 'F&O (Options)'}
+          </button>
+        ))}
+      </div>
+
+      {/* Strategy cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {filtered.map(strategy => (
+          <div
+            key={strategy.id}
+            className="bg-white dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-700/50 rounded-xl p-5 space-y-3"
+          >
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">{strategy.name}</h3>
+                <Badge color={strategy.category === 'intraday' ? 'blue' : 'purple'} className="mt-1">
+                  {strategy.category === 'intraday' ? 'Intraday' : 'F&O'}
+                </Badge>
+              </div>
+              <span className="text-xs text-zinc-400">{strategy.rules.length} rule{strategy.rules.length > 1 ? 's' : ''}</span>
+            </div>
+            <p className="text-xs text-zinc-500 leading-relaxed">{strategy.description}</p>
+            <div className="space-y-1.5">
+              {strategy.rules.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                    r.action_config.transaction_type === 'BUY' ? 'bg-green-500' : 'bg-red-500'
+                  }`} />
+                  <span className="text-zinc-600 dark:text-zinc-400">{r.name}</span>
+                </div>
+              ))}
+            </div>
+            <Button
+              onClick={() => setSelectedStrategy(strategy)}
+              className="w-full bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 text-xs font-medium"
+            >
+              <Zap data-slot="icon" className="w-3.5 h-3.5" />
+              Deploy Strategy
+            </Button>
+          </div>
+        ))}
+      </div>
+
+      {/* Deploy dialog */}
+      <Dialog open={!!selectedStrategy} onClose={() => { setSelectedStrategy(null); setDeployError(null); }} size="md">
+        <DialogTitle>
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/20">
+              <Zap className="h-4 w-4 text-amber-500 dark:text-amber-400" />
+            </div>
+            Deploy: {selectedStrategy?.name}
+          </div>
+        </DialogTitle>
+        <DialogBody className="mt-4 space-y-4">
+          <p className="text-sm text-zinc-500">{selectedStrategy?.description}</p>
+
+          <SymbolSearch
+            authToken={authToken}
+            value={deploySymbol}
+            onSelect={(symbol, instrumentKey) => {
+              setDeploySymbol(symbol);
+              setDeployInstrumentToken(instrumentKey || '');
+            }}
+          />
+
+          <div className="max-w-[200px]">
+            <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Quantity / Lot Size</label>
+            <Input
+              type="number"
+              min={1}
+              value={deployQty}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDeployQty(parseInt(e.target.value) || 1)}
+              className="text-sm"
+            />
+          </div>
+
+          {/* Preview rules */}
+          <div className="bg-zinc-50 dark:bg-zinc-900/50 rounded-lg p-3 border border-zinc-200 dark:border-zinc-700/30">
+            <h4 className="text-xs font-medium text-zinc-500 mb-2 uppercase tracking-wider">Rules to create</h4>
+            <div className="space-y-2">
+              {selectedStrategy?.rules.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <Badge color={r.action_config.transaction_type === 'BUY' ? 'emerald' : 'red'}>
+                    {r.action_config.transaction_type}
+                  </Badge>
+                  <span className="text-zinc-600 dark:text-zinc-400">
+                    {r.trigger_config.indicator}({r.trigger_config.params?.fast}/{r.trigger_config.params?.slow}) {r.trigger_config.condition} on {r.trigger_config.timeframe}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {deployError && (
+            <div className="p-2 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-800/50 rounded-lg text-xs text-red-600 dark:text-red-400">
+              {deployError}
+            </div>
+          )}
+        </DialogBody>
+        <DialogActions>
+          <Button plain onClick={() => { setSelectedStrategy(null); setDeployError(null); }}>Cancel</Button>
+          <Button
+            className="bg-amber-500 hover:bg-amber-600 text-white"
+            onClick={handleDeploy}
+            disabled={!deploySymbol || !!deploying}
+          >
+            {deploying ? (
+              <>
+                <Loader2 data-slot="icon" className="w-4 h-4 animate-spin" />
+                Deploying...
+              </>
+            ) : (
+              <>
+                <Zap data-slot="icon" className="w-4 h-4" />
+                Deploy {selectedStrategy?.rules.length} Rule{(selectedStrategy?.rules.length || 0) > 1 ? 's' : ''}
+              </>
+            )}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ─── Create Rule Wizard ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+
 function CreateRuleWizard({
   step, setStep, formData, setFormData, updateTriggerType, authToken,
 }: {
@@ -1381,7 +1741,30 @@ function CreateRuleWizard({
                   <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Indicator</label>
                   <select
                     value={formData.trigger_config.indicator}
-                    onChange={e => updateTC('indicator', e.target.value)}
+                    onChange={e => {
+                      const ind = e.target.value;
+                      // Reset params and defaults based on indicator type
+                      const paramDefaults: Record<string, any> = {
+                        rsi: { params: { period: 14 }, condition: 'lte', value: 30 },
+                        macd: { params: {}, condition: 'crosses_above', value: 0 },
+                        ema_crossover: { params: { fast: 9, slow: 21 }, condition: 'crosses_above', value: 0 },
+                        volume_spike: { params: { lookback: 20 }, condition: 'gte', value: 2.0 },
+                        vwap: { params: {}, condition: 'gte', value: 0 },
+                        bollinger: { params: { period: 20, std_dev: 2.0, band: 'pctb' }, condition: 'lte', value: 0 },
+                        supertrend: { params: { period: 10, multiplier: 3.0 }, condition: 'gte', value: 1 },
+                      };
+                      const defaults = paramDefaults[ind] || { params: {}, condition: 'gte', value: 0 };
+                      setFormData((prev: any) => ({
+                        ...prev,
+                        trigger_config: {
+                          ...prev.trigger_config,
+                          indicator: ind,
+                          params: defaults.params,
+                          condition: defaults.condition,
+                          value: defaults.value,
+                        },
+                      }));
+                    }}
                     className={selectClassName}
                   >
                     {INDICATORS.map(i => (
@@ -1402,17 +1785,96 @@ function CreateRuleWizard({
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Period</label>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={formData.trigger_config.params?.period || 14}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, period: parseInt(e.target.value) || 14 })}
-                    className="text-sm"
-                  />
+
+              {/* EMA Cross: fast/slow period inputs */}
+              {formData.trigger_config.indicator === 'ema_crossover' ? (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Fast EMA Period</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={formData.trigger_config.params?.fast || 9}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, fast: parseInt(e.target.value) || 9 })}
+                      className="text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Slow EMA Period</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={formData.trigger_config.params?.slow || 21}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, slow: parseInt(e.target.value) || 21 })}
+                      className="text-sm"
+                    />
+                  </div>
                 </div>
+              ) : formData.trigger_config.indicator === 'bollinger' ? (
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Period</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={formData.trigger_config.params?.period || 20}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, period: parseInt(e.target.value) || 20 })}
+                      className="text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Std Dev</label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min={0.1}
+                      value={formData.trigger_config.params?.std_dev || 2.0}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, std_dev: parseFloat(e.target.value) || 2.0 })}
+                      className="text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Band</label>
+                    <select
+                      value={formData.trigger_config.params?.band || 'pctb'}
+                      onChange={e => updateTC('params', { ...formData.trigger_config.params, band: e.target.value })}
+                      className={selectClassName}
+                    >
+                      <option value="pctb">%B (Percent B)</option>
+                      <option value="upper">Upper Band</option>
+                      <option value="lower">Lower Band</option>
+                      <option value="width">Width</option>
+                    </select>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4">
+                  {/* Period for RSI, Volume Spike lookback, Supertrend */}
+                  {['rsi', 'volume_spike', 'supertrend'].includes(formData.trigger_config.indicator) && (
+                    <div className="max-w-[200px]">
+                      <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">
+                        {formData.trigger_config.indicator === 'volume_spike' ? 'Lookback' : 'Period'}
+                      </label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={
+                          formData.trigger_config.indicator === 'volume_spike'
+                            ? (formData.trigger_config.params?.lookback || 20)
+                            : (formData.trigger_config.params?.period || 14)
+                        }
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                          const key = formData.trigger_config.indicator === 'volume_spike' ? 'lookback' : 'period';
+                          updateTC('params', { ...formData.trigger_config.params, [key]: parseInt(e.target.value) || 14 });
+                        }}
+                        className="text-sm"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Condition</label>
                   <select
@@ -1420,18 +1882,31 @@ function CreateRuleWizard({
                     onChange={e => updateTC('condition', e.target.value)}
                     className={selectClassName}
                   >
-                    {PRICE_CONDITIONS.map(c => (
-                      <option key={c.value} value={c.value}>{c.label}</option>
-                    ))}
+                    {formData.trigger_config.indicator === 'ema_crossover' || formData.trigger_config.indicator === 'macd' ? (
+                      <>
+                        <option value="crosses_above">Crosses above (bullish)</option>
+                        <option value="crosses_below">Crosses below (bearish)</option>
+                        <option value="gte">&gt;= (at or above)</option>
+                        <option value="lte">&lt;= (at or below)</option>
+                      </>
+                    ) : (
+                      PRICE_CONDITIONS.map(c => (
+                        <option key={c.value} value={c.value}>{c.label}</option>
+                      ))
+                    )}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Threshold</label>
+                  <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">
+                    {formData.trigger_config.indicator === 'ema_crossover' || formData.trigger_config.indicator === 'macd'
+                      ? 'Value (0 = crossover line)'
+                      : 'Threshold'}
+                  </label>
                   <Input
                     type="number"
                     step="0.1"
-                    value={formData.trigger_config.threshold || ''}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('threshold', parseFloat(e.target.value) || 0)}
+                    value={formData.trigger_config.value ?? ''}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('value', parseFloat(e.target.value) || 0)}
                     className="text-sm"
                   />
                 </div>
@@ -1700,7 +2175,7 @@ function CreateRuleWizard({
                 <Badge color={triggerTypeColor(formData.trigger_type)}>{formData.trigger_type}</Badge>
                 <span className="text-zinc-700 dark:text-zinc-300">
                   {formData.trigger_type === 'price' && `${formData.trigger_config.condition} ${formData.trigger_config.price}`}
-                  {formData.trigger_type === 'indicator' && `${formData.trigger_config.indicator} ${formData.trigger_config.condition} ${formData.trigger_config.threshold}`}
+                  {formData.trigger_type === 'indicator' && `${formData.trigger_config.indicator} ${formData.trigger_config.condition} ${formData.trigger_config.value ?? ''}`}
                   {formData.trigger_type === 'time' && `at ${formData.trigger_config.time}`}
                   {formData.trigger_type === 'order_status' && `order → ${formData.trigger_config.expected_status}`}
                 </span>
