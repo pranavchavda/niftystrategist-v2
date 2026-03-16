@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -15,6 +16,8 @@ _CACHE_PATH = os.path.join(
 )
 
 _options_cache: dict[str, dict] = {}
+# Maps short trading symbol prefix (e.g. "RELIANCE") → full company name
+_symbol_to_name: dict[str, str] = {}
 
 # Standard lot sizes (updated periodically by NSE)
 LOT_SIZES: dict[str, int] = {
@@ -26,14 +29,29 @@ LOT_SIZES: dict[str, int] = {
 }
 
 
+def _resolve_symbol(symbol: str) -> str:
+    """Resolve a short symbol to the name used in the options cache.
+
+    For OPTIDX, name is the short symbol (e.g. "NIFTY").
+    For OPTSTK, name is the full company name (e.g. "RELIANCE INDUSTRIES LTD").
+    """
+    _load_cache()
+    symbol = symbol.upper()
+    for data in _options_cache.values():
+        if data["name"] == symbol:
+            return symbol
+    return _symbol_to_name.get(symbol, symbol)
+
+
 def get_lot_size(underlying: str) -> int:
     """Return lot size for an underlying from cache, with hardcoded fallback."""
     underlying = underlying.upper()
     # Prefer cache (authoritative, updated daily)
     try:
         cache = _load_cache()
+        resolved = _resolve_symbol(underlying)
         for data in cache.values():
-            if data["name"] == underlying:
+            if data["name"] == resolved:
                 return data["lot_size"]
     except FileNotFoundError:
         pass
@@ -43,7 +61,7 @@ def get_lot_size(underlying: str) -> int:
 
 def _load_cache() -> dict[str, dict]:
     """Load F&O instruments from the shared NSE instruments CSV cache."""
-    global _options_cache
+    global _options_cache, _symbol_to_name
     if _options_cache:
         return _options_cache
 
@@ -54,15 +72,17 @@ def _load_cache() -> dict[str, dict]:
         )
 
     options: dict[str, dict] = {}
+    sym_to_name: dict[str, str] = {}
     with open(_CACHE_PATH, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if row.get("instrument_type") in ("OPTIDX", "OPTSTK"):
                 ts = row.get("tradingsymbol", "")
+                name = row.get("name", "")
                 options[ts] = {
                     "instrument_key": row.get("instrument_key"),
                     "tradingsymbol": ts,
-                    "name": row.get("name"),
+                    "name": name,
                     "expiry": row.get("expiry"),
                     "strike": float(row.get("strike") or 0),
                     "lot_size": int(row.get("lot_size") or 1),
@@ -70,7 +90,12 @@ def _load_cache() -> dict[str, dict]:
                     "option_type": row.get("option_type"),
                     "exchange": row.get("exchange"),
                 }
+                if row.get("instrument_type") == "OPTSTK" and ts:
+                    m = re.match(r'^([A-Z&-]+?)\d', ts)
+                    if m and m.group(1) not in sym_to_name:
+                        sym_to_name[m.group(1)] = name
     _options_cache = options
+    _symbol_to_name = sym_to_name
     return _options_cache
 
 
@@ -96,6 +121,7 @@ def resolve_option_instrument(
     """
     cache = _load_cache()
     underlying = underlying.upper()
+    resolved_name = _resolve_symbol(underlying)
     opt_type = option_type.upper()
 
     # Normalize expiry to DDMMMYY for matching
@@ -108,7 +134,7 @@ def resolve_option_instrument(
     matching = []
     for data in cache.values():
         if (
-            data["name"] == underlying
+            data["name"] == resolved_name
             and data["strike"] == strike
             and data["option_type"] == opt_type
         ):
