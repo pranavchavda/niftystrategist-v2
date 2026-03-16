@@ -1318,8 +1318,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-trades history [--segment EQ|FO] [--days 30] [--json]` — Historical trades
 - `python cli-tools/nf-trades charges [--segment EQ|FO] [--json]` — Trade P&L with charges breakdown (brokerage, STT, GST, etc.)
 
-**Options (F&O):**
-- `python cli-tools/nf-options chain SYMBOL [--expiry 17FEB] [--json]` — Option chain (from cache)
+**Options (F&O) — supports BOTH index options (NIFTY, BANKNIFTY) AND stock options (~200 F&O-eligible stocks like RELIANCE, TCS, HDFCBANK, etc.):**
+- `python cli-tools/nf-options chain SYMBOL [--expiry 17FEB] [--json]` — Option chain (from cache). SYMBOL can be NIFTY, BANKNIFTY, or any F&O stock (RELIANCE, TCS, etc.)
 - `python cli-tools/nf-options live-chain SYMBOL YYYY-MM-DD [--json]` — Live option chain with greeks from API
 - `python cli-tools/nf-options greeks SYMBOL [--expiry 17FEB] [--strikes 25000 25500] [--type CE|PE] [--json]` — Option greeks (delta, gamma, theta, vega, IV)
 - `python cli-tools/nf-options expiries SYMBOL [--json]` — Upcoming expiry dates
@@ -1328,6 +1328,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-options charges SYMBOL EXPIRY STRIKE CE|PE LOTS [--side BUY|SELL] [--price P] [--exit-price P] [--json]` — F&O charges estimate (brokerage, STT, GST, etc.), optional round-trip with --exit-price
 - `python cli-tools/nf-options positions [--json]` — View all open F&O positions with P&L
 - `python cli-tools/nf-options plan SYMBOL --expiry YYYY-MM-DD [--side buy|sell] [--bias bullish|bearish] [--capital N] [--lots N] [--json]` — Trade planner: suggests strikes, computes affordability, shows candidates near ATM
+- `python cli-tools/nf-options fno-symbols [--json]` — List all ~200 F&O-eligible stock symbols
+NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on expiry. Index options have weekly expiry and cash settlement.
 
 **Watchlist:**
 - `python cli-tools/nf-watchlist [--json]` — View watchlist with live prices

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Options trading tool for Nifty/Bank Nifty F&O.
+"""Options trading tool for Index & Stock F&O.
 
 Supports:
-- Option chain lookup (from cache or live API)
+- Option chain lookup for indices (NIFTY, BANKNIFTY) AND individual stocks
+  (RELIANCE, TCS, HDFCBANK, etc.) — ~200 F&O-eligible stocks on NSE
 - Get option quotes
 - Option greeks (delta, gamma, theta, vega, IV) via Upstox v3 API
 - Live option chain with greeks via Upstox put/call API
-- Place BUY/SELL option orders
+- Place BUY/SELL option orders (index AND stock options)
 - F&O charges estimation
 - F&O positions viewer
 - Trade planner (strike selection, lot sizing, affordability)
@@ -30,30 +31,36 @@ from base import format_inr, init_client, print_error, print_json, print_success
 OPTIONS_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache", "nse_instruments.csv")
 
 _options_cache: dict = {}
+# Maps short trading symbol prefix (e.g. "RELIANCE") to full company name
+# (e.g. "RELIANCE INDUSTRIES LTD") used in the CSV "name" field for OPTSTK rows.
+# For OPTIDX, name is already the short symbol (e.g. "NIFTY").
+_symbol_to_name: dict = {}
 
 
 def _load_options_cache():
     """Load options instruments from cache."""
-    global _options_cache
+    global _options_cache, _symbol_to_name
     if _options_cache:
         return _options_cache
-    
-    import csv
+
+    import csv, re
     if not os.path.exists(OPTIONS_CACHE):
         print_error("Instruments cache not found. Run nf-quote first to download.")
-    
+
     options = {}
+    sym_to_name = {}
     with open(OPTIONS_CACHE, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             # Only index options (OPTIDX) and stock options (OPTSTK)
             if row.get("instrument_type") in ("OPTIDX", "OPTSTK"):
                 tradingsymbol = row.get("tradingsymbol", "")
+                name = row.get("name", "")
                 options[tradingsymbol] = {
                     "instrument_key": row.get("instrument_key"),
                     "exchange_token": row.get("exchange_token"),
                     "tradingsymbol": tradingsymbol,
-                    "name": row.get("name"),
+                    "name": name,
                     "last_price": float(row.get("last_price") or 0),
                     "expiry": row.get("expiry"),
                     "strike": float(row.get("strike") or 0),
@@ -63,20 +70,48 @@ def _load_options_cache():
                     "option_type": row.get("option_type"),
                     "exchange": row.get("exchange"),
                 }
+                # Build symbol prefix → full name mapping for OPTSTK
+                # e.g. tradingsymbol "RELIANCE26MAR1650CE" → prefix "RELIANCE"
+                if row.get("instrument_type") == "OPTSTK" and tradingsymbol:
+                    m = re.match(r'^([A-Z&-]+?)\d', tradingsymbol)
+                    if m:
+                        prefix = m.group(1)
+                        if prefix not in sym_to_name:
+                            sym_to_name[prefix] = name
     _options_cache = options
+    _symbol_to_name = sym_to_name
     return _options_cache
+
+
+def _resolve_symbol(symbol: str) -> str:
+    """Resolve a short symbol to the name used in the options cache.
+
+    For index options (NIFTY, BANKNIFTY), the CSV "name" field is the short
+    symbol itself.  For stock options (OPTSTK), the "name" is the full company
+    name (e.g. "RELIANCE INDUSTRIES LTD").  This function maps "RELIANCE" →
+    "RELIANCE INDUSTRIES LTD" so all lookup functions work uniformly.
+    """
+    _load_options_cache()
+    symbol = symbol.upper()
+    # If the symbol directly matches any cache entry's name, use it as-is
+    for data in _options_cache.values():
+        if data["name"] == symbol:
+            return symbol
+    # Otherwise, try the prefix → full name mapping
+    return _symbol_to_name.get(symbol, symbol)
 
 
 def find_option(symbol: str, expiry_date: str, strike: float, option_type: str):
     """Find an option instrument.
-    
+
     Args:
-        symbol: NIFTY, BANKNIFTY, etc.
+        symbol: NIFTY, BANKNIFTY, RELIANCE, etc.
         expiry_date: DDMMMYY format (e.g., 17FEB26) or YYYY-MM-DD
         strike: Strike price
         option_type: CE (Call) or PE (Put)
     """
     cache = _load_options_cache()
+    resolved_name = _resolve_symbol(symbol)
     symbol = symbol.upper()
     opt_type = option_type.upper()
     
@@ -95,8 +130,8 @@ def find_option(symbol: str, expiry_date: str, strike: float, option_type: str):
     # Let's search by pattern matching
     matching = []
     for ts, data in cache.items():
-        if (data["name"] == symbol and 
-            data["strike"] == strike and 
+        if (data["name"] == resolved_name and
+            data["strike"] == strike and
             data["option_type"] == opt_type):
             # Check expiry matches
             cache_expiry = data.get("expiry", "")
@@ -122,13 +157,14 @@ def find_option(symbol: str, expiry_date: str, strike: float, option_type: str):
 
 
 def get_option_chain(symbol: str, expiry: str = None):
-    """Get option chain for a symbol."""
+    """Get option chain for a symbol (index or stock)."""
     cache = _load_options_cache()
+    resolved_name = _resolve_symbol(symbol)
     symbol = symbol.upper()
-    
+
     chain = []
     for ts, data in cache.items():
-        if data["name"] == symbol:
+        if data["name"] == resolved_name:
             if expiry:
                 if expiry.upper() not in ts:
                     continue
@@ -474,13 +510,14 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
 
 
 def show_expiries(symbol: str, as_json: bool = False):
-    """Show upcoming expiry dates for a symbol."""
+    """Show upcoming expiry dates for a symbol (index or stock)."""
     cache = _load_options_cache()
+    resolved_name = _resolve_symbol(symbol)
     symbol = symbol.upper()
-    
+
     expiries = set()
     for ts, data in cache.items():
-        if data["name"] == symbol and data.get("expiry"):
+        if data["name"] == resolved_name and data.get("expiry"):
             expiries.add(data["expiry"])
     
     if not expiries:
@@ -501,15 +538,16 @@ def show_expiries(symbol: str, as_json: bool = False):
 
 def show_greeks(symbol: str, expiry: str, strikes: list = None,
                 option_type: str = None, as_json: bool = False):
-    """Show option greeks for instruments."""
+    """Show option greeks for instruments (index or stock)."""
     cache = _load_options_cache()
+    resolved_name = _resolve_symbol(symbol)
     symbol_upper = symbol.upper()
 
     # Find matching instruments
     instrument_keys = []
     key_to_info = {}
     for ts, data in cache.items():
-        if data["name"] != symbol_upper:
+        if data["name"] != resolved_name:
             continue
         if expiry:
             # Match against both tradingsymbol and the expiry field (YYYY-MM-DD)
@@ -777,12 +815,13 @@ def plan_trade(symbol: str, expiry: str, side: str = "buy", bias: str = None,
                capital: float = None, lots: int = None, as_json: bool = False):
     """Plan an options trade — suggest strikes, compute affordability, show candidates."""
     cache = _load_options_cache()
+    resolved_name = _resolve_symbol(symbol)
     symbol = symbol.upper()
 
     # Collect all options for this symbol and expiry
     matching = []
     for ts, data in cache.items():
-        if data["name"] != symbol:
+        if data["name"] != resolved_name:
             continue
         if expiry:
             cache_expiry = data.get("expiry", "")
@@ -951,47 +990,76 @@ def plan_trade(symbol: str, expiry: str, side: str = "buy", bias: str = None,
                 print(f"  Cost: {format_inr(pick['cost_per_lot'])}/lot | Max loss: {format_inr(pick['cost_per_lot'] + pick['charges_per_lot'])}")
 
 
+def show_fno_symbols(as_json: bool = False):
+    """List all F&O-eligible stock symbols."""
+    _load_options_cache()
+    symbols = sorted(_symbol_to_name.items())
+
+    if as_json:
+        print_json({
+            "ok": True,
+            "data": {
+                "count": len(symbols),
+                "symbols": [{"symbol": s, "name": n} for s, n in symbols],
+            },
+        })
+        return
+
+    print(f"📋 F&O-Eligible Stock Symbols ({len(symbols)} stocks)\n")
+    print(f"{'Symbol':<20} {'Company Name'}")
+    print("-" * 60)
+    for sym, name in symbols:
+        print(f"{sym:<20} {name}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-options",
-        description="Options trading tool for Nifty/Bank Nifty F&O",
+        description="Options trading tool for Index & Stock F&O (~200 F&O-eligible stocks)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+Examples (Index Options):
   nf-options chain NIFTY                          Show NIFTY option chain (from cache)
   nf-options chain NIFTY --expiry 17FEB           Show specific expiry
   nf-options live-chain NIFTY 2026-03-13          Live chain with greeks from API
   nf-options greeks NIFTY --expiry 17FEB --strikes 25000 25500  Option greeks
-  nf-options greeks NIFTY --expiry 17FEB --type CE  Only call greeks
   nf-options expiries NIFTY                       Show upcoming expiries
-  nf-options quote NIFTY 17FEB26 25500 PE         Get option quote
-  nf-options buy NIFTY 17FEB26 25500 PE 1         Buy 1 lot (dry-run in paper mode)
-  nf-options buy NIFTY 17FEB26 25500 PE 1 --dry-run  Preview order with charges & funds
-  nf-options sell NIFTY 17FEB26 25500 CE 2        Sell 2 lots
-  nf-options buy NIFTY 17FEB26 25500 PE 1 --price 150 --type LIMIT  Limit order
+  nf-options buy NIFTY 17FEB26 25500 PE 1 --dry-run  Preview order
+
+Examples (Stock Options — any F&O-eligible stock):
+  nf-options chain RELIANCE                       Show RELIANCE option chain
+  nf-options chain RELIANCE --expiry 30MAR        Filter by expiry
+  nf-options expiries RELIANCE                    Show stock option expiries
+  nf-options live-chain RELIANCE 2026-03-30       Live chain with greeks
+  nf-options greeks RELIANCE --expiry 2026-03-30  Stock option greeks
+  nf-options buy RELIANCE 30MAR26 1400 CE 1 --dry-run  Preview stock option order
+  nf-options plan RELIANCE --expiry 2026-03-30 --bias bullish --capital 50000
+  nf-options fno-symbols                          List all F&O-eligible stock symbols
+
+Common:
   nf-options charges BANKNIFTY 2026-03-12 48000 CE 1 --side BUY     Charges estimate
-  nf-options charges BANKNIFTY 2026-03-12 48000 CE 1 --exit-price 250  Round-trip estimate
   nf-options positions                            Show all F&O positions
-  nf-options plan BANKNIFTY --expiry 2026-03-12 --bias bullish --capital 10000  Trade planner
 """,
     )
 
     sub = parser.add_subparsers(dest="command", help="Command")
 
+    _sym_help = "Symbol (NIFTY, BANKNIFTY, or any F&O stock e.g. RELIANCE, TCS, HDFCBANK)"
+
     # chain
-    p_chain = sub.add_parser("chain", help="Show option chain")
-    p_chain.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
-    p_chain.add_argument("--expiry", help="Filter by expiry (e.g., 17FEB, 17FEB26)")
+    p_chain = sub.add_parser("chain", help="Show option chain (index or stock)")
+    p_chain.add_argument("symbol", help=_sym_help)
+    p_chain.add_argument("--expiry", help="Filter by expiry (e.g., 17FEB, 17FEB26, 2026-03-30)")
     p_chain.add_argument("--json", action="store_true", help="Output as JSON")
 
     # expiries
     p_exp = sub.add_parser("expiries", help="Show upcoming expiry dates")
-    p_exp.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_exp.add_argument("symbol", help=_sym_help)
     p_exp.add_argument("--json", action="store_true", help="Output as JSON")
 
     # quote
     p_quote = sub.add_parser("quote", help="Get option quote")
-    p_quote.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_quote.add_argument("symbol", help=_sym_help)
     p_quote.add_argument("expiry", help="Expiry date (DDMMMYY format, e.g., 17FEB26)")
     p_quote.add_argument("strike", type=float, help="Strike price")
     p_quote.add_argument("option_type", choices=["CE", "PE", "ce", "pe"], help="Call (CE) or Put (PE)")
@@ -999,23 +1067,23 @@ Examples:
 
     # greeks
     p_greeks = sub.add_parser("greeks", help="Option greeks (delta, gamma, theta, vega, IV)")
-    p_greeks.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
-    p_greeks.add_argument("--expiry", help="Filter by expiry (e.g., 17FEB, 17FEB26)")
+    p_greeks.add_argument("symbol", help=_sym_help)
+    p_greeks.add_argument("--expiry", help="Filter by expiry (e.g., 17FEB, 17FEB26, 2026-03-30)")
     p_greeks.add_argument("--strikes", type=float, nargs="+", help="Specific strike prices")
     p_greeks.add_argument("--type", dest="opt_type", choices=["CE", "PE"], help="Filter by CE or PE")
     p_greeks.add_argument("--json", action="store_true", help="Output as JSON")
 
     # live-chain
     p_live = sub.add_parser("live-chain", help="Live option chain with greeks from API")
-    p_live.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY, or stock symbol)")
+    p_live.add_argument("symbol", help=_sym_help)
     p_live.add_argument("expiry", help="Expiry date (YYYY-MM-DD format)")
     p_live.add_argument("--json", action="store_true", help="Output as JSON")
 
     # buy / sell
     for cmd in ("buy", "sell"):
-        p = sub.add_parser(cmd, help=f"{cmd.title()} option")
-        p.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
-        p.add_argument("expiry", help="Expiry date (DDMMMYY format, e.g., 17FEB26)")
+        p = sub.add_parser(cmd, help=f"{cmd.title()} option (index or stock)")
+        p.add_argument("symbol", help=_sym_help)
+        p.add_argument("expiry", help="Expiry date (DDMMMYY format, e.g., 17FEB26, 30MAR26)")
         p.add_argument("strike", type=float, help="Strike price")
         p.add_argument("option_type", choices=["CE", "PE", "ce", "pe"], help="Call (CE) or Put (PE)")
         p.add_argument("lots", type=int, help="Number of lots")
@@ -1026,7 +1094,7 @@ Examples:
 
     # charges
     p_charges = sub.add_parser("charges", help="Estimate F&O charges for an options trade")
-    p_charges.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_charges.add_argument("symbol", help=_sym_help)
     p_charges.add_argument("expiry", help="Expiry date (DDMMMYY or YYYY-MM-DD)")
     p_charges.add_argument("strike", type=float, help="Strike price")
     p_charges.add_argument("option_type", choices=["CE", "PE", "ce", "pe"], help="Call (CE) or Put (PE)")
@@ -1037,18 +1105,22 @@ Examples:
     p_charges.add_argument("--json", action="store_true", help="Output as JSON")
 
     # positions
-    p_positions = sub.add_parser("positions", help="Show all F&O positions")
+    p_positions = sub.add_parser("positions", help="Show all F&O positions (index + stock)")
     p_positions.add_argument("--json", action="store_true", help="Output as JSON")
 
     # plan
     p_plan = sub.add_parser("plan", help="Plan an options trade (strike selection, affordability)")
-    p_plan.add_argument("symbol", help="Symbol (NIFTY, BANKNIFTY)")
+    p_plan.add_argument("symbol", help=_sym_help)
     p_plan.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
     p_plan.add_argument("--side", default="buy", choices=["buy", "sell"], help="Trade side (default: buy)")
     p_plan.add_argument("--bias", choices=["bullish", "bearish"], help="Market bias (filters CE/PE)")
     p_plan.add_argument("--capital", type=float, help="Available capital in rupees")
     p_plan.add_argument("--lots", type=int, help="Desired number of lots")
     p_plan.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # fno-symbols — list all F&O-eligible stock symbols
+    p_fno = sub.add_parser("fno-symbols", help="List all F&O-eligible stock symbols")
+    p_fno.add_argument("--json", action="store_true", help="Output as JSON")
 
     args = parser.parse_args()
 
@@ -1115,6 +1187,8 @@ Examples:
             lots=args.lots,
             as_json=args.json,
         )
+    elif args.command == "fno-symbols":
+        show_fno_symbols(as_json=args.json)
 
 
 if __name__ == "__main__":
