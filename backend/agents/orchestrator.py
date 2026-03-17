@@ -397,9 +397,8 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             Multi-layer validation:
             1. Skip if tools were called this turn (ctx.messages)
             2. Skip if response is too short
-            3. Skip if tools were called in prior turns (state.tools_called_history)
-            4. Skip for follow-up/educational/conversational patterns (heuristic)
-            5. LLM validation with enriched context (user question + conversation history)
+            3. Skip for follow-up/educational/conversational patterns (heuristic)
+            4. LLM validation with enriched context (user question + conversation history)
             """
 
             # 1. Extract actual tool calls from current run's message history
@@ -418,15 +417,7 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             if len(result) < 50:
                 return result
 
-            # 4. Skip if tools were called in prior turns of this conversation
-            prior_tools = ctx.deps.state.tools_called_history
-            if prior_tools:
-                logger.info(
-                    f"[VALIDATOR] Skipping - prior turns used tools: {prior_tools}"
-                )
-                return result
-
-            # 5. Heuristic pre-filters for common false positive patterns
+            # 4. Heuristic pre-filters for common false positive patterns
             lower_result = result.lower()
 
             # Follow-up references to prior context
@@ -462,7 +453,7 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
                         )
                         return result
 
-            # 6. LLM validation with enriched context
+            # 5. LLM validation with enriched context
             # Extract user question from current turn
             user_question = ""
             for msg in ctx.messages:
@@ -544,13 +535,16 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
 
                 if judgment.startswith("FAKE:"):
                     reason = judgment[5:].strip()
-                    # Log only — do NOT raise ModelRetry here.
-                    # ModelRetry causes pydantic-ai to stream a second model response,
-                    # which ResponseCapture saves as a duplicate assistant message in the DB.
-                    # The retry response is also often incoherent (the model confuses the
-                    # retry instruction for a tool call). Logging is sufficient signal.
                     logger.warning(
                         f"[VALIDATOR] Model narrated without tool calls: {reason}"
+                    )
+                    # Append a visible warning so the user knows this may be fabricated.
+                    # We don't raise ModelRetry because it causes duplicate DB messages
+                    # via ResponseCapture and often produces incoherent retry responses.
+                    result += (
+                        "\n\n---\n⚠️ **Validation warning:** This response may contain "
+                        "data that wasn't verified via tools. Please ask me to re-check "
+                        "with live data if anything looks off."
                     )
             except Exception as e:
                 # Don't block on validation errors - log and continue
