@@ -273,12 +273,16 @@ class MonitorDaemon:
             if session_obj is None:
                 return
 
-            for rule in session_obj.rules:
-                if rule.trigger_type not in ("price", "indicator", "compound", "trailing_stop"):
-                    continue
-                if rule.instrument_token != instrument_token:
-                    continue
+            # Evaluate entry rules first so they can disable opposite-direction
+            # rules before those get a chance to fire on the same tick.
+            matching = [
+                r for r in session_obj.rules
+                if r.trigger_type in ("price", "indicator", "compound", "trailing_stop")
+                and r.instrument_token == instrument_token
+            ]
+            matching.sort(key=lambda r: (0 if "Entry" in r.name else 1, r.id))
 
+            for rule in matching:
                 ctx = EvalContext(
                     market_data=market_data,
                     prev_prices=session_obj.prev_prices,
@@ -369,6 +373,28 @@ class MonitorDaemon:
             await self._action_executor.execute(
                 rule, result, trigger_snapshot, db_session
             )
+
+            # Strategy group direction gating: when an entry rule fires,
+            # disable all opposite-direction rules in the same group.
+            # This prevents e.g. short SL/trail rules from firing when a
+            # long entry triggers (ORB strategy bug 2026-03-17).
+            if rule.group_id and "Entry" in rule.name:
+                direction = "Long" if " Long " in rule.name else "Short" if " Short " in rule.name else None
+                if direction:
+                    disabled_ids = await crud.disable_opposite_direction_rules(
+                        db_session, rule.user_id, rule.group_id, direction,
+                    )
+                    if disabled_ids:
+                        # Also disable in-memory so same-tick evaluation skips them
+                        session_obj = self._user_manager.get_session(rule.user_id)
+                        if session_obj:
+                            for r in session_obj.rules:
+                                if r.id in disabled_ids:
+                                    r.enabled = False
+                        logger.info(
+                            "Entry rule %d (%s) disabled %d opposite-direction rules: %s",
+                            rule.id, rule.name, len(disabled_ids), disabled_ids,
+                        )
 
     # ── Client factory ────────────────────────────────────────────────
 

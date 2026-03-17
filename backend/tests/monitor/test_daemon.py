@@ -831,3 +831,147 @@ async def test_max_fires_prevents_second_fire_on_next_tick():
 
     # Only 1 execution despite 3 qualifying ticks
     assert execute_call_count == 1
+
+
+# ── Test: ORB entry rule disables opposite-direction rules ────────
+
+
+@pytest.mark.asyncio
+async def test_orb_entry_disables_opposite_direction_rules():
+    """When a Long Entry fires, Short-side rules in the same group are disabled.
+
+    Reproduces the 2026-03-17 bug where both Long Entry AND Short SL/Trail
+    fired on the same tick because the short-side rules weren't disabled.
+    """
+    from monitor.daemon import MonitorDaemon
+
+    TOKEN = "NSE_EQ|INE002A01018"
+    GROUP = "orb-test-group"
+
+    long_entry = MonitorRule(
+        id=1, user_id=999, name="M&M ORB Long Entry > 3075",
+        trigger_type="price", trigger_config={"condition": "gte", "price": 3075, "reference": "ltp"},
+        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+    )
+    long_sl = MonitorRule(
+        id=2, user_id=999, name="M&M ORB Long SL @ 3024.5",
+        trigger_type="price", trigger_config={"condition": "lte", "price": 3024.5, "reference": "ltp"},
+        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "SELL", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+    )
+    short_sl = MonitorRule(
+        id=3, user_id=999, name="M&M ORB Short SL @ 3075",
+        trigger_type="price", trigger_config={"condition": "gte", "price": 3075, "reference": "ltp"},
+        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+    )
+    short_trail = MonitorRule(
+        id=4, user_id=999, name="M&M ORB Short Trail 1.5%",
+        trigger_type="trailing_stop", trigger_config={"trail_percent": 1.5, "initial_price": 3075, "highest_price": 3075, "direction": "short", "reference": "ltp"},
+        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+    )
+    short_entry = MonitorRule(
+        id=5, user_id=999, name="M&M ORB Short Entry < 3024.5",
+        trigger_type="price", trigger_config={"condition": "lte", "price": 3024.5, "reference": "ltp"},
+        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "SELL", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+    )
+
+    all_rules = [long_entry, long_sl, short_sl, short_trail, short_entry]
+
+    session_obj = _make_user_session(999, rules=all_rules)
+    session_obj.prev_prices = {TOKEN: 3050.0}  # Previous price below entry
+
+    daemon = MonitorDaemon()
+    daemon._user_manager = MagicMock()
+    daemon._user_manager.get_session.return_value = session_obj
+    daemon._rules_by_user = {999: all_rules}
+
+    # Track which rules fire
+    fired_rule_ids = []
+    original_execute = daemon._evaluate_and_execute
+
+    async def tracking_execute(rule, ctx):
+        # We need the real evaluation logic but mock the DB/action parts
+        await original_execute(rule, ctx)
+
+    with patch("monitor.daemon.get_db_context") as mock_ctx, \
+         patch("monitor.daemon.crud") as mock_crud:
+
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # Track action executor calls to see which rules fire
+        daemon._action_executor = AsyncMock()
+        daemon._action_executor.execute = AsyncMock()
+
+        # disable_opposite_direction_rules returns the IDs of short-side rules
+        mock_crud.disable_opposite_direction_rules = AsyncMock(
+            return_value=[3, 4, 5]  # short SL, short trail, short entry
+        )
+
+        # Tick at 3100 — above both Long Entry (3075) AND Short SL (3075)
+        await daemon._on_tick(999, TOKEN, {"ltp": 3100.0})
+
+    # The action executor should have been called only for the Long Entry.
+    # Short SL (id=3) should NOT fire because it gets disabled after Long Entry fires.
+    executed_rule_ids = [
+        call.args[0].id for call in daemon._action_executor.execute.call_args_list
+    ]
+    assert 1 in executed_rule_ids, "Long Entry should have fired"
+    assert 3 not in executed_rule_ids, "Short SL should NOT fire (disabled by Long Entry)"
+    assert 4 not in executed_rule_ids, "Short Trail should NOT fire (disabled by Long Entry)"
+    assert 5 not in executed_rule_ids, "Short Entry should NOT fire (disabled by Long Entry)"
+
+    # Verify disable_opposite_direction_rules was called with correct args
+    mock_crud.disable_opposite_direction_rules.assert_awaited_once_with(
+        mock_session, 999, GROUP, "Long",
+    )
+
+
+@pytest.mark.asyncio
+async def test_orb_entry_rules_evaluated_before_sl_rules():
+    """Entry rules are sorted before SL/Trail rules in the same tick.
+
+    Even if Short SL has a lower rule ID than Long Entry, the entry rule
+    must be evaluated first so it can disable the opposite direction.
+    """
+    from monitor.daemon import MonitorDaemon
+
+    TOKEN = "NSE_EQ|INE002A01018"
+
+    # Short SL has LOWER id than Long Entry (would normally eval first)
+    short_sl = MonitorRule(
+        id=100, user_id=999, name="M&M ORB Short SL @ 3075",
+        trigger_type="price", trigger_config={"condition": "gte", "price": 3075, "reference": "ltp"},
+        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        instrument_token=TOKEN, max_fires=1, group_id="g1",
+    )
+    long_entry = MonitorRule(
+        id=200, user_id=999, name="M&M ORB Long Entry > 3075",
+        trigger_type="price", trigger_config={"condition": "gte", "price": 3075, "reference": "ltp"},
+        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        instrument_token=TOKEN, max_fires=1, group_id="g1",
+    )
+
+    session_obj = _make_user_session(999, rules=[short_sl, long_entry])
+    session_obj.prev_prices = {TOKEN: 3050.0}
+
+    daemon = MonitorDaemon()
+    daemon._user_manager = MagicMock()
+    daemon._user_manager.get_session.return_value = session_obj
+
+    eval_order = []
+
+    async def mock_eval_exec(rule, ctx):
+        eval_order.append(rule.id)
+
+    daemon._evaluate_and_execute = mock_eval_exec
+
+    await daemon._on_tick(999, TOKEN, {"ltp": 3100.0})
+
+    # Long Entry (id=200) should be evaluated BEFORE Short SL (id=100)
+    assert eval_order == [200, 100], f"Entry rules must eval first, got: {eval_order}"

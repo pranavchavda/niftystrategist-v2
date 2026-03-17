@@ -201,6 +201,43 @@ async def disable_rules_by_group(
     return result.rowcount
 
 
+async def disable_opposite_direction_rules(
+    session: AsyncSession,
+    user_id: int,
+    group_id: str,
+    direction: str,
+) -> list[int]:
+    """Disable all rules for the opposite direction within a strategy group.
+
+    ``direction`` is "Long" or "Short" (case-insensitive).  Rules whose name
+    contains the *opposite* keyword are disabled.
+
+    Returns list of disabled rule IDs (for in-memory sync).
+    """
+    opposite = "Short" if direction.lower() == "long" else "Long"
+    # Fetch IDs first so we can return them for in-memory disabling
+    stmt = (
+        select(MonitorRuleDB.id)
+        .where(MonitorRuleDB.user_id == user_id)
+        .where(MonitorRuleDB.group_id == group_id)
+        .where(MonitorRuleDB.enabled == True)  # noqa: E712
+        .where(MonitorRuleDB.name.ilike(f"%{opposite}%"))
+    )
+    result = await session.execute(stmt)
+    ids = [row[0] for row in result.fetchall()]
+
+    if ids:
+        upd = (
+            update(MonitorRuleDB)
+            .where(MonitorRuleDB.id.in_(ids))
+            .values(enabled=False, updated_at=utc_now())
+        )
+        await session.execute(upd)
+        await session.commit()
+
+    return ids
+
+
 async def get_active_rules_for_daemon(session: AsyncSession) -> list[MonitorRuleDB]:
     """Get all enabled rules across all users (for the daemon to load)."""
     stmt = (
