@@ -87,6 +87,72 @@ class TestCancelRuleAction:
         assert result.action_type == "cancel_rule"
         assert result.rules_to_cancel == [11]
 
+    def test_also_cancel_rules_list(self):
+        """also_cancel_rules (list) populates rules_to_cancel with multiple IDs."""
+        rule = MonitorRule(
+            id=10,
+            user_id=999,
+            name="sl-kills-target-and-trailing",
+            trigger_type="price",
+            trigger_config={"condition": "lte", "price": 90.0, "reference": "ltp"},
+            action_type="place_order",
+            action_config={
+                "symbol": "TEST",
+                "transaction_type": "SELL",
+                "quantity": 1,
+                "also_cancel_rules": [20, 30, 40],
+            },
+            instrument_token="NSE_EQ|TEST",
+        )
+        ctx = EvalContext(market_data={"ltp": 85.0})
+        result = evaluate_rule(rule, ctx)
+        assert result.fired is True
+        assert result.action_type == "place_order"
+        assert result.rules_to_cancel == [20, 30, 40]
+
+    def test_also_cancel_rules_takes_priority_over_legacy(self):
+        """When both also_cancel_rules and also_cancel_rule exist, list wins."""
+        rule = MonitorRule(
+            id=10,
+            user_id=999,
+            name="both-fields",
+            trigger_type="price",
+            trigger_config={"condition": "lte", "price": 90.0, "reference": "ltp"},
+            action_type="place_order",
+            action_config={
+                "symbol": "TEST",
+                "transaction_type": "SELL",
+                "quantity": 1,
+                "also_cancel_rules": [20, 30],
+                "also_cancel_rule": 99,
+            },
+            instrument_token="NSE_EQ|TEST",
+        )
+        ctx = EvalContext(market_data={"ltp": 85.0})
+        result = evaluate_rule(rule, ctx)
+        assert result.rules_to_cancel == [20, 30]
+
+    def test_legacy_also_cancel_rule_still_works(self):
+        """Legacy also_cancel_rule (single int) still works for backward compat."""
+        rule = MonitorRule(
+            id=10,
+            user_id=999,
+            name="legacy-oco",
+            trigger_type="price",
+            trigger_config={"condition": "lte", "price": 90.0, "reference": "ltp"},
+            action_type="place_order",
+            action_config={
+                "symbol": "TEST",
+                "transaction_type": "SELL",
+                "quantity": 1,
+                "also_cancel_rule": 99,
+            },
+            instrument_token="NSE_EQ|TEST",
+        )
+        ctx = EvalContext(market_data={"ltp": 85.0})
+        result = evaluate_rule(rule, ctx)
+        assert result.rules_to_cancel == [99]
+
 
 # ── prev_prices integration ─────────────────────────────────────────
 

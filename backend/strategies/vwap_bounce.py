@@ -87,6 +87,7 @@ class VWAPBounceTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl",
+                kills_roles=["target", "squareoff"],
             ),
             # Target
             RuleSpec(
@@ -99,6 +100,7 @@ class VWAPBounceTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="target",
+                kills_roles=["sl", "squareoff"],
             ),
             # Auto square-off
             RuleSpec(
@@ -111,6 +113,7 @@ class VWAPBounceTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                kills_roles=["sl", "target"],
             ),
         ]
 

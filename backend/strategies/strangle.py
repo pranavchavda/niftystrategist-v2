@@ -113,6 +113,7 @@ class StrangleTemplate(StrategyTemplate):
                         "product": product,
                     },
                     role="sl",
+                    kills_roles=["squareoff"],
                 ))
 
         # Auto square-off
@@ -135,6 +136,7 @@ class StrangleTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="squareoff",
+                kills_roles=["sl"],
             ))
 
         plan.rules = rules

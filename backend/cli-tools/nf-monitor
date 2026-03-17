@@ -327,6 +327,12 @@ def cmd_add_rule(args):
     else:
         print_error(f"Unknown action type: {action_type}")
 
+    # Kill chain: also_cancel_rules
+    if args.kills:
+        kill_ids = [int(x.strip()) for x in args.kills.split(",") if x.strip()]
+        if kill_ids:
+            action_config["also_cancel_rules"] = kill_ids
+
     # Parse expires
     expires_at = None
     if args.expires:
@@ -451,7 +457,7 @@ def cmd_add_oco(args):
 
             # Step 2: Create the target rule (cancels SL rule on fire)
             target_action = base_action_config.copy()
-            target_action["also_cancel_rule"] = sl_rule.id
+            target_action["also_cancel_rules"] = [sl_rule.id]
             target_rule = await create_rule(
                 session=session,
                 user_id=user_id,
@@ -473,7 +479,7 @@ def cmd_add_oco(args):
 
             # Step 3: Update SL rule action to also cancel target rule
             sl_action = sl_rule.action_config.copy()
-            sl_action["also_cancel_rule"] = target_rule.id
+            sl_action["also_cancel_rules"] = [target_rule.id]
             await update_rule(session, sl_rule.id, action_config=sl_action)
 
             # Refresh SL rule to get updated data
@@ -935,6 +941,7 @@ Examples:
     p_add.add_argument("--expires", help="Expiry: 'today' or ISO datetime")
     p_add.add_argument("--linked-trade", type=int, help="Linked trade ID")
     p_add.add_argument("--linked-order", help="Linked order ID")
+    p_add.add_argument("--kills", help="Comma-separated rule IDs to disable when this rule fires (e.g. --kills 5,7,12)")
     p_add.add_argument("--json", action="store_true", help="Output as JSON")
 
     # ---- add-oco ----

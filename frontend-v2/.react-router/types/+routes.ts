@@ -16,6 +16,9 @@ type Pages = {
   "/login": {
     params: {};
   };
+  "/reset-password": {
+    params: {};
+  };
   "/help": {
     params: {};
   };
@@ -87,7 +90,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/reset-password" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -96,6 +99,10 @@ type RouteFiles = {
   "./routes/login.tsx": {
     id: "routes/login";
     page: "/login";
+  };
+  "./routes/reset-password.tsx": {
+    id: "routes/reset-password";
+    page: "/reset-password";
   };
   "./routes/help.tsx": {
     id: "routes/help";

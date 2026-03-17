@@ -20,6 +20,9 @@ class RuleSpec:
     # Placeholder for cross-referencing rules within a strategy.
     # "sl", "target", "trailing", "entry", "squareoff" etc.
     role: str = ""
+    # Kill chain: when this rule fires, disable rules with these roles.
+    # Resolved to actual rule IDs at deploy time.
+    kills_roles: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -102,12 +105,14 @@ def _register_all() -> None:
     from strategies.bull_call_spread import BullCallSpreadTemplate
     from strategies.bear_put_spread import BearPutSpreadTemplate
     from strategies.iron_condor import IronCondorTemplate
+    from strategies.ema_cross import EMACrossLongTemplate, EMACrossShortTemplate, EMACrossPairTemplate
 
     for cls in (
         ORBTemplate, BreakoutTemplate, MeanReversionTemplate,
         VWAPBounceTemplate, ScalpTemplate,
         StraddleTemplate, StrangleTemplate, BullCallSpreadTemplate,
         BearPutSpreadTemplate, IronCondorTemplate,
+        EMACrossLongTemplate, EMACrossShortTemplate, EMACrossPairTemplate,
     ):
         register(cls())
 

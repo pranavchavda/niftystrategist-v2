@@ -11,7 +11,7 @@ from auth import User, get_current_user
 from database.session import get_db_context
 from services.instruments_cache import get_instrument_key
 from strategies.templates import list_templates, get_template
-from monitor.crud import create_rule, list_rules, list_rules_by_group, delete_rules_by_group
+from monitor.crud import create_rule, update_rule, list_rules, list_rules_by_group, delete_rules_by_group
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,18 @@ async def api_deploy_strategy(
 
     is_fno = getattr(template, "category", "equity") == "fno"
 
+    # Coerce numeric-looking param values (frontend sends strings from inputs)
+    coerced_params = {}
+    for k, v in body.params.items():
+        if isinstance(v, str) and v.replace(".", "", 1).replace("-", "", 1).isdigit():
+            try:
+                coerced_params[k] = int(v) if "." not in v else float(v)
+            except ValueError:
+                coerced_params[k] = v
+        else:
+            coerced_params[k] = v
+    body.params = coerced_params
+
     # Extract symbol from body or params
     symbol = body.symbol or body.params.get("symbol") or body.params.get("underlying", "")
 
@@ -160,6 +172,21 @@ async def api_deploy_strategy(
                 strategy_name=plan.template_name,
             )
             created_rules.append(rule)
+
+        # Wire kill chains: resolve role names → rule IDs
+        role_to_id = {}
+        for spec, rule in zip(plan.rules, created_rules):
+            if spec.role:
+                role_to_id[spec.role] = rule.id
+
+        for spec, rule in zip(plan.rules, created_rules):
+            if spec.kills_roles:
+                target_ids = [role_to_id[r] for r in spec.kills_roles if r in role_to_id]
+                if target_ids:
+                    updated_action = dict(rule.action_config)
+                    updated_action["also_cancel_rules"] = target_ids
+                    await update_rule(session, rule.id, action_config=updated_action)
+                    rule.action_config = updated_action
 
     return {
         "deployed": True,

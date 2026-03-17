@@ -91,6 +91,7 @@ class MeanReversionTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="target",
+                kills_roles=["sl", "squareoff"],
             ),
             # Price SL
             RuleSpec(
@@ -103,6 +104,7 @@ class MeanReversionTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl",
+                kills_roles=["target", "squareoff"],
             ),
             # Auto square-off
             RuleSpec(
@@ -115,6 +117,7 @@ class MeanReversionTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                kills_roles=["sl", "target"],
             ),
         ]
 

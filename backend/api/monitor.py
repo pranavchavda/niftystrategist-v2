@@ -230,7 +230,7 @@ async def api_create_oco(
                 "quantity": body.qty,
                 "order_type": "MARKET",
                 "product": body.product,
-                "also_cancel_rule": sl_rule.id,
+                "also_cancel_rules": [sl_rule.id],
             },
             instrument_token=instrument_token,
             symbol=body.symbol,
@@ -241,7 +241,7 @@ async def api_create_oco(
 
         # Step 3: Update SL rule action to also cancel target rule
         sl_action = sl_rule.action_config.copy()
-        sl_action["also_cancel_rule"] = target_rule.id
+        sl_action["also_cancel_rules"] = [target_rule.id]
         sl_rule = await update_rule(session, sl_rule.id, action_config=sl_action)
 
         return {

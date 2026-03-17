@@ -92,6 +92,7 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_long, "order_type": "MARKET", "product": product,
                 },
                 role="sl_long",
+                kills_roles=["target_long", "trailing_long", "squareoff"],
             ))
             # Long target
             rules.append(RuleSpec(
@@ -104,6 +105,7 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_long, "order_type": "MARKET", "product": product,
                 },
                 role="target_long",
+                kills_roles=["sl_long", "trailing_long", "squareoff"],
             ))
             # Long trailing stop
             rules.append(RuleSpec(
@@ -119,6 +121,7 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_long, "order_type": "MARKET", "product": product,
                 },
                 role="trailing_long",
+                kills_roles=["sl_long", "target_long", "squareoff"],
             ))
 
         if side in ("short", "both"):
@@ -149,6 +152,7 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_short, "order_type": "MARKET", "product": product,
                 },
                 role="sl_short",
+                kills_roles=["target_short", "trailing_short", "squareoff"],
             ))
             # Short target
             rules.append(RuleSpec(
@@ -161,6 +165,7 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_short, "order_type": "MARKET", "product": product,
                 },
                 role="target_short",
+                kills_roles=["sl_short", "trailing_short", "squareoff"],
             ))
             # Short trailing stop
             rules.append(RuleSpec(
@@ -176,6 +181,7 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_short, "order_type": "MARKET", "product": product,
                 },
                 role="trailing_short",
+                kills_roles=["sl_short", "target_short", "squareoff"],
             ))
 
         # Auto square-off (covers both sides)
@@ -194,6 +200,7 @@ class ORBTemplate(StrategyTemplate):
                 "quantity": max_qty, "order_type": "MARKET", "product": product,
             },
             role="squareoff",
+            kills_roles=["sl_long", "target_long", "trailing_long", "sl_short", "target_short", "trailing_short"],
         ))
 
         plan.rules = rules

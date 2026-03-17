@@ -102,6 +102,9 @@ const TEMPLATE_DISPLAY_NAMES: Record<string, string> = {
   'bull-call-spread': 'Bull Call Spread',
   'bear-put-spread': 'Bear Put Spread',
   'iron-condor': 'Iron Condor',
+  'ema-cross-long': 'EMA Cross Long',
+  'ema-cross-short': 'EMA Cross Short',
+  'ema-cross-pair': 'EMA Cross Long + Exit',
 };
 
 function formatTemplateName(name: string): string {
@@ -143,6 +146,7 @@ function DeployDialog({
   authToken: string;
 }) {
   const [params, setParams] = useState<Record<string, any>>({});
+  const [symbol, setSymbol] = useState('');
   const [previewRules, setPreviewRules] = useState<PreviewRule[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -159,6 +163,7 @@ function DeployDialog({
         });
       }
       setParams(defaults);
+      setSymbol('');
       setPreviewRules(null);
       setResult(null);
       setError(null);
@@ -187,6 +192,7 @@ function DeployDialog({
         },
         body: JSON.stringify({
           template: template.name,
+          symbol,
           params,
           dry_run: dryRun,
         }),
@@ -315,7 +321,7 @@ function DeployDialog({
     }
 
     // Number fields
-    const numberFields = ['capital', 'entry', 'sl', 'target', 'strike', 'strikes', 'lots', 'quantity', 'trail_percent', 'entry_price', 'sl_price', 'target_price'];
+    const numberFields = ['capital', 'entry', 'sl', 'target', 'strike', 'strikes', 'lots', 'quantity', 'trail_percent', 'entry_price', 'sl_price', 'target_price', 'range_high', 'range_low', 'risk_percent', 'rr_ratio', 'range_minutes', 'sl_percent'];
     const isNumber = numberFields.some(f => paramName.toLowerCase().includes(f));
 
     return (
@@ -347,6 +353,21 @@ function DeployDialog({
       </DialogTitle>
       <DialogBody>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">{template.description}</p>
+
+        {/* Symbol (equity) or Underlying (F&O) */}
+        {!isFnO && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+              Symbol <span className="text-red-400 ml-1">*</span>
+            </label>
+            <Input
+              type="text"
+              value={symbol}
+              onChange={e => setSymbol(e.target.value.toUpperCase())}
+              placeholder="e.g. RELIANCE, TCS, INFY"
+            />
+          </div>
+        )}
 
         {/* Parameter Form */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">

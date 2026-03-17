@@ -85,6 +85,7 @@ class ScalpTemplate(StrategyTemplate):
                 },
                 max_fires=max_entries,
                 role="sl",
+                kills_roles=["target", "trailing", "squareoff"],
             ),
             # Target
             RuleSpec(
@@ -98,6 +99,7 @@ class ScalpTemplate(StrategyTemplate):
                 },
                 max_fires=max_entries,
                 role="target",
+                kills_roles=["sl", "trailing", "squareoff"],
             ),
             # Trailing stop
             RuleSpec(
@@ -114,6 +116,7 @@ class ScalpTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="trailing",
+                kills_roles=["sl", "target", "squareoff"],
             ),
             # Auto square-off
             RuleSpec(
@@ -126,6 +129,7 @@ class ScalpTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                kills_roles=["sl", "target", "trailing"],
             ),
         ]
 

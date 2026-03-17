@@ -81,6 +81,7 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl",
+                kills_roles=["target", "trailing", "squareoff"],
             ),
             # Target
             RuleSpec(
@@ -93,6 +94,7 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="target",
+                kills_roles=["sl", "trailing", "squareoff"],
             ),
             # Trailing stop
             RuleSpec(
@@ -109,6 +111,7 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="trailing",
+                kills_roles=["sl", "target", "squareoff"],
             ),
             # Auto square-off
             RuleSpec(
@@ -121,6 +124,7 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                kills_roles=["sl", "target", "trailing"],
             ),
         ]
 
