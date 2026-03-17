@@ -44,7 +44,11 @@ def _resolve_option_instrument(underlying: str, expiry: str, strike: float,
         for row in reader:
             if row.get("instrument_type") not in ("OPTIDX", "OPTSTK"):
                 continue
-            if row.get("name") != underlying:
+            # Match by name (full company name for OPTIDX like "NIFTY")
+            # or by tradingsymbol prefix (ticker for OPTSTK like "SBIN")
+            name = row.get("name", "")
+            tsym = row.get("tradingsymbol", "")
+            if name != underlying and not tsym.startswith(underlying):
                 continue
             if float(row.get("strike") or 0) != strike:
                 continue
