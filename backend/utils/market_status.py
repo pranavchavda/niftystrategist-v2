@@ -85,14 +85,20 @@ def get_market_status(upstox_api_status: str | None = None) -> dict:
                 "source": "upstox_api",
             }
         else:
-            # API says closed
-            next_day = get_next_trading_day(now)
-            reason = "weekend" if weekday >= 5 else "holiday_or_after_hours"
+            # API says closed — but if it's before market hours on a weekday,
+            # the market will open TODAY, not tomorrow
+            if weekday < 5 and now < today_open:
+                # Before market hours on a weekday — market opens today
+                reason = "before_hours"
+                next_open = today_open
+            else:
+                next_open = get_next_trading_day(now)
+                reason = "weekend" if weekday >= 5 else "holiday_or_after_hours"
             return {
                 "status": "closed",
                 "reason": reason,
-                "next_open": next_day.strftime("%a %b %d at 9:15 AM IST"),
-                "next_open_in": format_duration(next_day - now),
+                "next_open": next_open.strftime("%a %b %d at 9:15 AM IST"),
+                "next_open_in": format_duration(next_open - now),
                 "current_time_ist": now.strftime("%I:%M %p IST"),
                 "source": "upstox_api",
             }

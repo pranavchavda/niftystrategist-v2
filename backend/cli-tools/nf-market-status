@@ -76,7 +76,8 @@ Examples:
             else:
                 print("🔴 Market is CLOSED (holiday)")
         elif reason == "before_hours":
-            print(f"🔴 Market is CLOSED (pre-market starts in {status['next_event_in']})")
+            eta = status.get('next_event_in') or status.get('next_open_in', '')
+            print(f"🔴 Market is CLOSED (pre-market starts in {eta})")
         elif reason == "after_hours":
             print("🔴 Market is CLOSED (after hours)")
         else:
