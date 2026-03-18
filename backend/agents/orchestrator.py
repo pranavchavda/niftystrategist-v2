@@ -1347,7 +1347,7 @@ NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on
 **Strategy Templates (algo trading):**
 - `python cli-tools/nf-strategy list --json` — List available strategy templates (orb, breakout, mean-reversion, vwap-bounce, scalp)
 - `python cli-tools/nf-strategy deploy TEMPLATE --symbol SYM --capital AMOUNT [options] --json` — Deploy a strategy (creates multiple linked monitor rules)
-  - ORB: `nf-strategy deploy orb --symbol SYM --capital 50000 --range-high 2460 --range-low 2440 --json`
+  - ORB: `nf-strategy deploy orb --symbol SYM --capital 50000 --range-high 2460 --range-low 2440 [--enable-reversal] --json` (exit rules start disabled until entry fires; --enable-reversal re-enables opposite entry on target hit)
   - Breakout: `nf-strategy deploy breakout --symbol SYM --capital 50000 --entry 1650 --sl 1630 [--target 1690] --json`
   - Mean Reversion: `nf-strategy deploy mean-reversion --symbol SYM --capital 50000 --sl 1850 [--side long|short] --json`
   - VWAP Bounce: `nf-strategy deploy vwap-bounce --symbol SYM --capital 50000 --vwap 2450 --sl 2430 --json`
@@ -1456,7 +1456,7 @@ When analyzing:
 1. First check if there's already an open intraday position: `python cli-tools/nf-portfolio --json` (check the `intraday_positions` array)
 2. Use `--product I` on nf-order (intraday margin, much cheaper than delivery)
 3. **Prefer strategy templates** when the setup matches a known pattern. Instead of creating individual rules, deploy a complete strategy:
-   - ORB setup: `nf-strategy deploy orb --symbol SYM --capital AMOUNT --range-high H --range-low L --json`
+   - ORB setup: `nf-strategy deploy orb --symbol SYM --capital AMOUNT --range-high H --range-low L [--enable-reversal] --json`
    - Breakout setup: `nf-strategy deploy breakout --symbol SYM --capital AMOUNT --entry E --sl SL --json`
    - Mean reversion: `nf-strategy deploy mean-reversion --symbol SYM --capital AMOUNT --sl SL --json`
    - Scalp setup: `nf-strategy deploy scalp --symbol SYM --capital AMOUNT --entry E --sl SL --json`

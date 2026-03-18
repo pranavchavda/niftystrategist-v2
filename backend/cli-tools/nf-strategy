@@ -125,6 +125,8 @@ def cmd_deploy(args):
         params["range_high"] = args.range_high
     if args.range_low is not None:
         params["range_low"] = args.range_low
+    if args.enable_reversal:
+        params["enable_reversal"] = True
     # VWAP-specific
     if args.vwap is not None:
         params["vwap"] = args.vwap
@@ -436,6 +438,10 @@ Examples:
   nf-strategy deploy scalp --symbol RELIANCE --capital 30000 \\
     --entry 2450 --sl 2445 --max-entries 5 --json
 
+  # Deploy ORB with reversal (target hit re-enables opposite entry)
+  nf-strategy deploy orb --symbol M&M --capital 100000 \\
+    --range-high 3075 --range-low 3025 --enable-reversal --json
+
   # Show deployed strategies
   nf-strategy status --json
 
@@ -473,6 +479,8 @@ Examples:
     # ORB-specific
     p_deploy.add_argument("--range-high", type=float, help="ORB: opening range high")
     p_deploy.add_argument("--range-low", type=float, help="ORB: opening range low")
+    p_deploy.add_argument("--enable-reversal", action="store_true",
+                          help="ORB: when target hits, re-enable opposite direction entry for fade/reversal")
 
     # VWAP-specific
     p_deploy.add_argument("--vwap", type=float, help="VWAP bounce: current VWAP price")
