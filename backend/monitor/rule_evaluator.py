@@ -323,6 +323,7 @@ class RuleResult:
     action_type: str | None = None
     action_config: dict = field(default_factory=dict)
     rules_to_cancel: list[int] = field(default_factory=list)
+    rules_to_enable: list[int] = field(default_factory=list)
     trigger_config_update: dict | None = None
 
 
@@ -390,5 +391,9 @@ def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
         elif rule.action_config and "also_cancel_rule" in rule.action_config:
             # Legacy OCO pattern (single int) — backward compat
             result.rules_to_cancel = [rule.action_config["also_cancel_rule"]]
+
+        # Enable chain: enable sibling rules when this fires (e.g. entry enables exit rules)
+        if rule.action_config and "also_enable_rules" in rule.action_config:
+            result.rules_to_enable = list(rule.action_config["also_enable_rules"])
 
     return result

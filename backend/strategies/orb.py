@@ -7,6 +7,14 @@ Creates rules for:
 4. Target based on R:R ratio
 5. Trailing stop after entry
 6. Auto square-off at 15:15 IST
+
+Exit rules (SL, target, trailing) start DISABLED and are activated only when
+their corresponding entry rule fires via the `activates_roles` mechanism.
+This prevents spurious fires (e.g. short trailing stop firing immediately
+when LTP is far above initial_price).
+
+Optional reversal mode: when a target fires, it re-enables the opposite
+direction's entry rule for a fade/reversal play.
 """
 from __future__ import annotations
 
@@ -31,6 +39,7 @@ class ORBTemplate(StrategyTemplate):
         "trail_percent": 1.5,
         "squareoff_time": "15:15",
         "side": "both",       # "long", "short", or "both"
+        "enable_reversal": False,  # When target hits, re-enable opposite entry
         # If provided, these override auto-detection (for pre-market planning)
         "range_high": None,
         "range_low": None,
@@ -45,6 +54,7 @@ class ORBTemplate(StrategyTemplate):
         trail_pct = p["trail_percent"]
         squareoff = p["squareoff_time"]
         side = p["side"]
+        enable_reversal = p.get("enable_reversal", False)
 
         range_high = p.get("range_high")
         range_low = p.get("range_low")
@@ -62,6 +72,7 @@ class ORBTemplate(StrategyTemplate):
             params=p,
         )
 
+        bidirectional = side == "both"
         rules: list[RuleSpec] = []
 
         if side in ("long", "both"):
@@ -69,7 +80,10 @@ class ORBTemplate(StrategyTemplate):
             qty_long = compute_quantity(capital, risk_pct, range_high, sl_long, product=product)
             target_long = compute_target(range_high, sl_long, rr)
 
-            # Long entry
+            # Long entry — activates its exit rules; kills opposite side if bidirectional
+            entry_long_activates = ["sl_long", "target_long", "trailing_long"]
+            entry_long_kills = ["entry_short", "sl_short", "target_short", "trailing_short"] if bidirectional else []
+
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Long Entry > {range_high}",
                 trigger_type="price",
@@ -80,8 +94,10 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_long, "order_type": "MARKET", "product": product,
                 },
                 role="entry_long",
+                activates_roles=entry_long_activates,
+                kills_roles=entry_long_kills,
             ))
-            # Long SL
+            # Long SL — starts disabled if bidirectional (activated by entry)
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Long SL @ {sl_long}",
                 trigger_type="price",
@@ -92,9 +108,12 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_long, "order_type": "MARKET", "product": product,
                 },
                 role="sl_long",
+                enabled=not bidirectional,
                 kills_roles=["target_long", "trailing_long", "squareoff"],
             ))
             # Long target
+            target_long_kills = ["sl_long", "trailing_long", "squareoff"]
+            target_long_activates = ["entry_short"] if enable_reversal and bidirectional else []
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Long Target @ {target_long}",
                 trigger_type="price",
@@ -105,7 +124,9 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_long, "order_type": "MARKET", "product": product,
                 },
                 role="target_long",
-                kills_roles=["sl_long", "trailing_long", "squareoff"],
+                enabled=not bidirectional,
+                kills_roles=target_long_kills,
+                activates_roles=target_long_activates,
             ))
             # Long trailing stop
             rules.append(RuleSpec(
@@ -121,6 +142,7 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_long, "order_type": "MARKET", "product": product,
                 },
                 role="trailing_long",
+                enabled=not bidirectional,
                 kills_roles=["sl_long", "target_long", "squareoff"],
             ))
 
@@ -129,7 +151,10 @@ class ORBTemplate(StrategyTemplate):
             qty_short = compute_quantity(capital, risk_pct, range_low, sl_short, product=product)
             target_short = compute_target(range_low, sl_short, rr)
 
-            # Short entry
+            # Short entry — activates its exit rules; kills opposite side if bidirectional
+            entry_short_activates = ["sl_short", "target_short", "trailing_short"]
+            entry_short_kills = ["entry_long", "sl_long", "target_long", "trailing_long"] if bidirectional else []
+
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Short Entry < {range_low}",
                 trigger_type="price",
@@ -140,6 +165,8 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_short, "order_type": "MARKET", "product": product,
                 },
                 role="entry_short",
+                activates_roles=entry_short_activates,
+                kills_roles=entry_short_kills,
             ))
             # Short SL
             rules.append(RuleSpec(
@@ -152,9 +179,12 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_short, "order_type": "MARKET", "product": product,
                 },
                 role="sl_short",
+                enabled=not bidirectional,
                 kills_roles=["target_short", "trailing_short", "squareoff"],
             ))
             # Short target
+            target_short_kills = ["sl_short", "trailing_short", "squareoff"]
+            target_short_activates = ["entry_long"] if enable_reversal and bidirectional else []
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Short Target @ {target_short}",
                 trigger_type="price",
@@ -165,7 +195,9 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_short, "order_type": "MARKET", "product": product,
                 },
                 role="target_short",
-                kills_roles=["sl_short", "trailing_short", "squareoff"],
+                enabled=not bidirectional,
+                kills_roles=target_short_kills,
+                activates_roles=target_short_activates,
             ))
             # Short trailing stop
             rules.append(RuleSpec(
@@ -181,11 +213,11 @@ class ORBTemplate(StrategyTemplate):
                     "quantity": qty_short, "order_type": "MARKET", "product": product,
                 },
                 role="trailing_short",
+                enabled=not bidirectional,
                 kills_roles=["sl_short", "target_short", "squareoff"],
             ))
 
-        # Auto square-off (covers both sides)
-        # Use max qty between long and short
+        # Auto square-off (covers both sides) — always enabled as safety net
         max_qty = max(
             compute_quantity(capital, risk_pct, range_high, range_low, product=product) if side in ("long", "both") else 0,
             compute_quantity(capital, risk_pct, range_low, range_high, product=product) if side in ("short", "both") else 0,

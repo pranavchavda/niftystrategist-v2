@@ -374,27 +374,28 @@ class MonitorDaemon:
                 rule, result, trigger_snapshot, db_session
             )
 
-            # Strategy group direction gating: when an entry rule fires,
-            # disable all opposite-direction rules in the same group.
-            # This prevents e.g. short SL/trail rules from firing when a
-            # long entry triggers (ORB strategy bug 2026-03-17).
-            if rule.group_id and "Entry" in rule.name:
-                direction = "Long" if " Long " in rule.name else "Short" if " Short " in rule.name else None
-                if direction:
-                    disabled_ids = await crud.disable_opposite_direction_rules(
-                        db_session, rule.user_id, rule.group_id, direction,
+            # Sync in-memory state for kill chain (rules_to_cancel) and
+            # activate chain (rules_to_enable).  The DB was already updated
+            # by action_executor; here we keep the in-memory session in sync
+            # so same-tick evaluation sees the changes immediately.
+            session_obj = self._user_manager.get_session(rule.user_id)
+            if session_obj:
+                if result.rules_to_cancel:
+                    for r in session_obj.rules:
+                        if r.id in result.rules_to_cancel:
+                            r.enabled = False
+                    logger.info(
+                        "Rule %d kill chain: disabled %d rules in-memory: %s",
+                        rule.id, len(result.rules_to_cancel), result.rules_to_cancel,
                     )
-                    if disabled_ids:
-                        # Also disable in-memory so same-tick evaluation skips them
-                        session_obj = self._user_manager.get_session(rule.user_id)
-                        if session_obj:
-                            for r in session_obj.rules:
-                                if r.id in disabled_ids:
-                                    r.enabled = False
-                        logger.info(
-                            "Entry rule %d (%s) disabled %d opposite-direction rules: %s",
-                            rule.id, rule.name, len(disabled_ids), disabled_ids,
-                        )
+                if result.rules_to_enable:
+                    for r in session_obj.rules:
+                        if r.id in result.rules_to_enable:
+                            r.enabled = True
+                    logger.info(
+                        "Rule %d activate chain: enabled %d rules in-memory: %s",
+                        rule.id, len(result.rules_to_enable), result.rules_to_enable,
+                    )
 
     # ── Client factory ────────────────────────────────────────────────
 

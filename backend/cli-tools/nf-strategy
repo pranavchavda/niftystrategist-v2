@@ -74,7 +74,7 @@ def cmd_deploy(args):
     from strategies.templates import get_template
     from services.instruments_cache import get_instrument_key
     from database.session import get_db_context
-    from monitor.crud import create_rule
+    from monitor.crud import create_rule, update_rule
 
     template = get_template(args.template)
     if not template:
@@ -240,8 +240,34 @@ def cmd_deploy(args):
                     expires_at=expires_at,
                     group_id=plan.group_id,
                     strategy_name=plan.template_name,
+                    enabled=spec.enabled,
+                    role=spec.role,
                 )
                 created.append(rule)
+
+            # Wire kill chains (also_cancel_rules) and activate chains
+            # (also_enable_rules) by resolving role names → rule IDs.
+            role_to_id = {}
+            for spec, rule in zip(plan.rules, created):
+                if spec.role:
+                    role_to_id[spec.role] = rule.id
+
+            for spec, rule in zip(plan.rules, created):
+                updates = {}
+                if spec.kills_roles:
+                    cancel_ids = [role_to_id[r] for r in spec.kills_roles if r in role_to_id]
+                    if cancel_ids:
+                        updates["also_cancel_rules"] = cancel_ids
+                if spec.activates_roles:
+                    enable_ids = [role_to_id[r] for r in spec.activates_roles if r in role_to_id]
+                    if enable_ids:
+                        updates["also_enable_rules"] = enable_ids
+                if updates:
+                    merged = dict(rule.action_config or {})
+                    merged.update(updates)
+                    await update_rule(session, rule.id, action_config=merged)
+                    rule.action_config = merged  # keep in-memory copy in sync
+
         return created
 
     rules = run_async(_create_all())

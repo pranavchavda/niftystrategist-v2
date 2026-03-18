@@ -20,9 +20,15 @@ class RuleSpec:
     # Placeholder for cross-referencing rules within a strategy.
     # "sl", "target", "trailing", "entry", "squareoff" etc.
     role: str = ""
+    # Whether the rule starts enabled. Exit rules in bidirectional strategies
+    # (e.g. ORB) start disabled and are activated when their entry fires.
+    enabled: bool = True
     # Kill chain: when this rule fires, disable rules with these roles.
     # Resolved to actual rule IDs at deploy time.
     kills_roles: list[str] = field(default_factory=list)
+    # Activate chain: when this rule fires, enable rules with these roles.
+    # Resolved to actual rule IDs at deploy time.
+    activates_roles: list[str] = field(default_factory=list)
 
 
 @dataclass

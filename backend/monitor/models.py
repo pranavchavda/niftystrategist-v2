@@ -102,6 +102,7 @@ class MonitorRule(BaseModel):
 
     group_id: str | None = None
     strategy_name: str | None = None
+    role: str | None = None
 
     @property
     def should_evaluate(self) -> bool:

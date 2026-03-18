@@ -68,14 +68,23 @@ class ActionExecutor:
             else:
                 action_result = {"success": False, "error": f"Unknown action_type: {result.action_type}"}
 
-            # Cancel linked rules (OCO pattern)
+            # Cancel linked rules (OCO / kill chain)
             if result.rules_to_cancel:
                 for cancel_id in result.rules_to_cancel:
                     try:
                         await crud.disable_rule(session, cancel_id)
-                        logger.info("Disabled linked rule %d (OCO from rule %d)", cancel_id, rule.id)
+                        logger.info("Disabled linked rule %d (kill chain from rule %d)", cancel_id, rule.id)
                     except Exception as e:
                         logger.error("Failed to disable linked rule %d: %s", cancel_id, e)
+
+            # Enable linked rules (activate chain — e.g. entry enables exit rules)
+            if result.rules_to_enable:
+                for enable_id in result.rules_to_enable:
+                    try:
+                        await crud.enable_rule(session, enable_id)
+                        logger.info("Enabled rule %d (activate chain from rule %d)", enable_id, rule.id)
+                    except Exception as e:
+                        logger.error("Failed to enable rule %d: %s", enable_id, e)
 
         except Exception as e:
             logger.error("ActionExecutor error for rule %d: %s", rule.id, e, exc_info=True)

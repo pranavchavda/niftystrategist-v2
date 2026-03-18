@@ -838,10 +838,12 @@ async def test_max_fires_prevents_second_fire_on_next_tick():
 
 @pytest.mark.asyncio
 async def test_orb_entry_disables_opposite_direction_rules():
-    """When a Long Entry fires, Short-side rules in the same group are disabled.
+    """When a Long Entry fires, Short-side rules are disabled via also_cancel_rules
+    and Long-side exits are enabled via also_enable_rules.
 
-    Reproduces the 2026-03-17 bug where both Long Entry AND Short SL/Trail
-    fired on the same tick because the short-side rules weren't disabled.
+    With the new activates_roles mechanism, short-side exit rules start DISABLED
+    so they can't fire spuriously. The entry rule's also_cancel_rules disables
+    the short entry, and also_enable_rules enables long exits.
     """
     from monitor.daemon import MonitorDaemon
 
@@ -851,7 +853,12 @@ async def test_orb_entry_disables_opposite_direction_rules():
     long_entry = MonitorRule(
         id=1, user_id=999, name="M&M ORB Long Entry > 3075",
         trigger_type="price", trigger_config={"condition": "gte", "price": 3075, "reference": "ltp"},
-        action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
+        action_type="place_order", action_config={
+            "symbol": "M&M", "transaction_type": "BUY", "quantity": 31,
+            "order_type": "MARKET", "product": "I",
+            "also_cancel_rules": [3, 4, 5],  # kill short side
+            "also_enable_rules": [2],  # activate long SL
+        },
         instrument_token=TOKEN, max_fires=1, group_id=GROUP,
     )
     long_sl = MonitorRule(
@@ -859,18 +866,21 @@ async def test_orb_entry_disables_opposite_direction_rules():
         trigger_type="price", trigger_config={"condition": "lte", "price": 3024.5, "reference": "ltp"},
         action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "SELL", "quantity": 31, "order_type": "MARKET", "product": "I"},
         instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+        enabled=False,  # starts disabled, activated by entry
     )
     short_sl = MonitorRule(
         id=3, user_id=999, name="M&M ORB Short SL @ 3075",
         trigger_type="price", trigger_config={"condition": "gte", "price": 3075, "reference": "ltp"},
         action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
         instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+        enabled=False,  # starts disabled
     )
     short_trail = MonitorRule(
         id=4, user_id=999, name="M&M ORB Short Trail 1.5%",
         trigger_type="trailing_stop", trigger_config={"trail_percent": 1.5, "initial_price": 3075, "highest_price": 3075, "direction": "short", "reference": "ltp"},
         action_type="place_order", action_config={"symbol": "M&M", "transaction_type": "BUY", "quantity": 31, "order_type": "MARKET", "product": "I"},
         instrument_token=TOKEN, max_fires=1, group_id=GROUP,
+        enabled=False,  # starts disabled
     )
     short_entry = MonitorRule(
         id=5, user_id=999, name="M&M ORB Short Entry < 3024.5",
@@ -882,20 +892,12 @@ async def test_orb_entry_disables_opposite_direction_rules():
     all_rules = [long_entry, long_sl, short_sl, short_trail, short_entry]
 
     session_obj = _make_user_session(999, rules=all_rules)
-    session_obj.prev_prices = {TOKEN: 3050.0}  # Previous price below entry
+    session_obj.prev_prices = {TOKEN: 3050.0}
 
     daemon = MonitorDaemon()
     daemon._user_manager = MagicMock()
     daemon._user_manager.get_session.return_value = session_obj
     daemon._rules_by_user = {999: all_rules}
-
-    # Track which rules fire
-    fired_rule_ids = []
-    original_execute = daemon._evaluate_and_execute
-
-    async def tracking_execute(rule, ctx):
-        # We need the real evaluation logic but mock the DB/action parts
-        await original_execute(rule, ctx)
 
     with patch("monitor.daemon.get_db_context") as mock_ctx, \
          patch("monitor.daemon.crud") as mock_crud:
@@ -904,32 +906,24 @@ async def test_orb_entry_disables_opposite_direction_rules():
         mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        # Track action executor calls to see which rules fire
         daemon._action_executor = AsyncMock()
         daemon._action_executor.execute = AsyncMock()
 
-        # disable_opposite_direction_rules returns the IDs of short-side rules
-        mock_crud.disable_opposite_direction_rules = AsyncMock(
-            return_value=[3, 4, 5]  # short SL, short trail, short entry
-        )
-
-        # Tick at 3100 — above both Long Entry (3075) AND Short SL (3075)
         await daemon._on_tick(999, TOKEN, {"ltp": 3100.0})
 
-    # The action executor should have been called only for the Long Entry.
-    # Short SL (id=3) should NOT fire because it gets disabled after Long Entry fires.
+    # Only Long Entry should fire — short side starts disabled, long SL not yet triggered
     executed_rule_ids = [
         call.args[0].id for call in daemon._action_executor.execute.call_args_list
     ]
     assert 1 in executed_rule_ids, "Long Entry should have fired"
-    assert 3 not in executed_rule_ids, "Short SL should NOT fire (disabled by Long Entry)"
-    assert 4 not in executed_rule_ids, "Short Trail should NOT fire (disabled by Long Entry)"
-    assert 5 not in executed_rule_ids, "Short Entry should NOT fire (disabled by Long Entry)"
+    assert 3 not in executed_rule_ids, "Short SL should NOT fire (starts disabled)"
+    assert 4 not in executed_rule_ids, "Short Trail should NOT fire (starts disabled)"
+    assert 5 not in executed_rule_ids, "Short Entry should NOT fire (price above entry level)"
 
-    # Verify disable_opposite_direction_rules was called with correct args
-    mock_crud.disable_opposite_direction_rules.assert_awaited_once_with(
-        mock_session, 999, GROUP, "Long",
-    )
+    # After entry fires, long SL should be enabled in-memory via activate chain
+    assert long_sl.enabled is True, "Long SL should be enabled after Long Entry fires"
+    # Short entry should be disabled in-memory via kill chain
+    assert short_entry.enabled is False, "Short Entry should be disabled after Long Entry fires"
 
 
 @pytest.mark.asyncio

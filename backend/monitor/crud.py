@@ -27,12 +27,14 @@ async def create_rule(
     expires_at: datetime | None = None,
     group_id: str | None = None,
     strategy_name: str | None = None,
+    enabled: bool = True,
+    role: str | None = None,
 ) -> MonitorRuleDB:
     """Create a new monitor rule."""
     rule = MonitorRuleDB(
         user_id=user_id,
         name=name,
-        enabled=True,
+        enabled=enabled,
         trigger_type=trigger_type,
         trigger_config=trigger_config,
         action_type=action_type,
@@ -45,6 +47,7 @@ async def create_rule(
         expires_at=expires_at,
         group_id=group_id,
         strategy_name=strategy_name,
+        role=role,
     )
     session.add(rule)
     await session.commit()
@@ -270,4 +273,5 @@ def db_rule_to_schema(db_rule: MonitorRuleDB) -> MonitorRuleSchema:
         fired_at=db_rule.fired_at,
         group_id=db_rule.group_id,
         strategy_name=db_rule.strategy_name,
+        role=db_rule.role,
     )

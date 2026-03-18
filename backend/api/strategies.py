@@ -170,23 +170,33 @@ async def api_deploy_strategy(
                 expires_at=expires_at,
                 group_id=plan.group_id,
                 strategy_name=plan.template_name,
+                enabled=spec.enabled,
+                role=spec.role,
             )
             created_rules.append(rule)
 
-        # Wire kill chains: resolve role names → rule IDs
+        # Wire kill chains (also_cancel_rules) and activate chains
+        # (also_enable_rules) by resolving role names → rule IDs.
         role_to_id = {}
         for spec, rule in zip(plan.rules, created_rules):
             if spec.role:
                 role_to_id[spec.role] = rule.id
 
         for spec, rule in zip(plan.rules, created_rules):
+            updates = {}
             if spec.kills_roles:
-                target_ids = [role_to_id[r] for r in spec.kills_roles if r in role_to_id]
-                if target_ids:
-                    updated_action = dict(rule.action_config)
-                    updated_action["also_cancel_rules"] = target_ids
-                    await update_rule(session, rule.id, action_config=updated_action)
-                    rule.action_config = updated_action
+                cancel_ids = [role_to_id[r] for r in spec.kills_roles if r in role_to_id]
+                if cancel_ids:
+                    updates["also_cancel_rules"] = cancel_ids
+            if spec.activates_roles:
+                enable_ids = [role_to_id[r] for r in spec.activates_roles if r in role_to_id]
+                if enable_ids:
+                    updates["also_enable_rules"] = enable_ids
+            if updates:
+                merged = dict(rule.action_config or {})
+                merged.update(updates)
+                await update_rule(session, rule.id, action_config=merged)
+                rule.action_config = merged
 
     return {
         "deployed": True,
