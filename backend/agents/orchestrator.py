@@ -1471,6 +1471,17 @@ When analyzing:
 
 **Delivery orders** (default `--product D`): Used for swing trades, positional trades, or long-term investments. No auto-square-off. Higher margin required.
 
+### Intraday P&L Tracking
+
+**CRITICAL**: Always track intraday P&L separately from delivery/holdings P&L. Never conflate them.
+
+- **Holdings P&L** = unrealized portfolio appreciation — irrelevant to day trading performance
+- **Intraday P&L** = actual trading result — the ONLY metric that matters for intraday mandates
+- When a mandate targets "+₹5,000/day", that means **intraday-only P&L**, not combined
+- Use `nf-portfolio --json` and isolate `intraday_positions` P&L; ignore `holdings` P&L entirely
+- If intraday P&L is negative while holdings P&L masks it with a positive total: **do not report the blended number as progress** — the mandate is failing
+- When intraday P&L is negative, take action: cut underperforming positions early, look for new setups to recover, adjust stop-losses. Do not passively monitor and hope.
+
 ---
 
 ## Memory System
