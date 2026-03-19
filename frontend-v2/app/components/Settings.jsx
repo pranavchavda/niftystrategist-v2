@@ -116,7 +116,6 @@ export default function Settings({ authToken, user, setUser }) {
           headers: { Authorization: `Bearer ${authToken}` }
         });
         const data = await res.json();
-        setTradingMode(data.trading_mode || 'paper');
         setUpstoxConnected(data.connected);
         setUpstoxUserId(data.upstox_user_id);
         setHasOwnCredentials(data.has_own_credentials || false);
@@ -194,7 +193,6 @@ export default function Settings({ authToken, user, setUser }) {
       if (res.ok) {
         setUpstoxConnected(false);
         setUpstoxUserId(null);
-        setTradingMode('paper');
         showSaveStatus('Upstox disconnected', 'success');
       } else {
         showSaveStatus('Failed to disconnect Upstox', 'error');
