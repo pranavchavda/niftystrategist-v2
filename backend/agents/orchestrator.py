@@ -256,7 +256,7 @@ class OrchestratorDeps(BaseModel):
     user_id: Optional[int] = (
         None  # Numeric DB user ID, injected as NF_USER_ID for CLI tools
     )
-    trading_mode: str = "paper"  # "paper" or "live"
+    trading_mode: str = "live"  # "paper" or "live"
     paper_total_value: Optional[float] = None  # Paper trading total value
     paper_total_pnl: Optional[float] = None  # Paper trading total P&L
     paper_pnl_percent: Optional[float] = None  # Paper trading total P&L percentage

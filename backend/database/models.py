@@ -151,7 +151,7 @@ class User(Base):
     password_reset_expires_at = Column(DateTime, nullable=True)
 
     # Trading mode: 'paper' or 'live'
-    trading_mode = Column(String(10), default="paper", nullable=False)
+    trading_mode = Column(String(10), default="live", nullable=False)
 
     # Model preferences
     preferred_model = Column(String(100), default="deepseek/deepseek-chat")

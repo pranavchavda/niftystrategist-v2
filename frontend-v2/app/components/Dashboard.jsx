@@ -14,7 +14,6 @@ import PriceChart from './cockpit/PriceChart';
 import PositionsTable from './cockpit/PositionsTable';
 import DailyScorecard from './cockpit/DailyScorecard';
 import CockpitChat from './cockpit/CockpitChat';
-import TradingModeToggle from './TradingModeToggle';
 import { useCockpitData } from '../hooks/useCockpitData';
 import { useChartData } from '../hooks/useChartData';
 
@@ -101,18 +100,6 @@ const Dashboard = ({ authToken }) => {
     setShowChatDrawer(true);
   }, []);
 
-  const handleTradingModeChange = useCallback(async () => {
-    // Invalidate cached Upstox client so cockpit picks up the new mode
-    try {
-      await fetch('/api/cockpit/invalidate-client', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
-    } catch (e) {
-      console.warn('Failed to invalidate client cache:', e);
-    }
-    cockpitData.refresh();
-  }, [authToken, cockpitData]);
 
   // Shared watchlist content for both inline panel and drawer
   const watchlistContent = (
@@ -181,11 +168,6 @@ const Dashboard = ({ authToken }) => {
               </button>
             </div>
 
-            {/* Trading Mode Toggle (mobile drawer) */}
-            <div className="flex-shrink-0 mb-2">
-              <TradingModeToggle authToken={authToken} onModeChange={handleTradingModeChange} />
-            </div>
-
             {watchlistContent}
           </div>
         </Headless.DialogPanel>
@@ -227,7 +209,6 @@ const Dashboard = ({ authToken }) => {
               >
                 <PanelLeftOpenIcon className="h-4 w-4" />
               </button>
-              <TradingModeToggle authToken={authToken} isCollapsed onModeChange={handleTradingModeChange} />
             </div>
           ) : (
             <div className="flex flex-col h-full min-h-0 p-2">
@@ -240,11 +221,6 @@ const Dashboard = ({ authToken }) => {
                 >
                   <PanelLeftCloseIcon className="h-3.5 w-3.5" />
                 </button>
-              </div>
-
-              {/* Trading Mode Toggle */}
-              <div className="flex-shrink-0 mb-2">
-                <TradingModeToggle authToken={authToken} onModeChange={handleTradingModeChange} />
               </div>
 
               {watchlistContent}

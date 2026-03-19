@@ -5,9 +5,7 @@ import {
   WalletIcon,
   CircleDotIcon,
   RefreshCwIcon,
-  AlertTriangleIcon,
 } from 'lucide-react';
-import { Badge } from '../catalyst/badge';
 import type { PortfolioSummary, FundsData } from './mock-data';
 
 const fmt = (n: number) =>
@@ -136,13 +134,6 @@ export default function TopStrip({ portfolio, funds, marketOpen, onRefresh, auto
 
       {/* Right side - pinned */}
       <div className="flex items-center gap-2 flex-shrink-0">
-        {/* Paper Trading Badge */}
-        {portfolio.paperTrading && (
-          <Badge color="amber" className="mr-2">
-            <AlertTriangleIcon className="h-3 w-3" />
-            Paper
-          </Badge>
-        )}
 
         {/* Market Status */}
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-zinc-100/80 dark:bg-zinc-800/80">

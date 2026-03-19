@@ -12,7 +12,6 @@ import {
   PaperClipIcon,
   XMarkIcon,
   ArrowTrendingUpIcon,
-  WalletIcon,
 } from '@heroicons/react/24/outline';
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
@@ -323,18 +322,6 @@ export default function Index() {
                   </div>
                 )}
 
-                {/* Paper Trading Notice */}
-                <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800/50">
-                  <div className="flex items-start gap-3">
-                    <WalletIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Paper Trading Mode</p>
-                      <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">
-                        You're using simulated trading with virtual funds. Connect Upstox in Settings for live trading.
-                      </p>
-                    </div>
-                  </div>
-                </div>
               </>
             )}
           </div>

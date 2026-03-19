@@ -477,14 +477,8 @@ export default function Help() {
             >
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <p className="text-sm">
-                  Nifty Strategist supports two trading modes, toggled from the switch at the bottom of the sidebar:
+                  Nifty Strategist operates in live trading mode by default. All orders are placed via your connected Upstox account with real money. Connect your Upstox account in Settings to get started.
                 </p>
-                <ul className="text-sm space-y-2 ml-4 list-disc">
-                  <li><strong>Paper Trading (default):</strong> Practice with simulated orders. No real money involved.
-                    Perfect for learning, testing strategies, or just exploring the platform.</li>
-                  <li><strong>Live Trading:</strong> Real orders via your connected Upstox account.
-                    Requires Upstox OAuth authorization in Settings.</li>
-                </ul>
 
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2 mt-4">
@@ -704,7 +698,7 @@ export default function Help() {
               <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
                 <ul className="text-sm space-y-2 ml-4 list-disc">
                   <li><strong>Human-in-the-loop:</strong> No trade is ever placed without your explicit approval (when Approval Mode is on)</li>
-                  <li><strong>Paper trading default:</strong> New accounts start in paper trading mode -- no risk of accidental real trades</li>
+                  <li><strong>Order confirmation:</strong> The AI always confirms trade details with you before placing orders</li>
                   <li><strong>Encrypted credentials:</strong> Your Upstox tokens are encrypted at rest using industry-standard encryption</li>
                   <li><strong>Session-based auth:</strong> JWT tokens expire after 7 days, requiring re-login</li>
                   <li><strong>Dry-run orders:</strong> You can ask the AI to simulate any order with <code className="bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded text-xs">--dry-run</code> before placing it for real</li>

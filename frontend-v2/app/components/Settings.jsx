@@ -14,7 +14,6 @@ import {
   TrendingUp,
   Link as LinkIcon,
   Unlink,
-  FileText,
   Loader2,
   AlertTriangle,
   Key,
@@ -26,13 +25,6 @@ import { Link, useSearchParams } from 'react-router';
 import { Button } from './catalyst/button';
 import { Switch } from '@headlessui/react';
 import { useTheme } from '../context/ThemeContext';
-import {
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogDescription,
-  DialogTitle,
-} from './catalyst/dialog';
 
 export default function Settings({ authToken, user, setUser }) {
   // Theme context
@@ -49,13 +41,10 @@ export default function Settings({ authToken, user, setUser }) {
   const [hitlEnabled, setHitlEnabled] = useState(true); // Default to approval mode
 
   // Trading state
-  const [tradingMode, setTradingMode] = useState('paper');
   const [upstoxConnected, setUpstoxConnected] = useState(false);
   const [upstoxUserId, setUpstoxUserId] = useState(null);
   const [isLoadingTrading, setIsLoadingTrading] = useState(true);
-  const [isSwitchingMode, setIsSwitchingMode] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
-  const [showLiveConfirmDialog, setShowLiveConfirmDialog] = useState(false);
 
   // Upstox API credentials state
   const [hasOwnCredentials, setHasOwnCredentials] = useState(false);
@@ -190,55 +179,6 @@ export default function Settings({ authToken, user, setUser }) {
   };
 
   // Trading mode handlers
-  const handleTradingModeChange = async (newMode) => {
-    if (newMode === 'live' && !upstoxConnected) {
-      // Need to connect Upstox first
-      window.location.href = '/api/auth/upstox/authorize';
-      return;
-    }
-
-    if (newMode === 'live' && tradingMode === 'paper') {
-      // Show confirmation dialog for switching to live
-      setShowLiveConfirmDialog(true);
-      return;
-    }
-
-    // Direct switch (or switching to paper)
-    await switchTradingMode(newMode);
-  };
-
-  const switchTradingMode = async (newMode) => {
-    setIsSwitchingMode(true);
-    try {
-      const res = await fetch('/api/auth/upstox/trading-mode', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({ mode: newMode })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setTradingMode(data.trading_mode);
-        setShowLiveConfirmDialog(false);
-        showSaveStatus(
-          newMode === 'live' ? 'Switched to Live Trading' : 'Switched to Paper Trading',
-          'success'
-        );
-      } else {
-        const error = await res.json();
-        showSaveStatus(error.detail || 'Failed to switch trading mode', 'error');
-      }
-    } catch (err) {
-      console.error('Failed to switch trading mode:', err);
-      showSaveStatus('Failed to switch trading mode', 'error');
-    } finally {
-      setIsSwitchingMode(false);
-    }
-  };
-
   const handleDisconnectUpstox = async () => {
     if (!confirm('Are you sure you want to disconnect your Upstox account? This will switch you back to paper trading.')) {
       return;
@@ -956,123 +896,19 @@ export default function Settings({ authToken, user, setUser }) {
                 </div>
               </div>
 
-              {/* Trading Mode Selection */}
-              <div className="p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
-                <div className="font-medium text-zinc-900 dark:text-zinc-100 mb-3">
-                  Trading Mode
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  {/* Paper Trading Option */}
-                  <button
-                    onClick={() => handleTradingModeChange('paper')}
-                    disabled={isSwitchingMode}
-                    className={`relative p-4 rounded-xl border-2 transition-all duration-200 ${
-                      tradingMode === 'paper'
-                        ? 'border-amber-500 bg-amber-50 dark:bg-amber-500/10'
-                        : 'border-zinc-200 dark:border-zinc-700 hover:border-zinc-300 dark:hover:border-zinc-600'
-                    }`}
-                  >
-                    <div className="flex flex-col items-center gap-2">
-                      <FileText className={`w-6 h-6 ${tradingMode === 'paper' ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'}`} />
-                      <div className={`font-medium ${tradingMode === 'paper' ? 'text-amber-700 dark:text-amber-300' : 'text-zinc-700 dark:text-zinc-300'}`}>
-                        Paper Trading
-                      </div>
-                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Simulated orders
-                      </div>
-                    </div>
-                    {tradingMode === 'paper' && (
-                      <div className="absolute top-2 right-2">
-                        <div className="w-5 h-5 rounded-full bg-amber-500 flex items-center justify-center">
-                          <Check className="w-3 h-3 text-white" />
-                        </div>
-                      </div>
-                    )}
-                  </button>
-
-                  {/* Live Trading Option */}
-                  <button
-                    onClick={() => handleTradingModeChange('live')}
-                    disabled={isSwitchingMode || !upstoxConnected}
-                    className={`relative p-4 rounded-xl border-2 transition-all duration-200 ${
-                      tradingMode === 'live'
-                        ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
-                        : upstoxConnected
-                          ? 'border-zinc-200 dark:border-zinc-700 hover:border-zinc-300 dark:hover:border-zinc-600'
-                          : 'border-zinc-200 dark:border-zinc-700 opacity-50 cursor-not-allowed'
-                    }`}
-                  >
-                    <div className="flex flex-col items-center gap-2">
-                      <Zap className={`w-6 h-6 ${tradingMode === 'live' ? 'text-red-600 dark:text-red-400' : 'text-zinc-500 dark:text-zinc-400'}`} />
-                      <div className={`font-medium ${tradingMode === 'live' ? 'text-red-700 dark:text-red-300' : 'text-zinc-700 dark:text-zinc-300'}`}>
-                        Live Trading
-                      </div>
-                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {upstoxConnected ? 'Real money' : 'Connect Upstox first'}
-                      </div>
-                    </div>
-                    {tradingMode === 'live' && (
-                      <div className="absolute top-2 right-2">
-                        <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center animate-pulse">
-                          <Check className="w-3 h-3 text-white" />
-                        </div>
-                      </div>
-                    )}
-                  </button>
-                </div>
-
-                {tradingMode === 'live' && (
-                  <div className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                    <div className="flex items-center gap-2 text-red-700 dark:text-red-300 text-sm">
-                      <AlertTriangle className="w-4 h-4" />
-                      <span>Live trading is enabled. All orders will use real money.</span>
-                    </div>
+              {/* Trading Mode - Live by default */}
+              {upstoxConnected && (
+                <div className="p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+                  <div className="flex items-center gap-2 text-green-700 dark:text-green-300 text-sm">
+                    <Zap className="w-4 h-4" />
+                    <span>Live trading is active. All orders use real money via Upstox.</span>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
         </section>
 
-        {/* Live Trading Confirmation Dialog */}
-        <Dialog open={showLiveConfirmDialog} onClose={() => setShowLiveConfirmDialog(false)}>
-          <DialogTitle>
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-red-500" />
-              Switch to Live Trading?
-            </div>
-          </DialogTitle>
-          <DialogDescription>
-            <div className="space-y-3">
-              <p>
-                You're about to enable <strong>live trading</strong> with your Upstox account.
-              </p>
-              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
-                <p className="text-red-700 dark:text-red-300 text-sm font-medium">
-                  All orders will be executed with real money.
-                </p>
-                <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-                  Make sure you understand the risks before proceeding.
-                </p>
-              </div>
-            </div>
-          </DialogDescription>
-          <DialogActions>
-            <Button plain onClick={() => setShowLiveConfirmDialog(false)} disabled={isSwitchingMode}>
-              Cancel
-            </Button>
-            <Button color="red" onClick={() => switchTradingMode('live')} disabled={isSwitchingMode}>
-              {isSwitchingMode ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  Switching...
-                </>
-              ) : (
-                'Yes, Enable Live Trading'
-              )}
-            </Button>
-          </DialogActions>
-        </Dialog>
 
         {/* Model Preference Section */}
         <section className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm">

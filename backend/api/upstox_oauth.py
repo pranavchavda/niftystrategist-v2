@@ -142,7 +142,7 @@ class UpstoxStatusResponse(BaseModel):
     connected: bool
     upstox_user_id: Optional[str] = None
     token_expiry: Optional[str] = None
-    trading_mode: str = "paper"
+    trading_mode: str = "live"
     has_own_credentials: bool = False
     has_totp_credentials: bool = False
 
@@ -411,7 +411,7 @@ async def disconnect_upstox(user: User = Depends(get_current_user)):
         db_user.upstox_refresh_token = None
         db_user.upstox_token_expiry = None
         db_user.upstox_user_id = None
-        db_user.trading_mode = "paper"  # Reset to paper trading
+        # Keep trading_mode as "live" (default) — reconnecting will restore live trading
 
         await session.commit()
 
@@ -485,7 +485,7 @@ async def get_upstox_status(user: User = Depends(get_current_user)):
             connected=connected,
             upstox_user_id=db_user.upstox_user_id if connected else None,
             token_expiry=token_expiry,
-            trading_mode=db_user.trading_mode or "paper",
+            trading_mode=db_user.trading_mode or "live",
             has_own_credentials=bool(db_user.upstox_api_key),
             has_totp_credentials=bool(
                 db_user.upstox_mobile and db_user.upstox_totp_secret
@@ -513,7 +513,7 @@ async def get_trading_mode(user: User = Depends(get_current_user)):
         )
 
         return TradingModeResponse(
-            trading_mode=db_user.trading_mode or "paper",
+            trading_mode=db_user.trading_mode or "live",
             upstox_connected=upstox_connected,
         )
 
@@ -841,4 +841,4 @@ async def get_user_trading_mode(user_id: int) -> str:
             select(DBUser.trading_mode).where(DBUser.id == user_id)
         )
         mode = result.scalar_one_or_none()
-        return mode or "paper"
+        return mode or "live"

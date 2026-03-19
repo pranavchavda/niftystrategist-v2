@@ -157,7 +157,7 @@ class UpstoxClient:
         api_secret: str | None = None,
         redirect_uri: str | None = None,
         access_token: str | None = None,
-        paper_trading: bool = True,
+        paper_trading: bool = False,
         user_id: int = 1,
     ):
         """

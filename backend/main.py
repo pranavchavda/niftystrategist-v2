@@ -2110,12 +2110,12 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
 
         preferred_model = DEFAULT_MODEL_ID
         user_upstox_token = None  # Decrypted live token for CLI tools
-        user_trading_mode = "paper"  # Default to paper, updated from DB below
+        user_trading_mode = "live"  # Default to live, updated from DB below
         if user:
             async with db_manager.async_session() as db:
                 db_user = await db.get(DBUser, user.id)
                 if db_user:
-                    user_trading_mode = db_user.trading_mode or "paper"
+                    user_trading_mode = db_user.trading_mode or "live"
                     if db_user.preferred_model:
                         preferred_model = db_user.preferred_model
                         logger.info(f"Using user's preferred model: {preferred_model}")
