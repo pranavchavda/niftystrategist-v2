@@ -80,8 +80,7 @@ export default function Help() {
                 <p className="mt-2 text-zinc-600 dark:text-zinc-400">
                   Nifty Strategist is your AI-powered trading assistant for the Indian stock market (NSE/BSE).
                   Analyze stocks, track your portfolio, get trade recommendations with technical analysis,
-                  and execute orders -- all through natural conversation. It starts in paper trading mode so you
-                  can explore safely before connecting your broker.
+                  and execute orders -- all through natural conversation. Connect your Upstox account in Settings to get started.
                 </p>
                 <button
                   onClick={() => navigate('/chat/' + `thread_${Date.now()}`)}
@@ -316,8 +315,7 @@ export default function Help() {
                 </ul>
                 <div className="mt-4 p-4 rounded-lg bg-blue-50/50 dark:bg-blue-500/5 border border-blue-200/50 dark:border-blue-500/20">
                   <p className="text-sm text-blue-800 dark:text-blue-200">
-                    <strong>Note:</strong> The dashboard requires your Upstox account to be connected for
-                    live data. In paper trading mode, you'll see simulated data.
+                    <strong>Note:</strong> The dashboard requires your Upstox account to be connected for live data.
                   </p>
                 </div>
               </div>
@@ -583,11 +581,11 @@ export default function Help() {
 
                 <div>
                   <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">
-                    Start with paper trading
+                    Use dry-run before trading
                   </h4>
                   <p className="text-sm">
-                    New to the platform or new to trading? Paper trading mode lets you practice
-                    everything without risking real money. Build confidence before switching to live.
+                    New to the platform or new to trading? Ask the AI to dry-run any order first.
+                    This simulates the trade and shows you exactly what would happen without risking real money.
                   </p>
                 </div>
 

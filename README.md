@@ -15,7 +15,7 @@ An intelligent trading companion that helps you analyze stocks, understand marke
 - **Historical data** with customizable timeframes
 
 ### Portfolio Management
-- **Paper trading** with ₹10 lakh virtual portfolio (default)
+- **Live trading** via Upstox with real-time position tracking
 - **Position tracking** with P&L calculations
 - **Position sizing** based on risk tolerance
 - **Trade history** and performance analytics
@@ -126,15 +126,13 @@ RELIANCE, TCS, HDFCBANK, INFY, ICICIBANK, HINDUNILVR, ITC, SBIN, BHARTIARTL, KOT
 
 ---
 
-## Paper Trading
+## Live Trading
 
-The system starts in **paper trading mode** by default:
-- Virtual portfolio: ₹10,00,000 (10 lakh)
-- Simulated order execution
-- No real money at risk
-- Full feature parity with live trading
-
-Connect your Upstox account in Settings to enable live trading.
+The system operates in **live trading mode** by default. Connect your Upstox account in Settings to get started:
+- Real-time market data and order execution via Upstox
+- Human-in-the-loop approval before every trade
+- Dry-run mode available for simulating orders without risk
+- TOTP auto-login for seamless daily token refresh
 
 ---
 
@@ -195,7 +193,7 @@ Private repository. All rights reserved.
 
 ## Disclaimer
 
-This software is for educational purposes. Paper trading mode is enabled by default. When using live trading:
+This software is for educational purposes. Live trading is enabled by default. Important:
 - Past performance does not guarantee future results
 - Only trade with money you can afford to lose
 - The AI provides analysis, not financial advice
