@@ -11,13 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import User, get_current_user
 from database.models import (
-    Trade, WatchlistItem as WatchlistItemDB, User as DBUser,
+    Trade, WatchlistItem as WatchlistItemDB,
     Conversation, Message, utc_now,
 )
 from services.upstox_client import UpstoxClient
 from services.instruments_cache import get_company_name as cache_get_company_name
 from utils.market_status import get_market_status
-from utils.encryption import decrypt_token
+from api.upstox_oauth import get_user_upstox_token
 
 logger = logging.getLogger(__name__)
 
@@ -39,48 +39,38 @@ _live_clients: dict[int, UpstoxClient] = {}
 
 
 async def _get_client_for_user(user: User) -> UpstoxClient:
-    """Resolve the right Upstox client based on the user's trading mode.
+    """Resolve the Upstox client for a user.
 
-    Returns a cached live client (with the user's decrypted token) when
-    trading_mode='live' and token is valid, otherwise falls back to the
-    shared paper client.  Caching ensures the dynamic symbol map
-    (populated by get_portfolio) is available for chart/quote endpoints.
+    Uses get_user_upstox_token() which handles decryption + expiry check +
+    TOTP auto-refresh.  Caches the live client so the dynamic symbol map
+    (populated by get_portfolio) persists across endpoints within a session.
+
+    Raises HTTPException(401) if no valid token is available — this lets the
+    frontend show a clear "connect Upstox" message instead of an infinite
+    skeleton loader.
     """
     if _db_manager is None:
         return _get_upstox_client()
 
-    # Return cached live client if token hasn't changed
+    # Return cached live client if we have one
     if user.id in _live_clients:
         return _live_clients[user.id]
 
-    async with _db_manager.async_session() as session:
-        result = await session.execute(
-            select(DBUser).where(DBUser.id == user.id)
+    # Use the canonical token resolver (decrypt + expiry + TOTP refresh)
+    access_token = await get_user_upstox_token(user.id)
+
+    if access_token:
+        logger.info(f"Cockpit: live client for user {user.id}")
+        client = UpstoxClient(
+            access_token=access_token,
+            paper_trading=False,
+            user_id=user.id,
         )
-        db_user = result.scalar_one_or_none()
+        _live_clients[user.id] = client
+        return client
 
-        if db_user and db_user.trading_mode == "live":
-            if (db_user.upstox_access_token
-                    and db_user.upstox_token_expiry
-                    and db_user.upstox_token_expiry > datetime.utcnow()):
-                access_token = decrypt_token(db_user.upstox_access_token)
-                if access_token:
-                    logger.info(f"Cockpit: live client for user {user.id}")
-                    client = UpstoxClient(
-                        access_token=access_token,
-                        paper_trading=False,
-                        user_id=db_user.id,
-                    )
-                    _live_clients[user.id] = client
-                    return client
-                else:
-                    logger.warning(f"Cockpit: token decrypt failed for user {user.id}")
-            else:
-                logger.warning(f"Cockpit: user {user.id} has live mode but expired token")
-                _live_clients.pop(user.id, None)
-        else:
-            _live_clients.pop(user.id, None)
-
+    # No valid token — try the shared default client as fallback
+    logger.warning(f"Cockpit: no valid token for user {user.id}, using default client")
     return _get_upstox_client()
 
 
@@ -141,6 +131,8 @@ async def cockpit_portfolio(user: User = Depends(get_current_user)):
         }
     except Exception as e:
         logger.error(f"Error fetching portfolio: {e}")
+        # Evict cached client so next request gets a fresh one
+        _live_clients.pop(user.id, None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -248,6 +240,7 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
         return {"positions": positions, "holdings": holdings}
     except Exception as e:
         logger.error(f"Error fetching positions: {e}")
+        _live_clients.pop(user.id, None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
