@@ -60,6 +60,7 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const retryCountRef = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!authToken) return;
@@ -83,11 +84,24 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
       setMarketStatus(results[0].value);
     }
 
-    // Portfolio
+    // Portfolio — if this fails, set a zero-value fallback so components
+    // render instead of showing skeleton forever.
     if (results[1].status === 'fulfilled') {
       setPortfolio(results[1].value);
     } else {
       console.warn('Portfolio fetch failed:', results[1]);
+      setPortfolio({
+        totalValue: 0,
+        investedValue: 0,
+        availableCash: 0,
+        dayPnl: 0,
+        dayPnlPct: 0,
+        totalPnl: 0,
+        totalPnlPct: 0,
+        marginUsed: 0,
+        paperTrading: false,
+      });
+      setError('Portfolio data unavailable — check your Upstox connection.');
     }
 
     // Positions
@@ -129,6 +143,15 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
 
     setIsLoading(false);
     setLastUpdated(new Date());
+
+    // Auto-retry once if portfolio failed (backend evicts stale cache on failure,
+    // so the retry will get a fresh client with a potentially refreshed token)
+    if (results[1].status === 'rejected' && retryCountRef.current < 1) {
+      retryCountRef.current += 1;
+      setTimeout(() => refresh(), 2000);
+    } else if (results[1].status === 'fulfilled') {
+      retryCountRef.current = 0;
+    }
   }, [authToken]);
 
   // Initial fetch
