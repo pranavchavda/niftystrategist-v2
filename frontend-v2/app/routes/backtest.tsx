@@ -140,7 +140,7 @@ const selectClassName = "w-full rounded-lg bg-white dark:bg-zinc-900/50 border b
 // Params that are always strings (not numbers)
 const STRING_PARAMS = new Set([
   'underlying', 'expiry', 'product', 'side', 'direction',
-  'squareoff_time', 'entry_time', 'symbol',
+  'squareoff_time', 'entry_time', 'symbol', 'rsi_timeframe', 'timeframe',
 ]);
 
 // Jargon tooltips for strategy params and terms
@@ -175,6 +175,18 @@ const PARAM_TOOLTIPS: Record<string, string> = {
   call_buy_strike: 'Strike of the Call you BUY (protection). Higher than call_sell_strike.',
   put_sell_strike: 'Strike of the Put you SELL (short put). Should be below current price (OTM).',
   put_buy_strike: 'Strike of the Put you BUY (protection). Lower than put_sell_strike.',
+  // EMA-Stochastic Scalper
+  atm_strike: 'At-the-money strike price. Use the strike closest to current underlying price.',
+  target_points: 'Profit target in premium points (e.g. 15 = exit when option premium rises ₹15).',
+  sl_points: 'Stop-loss in premium points (e.g. 10 = exit when option premium drops ₹10).',
+  max_fires: 'Max number of entries per direction. Higher = more trades, more exposure.',
+  rsi_oversold: 'RSI level below which the underlying is "oversold" — triggers CE (bullish) entry.',
+  rsi_overbought: 'RSI level above which the underlying is "overbought" — triggers PE (bearish) entry.',
+  rsi_timeframe: 'Candle timeframe for RSI calculation (e.g. "1m" for 1-minute scalping).',
+  // EMA Cross
+  fast_ema: 'Fast EMA period. Shorter period reacts faster to price changes.',
+  slow_ema: 'Slow EMA period. Longer period smooths out noise. Crossover signals trend change.',
+  timeframe: 'Candle timeframe for indicator calculation (e.g. "5m", "15m").',
 };
 
 // Strategy-level descriptions for n00bs
@@ -189,6 +201,10 @@ const STRATEGY_TOOLTIPS: Record<string, string> = {
   'bull-call-spread': 'Bull Call Spread: Buy a lower-strike Call, sell a higher-strike Call. Profits when price rises moderately. Capped profit but also capped risk (net debit).',
   'bear-put-spread': 'Bear Put Spread: Buy a higher-strike Put, sell a lower-strike Put. Profits when price falls moderately. Defined risk, defined reward.',
   'iron-condor': 'Iron Condor: Sell both a call spread and a put spread simultaneously. Profits when price stays in a range. 4 legs, defined risk on both sides. The "bread and butter" of premium sellers.',
+  'ema-stochastic-scalper': 'EMA-Stochastic Scalper: Bilateral Bank Nifty options scalping. Uses RSI oversold/overbought as entry trigger (proxy for Stochastic) with trend confirmation. Buys CE on dips, PE on rallies. 15-pt target, 10-pt SL, up to 5 trades per direction.',
+  'ema-cross-long': 'EMA Cross Long: Buys when a fast EMA crosses above a slow EMA, signaling bullish momentum. Simple trend-following entry.',
+  'ema-cross-short': 'EMA Cross Short: Sells when a fast EMA crosses below a slow EMA, signaling bearish momentum.',
+  'ema-cross-pair': 'EMA Cross Pair: Complete round-trip — buys on bullish EMA cross, auto-exits on bearish cross. Captures the full trend move.',
 };
 
 // ─── Equity Curve SVG ────────────────────────────────────────────────
