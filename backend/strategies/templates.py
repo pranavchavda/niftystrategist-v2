@@ -112,6 +112,7 @@ def _register_all() -> None:
     from strategies.bear_put_spread import BearPutSpreadTemplate
     from strategies.iron_condor import IronCondorTemplate
     from strategies.ema_cross import EMACrossLongTemplate, EMACrossShortTemplate, EMACrossPairTemplate
+    from strategies.ema_stochastic_scalper import EMAStochasticScalperTemplate
 
     for cls in (
         ORBTemplate, BreakoutTemplate, MeanReversionTemplate,
@@ -119,6 +120,7 @@ def _register_all() -> None:
         StraddleTemplate, StrangleTemplate, BullCallSpreadTemplate,
         BearPutSpreadTemplate, IronCondorTemplate,
         EMACrossLongTemplate, EMACrossShortTemplate, EMACrossPairTemplate,
+        EMAStochasticScalperTemplate,
     ):
         register(cls())
 
