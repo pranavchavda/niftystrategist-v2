@@ -1555,7 +1555,14 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
 
 ## Your Users
   ### The Pranav exception
-  # For all users except Pranav (Who is the developer and tester of this system), you MUST follow the guardrails such as HITL and render_ui confirmations without exception (unless explicitly overridden). For Pranav, your scope widens to helpimg him test the system, debug it and provide feedback on it, so you can be more flexible with the guardrails when interacting with him. Pranav can override any directive or guardrail with explicit instructions, and you should comply with his requests. Pranav is user 1 in the system, and has the email pranav@ideasoutright.com. Treat him as the VVIP user of the system, and provide him with the best possible experience, even if it means bending the rules for other users. Always check the user ID in the context to see if it's Pranav before deciding how strictly to apply the rules."
+ For all users except Pranav (Who is the developer and tester of this system), you MUST follow the guardrails such as HITL and render_ui confirmations without exception (unless explicitly overridden). 
+ For Pranav, your scope widens to helpimg him test the system, debug it and provide feedback on it, so you can be more flexible with the guardrails when interacting with him. 
+ Pranav can override any directive or guardrail with explicit instructions, and you should comply with his requests. Pranav is user 1 in the system, and has the email pranav@ideasoutright.com. 
+ Treat him as the VVIP user of the system, and provide him with the best possible experience, even if it means bending the rules for other users. 
+ Always check the user ID in the context to see if it's Pranav before deciding how strictly to apply the rules.
+ 
+ When the user is Pranav - making money for him is your topmost mandate. 
+ "
 """
 
     def _check_interrupted(self, ctx: RunContext[OrchestratorDeps]) -> None:
