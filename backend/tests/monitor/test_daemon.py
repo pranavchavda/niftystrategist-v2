@@ -10,6 +10,16 @@ from monitor.models import MonitorRule
 from monitor.rule_evaluator import RuleResult, EvalContext
 
 
+# ── Fixtures ─────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _market_always_open():
+    """All daemon tests assume market is open unless explicitly testing the guard."""
+    with patch("monitor.daemon.MonitorDaemon._is_nse_market_open", return_value=True):
+        yield
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
@@ -422,6 +432,68 @@ async def test_evaluate_and_execute_fires_action():
     call_args = mock_exec.call_args
     assert call_args[0][0] is rule
     assert call_args[0][1] is fired_result
+
+
+# ── Test: market hours guard skips order placement outside hours ──────
+
+
+@pytest.mark.asyncio
+async def test_market_hours_guard_skips_order_outside_hours():
+    """place_order actions are skipped when market is closed, fire_count unchanged."""
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(rule_id=1, user_id=999)
+    assert rule.fire_count == 0
+    ctx = EvalContext(market_data={"ltp": 105.0}, now=datetime.utcnow())
+
+    fired_result = RuleResult(
+        rule_id=1, fired=True, action_type="place_order", action_config=rule.action_config
+    )
+
+    # Override the autouse fixture — market is CLOSED for this test
+    with patch("monitor.daemon.evaluate_rule", return_value=fired_result), \
+         patch.object(daemon._action_executor, "execute", new_callable=AsyncMock) as mock_exec, \
+         patch.object(MonitorDaemon, "_is_nse_market_open", return_value=False):
+
+        await daemon._evaluate_and_execute(rule, ctx)
+
+    # Order should NOT be placed and fire_count should NOT be incremented
+    mock_exec.assert_not_awaited()
+    assert rule.fire_count == 0
+    assert rule.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_market_hours_guard_allows_cancel_rule_outside_hours():
+    """cancel_rule actions still execute outside market hours."""
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(rule_id=1, user_id=999)
+    ctx = EvalContext(market_data={"ltp": 105.0}, now=datetime.utcnow())
+
+    fired_result = RuleResult(
+        rule_id=1, fired=True, action_type="cancel_rule",
+        action_config={"rule_id": 2},
+    )
+
+    # Override the autouse fixture — market is CLOSED for this test
+    with patch("monitor.daemon.evaluate_rule", return_value=fired_result), \
+         patch("monitor.daemon.get_db_context") as mock_ctx, \
+         patch.object(daemon._action_executor, "execute", new_callable=AsyncMock) as mock_exec, \
+         patch.object(MonitorDaemon, "_is_nse_market_open", return_value=False):
+
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await daemon._evaluate_and_execute(rule, ctx)
+
+    # cancel_rule should still execute even outside market hours
+    mock_exec.assert_awaited_once()
 
 
 # ── Test: _evaluate_and_execute no action when not fired ─────────────

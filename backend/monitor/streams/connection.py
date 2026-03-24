@@ -140,9 +140,16 @@ class BaseWebSocketStream(ABC):
         """Parse raw WebSocket message. Return None to skip."""
         ...
 
-    async def send(self, data: bytes | str):
-        """Send a message on the WebSocket."""
+    async def send(self, data: bytes | str) -> bool:
+        """Send a message on the WebSocket. Returns True if sent."""
         if self._ws and self._ws.state is WsState.OPEN:
             await self._ws.send(data)
+            return True
         else:
-            logger.warning(f"[{self.name}] Cannot send — not connected")
+            logger.error(
+                "[%s] Cannot send — not connected (state=%s). "
+                "Message will be retried on next reconnect.",
+                self.name,
+                self._ws.state.name if self._ws else "NO_WS",
+            )
+            return False

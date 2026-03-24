@@ -193,7 +193,8 @@ class UserManager:
         logger.info(
             f"[UserManager] Started user {user_id}: "
             f"{len(instruments)} instruments, "
-            f"{len(session.candle_buffers)} candle buffers"
+            f"{len(session.candle_buffers)} candle buffers, "
+            f"subscribed={sorted(instruments)}"
         )
 
     async def stop_user(self, user_id: int):
@@ -228,11 +229,19 @@ class UserManager:
         # Subscribe to new instruments
         to_add = new_instruments - old_instruments
         if to_add:
+            logger.info(
+                "[UserManager] user %d: subscribing to NEW instruments: %s",
+                user_id, sorted(to_add),
+            )
             await session.market_stream.subscribe(list(to_add))
 
         # Unsubscribe from removed instruments
         to_remove = old_instruments - new_instruments
         if to_remove:
+            logger.info(
+                "[UserManager] user %d: unsubscribing from instruments: %s",
+                user_id, sorted(to_remove),
+            )
             await session.market_stream.unsubscribe(list(to_remove))
 
         session.subscribed_instruments = new_instruments
@@ -242,9 +251,8 @@ class UserManager:
         self._sync_candle_buffers(session, rules)
 
         logger.info(
-            f"[UserManager] Synced rules for user {user_id}: "
-            f"+{len(to_add)} -{len(to_remove)} instruments, "
-            f"{len(session.candle_buffers)} candle buffers"
+            "[UserManager] Synced user %d: %d rules, %d instruments %s",
+            user_id, len(rules), len(new_instruments), sorted(new_instruments),
         )
 
     async def stop_all(self):

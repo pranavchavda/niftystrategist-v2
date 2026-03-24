@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Optional
 
 # IST = UTC+5:30 — used for time-trigger evaluation because users specify
@@ -254,6 +254,14 @@ class MonitorDaemon:
 
         self._rules_by_user = rules_by_user
 
+        # Periodic summary — helps confirm daemon is alive and processing
+        total_rules = sum(len(r) for r in rules_by_user.values())
+        active_users = [uid for uid in rules_by_user if uid in self._access_tokens]
+        logger.info(
+            "Poll cycle: %d active rules for %d users %s",
+            total_rules, len(active_users), active_users,
+        )
+
     # ── Tick routing ──────────────────────────────────────────────────
 
     async def _on_tick(
@@ -267,6 +275,11 @@ class MonitorDaemon:
         incremented (the fire_count += 1 only protects sequential ticks,
         not concurrent ones).
         """
+        ltp = market_data.get("ltp")
+        logger.debug(
+            "Tick user=%d inst=%s ltp=%s", user_id, instrument_token, ltp,
+        )
+
         lock = self._tick_locks.setdefault(user_id, asyncio.Lock())
         async with lock:
             session_obj = self._user_manager.get_session(user_id)
@@ -281,6 +294,13 @@ class MonitorDaemon:
                 and r.instrument_token == instrument_token
             ]
             matching.sort(key=lambda r: (0 if "Entry" in r.name else 1, r.id))
+
+            if matching:
+                logger.debug(
+                    "Evaluating %d rules for inst=%s ltp=%s: %s",
+                    len(matching), instrument_token, ltp,
+                    [(r.id, r.name, r.trigger_type) for r in matching],
+                )
 
             for rule in matching:
                 ctx = EvalContext(
@@ -332,6 +352,17 @@ class MonitorDaemon:
         """
         result = evaluate_rule(rule, ctx)
 
+        if result.skipped:
+            logger.debug(
+                "Rule %d (%s) SKIPPED (enabled=%s fire_count=%s/%s)",
+                rule.id, rule.name, rule.enabled, rule.fire_count, rule.max_fires,
+            )
+        elif not result.fired:
+            logger.debug(
+                "Rule %d (%s) evaluated → not fired (ltp=%s)",
+                rule.id, rule.name, ctx.market_data.get("ltp"),
+            )
+
         # Persist trigger_config_update if present (e.g. trailing stop highest_price)
         if result.trigger_config_update is not None:
             try:
@@ -349,6 +380,18 @@ class MonitorDaemon:
                 )
 
         if not result.fired:
+            return
+
+        # ── Market hours guard ────────────────────────────────────────
+        # Skip order placement outside NSE market hours (9:15–15:30 IST).
+        # Don't waste max_fires on guaranteed-to-fail orders.
+        # Time-based rules (auto-squareoff) and non-order actions pass through.
+        if result.action_type == "place_order" and not self._is_nse_market_open():
+            logger.warning(
+                "Rule %d (%s) FIRED but market CLOSED — skipping order "
+                "placement (not counted against max_fires=%s)",
+                rule.id, rule.name, rule.max_fires,
+            )
             return
 
         # Immediately increment in-memory fire_count so the next tick's
@@ -396,6 +439,24 @@ class MonitorDaemon:
                         "Rule %d activate chain: enabled %d rules in-memory: %s",
                         rule.id, len(result.rules_to_enable), result.rules_to_enable,
                     )
+
+    # ── Market hours ────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_nse_market_open() -> bool:
+        """Check if NSE is currently in trading hours (9:15–15:30 IST).
+
+        Uses a simple time-of-day + weekday check.  Does not account for
+        exchange holidays — the Upstox API will still reject orders on
+        holidays with a 423 Locked, but the guard prevents burning
+        max_fires on weekends and obvious off-hours.
+        """
+        now_ist = datetime.now(_IST)
+        # Weekday: Mon=0 .. Fri=4, Sat=5, Sun=6
+        if now_ist.weekday() >= 5:
+            return False
+        t = now_ist.time()
+        return dt_time(9, 15) <= t <= dt_time(15, 30)
 
     # ── Client factory ────────────────────────────────────────────────
 

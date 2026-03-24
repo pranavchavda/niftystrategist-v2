@@ -777,8 +777,26 @@ def cmd_logs(args):
 
 def cmd_start(args):
     """Start the trade monitor daemon."""
+    import logging as _logging
     import signal
     from monitor.daemon import MonitorDaemon
+
+    # Configure root logger so all monitor.* INFO+ logs reach journald/stderr.
+    # Without this, Python's default only shows WARNING+, making the daemon
+    # effectively silent for normal operations (subscriptions, ticks, fires).
+    log_level = _logging.DEBUG if args.verbose else _logging.INFO
+    _logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stderr,
+    )
+    # Quiet noisy third-party loggers
+    _logging.getLogger("websockets").setLevel(_logging.WARNING)
+    _logging.getLogger("aiohttp").setLevel(_logging.WARNING)
+    _logging.getLogger("urllib3").setLevel(_logging.WARNING)
+    _logging.getLogger("upstox_client").setLevel(_logging.WARNING)
+    _logging.getLogger("google.protobuf").setLevel(_logging.WARNING)
 
     daemon = MonitorDaemon(
         paper_mode=args.paper,
@@ -1031,6 +1049,8 @@ Option contract example:
     p_start.add_argument("--paper", action="store_true", help="Paper trading mode (no real orders)")
     p_start.add_argument("--poll-interval", type=float, default=30.0,
                          help="Seconds between DB polls (default: 30)")
+    p_start.add_argument("--verbose", "-v", action="store_true",
+                         help="Enable DEBUG-level logging (tick-level detail)")
 
     args = parser.parse_args()
 

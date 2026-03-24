@@ -141,8 +141,9 @@ class MarketDataStream(BaseWebSocketStream):
         # V3 feed expects binary-encoded messages
         await self.send(msg.encode("utf-8"))
         logger.info(
-            f"[MarketDataStream] Subscribed to "
-            f"{len(instrument_keys)} instruments"
+            "[MarketDataStream] Subscribed to %d instruments: %s (total=%d)",
+            len(instrument_keys), sorted(instrument_keys),
+            len(self._subscribed_keys),
         )
 
     async def unsubscribe(self, instrument_keys: list[str]):
@@ -195,7 +196,13 @@ class MarketDataStream(BaseWebSocketStream):
     async def _on_connected(self, ws):
         """Re-subscribe to all keys after reconnect."""
         if self._subscribed_keys:
+            logger.info(
+                "[MarketDataStream] Reconnected — re-subscribing to %d instruments: %s",
+                len(self._subscribed_keys), sorted(self._subscribed_keys),
+            )
             await self.subscribe(list(self._subscribed_keys))
+        else:
+            logger.warning("[MarketDataStream] Reconnected but no instruments to subscribe")
 
     def _parse_message(self, raw: bytes | str) -> dict | None:
         """Parse protobuf market data message into a dict.
