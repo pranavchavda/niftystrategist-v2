@@ -58,10 +58,17 @@ NIFTY_NEXT_50_SYMBOLS: set[str] = {
 # Combined Nifty 100 = Nifty 50 + Nifty Next 50
 NIFTY_100_SYMBOLS: set[str] = NIFTY_50_SYMBOLS | NIFTY_NEXT_50_SYMBOLS
 
+# Nifty 500 — fetched dynamically from NSE (populated by _load_nifty500)
+_NIFTY_500_URL = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+_NIFTY_500_CACHE = os.path.join(_CACHE_DIR, "nifty500_constituents.csv")
+_NIFTY_500_META = os.path.join(_CACHE_DIR, "nifty500_constituents.meta")
+NIFTY_500_SYMBOLS: set[str] = set()
+
 # In-memory lookup tables (populated by ensure_loaded)
 _symbol_to_instrument_key: dict[str, str] = {}
 _symbol_to_name: dict[str, str] = {}
 _loaded = False
+_nifty500_loaded = False
 
 
 def _cache_is_fresh() -> bool:
@@ -144,6 +151,75 @@ def _load_from_disk() -> bool:
         return False
 
 
+def _nifty500_cache_is_fresh() -> bool:
+    """Return True if Nifty 500 cache exists and is less than _TTL_SECONDS old."""
+    if not os.path.exists(_NIFTY_500_META):
+        return False
+    try:
+        with open(_NIFTY_500_META) as f:
+            ts = float(f.read().strip())
+        return (time.time() - ts) < _TTL_SECONDS
+    except (ValueError, OSError):
+        return False
+
+
+def _load_nifty500() -> bool:
+    """Download Nifty 500 constituents from NSE and cache to disk."""
+    global NIFTY_500_SYMBOLS, _nifty500_loaded
+
+    if _nifty500_loaded:
+        return True
+
+    # Try loading from fresh cache first
+    if _nifty500_cache_is_fresh() and os.path.exists(_NIFTY_500_CACHE):
+        try:
+            with open(_NIFTY_500_CACHE, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+            if symbols:
+                NIFTY_500_SYMBOLS = symbols
+                _nifty500_loaded = True
+                logger.info(f"Nifty 500 loaded from cache: {len(symbols)} symbols")
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to parse Nifty 500 cache: {e}")
+
+    # Download fresh
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    try:
+        logger.info("Downloading Nifty 500 constituents from NSE")
+        req = urllib.request.Request(
+            _NIFTY_500_URL,
+            headers={"User-Agent": "Mozilla/5.0 (NiftyStrategist/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read().decode("utf-8")
+
+        with open(_NIFTY_500_CACHE, "w", encoding="utf-8") as f:
+            f.write(data)
+        with open(_NIFTY_500_META, "w") as f:
+            f.write(str(time.time()))
+
+        reader = csv.DictReader(io.StringIO(data))
+        symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+        if symbols:
+            NIFTY_500_SYMBOLS = symbols
+            _nifty500_loaded = True
+            logger.info(f"Nifty 500 constituents cached: {len(symbols)} symbols")
+            return True
+        else:
+            logger.warning("Nifty 500 CSV parsed but no symbols found")
+            return False
+    except Exception as e:
+        logger.warning(f"Failed to download Nifty 500 constituents: {e}")
+        # Fallback: use Nifty 100 if download fails
+        if not NIFTY_500_SYMBOLS:
+            NIFTY_500_SYMBOLS = NIFTY_100_SYMBOLS.copy()
+            logger.warning(f"Falling back to Nifty 100 ({len(NIFTY_500_SYMBOLS)} symbols)")
+        _nifty500_loaded = True
+        return False
+
+
 def ensure_loaded() -> None:
     """Download instruments CSV if stale/missing, then load into memory.
 
@@ -163,6 +239,7 @@ def ensure_loaded() -> None:
             return
 
     _load_from_disk()
+    _load_nifty500()
 
 
 def get_instrument_key(symbol: str) -> str | None:
@@ -180,6 +257,29 @@ def get_company_name(symbol: str) -> str | None:
 def is_nifty50(symbol: str) -> bool:
     """Return True if symbol is a Nifty 50 constituent."""
     return symbol.upper() in NIFTY_50_SYMBOLS
+
+
+def is_nifty500(symbol: str) -> bool:
+    """Return True if symbol is a Nifty 500 constituent."""
+    ensure_loaded()
+    return symbol.upper() in NIFTY_500_SYMBOLS
+
+
+def get_universe(name: str = "nifty500") -> set[str]:
+    """Return the symbol set for a named universe.
+
+    Supported: nifty50, nifty100, nifty500.
+    """
+    ensure_loaded()
+    match name.lower().replace(" ", "").replace("_", "").replace("-", ""):
+        case "nifty50":
+            return NIFTY_50_SYMBOLS
+        case "nifty100":
+            return NIFTY_100_SYMBOLS
+        case "nifty500":
+            return NIFTY_500_SYMBOLS
+        case _:
+            raise ValueError(f"Unknown universe: {name}. Use nifty50, nifty100, or nifty500.")
 
 
 def symbol_exists(symbol: str) -> bool:

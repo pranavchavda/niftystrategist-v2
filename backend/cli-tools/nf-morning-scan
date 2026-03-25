@@ -8,7 +8,7 @@ Combines three institutional signals:
 
 Plus momentum indicators (RSI, VWAP alignment) for final scoring.
 
-Designed to run shortly after market open (9:20-9:30 IST) on Nifty 100 stocks.
+Designed to run shortly after market open (9:20-9:30 IST) on Nifty 500 stocks (configurable).
 """
 
 import argparse
@@ -41,7 +41,7 @@ from services.upstox_client import UpstoxClient  # noqa: E402
 from services.instruments_cache import (  # noqa: E402
     ensure_loaded as ensure_instruments,
     get_instrument_key,
-    NIFTY_100_SYMBOLS,
+    get_universe,
     NIFTY_50_SYMBOLS,
 )
 from models.analysis import OHLCVData  # noqa: E402
@@ -53,13 +53,13 @@ import requests  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Batch quote fetching (single API call for all Nifty 100 + index)
+# Batch quote fetching (batched API calls for universe + index)
 # ---------------------------------------------------------------------------
 
-def _build_symbol_universe() -> list[str]:
-    """Return the full Nifty 100 symbol list, resolved via instruments cache."""
+def _build_symbol_universe(universe_name: str = "nifty500") -> list[str]:
+    """Return the symbol list for the given universe, resolved via instruments cache."""
     ensure_instruments()
-    symbols = sorted(NIFTY_100_SYMBOLS)
+    symbols = sorted(get_universe(universe_name))
     # Verify all symbols exist in the instruments cache
     valid = []
     for sym in symbols:
@@ -473,17 +473,18 @@ async def run_scan(
     as_json: bool = False,
     verbose: bool = False,
     debug_symbol: str | None = None,
+    universe_name: str = "nifty500",
 ) -> list[dict]:
     """Run the full morning scan."""
     client = init_client()
     t0 = time.time()
 
     # Build symbol universe
-    universe = _build_symbol_universe()
+    universe = _build_symbol_universe(universe_name)
 
     # Phase 1: Batch fetch all quotes
     if verbose:
-        print(f"Phase 1: Fetching quotes for {len(universe)} Nifty 100 stocks...", file=sys.stderr)
+        print(f"Phase 1: Fetching quotes for {len(universe)} {universe_name.upper()} stocks...", file=sys.stderr)
 
     stock_quotes, nifty_quote = await fetch_all_quotes(client, universe)
 
@@ -1141,7 +1142,7 @@ Examples:
   # Dry-run auto-deploy (preview only)
   nf-morning-scan --auto-deploy breakout --capital 100000 --top 5 --dry-run
 
-Scans all Nifty 100 stocks (Nifty 50 + Nifty Next 50).
+Scans Nifty 500 stocks by default. Use --universe to narrow scope.
 
 Scoring (0-8):
   Gap:     +1 (>=1%), +2 (>=2%)
@@ -1154,6 +1155,8 @@ Scoring (0-8):
 Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
 """,
     )
+    parser.add_argument("--universe", choices=["nifty50", "nifty100", "nifty500"], default="nifty500",
+                        help="Stock universe to scan (default: nifty500)")
     parser.add_argument("--top", type=int, default=10, metavar="N", help="Number of top candidates to show (default: 10)")
     parser.add_argument("--min-score", type=int, default=0, metavar="N", help="Minimum total score to display (default: 0)")
     parser.add_argument("--deep", type=int, default=15, metavar="N", help="Number of stocks to deep-analyze (default: 15)")
@@ -1188,6 +1191,7 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
                 as_json=args.json,
                 verbose=args.verbose or bool(args.debug),
                 debug_symbol=args.debug,
+                universe_name=args.universe,
             )
         )
     except Exception as e:
