@@ -53,6 +53,9 @@ export default [
     // Backtester
     route('backtest', './routes/backtest.tsx'),
 
+    // Chat History
+    route('history', './routes/history.tsx'),
+
     // User Profile
     route('user', './routes/user.tsx', [
       route('profile', './routes/user.profile.tsx'),

@@ -12,6 +12,11 @@ import {
   PaperClipIcon,
   XMarkIcon,
   ArrowTrendingUpIcon,
+  BellAlertIcon,
+  BoltIcon,
+  BeakerIcon,
+  ChatBubbleLeftRightIcon,
+  LightBulbIcon,
 } from '@heroicons/react/24/outline';
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
@@ -29,12 +34,52 @@ const sections = [
     permission: 'dashboard.access',
   },
   {
+    title: 'Monitor',
+    description:
+      'IFTTT-style rules engine for automated trade triggers.',
+    icon: BellAlertIcon,
+    href: '/monitor',
+    permission: 'chat.access',
+  },
+  {
+    title: 'Automations',
+    description:
+      'Scheduled follow-ups, workflows, and awakening rules.',
+    icon: BoltIcon,
+    href: '/automations',
+    permission: 'chat.access',
+  },
+  {
+    title: 'Strategies',
+    description:
+      'Pre-built and custom trading strategies.',
+    icon: LightBulbIcon,
+    href: '/strategies',
+    permission: 'chat.access',
+  },
+  {
+    title: 'Backtest',
+    description:
+      'Test strategies against historical market data.',
+    icon: BeakerIcon,
+    href: '/backtest',
+    permission: 'chat.access',
+  },
+  {
     title: 'Notes',
     description:
       'Second brain for trading ideas, research, and analysis.',
     icon: DocumentTextIcon,
     href: '/notes',
     permission: 'notes.access',
+  },
+  {
+    title: 'Chat History',
+    description:
+      'Browse past conversations and analysis threads.',
+    icon: ChatBubbleLeftRightIcon,
+    href: '/history',
+    permission: 'chat.access',
   },
   {
     title: 'Memory',
