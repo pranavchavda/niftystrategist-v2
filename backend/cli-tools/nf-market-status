@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check NSE market status — open/closed, time to next event.
+Also supports querying market holidays and exchange timings.
 
 Uses Upstox market status API as source of truth (handles holidays correctly).
 Falls back to time-based calculation if no valid token is available.
@@ -33,25 +34,111 @@ async def _get_upstox_status() -> str | None:
     return None
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="nf-market-status",
-        description="Check NSE market status (open/closed, time to next event)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  nf-market-status              Human-readable status
-  nf-market-status --json       JSON output for programmatic use
-""",
-    )
-    parser.add_argument("--json", action="store_true", help="Output as JSON")
-    args = parser.parse_args()
+def show_holidays(date: str | None, as_json: bool):
+    """Show market holidays."""
+    client = init_client()
+    try:
+        holidays = run_async(client.get_market_holidays(date=date))
+    except Exception as e:
+        print(f"❌ Failed to fetch holidays: {e}", file=sys.stderr)
+        sys.exit(1)
 
+    if as_json:
+        print(json.dumps(holidays, indent=2, default=str))
+        return
+
+    if not holidays:
+        if date:
+            print(f"✅ {date} is a regular trading day (no holiday).")
+        else:
+            print("📅 No holidays found for this year.")
+        return
+
+    # Check if the API returned holiday data with nested structure
+    if date:
+        print(f"📅 Market Holiday on {date}:\n")
+        for h in holidays:
+            desc = h.get("description") or "Holiday"
+            htype = h.get("holiday_type") or ""
+            print(f"  • {desc}")
+            if htype:
+                print(f"    Type: {htype}")
+            closed = h.get("closed_exchanges", [])
+            if closed:
+                print(f"    Closed: {', '.join(closed)}")
+            open_ex = h.get("open_exchanges", [])
+            if open_ex:
+                for oe in open_ex:
+                    exch = oe.get("exchange", "?")
+                    print(f"    Open:   {exch} (partial trading)")
+    else:
+        from datetime import datetime as _dt
+        today = _dt.now().strftime("%Y-%m-%d")
+
+        print("📅 Market Holidays\n")
+        for h in holidays:
+            hdate = h.get("date", "")
+            desc = h.get("description") or "Holiday"
+            htype = h.get("holiday_type") or ""
+            closed = h.get("closed_exchanges", [])
+
+            type_tag = "🔴" if htype == "TRADING_HOLIDAY" else "🟡"
+            closed_str = f"  [{', '.join(closed[:3])}{'...' if len(closed) > 3 else ''}]" if closed else ""
+            past = " ✓" if hdate < today else ""
+            print(f"  {type_tag} {hdate}  {desc}{closed_str}{past}")
+
+        print(f"\n  🔴 = Trading Holiday   🟡 = Settlement Holiday   ✓ = Past")
+
+
+def show_timings(date: str, as_json: bool):
+    """Show exchange timings for a date."""
+    client = init_client()
+    try:
+        timings = run_async(client.get_market_timings(date=date))
+    except Exception as e:
+        print(f"❌ Failed to fetch timings: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if as_json:
+        print(json.dumps(timings, indent=2, default=str))
+        return
+
+    if not timings:
+        print(f"📅 No timing data available for {date}.")
+        return
+
+    from datetime import datetime as _dt, timezone as _tz
+
+    def _epoch_to_ist(epoch_ms):
+        """Convert epoch milliseconds to IST time string."""
+        if not epoch_ms:
+            return "-"
+        try:
+            from zoneinfo import ZoneInfo
+            utc_dt = _dt.fromtimestamp(epoch_ms / 1000, tz=_tz.utc)
+            ist_dt = utc_dt.astimezone(ZoneInfo("Asia/Kolkata"))
+            return ist_dt.strftime("%I:%M %p")
+        except Exception:
+            return str(epoch_ms)
+
+    print(f"⏰ Exchange Timings for {date}\n")
+    print(f"{'Exchange':<10} {'Open':<12} {'Close':<12}")
+    print("-" * 34)
+
+    for t in timings:
+        exchange = t.get("exchange", "?")
+        open_t = _epoch_to_ist(t.get("start_time"))
+        close_t = _epoch_to_ist(t.get("end_time"))
+        print(f"{exchange:<10} {open_t:<12} {close_t:<12}")
+
+
+def show_status(as_json: bool):
+    """Show current market status."""
     # Try Upstox API first, fall back to time-based
     upstox_status = run_async(_get_upstox_status())
     status = get_market_status(upstox_api_status=upstox_status)
 
-    if args.json:
+    if as_json:
         print(json.dumps(status, indent=2))
         return
 
@@ -90,6 +177,37 @@ Examples:
     source_label = "Upstox API" if source == "upstox_api" else "time-based (no token)"
     print(f"   Current time: {status.get('current_time_ist', 'N/A')}")
     print(f"   Source: {source_label}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-market-status",
+        description="Check NSE market status, holidays, and exchange timings",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-market-status                       Current market status
+  nf-market-status --holidays            All holidays this year
+  nf-market-status --holidays 2026-03-30 Check if specific date is a holiday
+  nf-market-status --timings 2026-03-27  Exchange timings for a date
+  nf-market-status --json                JSON output
+""",
+    )
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--holidays", nargs="?", const="all", default=None,
+                        metavar="YYYY-MM-DD",
+                        help="Show market holidays. Optionally check a specific date.")
+    parser.add_argument("--timings", metavar="YYYY-MM-DD",
+                        help="Show exchange timings for a specific date")
+    args = parser.parse_args()
+
+    if args.holidays is not None:
+        date = None if args.holidays == "all" else args.holidays
+        show_holidays(date, args.json)
+    elif args.timings:
+        show_timings(args.timings, args.json)
+    else:
+        show_status(args.json)
 
 
 if __name__ == "__main__":

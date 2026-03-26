@@ -643,6 +643,16 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
                 "invalidation_triggers": ["order_placed"],
                 "summary_template": "Order data",
             },
+            "nf-gtt": {
+                "tool_name": "nf_gtt",
+                "invalidation_triggers": ["order_placed"],
+                "summary_template": "GTT order data",
+            },
+            "nf-margin": {
+                "tool_name": "nf_margin",
+                "invalidation_triggers": [],
+                "summary_template": "Margin calculation",
+            },
         }
 
         # Find matching pattern
@@ -1282,6 +1292,8 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 
 **Market Data:**
 - `python cli-tools/nf-market-status [--json]` — Check if market is open/closed (no token needed)
+- `python cli-tools/nf-market-status --holidays [YYYY-MM-DD]` — Show all market holidays this year, or check if a specific date is a holiday
+- `python cli-tools/nf-market-status --timings YYYY-MM-DD [--json]` — Exchange open/close timings for a specific date
 - `python cli-tools/nf-quote SYMBOL [SYMBOL2 ...] [--json]` — Live quotes
 - `python cli-tools/nf-quote SYMBOL --historical [--interval day] [--days 30]` — OHLCV candles
 - `python cli-tools/nf-quote --list` — Nifty 50 stocks (curated)
@@ -1299,12 +1311,19 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-portfolio [--json]` — Portfolio summary with all holdings + intraday positions
 - `python cli-tools/nf-portfolio --position SYMBOL [--json]` — Single position details (checks both delivery and intraday)
 - `python cli-tools/nf-portfolio --calc-size SYMBOL --risk 5000 --sl 2 [--json]` — Position size calculator
+- `python cli-tools/nf-portfolio convert SYMBOL QTY --from D|I --to D|I [--side BUY|SELL] [--json]` — Convert position product type (intraday ↔ delivery)
 
 **Orders (show render_ui confirmation card before executing):**
 - `python cli-tools/nf-order buy SYMBOL QTY [--type LIMIT --price P] [--product D|I] [--dry-run] [--json]`
 - `python cli-tools/nf-order sell SYMBOL QTY [--type LIMIT --price P] [--product D|I] [--json]`
 - `python cli-tools/nf-order list [--all] [--json]` — View open/all orders
 - `python cli-tools/nf-order cancel ORDER_ID [--json]`
+- `python cli-tools/nf-order cancel-all [--tag TAG] [--segment EQ|FO] [--json]` — Cancel all open orders (optionally filtered)
+- `python cli-tools/nf-order modify ORDER_ID [--quantity N] [--price P] [--type MARKET|LIMIT] [--trigger-price P] [--json]` — Modify pending order
+- `python cli-tools/nf-order detail ORDER_ID [--json]` — Full details for a specific order
+- `python cli-tools/nf-order history ORDER_ID [--json]` — State transitions (placed → modified → filled/rejected)
+- `python cli-tools/nf-order trades ORDER_ID [--json]` — Trade fills for a specific order
+- `python cli-tools/nf-order exit-all [--json]` — EXIT ALL open positions (panic button — use with caution)
   - `--product D` = Delivery (full margin, hold overnight) — DEFAULT
   - `--product I` = Intraday (lower margin, auto-squared-off at 3:15-3:25 PM IST)
 
@@ -1312,6 +1331,17 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-profile [--json]` — User profile, active segments, exchanges
 - `python cli-tools/nf-funds [--json]` — Available margin, used margin, buying power (equity + commodity segments)
 - `python cli-tools/nf-brokerage SYMBOL QTY [--side BUY|SELL] [--product D|I] [--price P] [--json]` — Pre-trade brokerage & charges estimate
+- `python cli-tools/nf-margin SYMBOL QTY [SYMBOL2 QTY2 ...] [--product D|I] [--side BUY|SELL] [--price P] [--json]` — Pre-order margin calculator (SPAN + exposure for F&O, equity margin)
+
+**GTT Orders (server-side persistent triggers — survive app restarts):**
+- `python cli-tools/nf-gtt place SYMBOL BUY|SELL QTY --trigger PRICE [--json]` — Single entry GTT
+- `python cli-tools/nf-gtt place SYMBOL SELL QTY --stoploss PRICE [--json]` — Stoploss GTT
+- `python cli-tools/nf-gtt place SYMBOL SELL QTY --target PRICE --stoploss PRICE [--json]` — OCO (target + stoploss)
+- `python cli-tools/nf-gtt place SYMBOL BUY QTY --trigger PRICE --trailing GAP [--json]` — Trailing trigger
+- `python cli-tools/nf-gtt list [--json]` — View all GTT orders
+- `python cli-tools/nf-gtt modify GTT_ID [--quantity N] [--trigger PRICE] [--json]` — Modify GTT order
+- `python cli-tools/nf-gtt cancel GTT_ID [--json]` — Cancel a GTT order
+NOTE: GTT orders are broker-native and persist until triggered or cancelled. Use for set-and-forget stop-losses and targets. For complex conditional logic, use nf-monitor instead.
 
 **Trades & P&L:**
 - `python cli-tools/nf-trades [--json]` — Today's executed trades with timestamps
@@ -1550,7 +1580,7 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
 |------|-------------|
 | **HONESTY-1** | Never fabricate prices, indicators, or analysis results |
 | **HONESTY-2** | Never claim a trade was executed unless it actually was |
-| **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling trades — **EXCEPTION**: when ## AUTONOMOUS AWAKENING MODE is active and a trading mandate was pre-approved in the conversation history, place orders directly within mandate bounds (no render_ui needed) |
+| **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling/modifying orders, GTT orders, exit-all, cancel-all, or converting positions — **EXCEPTION**: when ## AUTONOMOUS AWAKENING MODE is active and a trading mandate was pre-approved in the conversation history, place orders directly within mandate bounds (no render_ui needed) |
 | **EDUCATION-1** | Explain reasoning so users learn |
 
 ## Your Users
