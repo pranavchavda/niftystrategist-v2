@@ -89,6 +89,60 @@ def show_historical(segment: str, start_date: str, end_date: str,
             print(f"  {date}  {sym:<14} {side:<5} {qty:>5} @ {format_inr(price)}")
 
 
+def show_report(segment: str, financial_year: str | None, page: int,
+                page_size: int, as_json: bool):
+    """Show trade-wise P&L report with summary."""
+    client = init_client()
+
+    # Get trade-wise data
+    try:
+        result = run_async(client.get_pnl_report(
+            segment=segment, financial_year=financial_year,
+            page=page, page_size=page_size,
+        ))
+    except Exception as e:
+        print_error(f"Failed to get P&L report: {e}")
+
+    trades = result.get("trades", [])
+
+    if as_json:
+        print_json(result)
+        return
+
+    if not trades:
+        print(f"📊 P&L Report ({segment}) — No trades found.")
+        return
+
+    # Compute totals
+    total_buy = sum(t.get("buy_amount", 0) or 0 for t in trades)
+    total_sell = sum(t.get("sell_amount", 0) or 0 for t in trades)
+    total_pnl = total_sell - total_buy
+
+    print(f"📊 P&L Report ({segment}) — {len(trades)} trades (page {page})\n")
+    print(f"{'Scrip':<16} {'Qty':>5} {'Buy Avg':>10} {'Sell Avg':>10} {'P&L':>12} {'Date':<12}")
+    print("-" * 70)
+
+    for t in trades:
+        name = (t.get("scrip_name") or "?")[:15]
+        qty = int(t.get("quantity", 0))
+        buy_avg = t.get("buy_average", 0) or 0
+        sell_avg = t.get("sell_average", 0) or 0
+        buy_amt = t.get("buy_amount", 0) or 0
+        sell_amt = t.get("sell_amount", 0) or 0
+        pnl = sell_amt - buy_amt
+        date = t.get("sell_date") or t.get("buy_date") or ""
+        arrow = "▲" if pnl >= 0 else "▼"
+        print(
+            f"{name:<16} {qty:>5} {format_inr(buy_avg):>10} {format_inr(sell_avg):>10} "
+            f"{arrow} {format_inr(pnl):>10} {date:<12}"
+        )
+
+    print(f"\n  Total Buy:  {format_inr(total_buy)}")
+    print(f"  Total Sell: {format_inr(total_sell)}")
+    pnl_arrow = "▲" if total_pnl >= 0 else "▼"
+    print(f"  Net P&L:    {pnl_arrow} {format_inr(total_pnl)}")
+
+
 def show_charges(segment: str, from_date: str, to_date: str,
                  financial_year: str, as_json: bool):
     """Show trade P&L with charges breakdown."""
@@ -105,7 +159,14 @@ def show_charges(segment: str, from_date: str, to_date: str,
         print_json(result)
         return
 
-    print(f"💸 Trade P&L & Charges ({segment})\n")
+    date_label = ""
+    if from_date and to_date:
+        date_label = f" | {from_date} to {to_date}"
+    elif from_date:
+        date_label = f" | from {from_date}"
+    elif to_date:
+        date_label = f" | to {to_date}"
+    print(f"💸 Trade P&L & Charges ({segment}{date_label})\n")
 
     if not isinstance(result, dict):
         print(f"  {result}")
@@ -166,11 +227,21 @@ Examples:
     p_hist.add_argument("--page-size", type=int, default=50, help="Results per page")
     p_hist.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # report subcommand (P&L summary)
+    p_report = sub.add_parser("report", help="Trade-wise P&L report")
+    p_report.add_argument("--segment", default="EQ", choices=["EQ", "FO"], help="Segment (default: EQ)")
+    p_report.add_argument("--fy", metavar="2526", help="Financial year (e.g., 2526 for FY25-26)")
+    p_report.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
+    p_report.add_argument("--page-size", type=int, default=20, help="Results per page (default: 20)")
+    p_report.add_argument("--json", action="store_true", help="Output as JSON")
+
     # charges subcommand
     p_chg = sub.add_parser("charges", help="Trade P&L with charges breakdown")
     p_chg.add_argument("--segment", default="EQ", choices=["EQ", "FO"], help="Segment (default: EQ)")
-    p_chg.add_argument("--from", dest="from_date", metavar="DD-MM-YYYY", help="From date")
-    p_chg.add_argument("--to", dest="to_date", metavar="DD-MM-YYYY", help="To date")
+    p_chg.add_argument("--from", dest="from_date", metavar="DD-MM-YYYY", help="From date (dd-mm-yyyy)")
+    p_chg.add_argument("--to", dest="to_date", metavar="DD-MM-YYYY", help="To date (dd-mm-yyyy)")
+    p_chg.add_argument("--days", type=int, default=1,
+                       help="Number of days back (default: 1 = today only). Charges are T+1 so today may show 0.")
     p_chg.add_argument("--fy", metavar="YYYY", help="Financial year (e.g., 2526)")
     p_chg.add_argument("--json", action="store_true", help="Output as JSON")
 
@@ -181,8 +252,17 @@ Examples:
         start = args.start or (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
         end = args.end or datetime.now().strftime("%Y-%m-%d")
         show_historical(args.segment, start, end, args.page, args.page_size, args.json)
+    elif args.command == "report":
+        show_report(args.segment, args.fy, page=args.page, page_size=args.page_size, as_json=args.json)
     elif args.command == "charges":
-        show_charges(args.segment, args.from_date, args.to_date, args.fy, args.json)
+        from datetime import datetime, timedelta
+        from_d = args.from_date
+        to_d = args.to_date
+        if not from_d and not to_d:
+            # Use --days to compute range (default 1 = today only)
+            to_d = datetime.now().strftime("%d-%m-%Y")
+            from_d = (datetime.now() - timedelta(days=args.days - 1)).strftime("%d-%m-%Y")
+        show_charges(args.segment, from_d, to_d, args.fy, args.json)
     else:
         show_todays_trades(args.json)
 

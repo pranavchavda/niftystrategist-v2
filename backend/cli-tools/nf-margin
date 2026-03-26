@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Calculate required margin for orders before placement.
+
+Supports equity and F&O margin calculations for up to 20 instruments.
+"""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import format_inr, init_client, print_error, print_json, run_async, validate_symbol  # noqa: E402
+
+
+def calculate_margin(instruments_args: list[str], product: str, side: str,
+                     price: float | None, as_json: bool):
+    """Calculate margin for one or more instruments.
+
+    instruments_args: list of "SYMBOL QTY" pairs, e.g. ["RELIANCE", "10", "TCS", "5"]
+    """
+    # Parse symbol/qty pairs
+    if len(instruments_args) < 2 or len(instruments_args) % 2 != 0:
+        print_error("Provide symbol-quantity pairs: nf-margin RELIANCE 10 [TCS 5 ...]")
+
+    instruments = []
+    for i in range(0, len(instruments_args), 2):
+        sym = validate_symbol(instruments_args[i])
+        try:
+            qty = int(instruments_args[i + 1])
+        except ValueError:
+            print_error(f"Invalid quantity: {instruments_args[i + 1]}")
+        if qty < 1:
+            print_error(f"Quantity must be at least 1 for {sym}")
+        inst = {
+            "symbol": sym,
+            "quantity": qty,
+            "product": product,
+            "transaction_type": side,
+        }
+        if price:
+            inst["price"] = price
+        instruments.append(inst)
+
+    client = init_client()
+    try:
+        result = run_async(client.calculate_margin(instruments))
+    except Exception as e:
+        print_error(f"Failed to calculate margin: {e}")
+
+    if as_json:
+        print_json(result)
+        return
+
+    print("📊 Margin Requirement\n")
+
+    # Show per-instrument breakdown
+    inst_margins = result.get("instruments", [])
+    if inst_margins:
+        for i, m in enumerate(inst_margins):
+            sym = instruments_args[i * 2] if i * 2 < len(instruments_args) else f"Instrument {i+1}"
+            qty = instruments_args[i * 2 + 1] if i * 2 + 1 < len(instruments_args) else "?"
+            print(f"  {sym} ({qty} shares):")
+            margin_fields = [
+                ("Equity Margin", m.get("equity_margin")),
+                ("SPAN Margin", m.get("span_margin")),
+                ("Exposure Margin", m.get("exposure_margin")),
+                ("Additional Margin", m.get("additional_margin")),
+                ("Total Margin", m.get("total_margin")),
+            ]
+            for label, val in margin_fields:
+                if val is not None and val != 0:
+                    print(f"    {label:<20} {format_inr(val)}")
+            print()
+
+    # Summary
+    req = result.get("required_margin") or result.get("final_margin")
+    if req is not None:
+        print(f"  {'Required Margin':<22} {format_inr(req)}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-margin",
+        description="Calculate required margin for orders before placement",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-margin RELIANCE 10                          Margin for 10 shares of RELIANCE
+  nf-margin RELIANCE 10 TCS 5                    Multi-instrument margin
+  nf-margin RELIANCE 10 --product I              Intraday margin
+  nf-margin RELIANCE 10 --side SELL              Sell margin
+  nf-margin RELIANCE 10 --price 1450             With limit price
+  nf-margin RELIANCE 10 --json                   JSON output
+""",
+    )
+    parser.add_argument("instruments", nargs="+",
+                        help="Symbol-quantity pairs: SYMBOL QTY [SYMBOL QTY ...]")
+    parser.add_argument("--product", default="D", choices=["D", "I"],
+                        help="Product type: D=Delivery/CNC, I=Intraday/MIS (default: D)")
+    parser.add_argument("--side", default="BUY", choices=["BUY", "SELL"],
+                        help="Transaction type (default: BUY)")
+    parser.add_argument("--price", type=float, help="Limit price (optional)")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    calculate_margin(
+        instruments_args=args.instruments,
+        product=args.product,
+        side=args.side,
+        price=args.price,
+        as_json=args.json,
+    )
+
+
+if __name__ == "__main__":
+    main()

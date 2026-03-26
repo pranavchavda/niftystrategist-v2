@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Place, view, and cancel stock orders.
+"""Place, view, modify, and cancel stock orders.
 
-NOTE: place and cancel subcommands are HITL-protected — they require
-user approval when called from the orchestrator via execute_bash.
+NOTE: place, cancel, modify, exit-all, and cancel-all subcommands are HITL-protected —
+they require user approval when called from the orchestrator via execute_bash.
 When called directly from the terminal, they execute immediately.
 """
 
@@ -110,6 +110,144 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
         print(f"  Status:   {order_result.status}")
 
 
+def modify_order(order_id: str, quantity: int | None, price: float | None,
+                 order_type: str | None, trigger_price: float | None, as_json: bool):
+    """Modify an existing pending order."""
+    if not any([quantity, price, order_type, trigger_price]):
+        print_error("Must specify at least one of: --quantity, --price, --type, --trigger-price")
+
+    client = init_client()
+    try:
+        result = run_async(client.modify_order(
+            order_id=order_id,
+            quantity=quantity,
+            price=price,
+            order_type=order_type,
+            trigger_price=trigger_price,
+        ))
+    except Exception as e:
+        print_error(f"Failed to modify order: {e}")
+
+    if as_json:
+        print_json(result)
+    elif result.get("success"):
+        print_success(f"Order {order_id} modified.")
+        if quantity:
+            print(f"  New quantity: {quantity}")
+        if price:
+            print(f"  New price:    {format_inr(price)}")
+        if order_type:
+            print(f"  New type:     {order_type}")
+        if trigger_price:
+            print(f"  New trigger:  {format_inr(trigger_price)}")
+    else:
+        print_error(f"Modify failed: {result.get('message', 'Unknown error')}")
+
+
+def show_order_detail(order_id: str, as_json: bool):
+    """Show details for a specific order."""
+    client = init_client()
+    try:
+        order = run_async(client.get_order_details(order_id))
+    except Exception as e:
+        print_error(f"Failed to get order details: {e}")
+
+    if not order:
+        print_error(f"No details found for order {order_id}")
+
+    if as_json:
+        print_json(order)
+        return
+
+    print(f"📋 Order Details — {order_id}\n")
+    fields = [
+        ("Symbol", order.get("symbol")),
+        ("Action", order.get("transaction_type")),
+        ("Quantity", order.get("quantity")),
+        ("Filled", order.get("filled_quantity")),
+        ("Pending", order.get("pending_quantity")),
+        ("Type", order.get("order_type")),
+        ("Price", format_inr(order["price"]) if order.get("price") else "MARKET"),
+        ("Avg Price", format_inr(order["average_price"]) if order.get("average_price") else "-"),
+        ("Trigger", format_inr(order["trigger_price"]) if order.get("trigger_price") else "-"),
+        ("Status", order.get("status")),
+        ("Message", order.get("status_message") or "-"),
+        ("Product", order.get("product")),
+        ("Validity", order.get("validity")),
+        ("Exchange", order.get("exchange")),
+        ("Placed", order.get("order_timestamp") or "-"),
+        ("Exchange TS", order.get("exchange_timestamp") or "-"),
+    ]
+    for label, val in fields:
+        if val is not None:
+            print(f"  {label:<14} {val}")
+
+
+def show_order_history(order_id: str, as_json: bool):
+    """Show state transition history for an order."""
+    client = init_client()
+    try:
+        history = run_async(client.get_order_history(order_id))
+    except Exception as e:
+        print_error(f"Failed to get order history: {e}")
+
+    if not history:
+        print_error(f"No history found for order {order_id}")
+
+    if as_json:
+        print_json({"order_id": order_id, "transitions": history})
+        return
+
+    print(f"📜 Order History — {order_id}\n")
+    print(f"{'#':<4} {'Status':<16} {'Qty':>6} {'Price':>12} {'Avg Price':>12} {'Timestamp':<22}")
+    print("-" * 76)
+
+    for i, h in enumerate(history, 1):
+        status = h.get("status", "?")
+        qty = h.get("quantity", "")
+        price = format_inr(h["price"]) if h.get("price") else "-"
+        avg = format_inr(h["average_price"]) if h.get("average_price") else "-"
+        ts = h.get("order_timestamp") or h.get("exchange_timestamp") or "-"
+        msg = h.get("status_message") or ""
+        print(f"{i:<4} {status:<16} {qty:>6} {price:>12} {avg:>12} {ts:<22}")
+        if msg:
+            print(f"     └─ {msg}")
+
+
+def show_order_trades(order_id: str, as_json: bool):
+    """Show trade fills for a specific order."""
+    client = init_client()
+    try:
+        trades = run_async(client.get_order_trades(order_id))
+    except Exception as e:
+        print_error(f"Failed to get order trades: {e}")
+
+    if not trades:
+        if as_json:
+            print_json({"order_id": order_id, "trades": []})
+        else:
+            print(f"📭 No trade fills found for order {order_id}.")
+        return
+
+    if as_json:
+        print_json({"order_id": order_id, "trades": trades})
+        return
+
+    print(f"📊 Trade Fills — Order {order_id}\n")
+    print(f"{'Trade ID':<14} {'Symbol':<12} {'Action':<6} {'Qty':>6} {'Price':>12} {'Exchange':<8} {'Time':<20}")
+    print("-" * 82)
+
+    for t in trades:
+        tid = str(t.get("trade_id", ""))[:12]
+        sym = t.get("symbol", "?")
+        action = t.get("transaction_type", "?")
+        qty = t.get("quantity", "")
+        price = format_inr(t["price"]) if t.get("price") else "-"
+        exch = t.get("exchange", "")
+        ts = t.get("exchange_timestamp") or "-"
+        print(f"{tid:<14} {sym:<12} {action:<6} {qty:>6} {price:>12} {exch:<8} {ts:<20}")
+
+
 def show_orders(open_only: bool, limit: int, as_json: bool):
     """Show open or recent orders."""
     client = init_client()
@@ -171,10 +309,47 @@ def cancel_order(order_id: str, as_json: bool):
         print_error(f"Cancel failed: {result.get('message', 'Unknown error')}")
 
 
+def cancel_all_orders(tag: str | None, segment: str | None, as_json: bool):
+    """Cancel all open orders."""
+    client = init_client()
+    try:
+        result = run_async(client.cancel_multi_order(tag=tag, segment=segment))
+    except Exception as e:
+        print_error(f"Failed to cancel orders: {e}")
+
+    if as_json:
+        print_json(result)
+    elif result.get("success"):
+        label = ""
+        if tag:
+            label += f" with tag '{tag}'"
+        if segment:
+            label += f" in {segment} segment"
+        print_success(f"All open orders{label} cancelled.")
+    else:
+        print_error(f"Cancel-all failed: {result.get('message', 'Unknown error')}")
+
+
+def exit_all_positions(as_json: bool):
+    """Exit all open positions."""
+    client = init_client()
+    try:
+        result = run_async(client.exit_all_positions())
+    except Exception as e:
+        print_error(f"Failed to exit positions: {e}")
+
+    if as_json:
+        print_json(result)
+    elif result.get("success"):
+        print_success("All positions exit orders placed.")
+    else:
+        print_error(f"Exit-all failed: {result.get('message', 'Unknown error')}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-order",
-        description="Place, view, and cancel stock orders",
+        description="Place, view, modify, and cancel stock orders",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -182,10 +357,18 @@ Examples:
   nf-order buy RELIANCE 10 --type LIMIT --price 1450   Limit buy
   nf-order buy RELIANCE 10 --dry-run           Preview without executing
   nf-order sell TCS 5                           Market sell (AMO auto-detected)
-  nf-order sell TCS 5 --amo                      Force after-market order
+  nf-order sell TCS 5 --amo                     Force after-market order
   nf-order list                                 Show open orders
   nf-order list --all --limit 20                Show all recent orders
   nf-order cancel ORDER_ID                      Cancel an order
+  nf-order cancel-all                           Cancel all open orders
+  nf-order cancel-all --segment EQ              Cancel equity orders only
+  nf-order modify ORDER_ID --price 1500         Modify order price
+  nf-order modify ORDER_ID --quantity 20        Modify order quantity
+  nf-order detail ORDER_ID                      Show order details
+  nf-order history ORDER_ID                     Show order state transitions
+  nf-order trades ORDER_ID                      Show trade fills for an order
+  nf-order exit-all                             Exit ALL open positions (panic)
   nf-order buy RELIANCE 10 --json               JSON output
 """,
     )
@@ -218,6 +401,40 @@ Examples:
     p_cancel.add_argument("order_id", help="Order ID to cancel")
     p_cancel.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # cancel-all
+    p_cancel_all = sub.add_parser("cancel-all", help="Cancel all open orders")
+    p_cancel_all.add_argument("--tag", help="Only cancel orders with this tag")
+    p_cancel_all.add_argument("--segment", choices=["EQ", "FO"], help="Only cancel orders in this segment")
+    p_cancel_all.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # modify
+    p_modify = sub.add_parser("modify", help="Modify a pending order")
+    p_modify.add_argument("order_id", help="Order ID to modify")
+    p_modify.add_argument("--quantity", type=int, help="New quantity")
+    p_modify.add_argument("--price", type=float, help="New price")
+    p_modify.add_argument("--type", dest="order_type", choices=["MARKET", "LIMIT"], help="New order type")
+    p_modify.add_argument("--trigger-price", type=float, help="New trigger price (for SL orders)")
+    p_modify.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # detail
+    p_detail = sub.add_parser("detail", help="Show details for a specific order")
+    p_detail.add_argument("order_id", help="Order ID")
+    p_detail.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # history
+    p_history = sub.add_parser("history", help="Show order state transitions")
+    p_history.add_argument("order_id", help="Order ID")
+    p_history.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # trades (fills for a specific order)
+    p_trades = sub.add_parser("trades", help="Show trade fills for a specific order")
+    p_trades.add_argument("order_id", help="Order ID")
+    p_trades.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # exit-all
+    p_exit = sub.add_parser("exit-all", help="Exit ALL open positions (panic button)")
+    p_exit.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -242,6 +459,25 @@ Examples:
         show_orders(open_only=not args.all, limit=args.limit, as_json=args.json)
     elif args.command == "cancel":
         cancel_order(args.order_id, as_json=args.json)
+    elif args.command == "cancel-all":
+        cancel_all_orders(tag=args.tag, segment=args.segment, as_json=args.json)
+    elif args.command == "modify":
+        modify_order(
+            order_id=args.order_id,
+            quantity=args.quantity,
+            price=args.price,
+            order_type=args.order_type,
+            trigger_price=args.trigger_price,
+            as_json=args.json,
+        )
+    elif args.command == "detail":
+        show_order_detail(args.order_id, as_json=args.json)
+    elif args.command == "history":
+        show_order_history(args.order_id, as_json=args.json)
+    elif args.command == "trades":
+        show_order_trades(args.order_id, as_json=args.json)
+    elif args.command == "exit-all":
+        exit_all_positions(as_json=args.json)
 
 
 if __name__ == "__main__":

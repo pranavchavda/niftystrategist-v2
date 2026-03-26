@@ -9,7 +9,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_change, format_inr, init_client, print_error, print_json, run_async  # noqa: E402
+from base import format_change, format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
 def show_portfolio(as_json: bool):
@@ -176,28 +176,82 @@ def calc_position_size(symbol: str, risk_amount: float, stop_loss_pct: float, as
     print(f"  Max Loss if SL:  {format_inr(risk_amount)}")
 
 
+def convert_position(symbol: str, quantity: int, old_product: str, new_product: str,
+                     transaction_type: str, as_json: bool):
+    """Convert position product type (intraday <-> delivery)."""
+    sym = validate_symbol(symbol)
+    client = init_client()
+
+    old_label = "Intraday (MIS)" if old_product == "I" else "Delivery (CNC)"
+    new_label = "Intraday (MIS)" if new_product == "I" else "Delivery (CNC)"
+
+    try:
+        result = run_async(client.convert_position(
+            symbol=sym,
+            transaction_type=transaction_type.upper(),
+            quantity=quantity,
+            old_product=old_product,
+            new_product=new_product,
+        ))
+    except Exception as e:
+        print_error(f"Failed to convert position: {e}")
+
+    if as_json:
+        print_json(result)
+    elif result.get("success"):
+        print_success(f"Position converted: {sym}")
+        print(f"  {quantity} shares: {old_label} → {new_label}")
+    else:
+        print_error(f"Convert failed: {result.get('message', 'Unknown error')}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-portfolio",
-        description="View portfolio, positions, and calculate position sizes",
+        description="View portfolio, positions, convert positions, and calculate position sizes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   nf-portfolio                                  Full portfolio summary
   nf-portfolio --position RELIANCE              Single position details
   nf-portfolio --calc-size RELIANCE --risk 5000 --sl 2  Position size calculator
+  nf-portfolio convert RELIANCE 10 --from I --to D      Convert intraday to delivery
+  nf-portfolio convert TCS 5 --from D --to I --side SELL  Convert delivery to intraday
   nf-portfolio --json                           JSON output
 """,
     )
+    # Global flags
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--position", metavar="SYMBOL", help="Show details for a specific position")
     parser.add_argument("--calc-size", metavar="SYMBOL", help="Calculate position size for a symbol")
     parser.add_argument("--risk", type=float, default=5000, help="Risk amount in rupees (default: 5000)")
     parser.add_argument("--sl", type=float, default=2.0, help="Stop loss percentage (default: 2.0)")
 
+    # Subcommands
+    sub = parser.add_subparsers(dest="command")
+    p_convert = sub.add_parser("convert", help="Convert position product type (intraday <-> delivery)")
+    p_convert.add_argument("symbol", help="Stock symbol")
+    p_convert.add_argument("quantity", type=int, help="Quantity to convert")
+    p_convert.add_argument("--from", dest="from_product", required=True, choices=["D", "I"],
+                           help="Current product type: D=Delivery, I=Intraday")
+    p_convert.add_argument("--to", dest="to_product", required=True, choices=["D", "I"],
+                           help="Target product type: D=Delivery, I=Intraday")
+    p_convert.add_argument("--side", default="BUY", choices=["BUY", "SELL"],
+                           help="Original transaction type (default: BUY)")
+    p_convert.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
-    if args.calc_size:
+    if args.command == "convert":
+        convert_position(
+            symbol=args.symbol,
+            quantity=args.quantity,
+            old_product=args.from_product,
+            new_product=args.to_product,
+            transaction_type=args.side,
+            as_json=args.json,
+        )
+    elif args.calc_size:
         calc_position_size(args.calc_size, args.risk, args.sl, args.json)
     elif args.position:
         show_position(args.position, args.json)

@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Manage GTT (Good Till Triggered) orders.
+
+GTT orders persist server-side and trigger automatically when price conditions
+are met, even if the app is not running. Supports single-trigger and
+OCO (One-Cancels-Other) multi-leg orders.
+
+NOTE: place, modify, and cancel subcommands are HITL-protected — they require
+user approval when called from the orchestrator via execute_bash.
+"""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+
+
+def place_gtt(symbol: str, side: str, quantity: int, product: str,
+              trigger_price: float, trigger_type: str,
+              target_price: float | None, stoploss_price: float | None,
+              trailing_gap: float | None, as_json: bool):
+    """Place a GTT order."""
+    sym = validate_symbol(symbol)
+
+    rules = []
+
+    # Auto-detect trigger_type (ABOVE/BELOW) based on strategy and side
+    # SELL stoploss = trigger when price drops BELOW → "BELOW"
+    # SELL target = trigger when price rises ABOVE → "ABOVE"
+    # BUY entry at lower price = trigger BELOW → "BELOW"
+    # BUY entry at higher price (breakout) = trigger ABOVE → "ABOVE"
+    def _auto_trigger_type(strategy: str, side_str: str, explicit: str | None) -> str:
+        if explicit and explicit != "auto":
+            return explicit
+        if strategy == "STOPLOSS":
+            return "BELOW" if side_str.upper() == "SELL" else "ABOVE"
+        if strategy == "TARGET":
+            return "ABOVE" if side_str.upper() == "SELL" else "BELOW"
+        # ENTRY: BUY below current = BELOW, BUY above = ABOVE (breakout)
+        # Default to BELOW for BUY (dip buy), ABOVE for SELL (rally sell)
+        return "BELOW" if side_str.upper() == "BUY" else "ABOVE"
+
+    if target_price and stoploss_price:
+        # OCO (multi-leg) order
+        gtt_type = "MULTIPLE"
+        rules.append({
+            "strategy": "TARGET",
+            "trigger_type": _auto_trigger_type("TARGET", side, trigger_type),
+            "trigger_price": target_price,
+        })
+        rules.append({
+            "strategy": "STOPLOSS",
+            "trigger_type": _auto_trigger_type("STOPLOSS", side, trigger_type),
+            "trigger_price": stoploss_price,
+        })
+    elif stoploss_price:
+        # Single stoploss GTT
+        gtt_type = "SINGLE"
+        rules.append({
+            "strategy": "STOPLOSS",
+            "trigger_type": _auto_trigger_type("STOPLOSS", side, trigger_type),
+            "trigger_price": stoploss_price,
+        })
+    else:
+        # Single entry/target GTT
+        gtt_type = "SINGLE"
+        rule = {
+            "strategy": "ENTRY",
+            "trigger_type": _auto_trigger_type("ENTRY", side, trigger_type),
+            "trigger_price": trigger_price,
+        }
+        if trailing_gap:
+            rule["trailing_gap"] = trailing_gap
+        rules.append(rule)
+
+    client = init_client()
+    try:
+        result = run_async(client.place_gtt_order(
+            symbol=sym,
+            transaction_type=side.upper(),
+            quantity=quantity,
+            product=product,
+            gtt_type=gtt_type,
+            rules=rules,
+        ))
+    except Exception as e:
+        print_error(f"GTT order failed: {e}")
+
+    if as_json:
+        print_json(result)
+    elif result.get("success"):
+        print_success(f"GTT Order Placed")
+        print(f"\n  Symbol:    {sym}")
+        print(f"  Action:    {side.upper()}")
+        print(f"  Quantity:  {quantity}")
+        print(f"  Type:      {gtt_type}")
+        print(f"  GTT ID:    {result.get('gtt_order_id', 'N/A')}")
+        if len(rules) == 1:
+            r = rules[0]
+            print(f"  Trigger:   {r['strategy']} @ {format_inr(r['trigger_price'])}")
+        else:
+            for r in rules:
+                print(f"  {r['strategy']:<10} @ {format_inr(r['trigger_price'])}")
+    else:
+        print_error(f"GTT order failed: {result.get('message', 'Unknown error')}")
+
+
+def modify_gtt(gtt_order_id: str, quantity: int | None,
+               trigger_price: float | None, trigger_type: str | None,
+               as_json: bool):
+    """Modify an existing GTT order."""
+    client = init_client()
+
+    # If trigger_price is given, we pass it to the client which will merge
+    # with existing rules. If trigger_type isn't explicitly set, pass None
+    # so the client preserves the existing trigger_type from the current order.
+    rules = None
+    if trigger_price:
+        rules = [{
+            "strategy": "ENTRY",
+            "trigger_type": trigger_type if trigger_type else None,
+            "trigger_price": trigger_price,
+        }]
+
+    try:
+        result = run_async(client.modify_gtt_order(
+            gtt_order_id=gtt_order_id,
+            quantity=quantity,
+            rules=rules,
+        ))
+    except Exception as e:
+        print_error(f"GTT modify failed: {e}")
+
+    if as_json:
+        print_json(result)
+    elif result.get("success"):
+        print_success(f"GTT order {gtt_order_id} modified.")
+        if quantity:
+            print(f"  New quantity: {quantity}")
+        if trigger_price:
+            print(f"  New trigger:  {format_inr(trigger_price)}")
+    else:
+        print_error(f"GTT modify failed: {result.get('message', 'Unknown error')}")
+
+
+def cancel_gtt(gtt_order_id: str, as_json: bool):
+    """Cancel a GTT order."""
+    client = init_client()
+    try:
+        result = run_async(client.cancel_gtt_order(gtt_order_id))
+    except Exception as e:
+        print_error(f"GTT cancel failed: {e}")
+
+    if as_json:
+        print_json(result)
+    elif result.get("success"):
+        print_success(f"GTT order {gtt_order_id} cancelled.")
+    else:
+        print_error(f"GTT cancel failed: {result.get('message', 'Unknown error')}")
+
+
+def list_gtt(as_json: bool):
+    """List all GTT orders."""
+    client = init_client()
+    try:
+        orders = run_async(client.get_gtt_orders())
+    except Exception as e:
+        print_error(f"Failed to list GTT orders: {e}")
+
+    if as_json:
+        print_json({"gtt_orders": orders})
+        return
+
+    if not orders:
+        print("📭 No GTT orders found.")
+        return
+
+    print("📋 GTT Orders\n")
+    print(f"{'GTT ID':<22} {'Symbol':<12} {'Action':<6} {'Qty':>5} {'Type':<8} {'Status':<12} {'Rules'}")
+    print("-" * 90)
+
+    for o in orders:
+        gtt_id = str(o.get("gtt_order_id", ""))
+        symbol = o.get("trading_symbol", "?")
+        gtt_type = o.get("type", "?")
+        action = o.get("transaction_type", "?")
+        qty = o.get("quantity", "")
+        status = o.get("status", "?")
+        rules = o.get("rules", [])
+        rules_str = ", ".join(
+            f"{r.get('strategy', '?')} {r.get('trigger_type', '')}@{format_inr(r['trigger_price']) if r.get('trigger_price') else '?'}"
+            for r in rules
+        ) if rules else "-"
+
+        print(f"{gtt_id:<22} {symbol:<12} {action:<6} {qty:>5} {gtt_type:<8} {status:<12} {rules_str}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-gtt",
+        description="Manage GTT (Good Till Triggered) orders — server-side persistent orders",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-gtt place RELIANCE BUY 10 --trigger 1400              Buy when price hits 1400
+  nf-gtt place TCS SELL 5 --stoploss 3200                   Stoploss GTT
+  nf-gtt place INFY SELL 10 --target 1800 --stoploss 1500   OCO (target + stoploss)
+  nf-gtt place RELIANCE BUY 10 --trigger 1400 --trailing 20 Trailing trigger
+  nf-gtt list                                                Show all GTT orders
+  nf-gtt modify GTT_ID --quantity 20                         Change quantity
+  nf-gtt modify GTT_ID --trigger 1450                        Change trigger price
+  nf-gtt cancel GTT_ID                                       Cancel a GTT order
+""",
+    )
+
+    sub = parser.add_subparsers(dest="command", help="Command")
+
+    # place
+    p_place = sub.add_parser("place", help="Place a GTT order")
+    p_place.add_argument("symbol", help="Stock symbol")
+    p_place.add_argument("side", choices=["BUY", "SELL", "buy", "sell"], help="Transaction type")
+    p_place.add_argument("quantity", type=int, help="Order quantity")
+    p_place.add_argument("--trigger", type=float, default=0,
+                         help="Trigger price (for single entry GTT)")
+    p_place.add_argument("--target", type=float, help="Target price (for OCO orders)")
+    p_place.add_argument("--stoploss", type=float, help="Stoploss price")
+    p_place.add_argument("--trailing", type=float, help="Trailing gap (points)")
+    p_place.add_argument("--trigger-type", default="auto",
+                         choices=["auto", "ABOVE", "BELOW", "IMMEDIATE"],
+                         help="Trigger direction (default: auto-detected from side/strategy)")
+    p_place.add_argument("--product", default="D", choices=["D", "I"],
+                         help="Product type: D=Delivery, I=Intraday (default: D)")
+    p_place.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # list
+    p_list = sub.add_parser("list", help="List all GTT orders")
+    p_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # modify
+    p_modify = sub.add_parser("modify", help="Modify a GTT order")
+    p_modify.add_argument("gtt_order_id", help="GTT Order ID")
+    p_modify.add_argument("--quantity", type=int, help="New quantity")
+    p_modify.add_argument("--trigger", type=float, help="New trigger price")
+    p_modify.add_argument("--trigger-type", choices=["ABOVE", "BELOW", "IMMEDIATE"],
+                          help="New trigger type")
+    p_modify.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # cancel
+    p_cancel = sub.add_parser("cancel", help="Cancel a GTT order")
+    p_cancel.add_argument("gtt_order_id", help="GTT Order ID")
+    p_cancel.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "place":
+        if not args.trigger and not args.stoploss and not args.target:
+            print_error("Must specify at least one of: --trigger, --stoploss, --target")
+        place_gtt(
+            symbol=args.symbol,
+            side=args.side,
+            quantity=args.quantity,
+            product=args.product,
+            trigger_price=args.trigger,
+            trigger_type=args.trigger_type,
+            target_price=args.target,
+            stoploss_price=args.stoploss,
+            trailing_gap=args.trailing,
+            as_json=args.json,
+        )
+    elif args.command == "list":
+        list_gtt(as_json=args.json)
+    elif args.command == "modify":
+        if not args.quantity and not args.trigger:
+            print_error("Must specify at least one of: --quantity, --trigger")
+        modify_gtt(
+            gtt_order_id=args.gtt_order_id,
+            quantity=args.quantity,
+            trigger_price=args.trigger,
+            trigger_type=args.trigger_type,
+            as_json=args.json,
+        )
+    elif args.command == "cancel":
+        cancel_gtt(args.gtt_order_id, as_json=args.json)
+
+
+if __name__ == "__main__":
+    main()
