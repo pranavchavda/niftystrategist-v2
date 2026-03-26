@@ -1343,7 +1343,8 @@ class UpstoxClient:
         if not to_date:
             to_date = datetime.now().strftime("%d-%m-%Y")
         if not from_date:
-            from_date = (datetime.now() - timedelta(days=30)).strftime("%d-%m-%Y")
+            # Default to today (not 30 days) — caller should pass explicit range for historical
+            from_date = datetime.now().strftime("%d-%m-%Y")
 
         try:
             api_client = upstox_client.ApiClient(self._configuration)
@@ -2432,7 +2433,7 @@ class UpstoxClient:
             if to_date:
                 kwargs["to_date"] = to_date
 
-            response = pnl_api.get_profit_and_loss_charges(**kwargs)
+            response = pnl_api.get_trade_wise_profit_and_loss_data(**kwargs)
 
             if response.data:
                 data = response.data
@@ -2443,11 +2444,13 @@ class UpstoxClient:
                 for item in items:
                     if isinstance(item, dict):
                         trades.append(item)
+                    elif hasattr(item, "to_dict"):
+                        trades.append(item.to_dict())
                     else:
                         trade = {}
-                        for attr in ("symbol", "quantity", "buy_amount", "sell_amount",
-                                     "realized_profit", "unrealized_profit", "scrip_name",
-                                     "trade_type", "buy_average", "sell_average"):
+                        for attr in ("scrip_name", "quantity", "buy_amount", "sell_amount",
+                                     "buy_average", "sell_average", "buy_date", "sell_date",
+                                     "trade_type", "isin"):
                             val = getattr(item, attr, None)
                             if val is not None:
                                 trade[attr] = val

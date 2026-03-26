@@ -1346,7 +1346,8 @@ NOTE: GTT orders are broker-native and persist until triggered or cancelled. Use
 **Trades & P&L:**
 - `python cli-tools/nf-trades [--json]` — Today's executed trades with timestamps
 - `python cli-tools/nf-trades history [--segment EQ|FO] [--days 30] [--json]` — Historical trades
-- `python cli-tools/nf-trades charges [--segment EQ|FO] [--json]` — Trade P&L with charges breakdown (brokerage, STT, GST, etc.)
+- `python cli-tools/nf-trades charges [--segment EQ|FO] [--days N] [--from DD-MM-YYYY] [--to DD-MM-YYYY] [--json]` — Trade charges breakdown (default: today only, use --days 7 for weekly). Note: charges data is T+1.
+- `python cli-tools/nf-trades report [--segment EQ|FO] [--page N] [--page-size N] [--fy 2526] [--json]` — Trade-wise P&L report with buy/sell averages and net P&L
 
 **Options (F&O) — supports BOTH index options (NIFTY, BANKNIFTY) AND stock options (~200 F&O-eligible stocks like RELIANCE, TCS, HDFCBANK, etc.):**
 - `python cli-tools/nf-options chain SYMBOL [--expiry 17FEB] [--json]` — Option chain (from cache). SYMBOL can be NIFTY, BANKNIFTY, or any F&O stock (RELIANCE, TCS, etc.)
