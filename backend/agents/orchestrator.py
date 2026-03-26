@@ -1359,6 +1359,8 @@ NOTE: GTT orders are broker-native and persist until triggered or cancelled. Use
 - `python cli-tools/nf-options charges SYMBOL EXPIRY STRIKE CE|PE LOTS [--side BUY|SELL] [--price P] [--exit-price P] [--json]` — F&O charges estimate (brokerage, STT, GST, etc.), optional round-trip with --exit-price
 - `python cli-tools/nf-options positions [--json]` — View all open F&O positions with P&L
 - `python cli-tools/nf-options plan SYMBOL --expiry YYYY-MM-DD [--side buy|sell] [--bias bullish|bearish] [--capital N] [--lots N] [--json]` — Trade planner: suggests strikes, computes affordability, shows candidates near ATM
+- `python cli-tools/nf-options spread SYMBOL --expiry YYYY-MM-DD --legs BUY:STRIKE:CE SELL:STRIKE:CE [--lots N] [--product D|I] [--dry-run] [--json]` — Multi-leg spread/basket order (Strategy Builder). Supports bull call, bear put, bull put, bear call, iron condor, straddle. Shows payoff analysis (max profit/loss, breakevens, risk/reward), margin estimate, and charges. Places all legs as a single basket via multi-order API for spread margin benefit. Use --dry-run to preview.
+  Example: `nf-options spread SHREECEM --expiry 2026-04-28 --legs BUY:24250:CE SELL:25000:CE --lots 1 --dry-run`
 - `python cli-tools/nf-options fno-symbols [--json]` — List all ~200 F&O-eligible stock symbols
 NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on expiry. Index options have weekly expiry and cash settlement.
 

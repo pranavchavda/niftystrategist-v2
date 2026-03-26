@@ -1012,6 +1012,348 @@ def show_fno_symbols(as_json: bool = False):
         print(f"{sym:<20} {name}")
 
 
+def _compute_payoff(legs: list[dict], lot_size: int) -> dict:
+    """Compute payoff analysis for a multi-leg option strategy.
+
+    Each leg: {side: BUY/SELL, strike: float, option_type: CE/PE, premium: float, lots: int}
+
+    Returns: {max_profit, max_loss, breakevens, net_debit_credit, risk_reward, strategy_name}
+    """
+    quantity_per_lot = lot_size
+    total_lots = legs[0]["lots"]  # Assume same lots for all legs
+
+    # Net premium (positive = debit, negative = credit)
+    net_premium = 0
+    for leg in legs:
+        if leg["side"] == "BUY":
+            net_premium += leg["premium"] * leg["lots"] * quantity_per_lot
+        else:
+            net_premium -= leg["premium"] * leg["lots"] * quantity_per_lot
+
+    # Identify strategy type
+    calls = [l for l in legs if l["option_type"] == "CE"]
+    puts = [l for l in legs if l["option_type"] == "PE"]
+    buys = [l for l in legs if l["side"] == "BUY"]
+    sells = [l for l in legs if l["side"] == "SELL"]
+
+    strategy_name = "Custom Spread"
+
+    # Bull Call Spread: Buy lower CE, Sell higher CE
+    if (len(legs) == 2 and len(calls) == 2 and len(buys) == 1 and len(sells) == 1
+            and buys[0]["option_type"] == "CE" and sells[0]["option_type"] == "CE"
+            and buys[0]["strike"] < sells[0]["strike"]):
+        strategy_name = "Bull Call Spread"
+        lower = buys[0]["strike"]
+        upper = sells[0]["strike"]
+        width = (upper - lower) * total_lots * quantity_per_lot
+        max_loss = abs(net_premium)
+        max_profit = width - max_loss
+        breakeven = lower + abs(net_premium) / (total_lots * quantity_per_lot)
+        return {
+            "strategy": strategy_name, "max_profit": round(max_profit, 2),
+            "max_loss": round(max_loss, 2), "breakevens": [round(breakeven, 2)],
+            "net_debit": round(net_premium, 2), "risk_reward": f"1:{round(max_profit / max_loss, 2) if max_loss else 'inf'}",
+        }
+
+    # Bear Put Spread: Buy higher PE, Sell lower PE
+    if (len(legs) == 2 and len(puts) == 2 and len(buys) == 1 and len(sells) == 1
+            and buys[0]["option_type"] == "PE" and sells[0]["option_type"] == "PE"
+            and buys[0]["strike"] > sells[0]["strike"]):
+        strategy_name = "Bear Put Spread"
+        upper = buys[0]["strike"]
+        lower = sells[0]["strike"]
+        width = (upper - lower) * total_lots * quantity_per_lot
+        max_loss = abs(net_premium)
+        max_profit = width - max_loss
+        breakeven = upper - abs(net_premium) / (total_lots * quantity_per_lot)
+        return {
+            "strategy": strategy_name, "max_profit": round(max_profit, 2),
+            "max_loss": round(max_loss, 2), "breakevens": [round(breakeven, 2)],
+            "net_debit": round(net_premium, 2), "risk_reward": f"1:{round(max_profit / max_loss, 2) if max_loss else 'inf'}",
+        }
+
+    # Bull Put Spread (credit): Sell higher PE, Buy lower PE
+    if (len(legs) == 2 and len(puts) == 2 and len(buys) == 1 and len(sells) == 1
+            and sells[0]["option_type"] == "PE" and buys[0]["option_type"] == "PE"
+            and sells[0]["strike"] > buys[0]["strike"]):
+        strategy_name = "Bull Put Spread"
+        upper = sells[0]["strike"]
+        lower = buys[0]["strike"]
+        width = (upper - lower) * total_lots * quantity_per_lot
+        max_profit = abs(net_premium)  # Credit received
+        max_loss = width - max_profit
+        breakeven = upper - abs(net_premium) / (total_lots * quantity_per_lot)
+        return {
+            "strategy": strategy_name, "max_profit": round(max_profit, 2),
+            "max_loss": round(max_loss, 2), "breakevens": [round(breakeven, 2)],
+            "net_credit": round(abs(net_premium), 2), "risk_reward": f"1:{round(max_profit / max_loss, 2) if max_loss else 'inf'}",
+        }
+
+    # Bear Call Spread (credit): Sell lower CE, Buy higher CE
+    if (len(legs) == 2 and len(calls) == 2 and len(buys) == 1 and len(sells) == 1
+            and sells[0]["option_type"] == "CE" and buys[0]["option_type"] == "CE"
+            and sells[0]["strike"] < buys[0]["strike"]):
+        strategy_name = "Bear Call Spread"
+        lower = sells[0]["strike"]
+        upper = buys[0]["strike"]
+        width = (upper - lower) * total_lots * quantity_per_lot
+        max_profit = abs(net_premium)
+        max_loss = width - max_profit
+        breakeven = lower + abs(net_premium) / (total_lots * quantity_per_lot)
+        return {
+            "strategy": strategy_name, "max_profit": round(max_profit, 2),
+            "max_loss": round(max_loss, 2), "breakevens": [round(breakeven, 2)],
+            "net_credit": round(abs(net_premium), 2), "risk_reward": f"1:{round(max_profit / max_loss, 2) if max_loss else 'inf'}",
+        }
+
+    # Iron Condor: Sell CE + Buy higher CE + Sell PE + Buy lower PE (4 legs)
+    if len(legs) == 4 and len(calls) == 2 and len(puts) == 2:
+        call_sell = [l for l in calls if l["side"] == "SELL"]
+        call_buy = [l for l in calls if l["side"] == "BUY"]
+        put_sell = [l for l in puts if l["side"] == "SELL"]
+        put_buy = [l for l in puts if l["side"] == "BUY"]
+        if len(call_sell) == 1 and len(call_buy) == 1 and len(put_sell) == 1 and len(put_buy) == 1:
+            strategy_name = "Iron Condor"
+            call_width = abs(call_buy[0]["strike"] - call_sell[0]["strike"])
+            put_width = abs(put_sell[0]["strike"] - put_buy[0]["strike"])
+            max_width = max(call_width, put_width)
+            max_profit = abs(net_premium)
+            max_loss = max_width * total_lots * quantity_per_lot - max_profit
+            be_upper = call_sell[0]["strike"] + abs(net_premium) / (total_lots * quantity_per_lot)
+            be_lower = put_sell[0]["strike"] - abs(net_premium) / (total_lots * quantity_per_lot)
+            return {
+                "strategy": strategy_name, "max_profit": round(max_profit, 2),
+                "max_loss": round(max_loss, 2), "breakevens": [round(be_lower, 2), round(be_upper, 2)],
+                "net_credit": round(abs(net_premium), 2), "risk_reward": f"1:{round(max_profit / max_loss, 2) if max_loss else 'inf'}",
+            }
+
+    # Straddle: Buy/Sell CE + PE at same strike
+    if len(legs) == 2 and len(calls) == 1 and len(puts) == 1 and calls[0]["strike"] == puts[0]["strike"]:
+        if calls[0]["side"] == puts[0]["side"]:
+            side = calls[0]["side"]
+            strategy_name = f"{'Long' if side == 'BUY' else 'Short'} Straddle"
+            total_prem = abs(net_premium)
+            strike = calls[0]["strike"]
+            be_up = strike + total_prem / (total_lots * quantity_per_lot)
+            be_down = strike - total_prem / (total_lots * quantity_per_lot)
+            if side == "BUY":
+                return {
+                    "strategy": strategy_name, "max_profit": "Unlimited",
+                    "max_loss": round(total_prem, 2), "breakevens": [round(be_down, 2), round(be_up, 2)],
+                    "net_debit": round(total_prem, 2), "risk_reward": "Unlimited upside",
+                }
+            else:
+                return {
+                    "strategy": strategy_name, "max_profit": round(total_prem, 2),
+                    "max_loss": "Unlimited", "breakevens": [round(be_down, 2), round(be_up, 2)],
+                    "net_credit": round(total_prem, 2), "risk_reward": "Limited profit, unlimited risk",
+                }
+
+    # Generic fallback
+    return {
+        "strategy": strategy_name, "max_profit": "Compute manually",
+        "max_loss": "Compute manually", "breakevens": [],
+        "net_debit" if net_premium > 0 else "net_credit": round(abs(net_premium), 2),
+        "risk_reward": "N/A",
+    }
+
+
+def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
+                 product: str, dry_run: bool, as_json: bool):
+    """Place a multi-leg spread/basket option order.
+
+    legs_raw: list of "SIDE:STRIKE:TYPE" strings, e.g. ["BUY:24250:CE", "SELL:25000:CE"]
+    """
+    # Parse legs
+    legs = []
+    for leg_str in legs_raw:
+        parts = leg_str.upper().split(":")
+        if len(parts) != 3:
+            print_error(f"Invalid leg format: {leg_str}. Use SIDE:STRIKE:TYPE (e.g. BUY:24250:CE)")
+        side, strike_str, opt_type = parts
+        if side not in ("BUY", "SELL", "B", "S"):
+            print_error(f"Invalid side: {side}. Use BUY/B or SELL/S")
+        if opt_type not in ("CE", "PE"):
+            print_error(f"Invalid option type: {opt_type}. Use CE or PE")
+        side = "BUY" if side in ("BUY", "B") else "SELL"
+        try:
+            strike = float(strike_str)
+        except ValueError:
+            print_error(f"Invalid strike price: {strike_str}")
+        legs.append({"side": side, "strike": strike, "option_type": opt_type})
+
+    if len(legs) < 2:
+        print_error("Spread requires at least 2 legs")
+
+    # Resolve instruments and get live prices
+    client = init_client()
+    resolved_legs = []
+    for leg in legs:
+        option = find_option(symbol, expiry, leg["strike"], leg["option_type"])
+        if not option:
+            print_error(f"Option not found: {symbol} {expiry} {leg['strike']} {leg['option_type']}")
+
+        instrument_key = option["instrument_key"]
+        lot_size = option["lot_size"]
+
+        # Get live LTP
+        live_ltp = None
+        try:
+            greeks = run_async(client.get_option_greeks([instrument_key]))
+            if greeks:
+                gdata = list(greeks.values())[0]
+                live_ltp = gdata.get("last_price")
+        except Exception:
+            pass
+
+        premium = live_ltp or option.get("last_price", 0)
+        resolved_legs.append({
+            **leg,
+            "lots": lots,
+            "premium": premium,
+            "live_ltp": live_ltp,
+            "instrument_key": instrument_key,
+            "tradingsymbol": option["tradingsymbol"],
+            "lot_size": lot_size,
+            "expiry": option["expiry"],
+        })
+
+    lot_size = resolved_legs[0]["lot_size"]
+    quantity = lots * lot_size
+
+    # Compute payoff
+    payoff = _compute_payoff(resolved_legs, lot_size)
+
+    # Compute charges for each leg
+    total_charges = 0
+    for leg in resolved_legs:
+        charges = estimate_fno_charges(leg["premium"], quantity, leg["side"])
+        leg["charges"] = charges["total"]
+        total_charges += charges["total"]
+
+    # Get margin estimate
+    margin_info = None
+    try:
+        margin_instruments = [{
+            "symbol": leg["tradingsymbol"],
+            "quantity": quantity,
+            "product": product,
+            "transaction_type": leg["side"],
+        } for leg in resolved_legs]
+        # Use instrument keys directly for margin calc
+        margin_result = run_async(client.calculate_margin([{
+            "symbol": symbol.upper(),  # Will be resolved by client
+            "quantity": quantity,
+            "product": product,
+            "transaction_type": leg["side"],
+        } for leg in resolved_legs]))
+        margin_info = margin_result
+    except Exception:
+        pass
+
+    # Build result
+    result = {
+        "strategy": payoff.get("strategy", "Custom Spread"),
+        "underlying": symbol.upper(),
+        "expiry": resolved_legs[0]["expiry"],
+        "lots": lots,
+        "lot_size": lot_size,
+        "quantity_per_leg": quantity,
+        "legs": [
+            {
+                "side": l["side"],
+                "strike": l["strike"],
+                "option_type": l["option_type"],
+                "premium": l["premium"],
+                "live_ltp": l["live_ltp"],
+                "tradingsymbol": l["tradingsymbol"],
+                "instrument_key": l["instrument_key"],
+                "charges": l["charges"],
+            }
+            for l in resolved_legs
+        ],
+        "payoff": payoff,
+        "total_charges": round(total_charges, 2),
+        "estimated_margin": margin_info.get("required_margin") or margin_info.get("final_margin") if margin_info else None,
+    }
+
+    if dry_run or as_json:
+        if as_json:
+            print_json(result)
+            return
+
+        # Human-readable dry run
+        print(f"📊 {payoff.get('strategy', 'Spread')} — {symbol.upper()} (Expiry: {resolved_legs[0]['expiry']})\n")
+        print(f"  {'Leg':<5} {'Side':<6} {'Strike':>8} {'Type':<4} {'Premium':>10} {'Value':>12}")
+        print("  " + "-" * 52)
+        for i, l in enumerate(resolved_legs, 1):
+            val = l["premium"] * quantity
+            sign = "-" if l["side"] == "BUY" else "+"
+            print(f"  {i:<5} {l['side']:<6} {l['strike']:>8.0f} {l['option_type']:<4} {format_inr(l['premium']):>10} {sign}{format_inr(val):>11}")
+
+        print(f"\n  Lots: {lots} × {lot_size} = {quantity} shares/leg")
+        if payoff.get("net_debit"):
+            print(f"  Net Debit:        {format_inr(payoff['net_debit'])}")
+        elif payoff.get("net_credit"):
+            print(f"  Net Credit:       {format_inr(payoff['net_credit'])}")
+
+        print(f"\n  Max Profit:       {format_inr(payoff['max_profit']) if isinstance(payoff['max_profit'], (int, float)) else payoff['max_profit']}")
+        print(f"  Max Loss:         {format_inr(payoff['max_loss']) if isinstance(payoff['max_loss'], (int, float)) else payoff['max_loss']}")
+        if payoff.get("breakevens"):
+            be_str = ", ".join(format_inr(b) for b in payoff["breakevens"])
+            print(f"  Breakeven(s):     {be_str}")
+        print(f"  Risk/Reward:      {payoff.get('risk_reward', 'N/A')}")
+        print(f"  Est. Charges:     {format_inr(total_charges)}")
+
+        if margin_info:
+            margin_val = margin_info.get("required_margin") or margin_info.get("final_margin")
+            if margin_val:
+                print(f"  Est. Margin:      {format_inr(margin_val)}")
+
+        if dry_run:
+            print(f"\n  🔍 Dry Run — orders NOT placed")
+        return
+
+    # Place multi-leg order
+    import uuid
+    basket_tag = f"spread_{uuid.uuid4().hex[:8]}"
+    orders = []
+    for i, l in enumerate(resolved_legs):
+        orders.append({
+            "instrument_token": l["instrument_key"],
+            "transaction_type": l["side"],
+            "quantity": quantity,
+            "price": l["premium"],
+            "order_type": "LIMIT",
+            "product": product,
+            "tag": basket_tag,
+            "correlation_id": f"{basket_tag}_leg{i+1}",
+        })
+
+    try:
+        place_result = run_async(client.place_multi_order(orders))
+    except Exception as e:
+        print_error(f"Spread order failed: {e}")
+
+    if as_json:
+        result["order_result"] = place_result
+        print_json(result)
+    elif place_result.get("success"):
+        print_success(f"{payoff.get('strategy', 'Spread')} Placed [{basket_tag}]")
+        print(f"\n  {symbol.upper()} | {resolved_legs[0]['expiry']} | {lots} lot(s)")
+        for i, l in enumerate(resolved_legs):
+            print(f"  Leg {i+1}: {l['side']} {l['strike']:.0f} {l['option_type']} @ {format_inr(l['premium'])}")
+        oids = place_result.get("order_ids", [])
+        if oids:
+            print(f"\n  Order IDs: {', '.join(str(o) for o in oids)}")
+        if payoff.get("net_debit"):
+            print(f"  Net Debit: {format_inr(payoff['net_debit'])}")
+        elif payoff.get("net_credit"):
+            print(f"  Net Credit: {format_inr(payoff['net_credit'])}")
+    else:
+        print_error(f"Spread order failed: {place_result.get('message', 'Unknown error')}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-options",
@@ -1035,6 +1377,13 @@ Examples (Stock Options — any F&O-eligible stock):
   nf-options buy RELIANCE 30MAR26 1400 CE 1 --dry-run  Preview stock option order
   nf-options plan RELIANCE --expiry 2026-03-30 --bias bullish --capital 50000
   nf-options fno-symbols                          List all F&O-eligible stock symbols
+
+Spreads / Strategy Builder (multi-leg basket orders):
+  nf-options spread SHREECEM --expiry 2026-04-28 --legs BUY:24250:CE SELL:25000:CE --dry-run
+  nf-options spread NIFTY --expiry 2026-04-03 --legs BUY:23000:CE SELL:23500:CE --lots 1
+  nf-options spread NIFTY --expiry 2026-04-03 --legs SELL:23200:PE BUY:23000:PE --lots 1  (Bull Put)
+  nf-options spread NIFTY --expiry 2026-04-03 --legs BUY:23000:CE BUY:23000:PE --lots 1  (Straddle)
+  nf-options spread NIFTY --expiry 2026-04-03 --legs SELL:23200:CE BUY:23400:CE SELL:22800:PE BUY:22600:PE  (Iron Condor)
 
 Common:
   nf-options charges BANKNIFTY 2026-03-12 48000 CE 1 --side BUY     Charges estimate
@@ -1118,6 +1467,18 @@ Common:
     p_plan.add_argument("--lots", type=int, help="Desired number of lots")
     p_plan.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # spread — multi-leg basket order (strategy builder)
+    p_spread = sub.add_parser("spread", help="Multi-leg spread/basket order with payoff analysis")
+    p_spread.add_argument("symbol", help=_sym_help)
+    p_spread.add_argument("--expiry", required=True, help="Expiry date (DDMMMYY or YYYY-MM-DD)")
+    p_spread.add_argument("--legs", nargs="+", required=True, metavar="SIDE:STRIKE:TYPE",
+                          help="Leg definitions. Format: SIDE:STRIKE:TYPE (e.g. BUY:24250:CE SELL:25000:CE)")
+    p_spread.add_argument("--lots", type=int, default=1, help="Number of lots per leg (default: 1)")
+    p_spread.add_argument("--product", default="D", choices=["D", "I"],
+                          help="Product type: D=NRML, I=MIS (default: D)")
+    p_spread.add_argument("--dry-run", action="store_true", help="Preview spread without placing orders")
+    p_spread.add_argument("--json", action="store_true", help="Output as JSON")
+
     # fno-symbols — list all F&O-eligible stock symbols
     p_fno = sub.add_parser("fno-symbols", help="List all F&O-eligible stock symbols")
     p_fno.add_argument("--json", action="store_true", help="Output as JSON")
@@ -1185,6 +1546,16 @@ Common:
             bias=args.bias,
             capital=args.capital,
             lots=args.lots,
+            as_json=args.json,
+        )
+    elif args.command == "spread":
+        spread_order(
+            symbol=args.symbol,
+            expiry=args.expiry,
+            legs_raw=args.legs,
+            lots=args.lots,
+            product=args.product,
+            dry_run=args.dry_run,
             as_json=args.json,
         )
     elif args.command == "fno-symbols":

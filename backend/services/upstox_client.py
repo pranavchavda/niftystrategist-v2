@@ -1688,6 +1688,84 @@ class UpstoxClient:
 
     # ── Order Management (modify, details, history, exit-all, cancel-multi) ──
 
+    async def place_multi_order(self, orders: list[dict]) -> dict:
+        """Place multiple orders as a basket (used for spreads/combos).
+
+        Args:
+            orders: List of order dicts, each with:
+                - instrument_token: Instrument key (e.g. NSE_FO|...)
+                - transaction_type: BUY or SELL
+                - quantity: Order quantity
+                - price: Limit price (0 for market)
+                - order_type: MARKET or LIMIT
+                - product: D (Delivery/NRML) or I (Intraday/MIS)
+                - tag: Shared tag for all legs (for basket grouping)
+                - correlation_id: Unique per-leg ID within the basket
+
+        Returns:
+            Dict with success status and order IDs.
+        """
+        if self.paper_trading:
+            return {"success": False, "message": "Paper trading does not support multi-order."}
+
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        try:
+            api_client = upstox_client.ApiClient(self._configuration)
+            order_api = upstox_client.OrderApi(api_client)
+
+            multi_orders = []
+            for o in orders:
+                req = upstox_client.MultiOrderRequest(
+                    quantity=o["quantity"],
+                    product=o.get("product", "D"),
+                    validity="DAY",
+                    price=o.get("price", 0),
+                    instrument_token=o["instrument_token"],
+                    order_type=o.get("order_type", "LIMIT"),
+                    transaction_type=o["transaction_type"],
+                    disclosed_quantity=0,
+                    trigger_price=0,
+                    is_amo=False,
+                    correlation_id=o.get("correlation_id", ""),
+                    tag=o.get("tag", ""),
+                    slice=o.get("slice", False),
+                )
+                multi_orders.append(req)
+
+            response = order_api.place_multi_order(body=multi_orders)
+
+            order_ids = []
+            if response.data:
+                items = response.data if isinstance(response.data, list) else [response.data]
+                for item in items:
+                    if isinstance(item, dict):
+                        oid = item.get("order_id") or item.get("order_ids")
+                        order_ids.append(oid)
+                    else:
+                        oid = getattr(item, "order_id", None) or getattr(item, "order_ids", None)
+                        order_ids.append(oid)
+
+            return {
+                "success": True,
+                "order_ids": order_ids,
+                "message": f"Multi-order placed ({len(orders)} legs)",
+            }
+
+        except ApiException as e:
+            detail = ""
+            if e.body:
+                try:
+                    import json as _json
+                    body = _json.loads(e.body) if isinstance(e.body, str) else e.body
+                    detail = body.get("message", "") or body.get("errors", "")
+                except Exception:
+                    detail = str(e.body)[:300]
+            return {"success": False, "message": f"Multi-order failed: {e.status} - {e.reason} ({detail})"}
+        except Exception as e:
+            return {"success": False, "message": f"Multi-order failed: {e}"}
+
     async def modify_order(
         self,
         order_id: str,
