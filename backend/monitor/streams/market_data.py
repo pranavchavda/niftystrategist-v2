@@ -1,6 +1,7 @@
 """Upstox Market Data Feed V3 -- live price streaming via protobuf."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Callable, Coroutine
@@ -24,10 +25,10 @@ class MarketDataStream(BaseWebSocketStream):
     and receives protobuf-encoded market data.
 
     Subscription modes:
-    - "ltpc": Last traded price + close price (lightweight, default)
+    - "ltpc": Last traded price + close price (lightweight)
     - "full": LTPC + 5-level depth + OHLC + volume
     - "option_greeks": LTPC + first depth + option greeks
-    - "full_d30": Full with 30-level depth
+    - "full_d30": Full with 30-level depth (default for Plus users)
 
     The on_message callback receives a dict keyed by instrument_key, e.g.:
         {
@@ -35,6 +36,9 @@ class MarketDataStream(BaseWebSocketStream):
                 "instrument_key": "NSE_EQ|INE002A01018",
                 "ltp": 2545.50,
                 "close": 2530.00,
+                "bids": [{"price": 2545.25, "qty": 500}, ...],  # 30 levels
+                "asks": [{"price": 2545.50, "qty": 300}, ...],
+                "depth_levels": 30,
                 ...
             }
         }
@@ -49,11 +53,14 @@ class MarketDataStream(BaseWebSocketStream):
         self,
         access_token: str,
         on_message: Callable[[dict], Coroutine[Any, Any, None]],
-        mode: str = "ltpc",
+        mode: str = "full_d30",
+        fallback_mode: str | None = "full",
         on_auth_failure: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ):
         self._access_token = access_token
         self._mode = mode
+        self._fallback_mode = fallback_mode
+        self._mode_downgraded = False
         self._subscribed_keys: set[str] = set()
         self._proto_module: Any = None  # Lazy-loaded protobuf module
 
@@ -193,6 +200,21 @@ class MarketDataStream(BaseWebSocketStream):
             f"{len(instrument_keys)} instruments"
         )
 
+    def _downgrade_mode(self):
+        """Downgrade to fallback mode (e.g., full_d30 → full for non-Plus users)."""
+        if not self._fallback_mode or self._mode_downgraded:
+            return
+        logger.warning(
+            "[MarketDataStream] Downgrading from %s to %s "
+            "(full_d30 requires Upstox Plus subscription)",
+            self._mode, self._fallback_mode,
+        )
+        self._mode = self._fallback_mode
+        self._mode_downgraded = True
+        # Re-subscribe with the new mode
+        if self._subscribed_keys:
+            asyncio.ensure_future(self.subscribe(list(self._subscribed_keys)))
+
     async def _on_connected(self, ws):
         """Re-subscribe to all keys after reconnect."""
         if self._subscribed_keys:
@@ -214,18 +236,37 @@ class MarketDataStream(BaseWebSocketStream):
                 "close": 2530.00,
                 "ltt": 1708012345,    # last trade timestamp (epoch ms)
                 "ltq": 100,           # last trade quantity
-                "open": 2532.00,      # only in full mode
-                "high": 2560.00,      # only in full mode
-                "low": 2525.00,       # only in full mode
-                "volume": 1234567,    # only in full mode
+                "volume": 1234567,   # only in full/full_d30 mode
+                "oi": 500000,        # open interest, only in full/full_d30
+                "tbq": 50000,        # total bid quantity across all 30 levels
+                "tsq": 48000,        # total ask quantity across all 30 levels
+                "bids": [            # 30-level depth in full_d30 mode
+                    {"price": 2545.25, "qty": 500},
+                    {"price": 2545.00, "qty": 800},  # level 2
+                    {...},                           # ...up to level 30
+                ],
+                "asks": [
+                    {"price": 2545.50, "qty": 300},  # level 1
+                    {"price": 2545.75, "qty": 600},  # level 2
+                    {...},                           # ...up to level 30
+                ],
+                "depth_levels": 30,  # number of depth levels available
+                "open": 2532.00,      # only in full/full_d30 mode
+                "high": 2560.00,      # only in full/full_d30 mode
+                "low": 2525.00,       # only in full/full_d30 mode
             }
 
         Returns None if the message cannot be parsed or contains no data.
         """
         if isinstance(raw, str):
-            # Initial connection ack or market_info may come as text
+            # Initial connection ack, market_info, or errors come as text JSON
             try:
-                json.loads(raw)
+                msg = json.loads(raw)
+                # Check for subscription errors (e.g., non-Plus user using full_d30)
+                if msg.get("type") == "error" or msg.get("status") == "error":
+                    logger.warning("[MarketDataStream] Server error: %s", msg)
+                    if not self._mode_downgraded and self._fallback_mode:
+                        self._downgrade_mode()
                 return None  # Skip non-data JSON messages
             except json.JSONDecodeError:
                 pass
@@ -285,6 +326,19 @@ class MarketDataStream(BaseWebSocketStream):
                     entry["ltq"] = mff.ltpc.ltq
                     entry["volume"] = mff.vtt
                     entry["oi"] = mff.oi
+                    # Total bid/sell quantity across all depth levels
+                    entry["tbq"] = mff.tbq
+                    entry["tsq"] = mff.tsq
+                    # Extract 30-level depth (available in full_d30 mode)
+                    if mff.HasField("marketLevel"):
+                        bids = []
+                        asks = []
+                        for quote in mff.marketLevel.bidAskQuote:
+                            bids.append({"price": quote.bidP, "qty": quote.bidQ})
+                            asks.append({"price": quote.askP, "qty": quote.askQ})
+                        entry["bids"] = bids  # list of {price, qty}, 30 levels in full_d30
+                        entry["asks"] = asks  # list of {price, qty}
+                        entry["depth_levels"] = len(bids)
                     # Extract 1d OHLC if available
                     if mff.HasField("marketOHLC"):
                         for ohlc in mff.marketOHLC.ohlc:
