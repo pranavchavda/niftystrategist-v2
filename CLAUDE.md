@@ -58,7 +58,7 @@ FastAPI Backend
 ### Agent System
 
 - **Orchestrator** (`agents/orchestrator.py`, ~3700 lines): Main agent using Pydantic AI. Interprets user intent, calls CLI tools via `execute_bash`, delegates to sub-agents via `call_agent`. System prompt documents all CLI tools.
-- **Base Agent** (`agents/base_agent.py`): Abstract base class. Supports 4 LLM providers: Anthropic (Claude with 12K thinking budget), OpenRouter (DeepSeek, Gemini, Grok), Gateway (Pydantic AI Gateway), OpenAI (GPT-5).
+- **Base Agent** (`agents/base_agent.py`): Abstract base class. Supports 4 LLM providers: Anthropic (Claude), OpenRouter (DeepSeek, Gemini, Grok, GLM), Gateway (Pydantic AI Gateway), OpenAI (GPT-5). Uses pydantic-ai's unified `thinking` model setting (v1.71+) — effort level configured per-model in `config/models.py` (`thinking_effort` field) and `ai_models` DB table. OpenRouter model profiles are overridden where `supports_thinking` is incorrectly `False`.
 - **Sub-agents**: `web_search` and `vision` only. Registered at startup in `main.py`.
 - **Default model**: `glm-5` (configured in `config/models.py`).
 
@@ -203,7 +203,7 @@ Agents can schedule one-shot follow-ups bound to an existing conversation thread
 - `backend/migrations/add_scheduled_at.sql`
 - `backend/migrations/add_thread_id_to_workflow_definitions.sql`
 
-**pydantic-ai version note:** As of 2026-02-26, running pydantic-ai 1.47.0 (upgraded from 1.39.0). `TextPart` positional arg used (not `text=` kwarg) to stay version-agnostic.
+**pydantic-ai version note:** As of 2026-03-30, running pydantic-ai 1.73.0. Uses unified `thinking` model setting (v1.71+) and Capabilities system. `TextPart` positional arg used (not `text=` kwarg) to stay version-agnostic.
 
 **Critical bugs fixed in awakenings (2026-02-27):**
 - **Use `agent.run()`, NOT `stream_text()`**: `stream_text()` only captures the first model response and misses all tool calls and subsequent turns. `agent.run()` completes the full tool-call loop. See `workflow_engine.py`.
