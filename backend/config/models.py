@@ -4,7 +4,7 @@ Defines available models with their capabilities and pricing.
 """
 
 from enum import Enum
-from typing import List, Literal, TypedDict
+from typing import List, Literal, Optional, TypedDict
 
 
 class ModelProvider(str, Enum):
@@ -26,7 +26,8 @@ class ModelInfo(TypedDict):
     max_output: int  # Max output tokens
     cost_input: str  # Cost per 1M input tokens
     cost_output: str  # Cost per 1M output tokens
-    supports_thinking: bool  # Extended thinking/reasoning
+    supports_thinking: bool  # Extended thinking/reasoning (for frontend display)
+    thinking_effort: Optional[str]  # Unified effort level: 'high', 'medium', 'low', or None
     supports_vision: bool  # Vision/multimodal image processing
     speed: Literal["fast", "medium", "slow"]  # Relative speed
     intelligence: Literal["high", "very-high", "frontier"]  # Capability level
@@ -46,6 +47,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "cost_input": "$1.00",
         "cost_output": "$5.00",
         "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": True,
         "speed": "fast",
         "intelligence": "very-high",
@@ -66,6 +68,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "cost_input": "$3.00",
         "cost_output": "$15.00",
         "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": True,
         "speed": "medium",
         "intelligence": "frontier",
@@ -86,6 +89,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "cost_input": "$0.14",
         "cost_output": "$0.14",
         "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": False,
         "speed": "medium",
         "intelligence": "high",
@@ -106,6 +110,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "cost_input": "$0.14",
         "cost_output": "$0.14",
         "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": False,
         "speed": "medium",
         "intelligence": "high",
@@ -126,6 +131,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "cost_input": "$0.14",
         "cost_output": "$0.14",
         "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": False,
         "speed": "medium",
         "intelligence": "high",
@@ -145,7 +151,8 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "max_output": 16_000,
         "cost_input": "$0.50",
         "cost_output": "$2.00",
-        "supports_thinking": False,
+        "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": False,
         "speed": "fast",
         "intelligence": "high",
@@ -161,7 +168,8 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "max_output": 16_000,
         "cost_input": "$0.80",
         "cost_output": "$2.56",
-        "supports_thinking": False,
+        "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": False,
         "speed": "fast",
         "intelligence": "very-high",
@@ -178,6 +186,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "cost_input": "$2.50",
         "cost_output": "$10.00",
         "supports_thinking": True,
+        "thinking_effort": "high",
         "supports_vision": True,
         "speed": "slow",
         "intelligence": "frontier",
@@ -194,6 +203,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "cost_input": "$0.50",
         "cost_output": "$2.00",
         "supports_thinking": True,
+        "thinking_effort": "medium",
         "supports_vision": False,
         "speed": "fast",
         "intelligence": "high",
@@ -223,6 +233,11 @@ def get_model_provider(model_id: str) -> ModelProvider:
 def is_anthropic_model(model_id: str) -> bool:
     """Check if model uses Anthropic API"""
     return get_model_provider(model_id) == ModelProvider.ANTHROPIC
+
+
+def get_thinking_effort(model_id: str) -> Optional[str]:
+    """Get thinking effort level for model. Returns None if model doesn't support thinking."""
+    return get_model_info(model_id).get("thinking_effort")
 
 
 def get_all_models() -> List[ModelInfo]:

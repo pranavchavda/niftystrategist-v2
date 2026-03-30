@@ -285,6 +285,7 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
         model_slug: str = None,
         use_openrouter: bool = None,
         user_mcp_toolsets: Optional[List[Any]] = None,
+        thinking_effort: Optional[str] = None,
     ):
         """
         Initialize the orchestrator agent with specified model.
@@ -294,14 +295,21 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             model_slug: API model slug (e.g., "claude-haiku-4-5-20251001", "moonshotai/kimi-k2-thinking")
                        If not provided, will attempt to look up from config.models (fallback)
             use_openrouter: Whether to use OpenRouter API. If not provided, will attempt to infer.
+            thinking_effort: Thinking effort level ('high', 'medium', 'low'). Explicit value takes precedence over config lookup.
             user_mcp_toolsets: Optional list of user-specific MCP server instances to add to orchestrator
         """
         self.model_id = model_id  # Store for logging
 
-        # If model details not provided, try to get from config (fallback for backward compatibility)
-        if model_slug is None or use_openrouter is None:
-            from config.models import get_model_slug, is_anthropic_model
+        # Look up model details from config (explicit param takes precedence)
+        from config.models import get_model_slug, is_anthropic_model, get_thinking_effort
 
+        if thinking_effort is None:
+            try:
+                thinking_effort = get_thinking_effort(model_id)
+            except (KeyError, Exception):
+                pass  # Model not in config, no thinking
+
+        if model_slug is None or use_openrouter is None:
             try:
                 model_slug = model_slug or get_model_slug(model_id)
                 use_openrouter = (
@@ -324,7 +332,7 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
                     use_openrouter = True
 
         logger.info(
-            f"Initializing orchestrator with model: {model_id} (slug: {model_slug}, openrouter: {use_openrouter})"
+            f"Initializing orchestrator with model: {model_id} (slug: {model_slug}, openrouter: {use_openrouter}, thinking: {thinking_effort})"
         )
 
         config = AgentConfig(
@@ -332,7 +340,7 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             description="Main orchestrator coordinating all specialized agents",
             model_name=model_slug,
             use_openrouter=use_openrouter,
-            # temperature removed - thinking mode requires temperature=1.0 (set automatically in base_agent)
+            thinking_effort=thinking_effort,
         )
 
         # Initialize builtin tools for Claude models

@@ -73,6 +73,7 @@ class AIModel(Base):
 
     # Capabilities
     supports_thinking = Column(Boolean, default=False)
+    thinking_effort = Column(String(20), nullable=True)  # 'high', 'medium', 'low', or None
     supports_vision = Column(Boolean, default=False)
     speed = Column(String(20), nullable=True)  # "fast", "medium", "slow"
     intelligence = Column(String(20), nullable=True)  # "high", "very-high", "frontier"

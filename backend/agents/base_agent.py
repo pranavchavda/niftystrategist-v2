@@ -37,6 +37,7 @@ class AgentConfig(BaseModel):
     use_openrouter: bool = True  # Use OpenRouter by default
     max_retries: int = 5  # Allow multiple retries for API errors and self-correction
     temperature: Optional[float] = None  # Optional temperature (defaults per model type)
+    thinking_effort: Optional[str] = None  # Unified thinking: 'high', 'medium', 'low', or None
 
 
 class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
@@ -113,245 +114,145 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
         logger.info(f"Initialized {self.name} with LLM-based intelligence using {config.model_name} (retries={config.max_retries})")
 
     def _setup_model(self, config: AgentConfig):
-        """Set up the LLM model with appropriate provider"""
-        # DEBUG: Log what model name we're checking
+        """Set up the LLM model with appropriate provider.
+
+        Uses pydantic-ai's unified 'thinking' model setting (v1.71+) to handle
+        reasoning/thinking across all providers automatically. The effort level
+        is configured per-model in config/models.py via thinking_effort.
+        """
         logger.info(f"[GATEWAY-DEBUG] Setting up model: '{config.model_name}', use_openrouter={config.use_openrouter}")
 
-        # Check if this is a Gateway model - handle it first before other checks
+        # Gateway models — Pydantic AI handles routing automatically
         if config.model_name.startswith('gateway/'):
-            logger.info(f"Detected Pydantic AI Gateway model: {config.model_name}")
-            # For gateway models, Pydantic AI automatically detects and routes when:
-            # 1. Model string starts with "gateway/"
-            # 2. PYDANTIC_AI_GATEWAY_API_KEY is set in environment
-
-            # Load gateway API key from environment
             api_key = os.environ.get('PYDANTIC_AI_GATEWAY_API_KEY')
             if not api_key:
                 from dotenv import load_dotenv
                 load_dotenv()
                 api_key = os.getenv('PYDANTIC_AI_GATEWAY_API_KEY')
-
             if not api_key:
                 logger.error("PYDANTIC_AI_GATEWAY_API_KEY not found - gateway models require this!")
                 raise ValueError("PYDANTIC_AI_GATEWAY_API_KEY is required for gateway models")
-
             logger.info(f"Using Pydantic AI Gateway with key: {api_key[:12]}...")
+            return config.model_name, None
 
-            # For gateway models, return the model STRING directly
-            # Pydantic AI's Agent class will handle gateway routing automatically
-            # No need to create a custom provider - this is the documented way!
-            return config.model_name, None  # e.g., "gateway/groq:openai/gpt-oss-120b"
-
-        # Check if this is an Anthropic model (Claude)
+        # === Provider Setup ===
         is_anthropic = 'claude' in config.model_name.lower()
-        use_responses_api = False  # Will be set True for OpenAI models (GPT-5.x etc.)
+        use_responses_api = False
+        model_name = config.model_name
 
         if is_anthropic:
-            # Use direct Anthropic API for Claude models
             api_key = os.environ.get('ANTHROPIC_API_KEY')
             if not api_key:
                 from dotenv import load_dotenv
                 load_dotenv()
                 api_key = os.getenv('ANTHROPIC_API_KEY')
-
             if not api_key:
                 logger.error("ANTHROPIC_API_KEY not found in environment or .env file!")
                 raise ValueError("ANTHROPIC_API_KEY is required for Anthropic models")
-
             logger.info(f"Using direct Anthropic API with key: {api_key[:8]}...")
             logger.debug(f"API key length: {len(api_key)}, ends with: '{api_key[-5:]}'")
-
-            # Create Anthropic provider with API key
-            # Explicitly set base_url to override any empty ANTHROPIC_BASE_URL env var
             provider = AnthropicProvider(
                 api_key=api_key.strip(),
                 base_url="https://api.anthropic.com"
             )
-            logger.info(f"Enabling extended thinking mode for {config.model_name}")
-
-            # Create model settings with temperature and extended thinking
-            # IMPORTANT: Anthropic requires temperature=1.0 when thinking is enabled
-            # IMPORTANT: max_tokens must be GREATER than budget_tokens
-            # budget_tokens: Max thinking tokens (12K = balanced for complex orchestration)
-            # max_tokens: Total output tokens (thinking + response) - Claude Haiku 4.5 max is 64K
-            # With 12K thinking budget, leaves ~52K for actual response
-            # Note: For very long operations, the sliding_window_history_processor truncates context
-            model_settings_kwargs = {
-                'temperature': 1.0,  # Required by Anthropic when thinking is enabled
-                'max_tokens': 64000,  # Claude Haiku 4.5 maximum (can't exceed this)
-                'anthropic_thinking': {
-                    'type': 'enabled',
-                    'budget_tokens': 12000  # Balanced: enough thinking for orchestration, room for long responses
-                }
-            }
-            model_settings = ModelSettings(**model_settings_kwargs)
-
-            return AnthropicModel(
-                config.model_name,
-                provider=provider,
-                settings=model_settings
-            ), model_settings
 
         elif config.use_openrouter:
-            # Use OpenRouterProvider for proper OpenRouter support
-            # This enables reasoning field parsing for DeepSeek, Gemini, etc.
-            # First check OS environment, then fall back to dotenv if needed
             api_key = os.environ.get('OPENROUTER_API_KEY')
             if not api_key:
                 from dotenv import load_dotenv
                 load_dotenv()
                 api_key = os.getenv('OPENROUTER_API_KEY')
-
             if not api_key:
                 logger.error("OPENROUTER_API_KEY not found in environment or .env file!")
                 raise ValueError("OPENROUTER_API_KEY is required for OpenRouter models")
-
             logger.info(f"Using OpenRouterProvider with key: {api_key[:8]}...")
-            # Use dedicated OpenRouterProvider - properly handles reasoning field
-            # This enables automatic ThinkingPart parsing for DeepSeek, etc.
             provider = OpenRouterProvider(api_key=api_key)
-            # OpenRouter uses format: provider/model
-            model_name = f"openai/{config.model_name}" if not "/" in config.model_name else config.model_name
+            model_name = f"openai/{config.model_name}" if "/" not in config.model_name else config.model_name
             logger.info(f"Using model: {model_name} via OpenRouterProvider")
-            # Use Responses API for OpenAI models via OpenRouter (supported since Jan 2026)
             use_responses_api = model_name.startswith('openai/')
+
         else:
-            # Direct OpenAI API
-            # First check OS environment, then fall back to dotenv if needed
             api_key = os.environ.get('OPENAI_API_KEY')
             if not api_key:
                 from dotenv import load_dotenv
                 load_dotenv()
                 api_key = os.getenv('OPENAI_API_KEY')
-
             if not api_key:
                 logger.error("OPENAI_API_KEY not found in environment or .env file!")
                 raise ValueError("OPENAI_API_KEY is required for OpenAI models")
-
-            provider = OpenAIProvider(
-                api_key=api_key
-            )
+            provider = OpenAIProvider(api_key=api_key)
             model_name = config.model_name
-            # Flag direct OpenAI for Responses API usage below
             use_responses_api = True
 
-        # Create model settings with temperature and max_tokens
-        # Add reasoning_effort for models that support it
-        # Default temperature: 0.7 for non-reasoning models
-        temperature = config.temperature if config.temperature is not None else 0.7
-        model_settings_kwargs = {
-            'temperature': temperature,
-            'max_tokens': 16000  # Set generous limit to prevent abrupt stops (16K tokens)
-        }
+        # === Model Settings ===
+        model_settings_kwargs = {}
 
-        # Add reasoning_effort for models that support reasoning
-        if 'grok-4' in model_name.lower():
-            model_settings_kwargs['reasoning_effort'] = 'medium'
-            logger.info(f"Enabling reasoning for {model_name} with effort: medium")
-        elif 'gpt-5-mini' in model_name.lower():
-            # GPT-5-mini: Use medium reasoning for cost/performance balance
-            model_settings_kwargs['reasoning_effort'] = 'medium'
-            logger.info(f"Enabling reasoning for {model_name} with effort: medium")
-        elif 'gpt-5' in model_name.lower():
-            # GPT-5 always uses reasoning
-            if use_responses_api:
-                # Responses API uses openai_ prefixed settings for reasoning
-                # BOTH effort and summary are required — summary alone won't trigger reasoning
-                model_settings_kwargs['openai_reasoning_effort'] = 'high'
-                model_settings_kwargs['openai_reasoning_summary'] = 'detailed'
-                # Disable reasoning IDs — sliding window history processor can truncate
-                # messages, causing "Item 'rs_123' provided without required following item" errors
-                model_settings_kwargs['openai_send_reasoning_ids'] = False
-                # Temperature is not supported when reasoning is enabled
-                model_settings_kwargs.pop('temperature', None)
-                logger.info(f"Enabling reasoning for {model_name} via Responses API (effort: high, summary: detailed)")
-            else:
-                model_settings_kwargs['reasoning'] = {'effort': 'high'}
-                logger.info(f"Enabling reasoning for {model_name} with effort: high")
-        elif 'openai/gpt-oss-120b' in model_name.lower():
-            model_settings_kwargs['reasoning'] = {'effort': 'high'}
-            logger.info(f"Enabling reasoning for {model_name} with effort: high")
-        # elif 'glm' in model_name.lower():
-            # GLM 4.6 supports thinking mode via OpenRouter
-            # API format: {"thinking": {"type": "enabled"}}
-            # Use extra_body to pass custom parameters to OpenRouter
-        elif 'deepseek' in model_name.lower():
-            # DeepSeek models support reasoning via OpenRouter
-            # V3.1 Terminus uses: reasoning: { effort: 'high' }
-            # V3.2+ uses: reasoning: true (boolean only)
-            if 'v3.1' in model_name.lower() or 'terminus' in model_name.lower():
-                model_settings_kwargs['extra_body'] = {
-                    'reasoning': {
-                        'effort': 'high'  # V3.1 uses effort parameter
-                    },
-                    'include_reasoning': True
-                }
-                logger.info(f"Enabling reasoning for {model_name} with effort: high (V3.1 API)")
-            else:
-                # V3.2 and newer use enabled object format
-                model_settings_kwargs['extra_body'] = {
-                    'reasoning': {'enabled': True},  # V3.2 uses enabled object
-                    'include_reasoning': True
-                }
-                logger.info(f"Enabling reasoning for {model_name} with reasoning.enabled: true (V3.2 API)")
-        elif 'gemini' in model_name.lower():
-            # Gemini models (including Gemini 3.0 Pro) are "mandatory reasoning" models
-            # They ALWAYS use reasoning internally - we just need to request that reasoning be included in responses
-            # For multi-turn tool calling, Pydantic AI will automatically preserve reasoning_details
-            # IMPORTANT: Do NOT send reasoning config (max_tokens/effort) as it applies to ALL requests
-            # and conflicts with reasoning_details preservation in follow-up requests
-            model_settings_kwargs['extra_body'] = {
-                'include_reasoning': True,  # Disable reasoning output to enable proper streaming
-                'reasoning': {
-                        'effort': 'high'  # V3.1 uses effort parameter
-                    },
-            }
-            logger.info(f"Enabling reasoning output for {model_name} to enable streaming")
-        elif 'claude' in model_name.lower():
-            # Claude models support thinking through Anthropic's beta API
-            # Pydantic AI should handle this automatically
-            logger.info(f"Using Claude model {model_name} with thinking support")
+        # Max output tokens (provider-specific limits)
+        model_settings_kwargs['max_tokens'] = 64000 if is_anthropic else 16000
 
+        # Unified thinking — pydantic-ai translates to each provider's native format:
+        # Anthropic → anthropic_thinking + temperature=1.0
+        # OpenAI → openai_reasoning_effort
+        # OpenRouter → provider-specific reasoning config
+        # Models without thinking_effort just get a normal temperature setting
+        if config.thinking_effort:
+            model_settings_kwargs['thinking'] = config.thinking_effort
+            logger.info(f"Thinking enabled for {config.model_name} with effort: {config.thinking_effort}")
+        else:
+            temperature = config.temperature if config.temperature is not None else 0.7
+            model_settings_kwargs['temperature'] = temperature
+
+        # OpenAI Responses API workarounds when thinking is active
+        if use_responses_api and config.thinking_effort:
+            model_settings_kwargs['openai_reasoning_summary'] = 'detailed'
+            # Disable reasoning IDs — sliding window history processor can truncate
+            # messages, causing "Item 'rs_123' provided without required following item" errors
+            model_settings_kwargs['openai_send_reasoning_ids'] = False
+
+        # Create model settings
         if use_responses_api:
             model_settings = OpenAIResponsesModelSettings(**model_settings_kwargs)
         else:
             model_settings = ModelSettings(**model_settings_kwargs)
 
-        # DeepSeek models need strict tool definitions disabled.
-        # Use dataclasses.replace to override ONLY that field while preserving
-        # the provider's default profile (which includes thinking_field, send_back_thinking, etc.)
-        # Previously we used a custom OpenRouterGeminiModel class, but Pydantic AI 1.47+
-        # handles reasoning_content/reasoning_details natively via OpenRouterProvider profiles.
-        if config.use_openrouter and 'deepseek' in model_name.lower():
-            default_profile = provider.model_profile(model_name)
-            profile = dataclasses.replace(default_profile, openai_supports_strict_tool_definition=False)
-            logger.info(f"Using native OpenAIChatModel for {model_name} (strict tools disabled, thinking handled by provider profile)")
-            return OpenAIChatModel(
-                model_name,
-                provider=provider,
-                settings=model_settings,
-                profile=profile
+        # === Model Creation ===
+        if is_anthropic:
+            return AnthropicModel(
+                config.model_name, provider=provider, settings=model_settings
             ), model_settings
 
-        # Use OpenAI Responses API for OpenAI models (GPT-5.x etc.)
-        # Responses API provides better tool calling, reasoning, and server-side state
-        # Supported by both direct OpenAI and OpenRouter (since Jan 2026 Open Responses spec)
+        # For OpenRouter models, override the profile if needed
+        # pydantic-ai's OpenRouter profiles lag behind actual model capabilities —
+        # most models have supports_thinking=False even when they support reasoning.
+        profile_override = None
+        if config.use_openrouter:
+            default_profile = provider.model_profile(model_name)
+            overrides = {}
+
+            # Enable thinking in profile if we know the model supports it
+            if config.thinking_effort and not default_profile.supports_thinking:
+                overrides['supports_thinking'] = True
+                logger.info(f"Profile override: supports_thinking=True for {model_name}")
+
+            # DeepSeek needs strict tool definitions disabled
+            if 'deepseek' in model_name.lower():
+                overrides['openai_supports_strict_tool_definition'] = False
+
+            if overrides:
+                profile_override = dataclasses.replace(default_profile, **overrides)
+
+        # OpenAI models use Responses API
         if use_responses_api:
             logger.info(f"Using OpenAIResponsesModel (Responses API) for {model_name}")
             return OpenAIResponsesModel(
-                model_name,
-                provider=provider,
-                settings=model_settings
+                model_name, provider=provider, settings=model_settings,
+                **({"profile": profile_override} if profile_override else {})
             ), model_settings
 
-        # Gemini, Kimi/Moonshot, and all other OpenRouter models:
-        # Pydantic AI 1.47+ OpenRouterProvider natively handles reasoning fields
-        # (reasoning_content for DeepSeek/Kimi, reasoning for OpenRouter standard)
-        # No custom model classes needed.
+        # All other models (OpenRouter: Grok, GLM, DeepSeek, Gemini, etc.)
         return OpenAIChatModel(
-            model_name,
-            provider=provider,
-            settings=model_settings
+            model_name, provider=provider, settings=model_settings,
+            **({"profile": profile_override} if profile_override else {})
         ), model_settings
 
     @abstractmethod

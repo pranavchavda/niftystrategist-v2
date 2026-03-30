@@ -619,11 +619,16 @@ async def get_orchestrator_for_model(model_id: str, user_id: Optional[int] = Non
                     if ai_model.provider == "gateway":
                         use_openrouter = False
                         logger.info(f"Using Pydantic AI Gateway for model: {ai_model.slug}")
+                    # Resolve thinking_effort: DB column > supports_thinking fallback
+                    db_thinking = getattr(ai_model, 'thinking_effort', None)
+                    if db_thinking is None and ai_model.supports_thinking:
+                        db_thinking = "high"  # Backward compat for old DB entries
                     new_orchestrator = OrchestratorAgent(
                         model_id=model_id,
                         model_slug=ai_model.slug,
                         use_openrouter=use_openrouter,
-                        user_mcp_toolsets=user_mcp_servers
+                        user_mcp_toolsets=user_mcp_servers,
+                        thinking_effort=db_thinking,
                     )
 
                 # Register domain-specific agents
@@ -657,10 +662,15 @@ async def get_orchestrator_for_model(model_id: str, user_id: Optional[int] = Non
         if ai_model.provider == "gateway":
             use_openrouter = False
             logger.info(f"Using Pydantic AI Gateway for model: {ai_model.slug}")
+        # Resolve thinking_effort: DB column > supports_thinking fallback
+        db_thinking = getattr(ai_model, 'thinking_effort', None)
+        if db_thinking is None and ai_model.supports_thinking:
+            db_thinking = "high"  # Backward compat for old DB entries
         new_orchestrator = OrchestratorAgent(
             model_id=model_id,
             model_slug=ai_model.slug,
-            use_openrouter=use_openrouter
+            use_openrouter=use_openrouter,
+            thinking_effort=db_thinking,
         )
 
     # Register domain-specific agents (same for all orchestrators)
@@ -1721,6 +1731,7 @@ async def get_available_models():
                     "cost_input": m.cost_input,
                     "cost_output": m.cost_output,
                     "supports_thinking": m.supports_thinking,
+                    "thinking_effort": getattr(m, 'thinking_effort', None),
                     "speed": m.speed,
                     "intelligence": m.intelligence,
                     "recommended_for": m.recommended_for or []

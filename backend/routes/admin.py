@@ -509,6 +509,7 @@ class AIModelResponse(BaseModel):
     cost_input: Optional[str]
     cost_output: Optional[str]
     supports_thinking: bool
+    thinking_effort: Optional[str] = None
     speed: Optional[str]
     intelligence: Optional[str]
     recommended_for: Optional[List[str]]
@@ -528,6 +529,7 @@ class AIModelCreate(BaseModel):
     cost_input: Optional[str] = None
     cost_output: Optional[str] = None
     supports_thinking: bool = False
+    thinking_effort: Optional[str] = None  # 'high', 'medium', 'low', or None
     speed: Optional[str] = None
     intelligence: Optional[str] = None
     recommended_for: Optional[List[str]] = None
@@ -546,6 +548,7 @@ class AIModelUpdate(BaseModel):
     cost_input: Optional[str] = None
     cost_output: Optional[str] = None
     supports_thinking: Optional[bool] = None
+    thinking_effort: Optional[str] = None  # 'high', 'medium', 'low', or None
     speed: Optional[str] = None
     intelligence: Optional[str] = None
     recommended_for: Optional[List[str]] = None

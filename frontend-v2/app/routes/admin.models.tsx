@@ -34,6 +34,7 @@ interface AIModel {
   cost_input: string;
   cost_output: string;
   supports_thinking: boolean;
+  thinking_effort: string | null;
   speed: string;
   intelligence: string;
   recommended_for: string[];
@@ -52,6 +53,7 @@ interface ModelFormData {
   cost_input: string;
   cost_output: string;
   supports_thinking: boolean;
+  thinking_effort: string;
   speed: string;
   intelligence: string;
   recommended_for: string[];
@@ -79,6 +81,7 @@ export default function AdminModels() {
     cost_input: '',
     cost_output: '',
     supports_thinking: false,
+    thinking_effort: '',
     speed: 'fast',
     intelligence: 'high',
     recommended_for: [],
@@ -108,6 +111,11 @@ export default function AdminModels() {
     }
   };
 
+  const prepareFormData = (data: ModelFormData) => ({
+    ...data,
+    thinking_effort: data.thinking_effort || null,
+  });
+
   const handleCreate = async () => {
     try {
       const res = await fetch('/api/admin/models', {
@@ -116,7 +124,7 @@ export default function AdminModels() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`
         },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(prepareFormData(formData))
       });
 
       if (!res.ok) {
@@ -142,7 +150,7 @@ export default function AdminModels() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`
         },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(prepareFormData(formData))
       });
 
       if (!res.ok) {
@@ -213,6 +221,7 @@ export default function AdminModels() {
       cost_input: model.cost_input,
       cost_output: model.cost_output,
       supports_thinking: model.supports_thinking,
+      thinking_effort: model.thinking_effort || '',
       speed: model.speed,
       intelligence: model.intelligence,
       recommended_for: model.recommended_for,
@@ -234,6 +243,7 @@ export default function AdminModels() {
       cost_input: '',
       cost_output: '',
       supports_thinking: false,
+      thinking_effort: '',
       speed: 'fast',
       intelligence: 'high',
       recommended_for: [],
@@ -572,17 +582,27 @@ export default function AdminModels() {
                   </div>
                 </div>
 
-                {/* Checkboxes */}
-                <div className="flex gap-6">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={formData.supports_thinking}
-                      onChange={(e) => setFormData({ ...formData, supports_thinking: e.target.checked })}
-                      className="rounded"
-                    />
-                    <span className="text-sm text-zinc-700 dark:text-zinc-300">Supports Extended Thinking</span>
-                  </label>
+                {/* Thinking Effort + Checkboxes */}
+                <div className="flex gap-6 items-end">
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                      Thinking Effort
+                    </label>
+                    <select
+                      value={formData.thinking_effort}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        thinking_effort: e.target.value || '',
+                        supports_thinking: e.target.value !== '',
+                      })}
+                      className="px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
+                    >
+                      <option value="">None</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
                   <label className="flex items-center gap-2">
                     <input
                       type="checkbox"

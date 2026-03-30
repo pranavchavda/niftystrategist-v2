@@ -85,8 +85,8 @@ def configure_logfire(
 
         try:
             logfire.instrument_httpx(
-                capture_request_json_body=True,
-                capture_response_json_body=True
+                capture_request_body=True,
+                capture_response_body=True
             )
             logger.info("  ✓ httpx instrumentation enabled (with full request/response bodies)")
         except Exception as e:
