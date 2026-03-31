@@ -38,26 +38,30 @@ def _get_upstox_client() -> UpstoxClient:
 _live_clients: dict[int, UpstoxClient] = {}
 
 
-async def _get_client_for_user(user: User) -> UpstoxClient:
+async def _get_client_for_user(user: User, force_refresh: bool = False) -> UpstoxClient:
     """Resolve the Upstox client for a user.
 
     Uses get_user_upstox_token() which handles decryption + expiry check +
     TOTP auto-refresh.  Caches the live client so the dynamic symbol map
     (populated by get_portfolio) persists across endpoints within a session.
 
-    Raises HTTPException(401) if no valid token is available — this lets the
-    frontend show a clear "connect Upstox" message instead of an infinite
-    skeleton loader.
+    Args:
+        force_refresh: If True, invalidate cached client and force a TOTP
+                       refresh. Used for 401 recovery after Upstox daily reset.
     """
     if _db_manager is None:
         return _get_upstox_client()
+
+    # Invalidate cache if force-refreshing (e.g. after 401)
+    if force_refresh:
+        _live_clients.pop(user.id, None)
 
     # Return cached live client if we have one
     if user.id in _live_clients:
         return _live_clients[user.id]
 
     # Use the canonical token resolver (decrypt + expiry + TOTP refresh)
-    access_token = await get_user_upstox_token(user.id)
+    access_token = await get_user_upstox_token(user.id, force_refresh=force_refresh)
 
     if access_token:
         logger.info(f"Cockpit: live client for user {user.id}")
@@ -77,6 +81,28 @@ async def _get_client_for_user(user: User) -> UpstoxClient:
 def invalidate_client_cache(user_id: int) -> None:
     """Remove cached live client for a user (e.g. after trading mode switch)."""
     _live_clients.pop(user_id, None)
+
+
+def _is_401_error(exc: Exception) -> bool:
+    """Check if an exception is an Upstox 401 Unauthorized error."""
+    return "401" in str(exc) and ("Unauthorized" in str(exc) or "Invalid token" in str(exc))
+
+
+async def _with_401_retry(user: User, api_call):
+    """Execute api_call(client), retry once with a force-refreshed token on 401.
+
+    This handles the Upstox daily reset race condition: the DB token expiry
+    looks valid, but Upstox has invalidated it server-side at ~3:30 AM IST.
+    """
+    client = await _get_client_for_user(user)
+    try:
+        return await api_call(client)
+    except Exception as e:
+        if _is_401_error(e):
+            logger.warning(f"Cockpit 401 for user {user.id}, force-refreshing token and retrying")
+            client = await _get_client_for_user(user, force_refresh=True)
+            return await api_call(client)
+        raise
 
 
 async def _get_db() -> AsyncSession:
@@ -111,27 +137,26 @@ async def cockpit_market_status(user: User = Depends(get_current_user)):
 @router.get("/portfolio")
 async def cockpit_portfolio(user: User = Depends(get_current_user)):
     """Return portfolio summary matching the PortfolioSummary TypeScript interface."""
-    client = await _get_client_for_user(user)
     try:
-        portfolio = await client.get_portfolio()
-        invested = portfolio.invested_value or 0
-        total = portfolio.total_value or 0
-        margin_used = (invested / total * 100) if total > 0 else 0
-
-        return {
-            "totalValue": portfolio.total_value,
-            "investedValue": portfolio.invested_value,
-            "availableCash": portfolio.available_cash,
-            "dayPnl": portfolio.day_pnl,
-            "dayPnlPct": portfolio.day_pnl_percentage,
-            "totalPnl": portfolio.total_pnl,
-            "totalPnlPct": portfolio.total_pnl_percentage,
-            "marginUsed": round(margin_used, 2),
-            "paperTrading": client.paper_trading,
-        }
+        async def _fetch(client):
+            portfolio = await client.get_portfolio()
+            invested = portfolio.invested_value or 0
+            total = portfolio.total_value or 0
+            margin_used = (invested / total * 100) if total > 0 else 0
+            return {
+                "totalValue": portfolio.total_value,
+                "investedValue": portfolio.invested_value,
+                "availableCash": portfolio.available_cash,
+                "dayPnl": portfolio.day_pnl,
+                "dayPnlPct": portfolio.day_pnl_percentage,
+                "totalPnl": portfolio.total_pnl,
+                "totalPnlPct": portfolio.total_pnl_percentage,
+                "marginUsed": round(margin_used, 2),
+                "paperTrading": client.paper_trading,
+            }
+        return await _with_401_retry(user, _fetch)
     except Exception as e:
         logger.error(f"Error fetching portfolio: {e}")
-        # Evict cached client so next request gets a fresh one
         _live_clients.pop(user.id, None)
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -184,60 +209,61 @@ def _estimate_charges(sell_value: float, buy_value: float, is_intraday: bool) ->
 @router.get("/positions")
 async def cockpit_positions(user: User = Depends(get_current_user)):
     """Return positions and holdings with company names and estimated charges."""
-    client = await _get_client_for_user(user)
     try:
-        portfolio = await client.get_portfolio()
-        company_map = UpstoxClient.SYMBOL_TO_COMPANY
+        async def _fetch(client):
+            portfolio = await client.get_portfolio()
+            company_map = UpstoxClient.SYMBOL_TO_COMPANY
 
-        positions = []
-        holdings = []
-
-        for pos in portfolio.positions:
-            company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
-            buy_val = pos.average_price * pos.quantity
-            sell_val = pos.current_price * pos.quantity
-            charges = _estimate_charges(sell_val, buy_val, is_intraday=False)
-            holdings.append({
-                "symbol": pos.symbol,
-                "company": company,
-                "qty": pos.quantity,
-                "avgPrice": pos.average_price,
-                "ltp": pos.current_price,
-                "pnl": pos.pnl,
-                "pnlPct": pos.pnl_percentage,
-                "dayChange": pos.day_change,
-                "dayChangePct": pos.day_change_percentage,
-                "holdDays": None,
-                "product": pos.product or "D",
-                "charges": charges,
-            })
-
-        for pos in portfolio.intraday_positions:
-            company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
-            buy_val = pos.average_price * abs(pos.quantity)
-            sell_val = pos.current_price * abs(pos.quantity)
-            charges = _estimate_charges(sell_val, buy_val, is_intraday=True)
-            positions.append({
-                "symbol": pos.symbol,
-                "company": company,
-                "qty": pos.quantity,
-                "avgPrice": pos.average_price,
-                "ltp": pos.current_price,
-                "pnl": pos.pnl,
-                "pnlPct": pos.pnl_percentage,
-                "dayChange": pos.day_change,
-                "dayChangePct": pos.day_change_percentage,
-                "holdDays": None,
-                "product": "I",
-                "charges": charges,
-            })
-
-        # In paper mode, all positions are simulated (treat as intraday/positions)
-        if client.paper_trading and not positions and holdings:
-            positions = holdings
+            positions = []
             holdings = []
 
-        return {"positions": positions, "holdings": holdings}
+            for pos in portfolio.positions:
+                company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
+                buy_val = pos.average_price * pos.quantity
+                sell_val = pos.current_price * pos.quantity
+                charges = _estimate_charges(sell_val, buy_val, is_intraday=False)
+                holdings.append({
+                    "symbol": pos.symbol,
+                    "company": company,
+                    "qty": pos.quantity,
+                    "avgPrice": pos.average_price,
+                    "ltp": pos.current_price,
+                    "pnl": pos.pnl,
+                    "pnlPct": pos.pnl_percentage,
+                    "dayChange": pos.day_change,
+                    "dayChangePct": pos.day_change_percentage,
+                    "holdDays": None,
+                    "product": pos.product or "D",
+                    "charges": charges,
+                })
+
+            for pos in portfolio.intraday_positions:
+                company = company_map.get(pos.symbol) or cache_get_company_name(pos.symbol) or pos.symbol
+                buy_val = pos.average_price * abs(pos.quantity)
+                sell_val = pos.current_price * abs(pos.quantity)
+                charges = _estimate_charges(sell_val, buy_val, is_intraday=True)
+                positions.append({
+                    "symbol": pos.symbol,
+                    "company": company,
+                    "qty": pos.quantity,
+                    "avgPrice": pos.average_price,
+                    "ltp": pos.current_price,
+                    "pnl": pos.pnl,
+                    "pnlPct": pos.pnl_percentage,
+                    "dayChange": pos.day_change,
+                    "dayChangePct": pos.day_change_percentage,
+                    "holdDays": None,
+                    "product": "I",
+                    "charges": charges,
+                })
+
+            # In paper mode, all positions are simulated (treat as intraday/positions)
+            if client.paper_trading and not positions and holdings:
+                positions = holdings
+                holdings = []
+
+            return {"positions": positions, "holdings": holdings}
+        return await _with_401_retry(user, _fetch)
     except Exception as e:
         logger.error(f"Error fetching positions: {e}")
         _live_clients.pop(user.id, None)
@@ -250,13 +276,10 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
 @router.get("/indices")
 async def cockpit_indices(user: User = Depends(get_current_user)):
     """Return NIFTY 50, BANK NIFTY, INDIA VIX quotes."""
-    client = await _get_client_for_user(user)
     try:
-        indices = await client.get_index_quotes()
-        return indices
+        return await _with_401_retry(user, lambda c: c.get_index_quotes())
     except Exception as e:
         logger.error(f"Error fetching indices: {e}")
-        # Graceful fallback: return empty array
         return []
 
 
@@ -378,8 +401,7 @@ async def cockpit_chart(
 async def cockpit_scorecard(user: User = Depends(get_current_user)):
     """Return today's trading scorecard from live Upstox trades."""
     try:
-        client = await _get_client_for_user(user)
-        trades = await client.get_trades_for_day()
+        trades = await _with_401_retry(user, lambda c: c.get_trades_for_day())
 
         if not trades:
             return {
@@ -490,10 +512,8 @@ async def cockpit_scorecard(user: User = Depends(get_current_user)):
 @router.get("/funds")
 async def cockpit_funds(user: User = Depends(get_current_user)):
     """Return funds and margin breakdown from Upstox."""
-    client = await _get_client_for_user(user)
     try:
-        funds = await client.get_funds_and_margin()
-        return funds
+        return await _with_401_retry(user, lambda c: c.get_funds_and_margin())
     except Exception as e:
         logger.error(f"Error fetching funds: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -505,10 +525,11 @@ async def cockpit_funds(user: User = Depends(get_current_user)):
 @router.get("/trades")
 async def cockpit_trades(user: User = Depends(get_current_user)):
     """Return today's executed trades from Upstox."""
-    client = await _get_client_for_user(user)
     try:
-        trades = await client.get_trades_for_day()
-        return {"trades": trades, "count": len(trades)}
+        async def _fetch(client):
+            trades = await client.get_trades_for_day()
+            return {"trades": trades, "count": len(trades)}
+        return await _with_401_retry(user, _fetch)
     except Exception as e:
         logger.error(f"Error fetching trades: {e}")
         raise HTTPException(status_code=500, detail=str(e))

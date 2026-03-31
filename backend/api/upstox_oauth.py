@@ -634,13 +634,23 @@ async def test_totp_login(user: User = Depends(get_current_user)):
 # ── Standalone helper functions ──────────────────────────────────────
 
 
-async def get_user_upstox_token(user_id: int) -> Optional[str]:
+async def get_user_upstox_token(user_id: int, force_refresh: bool = False) -> Optional[str]:
     """
     Get decrypted Upstox access token for a user.
     Returns None if not connected or token expired.
 
+    Args:
+        user_id: Database user ID.
+        force_refresh: If True, force a TOTP refresh regardless of DB expiry.
+                       Use after receiving a 401 from Upstox (token invalidated
+                       server-side despite valid DB expiry, e.g. daily reset).
+
     This is used by UpstoxClient for live trading.
     """
+    if force_refresh:
+        logger.warning(f"Upstox token force-refresh requested for user {user_id} (401 recovery)")
+        return await auto_refresh_upstox_token(user_id, force=True)
+
     async with get_db_session() as session:
         result = await session.execute(
             select(DBUser).where(DBUser.id == user_id)
@@ -705,10 +715,17 @@ def _totp_get_token(
         return {"success": False, "error": str(e)}
 
 
-async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
+async def auto_refresh_upstox_token(user_id: int, force: bool = False) -> Optional[str]:
     """Try to auto-refresh an expired Upstox token via TOTP.
 
     Returns the new access token string on success, None on failure.
+
+    Args:
+        user_id: Database user ID.
+        force: If True, bypass the "recently refreshed" guard. Use this when
+               a 401 proves the token is invalid despite a future DB expiry
+               (e.g. Upstox daily reset invalidated it server-side).
+
     Checks:
     1. TOTP credentials exist (mobile, pin, totp_secret)
     2. Not within cooldown period after a previous failure
@@ -723,10 +740,10 @@ async def auto_refresh_upstox_token(user_id: int) -> Optional[str]:
         return None
 
     async with lock:
-        return await _auto_refresh_upstox_token_inner(user_id)
+        return await _auto_refresh_upstox_token_inner(user_id, force=force)
 
 
-async def _auto_refresh_upstox_token_inner(user_id: int) -> Optional[str]:
+async def _auto_refresh_upstox_token_inner(user_id: int, force: bool = False) -> Optional[str]:
     """Inner implementation of TOTP refresh, called under lock."""
     async with get_db_session() as session:
         result = await session.execute(
@@ -740,7 +757,9 @@ async def _auto_refresh_upstox_token_inner(user_id: int) -> Optional[str]:
         # Guard: if token was recently refreshed (expiry >23h away), skip.
         # This prevents cross-process duplicate refreshes (e.g. scheduler
         # refreshed at 3:35 AM, then daemon polls at 3:35:15 AM).
-        if db_user.upstox_token_expiry:
+        # Bypassed when force=True (e.g. after a 401 proves the token is
+        # invalid despite a future DB expiry — Upstox daily reset).
+        if not force and db_user.upstox_token_expiry:
             remaining = db_user.upstox_token_expiry - datetime.utcnow()
             if remaining > timedelta(hours=23):
                 logger.info(
@@ -750,6 +769,8 @@ async def _auto_refresh_upstox_token_inner(user_id: int) -> Optional[str]:
                 )
                 # Return the existing valid token
                 return decrypt_token(db_user.upstox_access_token) if db_user.upstox_access_token else None
+        if force:
+            logger.info("TOTP auto-refresh: FORCED refresh for user %d (401 detected)", user_id)
 
         # Check TOTP credentials exist
         if not all([
