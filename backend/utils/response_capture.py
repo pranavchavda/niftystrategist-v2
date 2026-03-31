@@ -192,7 +192,8 @@ class ResponseCapture:
                             logger.info(f"[TOKENS] Estimated: input={input_tokens}, output={output_tokens}")
 
                             # Call the completion callback if provided
-                            if self.on_complete and full_response:
+                            # Save if there's text content OR reasoning-only (thinking-only responses)
+                            if self.on_complete and (full_response or full_reasoning):
                                 logger.info(f"[SAVE DEBUG] Calling save callback with {len(self.tool_calls)} tool calls")
                                 try:
                                     await self.on_complete(
@@ -214,14 +215,16 @@ class ResponseCapture:
 
                         elif event_type == 'RUN_FINISHED':
                             # Ensure we save even if TEXT_MESSAGE_END wasn't sent
-                            if self.response_buffer and not content_started:
+                            # Also save thinking-only responses (reasoning_buffer has content but response_buffer is empty)
+                            has_unsaved_content = self.response_buffer or self.reasoning_buffer
+                            if has_unsaved_content:
                                 full_response = ''.join(self.response_buffer)
                                 full_reasoning = ''.join(self.reasoning_buffer) if self.reasoning_buffer else None
                                 input_tokens = estimate_tokens(self.input_content) if self.input_content else 0
-                                output_tokens = estimate_tokens(full_response)
+                                output_tokens = estimate_tokens(full_response) if full_response else 0
                                 if full_reasoning:
                                     output_tokens += estimate_tokens(full_reasoning)
-                                if self.on_complete and full_response:
+                                if self.on_complete and (full_response or full_reasoning):
                                     try:
                                         await self.on_complete(
                                             thread_id, full_response, self.message_id,

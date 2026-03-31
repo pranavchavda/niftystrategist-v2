@@ -770,14 +770,17 @@ function ChatView({ authToken, onConversationChange }) {
                   "[ChatView] RUN_FINISHED received - cleaning up state",
                 );
 
-                // If there's remaining streaming content, add it as final message
-                if (currentMessage.trim().length > 0) {
-                  console.log("[ChatView] RUN_FINISHED: Adding remaining content as final message");
+                // If there's remaining streaming content OR thinking-only response, add as final message
+                if (currentMessage.trim().length > 0 || accumulatedReasoning.trim().length > 0) {
+                  const hasText = currentMessage.trim().length > 0;
+                  const hasReasoningOnly = !hasText && accumulatedReasoning.trim().length > 0;
+                  console.log(`[ChatView] RUN_FINISHED: Adding ${hasReasoningOnly ? 'thinking-only' : 'remaining content as'} final message`);
                   const finalMessageId = `assistant_${Date.now()}`;
                   const finalMessage = {
                     id: finalMessageId,
                     role: "assistant",
-                    content: currentMessage,
+                    // For thinking-only responses, show a brief note so the message isn't empty
+                    content: hasText ? currentMessage : "*The model produced only internal reasoning with no visible response.*",
                     timestamp: new Date().toISOString(),
                     reasoning: accumulatedReasoning || null, // Include reasoning
                   };
