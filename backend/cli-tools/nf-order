@@ -15,6 +15,7 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from base import SYMBOLS, format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from services.order_node_proxy import init_order_client  # noqa: E402
 
 
 def place_order(symbol: str, action: str, quantity: int, order_type: str,
@@ -70,6 +71,49 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
                 print(f"  Target:      {format_inr(target)}")
         return
 
+    # Resolve instrument key locally (needed for order node proxy)
+    instrument_token = client._get_instrument_key(sym)
+
+    # Route through order node if configured
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.place_order(
+                symbol=sym,
+                instrument_token=instrument_token,
+                transaction_type=act,
+                quantity=quantity,
+                order_type=order_type,
+                price=price if price else 0,
+                product=product,
+                is_amo=True if amo else None,
+            )
+        except Exception as e:
+            print_error(f"Order failed: {e}")
+
+        if not result.success:
+            print_error(f"Order failed: {result.message}")
+
+        if as_json:
+            print_json({
+                "success": True,
+                "order_id": result.order_id,
+                "symbol": sym,
+                "action": act,
+                "quantity": quantity,
+                "order_type": order_type,
+                "status": result.status,
+                "mode": "live",
+            })
+        else:
+            print_success(f"Order Placed [🔴 LIVE]")
+            print(f"\n  {'🟢' if act == 'BUY' else '🔴'} {act} {quantity}x {sym}")
+            print(f"  Order ID: {result.order_id}")
+            print(f"  Type:     {order_type}")
+            print(f"  Status:   {result.status}")
+        return
+
+    # Direct path (no order node configured)
     try:
         order_result = run_async(client.place_order(
             symbol=sym,
@@ -115,6 +159,35 @@ def modify_order(order_id: str, quantity: int | None, price: float | None,
     """Modify an existing pending order."""
     if not any([quantity, price, order_type, trigger_price]):
         print_error("Must specify at least one of: --quantity, --price, --type, --trigger-price")
+
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.modify_order(
+                order_id=order_id,
+                quantity=quantity,
+                price=price,
+                order_type=order_type,
+                trigger_price=trigger_price,
+            )
+        except Exception as e:
+            print_error(f"Failed to modify order: {e}")
+
+        if as_json:
+            print_json({"success": result.success, "order_id": result.order_id, "message": result.message})
+        elif result.success:
+            print_success(f"Order {order_id} modified.")
+            if quantity:
+                print(f"  New quantity: {quantity}")
+            if price:
+                print(f"  New price:    {format_inr(price)}")
+            if order_type:
+                print(f"  New type:     {order_type}")
+            if trigger_price:
+                print(f"  New trigger:  {format_inr(trigger_price)}")
+        else:
+            print_error(f"Modify failed: {result.message}")
+        return
 
     client = init_client()
     try:
@@ -295,6 +368,21 @@ def show_orders(open_only: bool, limit: int, as_json: bool):
 
 def cancel_order(order_id: str, as_json: bool):
     """Cancel an open order."""
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.cancel_order(order_id)
+        except Exception as e:
+            print_error(f"Failed to cancel order: {e}")
+
+        if as_json:
+            print_json({"success": result.success, "order_id": result.order_id, "message": result.message})
+        elif result.success:
+            print_success(f"Order {order_id} cancelled.")
+        else:
+            print_error(f"Cancel failed: {result.message}")
+        return
+
     client = init_client()
     try:
         result = run_async(client.cancel_order(order_id))
@@ -311,6 +399,26 @@ def cancel_order(order_id: str, as_json: bool):
 
 def cancel_all_orders(tag: str | None, segment: str | None, as_json: bool):
     """Cancel all open orders."""
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.cancel_multi_order(tag=tag, segment=segment)
+        except Exception as e:
+            print_error(f"Failed to cancel orders: {e}")
+
+        if as_json:
+            print_json({"success": result.success, "message": result.message})
+        elif result.success:
+            label = ""
+            if tag:
+                label += f" with tag '{tag}'"
+            if segment:
+                label += f" in {segment} segment"
+            print_success(f"All open orders{label} cancelled.")
+        else:
+            print_error(f"Cancel-all failed: {result.message}")
+        return
+
     client = init_client()
     try:
         result = run_async(client.cancel_multi_order(tag=tag, segment=segment))
@@ -332,6 +440,21 @@ def cancel_all_orders(tag: str | None, segment: str | None, as_json: bool):
 
 def exit_all_positions(as_json: bool):
     """Exit all open positions."""
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.exit_all_positions()
+        except Exception as e:
+            print_error(f"Failed to exit positions: {e}")
+
+        if as_json:
+            print_json({"success": result.success, "message": result.message})
+        elif result.success:
+            print_success("All positions exit orders placed.")
+        else:
+            print_error(f"Exit-all failed: {result.message}")
+        return
+
     client = init_client()
     try:
         result = run_async(client.exit_all_positions())

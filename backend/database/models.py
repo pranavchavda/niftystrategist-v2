@@ -157,6 +157,10 @@ class User(Base):
     # Model preferences
     preferred_model = Column(String(100), default="deepseek/deepseek-chat")
 
+    # Per-user order node URL for SEBI static IP compliance
+    # e.g., "http://localhost:8001" or "http://<nanode-ip>:8001"
+    order_node_url = Column(String(255), nullable=True)
+
     # Relationships
     roles = relationship("Role", secondary=user_roles, back_populates="users")
     trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")

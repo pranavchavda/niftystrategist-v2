@@ -256,6 +256,9 @@ class OrchestratorDeps(BaseModel):
     user_id: Optional[int] = (
         None  # Numeric DB user ID, injected as NF_USER_ID for CLI tools
     )
+    order_node_url: Optional[str] = (
+        None  # Per-user order node URL for SEBI static IP compliance
+    )
     trading_mode: str = "live"  # "paper" or "live"
     paper_total_value: Optional[float] = None  # Paper trading total value
     paper_total_pnl: Optional[float] = None  # Paper trading total P&L
@@ -1826,6 +1829,8 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                     subprocess_env["NF_ACCESS_TOKEN"] = ctx.deps.upstox_access_token
                 if ctx.deps.user_id:
                     subprocess_env["NF_USER_ID"] = str(ctx.deps.user_id)
+                if ctx.deps.order_node_url:
+                    subprocess_env["NF_ORDER_NODE_URL"] = ctx.deps.order_node_url
 
                 # Run the command with asyncio, streaming output
                 # cwd=backend/ so cli-tools/ and bash-tools/ resolve correctly

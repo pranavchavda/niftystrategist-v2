@@ -37,8 +37,18 @@ cd frontend-v2 && pnpm install && pnpm run dev
 - **Manual**: `./deploy/deploy.sh <server-ip>` — builds frontend, rsyncs to prod, restarts service
 - **Production server**: `172.105.40.112` — Caddy reverse proxy → uvicorn on port 8000
 - **Prod path**: `/opt/niftystrategist/` (backend at `/opt/niftystrategist/backend/`, venv inside)
-- **Service**: `niftystrategist` systemd unit, runs as `deploy` user, root needed for restart
+- **Services**: `niftystrategist` (main), `niftystrategist-ordernode` (order proxy), `niftystrategist-monitor` (daemon) — all systemd, `deploy` user, root for restart
 - **SSH**: `ssh deploy@172.105.40.112`
+
+### Per-User Order Nodes (SEBI Static IP Compliance)
+
+SEBI requires each user's order API calls to originate from a static IP registered to that user. Each user gets a thin FastAPI order proxy (`order_node/app.py`) on its own IP. CLI tools (`nf-order`, `nf-options`) check `NF_ORDER_NODE_URL` env var and route order-mutating calls through it. The orchestrator injects this from `User.order_node_url` in the DB. Non-order APIs are unaffected.
+
+- **Pranav (user 1)**: `http://localhost:8001` (same machine)
+- **Ashok (user 5)**: `http://172.105.40.186:8001` ($5 Linode Nanode, `ns-ordernode-user5`)
+- **Full docs**: `docs/order-node-architecture.md` (includes add-user-node procedure)
+- **Key files**: `order_node/app.py`, `services/order_node_proxy.py`, `monitor/action_executor.py`
+- **Auth**: Bearer token (per-request) + `NF_ORDER_NODE_SECRET` (shared). Nanodes firewalled to main NS IP only.
 
 ## Architecture
 

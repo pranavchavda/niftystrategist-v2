@@ -67,7 +67,7 @@ jobs:
       - name: Restart services
         run: |
           ssh -i ~/.ssh/deploy_key root@${{ secrets.SERVER_IP }} \
-            "systemctl restart niftystrategist && systemctl restart niftystrategist-monitor"
+            "systemctl restart niftystrategist && systemctl restart niftystrategist-ordernode 2>/dev/null; systemctl restart niftystrategist-monitor"
 
       - name: Health check
         run: |

@@ -54,6 +54,7 @@ ENDSSH
 # --- Restart services (as root, since deploy user sudo is restricted) ---
 echo "[5/5] Restarting services..."
 ssh root@${SERVER_IP} "systemctl restart niftystrategist && systemctl status niftystrategist --no-pager"
+ssh root@${SERVER_IP} "systemctl restart niftystrategist-ordernode 2>/dev/null && systemctl status niftystrategist-ordernode --no-pager || echo '(order node service not installed yet)'"
 ssh root@${SERVER_IP} "systemctl restart niftystrategist-monitor 2>/dev/null && systemctl status niftystrategist-monitor --no-pager || echo '(monitor service not installed yet — run setup-server.sh to install)'"
 
 echo ""

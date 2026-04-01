@@ -28,15 +28,19 @@ class ActionExecutor:
     Args:
         get_client: Async callable that returns an UpstoxClient for a given user_id.
                     Signature: (user_id: int) -> UpstoxClient
+        get_order_node_url: Async callable returning the user's order node URL (or None).
+                    Signature: (user_id: int) -> str | None
         paper_mode: If True, log that actions run in paper mode. Default False.
     """
 
     def __init__(
         self,
         get_client: Callable[[int], Awaitable[Any]],
+        get_order_node_url: Callable[[int], Awaitable[Any]] | None = None,
         paper_mode: bool = False,
     ) -> None:
         self._get_client = get_client
+        self._get_order_node_url = get_order_node_url
         self._paper_mode = paper_mode
 
     async def execute(
@@ -106,7 +110,7 @@ class ActionExecutor:
         return action_result
 
     async def _execute_place_order(self, rule: MonitorRule, config: dict) -> dict:
-        """Place an order using UpstoxClient.
+        """Place an order, routing through the user's order node if configured.
 
         For F&O contracts, action_config should include 'instrument_token' with
         the pre-resolved instrument key (e.g., 'NSE_FO|43885'). This bypasses
@@ -117,6 +121,53 @@ class ActionExecutor:
         if self._paper_mode:
             logger.info("[PAPER] Placing order for rule %d: %s", rule.id, action)
 
+        # Check if this user has an order node configured
+        node_url = None
+        if self._get_order_node_url:
+            node_url = await self._get_order_node_url(rule.user_id)
+
+        if node_url:
+            return await self._place_order_via_node(rule, action, node_url)
+
+        # Direct path (no order node)
+        return await self._place_order_direct(rule, action)
+
+    async def _place_order_via_node(self, rule: MonitorRule, action: PlaceOrderAction, node_url: str) -> dict:
+        """Place an order through the user's order node proxy."""
+        from services.order_node_proxy import OrderNodeProxy
+
+        # Get the access token for auth header
+        client = await self._get_client(rule.user_id)
+        token = client.access_token
+
+        proxy = OrderNodeProxy(node_url, token)
+        try:
+            # Resolve instrument_token if not already set (equity path)
+            instrument_token = action.instrument_token
+            if not instrument_token:
+                instrument_token = client._get_instrument_key(action.symbol)
+
+            result = await proxy.place_order(
+                symbol=action.symbol,
+                instrument_token=instrument_token,
+                transaction_type=action.transaction_type,
+                quantity=action.quantity,
+                order_type=action.order_type,
+                price=action.price if action.price is not None else 0,
+                product=action.product,
+            )
+            return {
+                "success": result.success,
+                "order_id": result.order_id,
+                "message": result.message,
+                "status": result.status,
+            }
+        except Exception as e:
+            logger.error("place_order via node failed for rule %d: %s", rule.id, e)
+            return {"success": False, "error": str(e)}
+
+    async def _place_order_direct(self, rule: MonitorRule, action: PlaceOrderAction) -> dict:
+        """Place an order directly via UpstoxClient (no order node)."""
         client = await self._get_client(rule.user_id)
         try:
             if action.instrument_token:
@@ -168,9 +219,30 @@ class ActionExecutor:
             return {"success": False, "error": str(e)}
 
     async def _execute_cancel_order(self, rule: MonitorRule, config: dict) -> dict:
-        """Cancel an order using UpstoxClient."""
+        """Cancel an order, routing through the user's order node if configured."""
         action = CancelOrderAction(**config)
 
+        # Check if this user has an order node configured
+        node_url = None
+        if self._get_order_node_url:
+            node_url = await self._get_order_node_url(rule.user_id)
+
+        if node_url:
+            from services.order_node_proxy import OrderNodeProxy
+            client = await self._get_client(rule.user_id)
+            proxy = OrderNodeProxy(node_url, client.access_token)
+            try:
+                result = await proxy.cancel_order(order_id=action.order_id)
+                return {
+                    "success": result.success,
+                    "order_id": result.order_id,
+                    "message": result.message,
+                }
+            except Exception as e:
+                logger.error("cancel_order via node failed for rule %d: %s", rule.id, e)
+                return {"success": False, "error": str(e)}
+
+        # Direct path
         client = await self._get_client(rule.user_id)
         try:
             result = await client.cancel_order(order_id=action.order_id)

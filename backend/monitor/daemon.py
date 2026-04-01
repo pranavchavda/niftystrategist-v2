@@ -65,11 +65,13 @@ class MonitorDaemon:
         )
         self._action_executor = ActionExecutor(
             get_client=self._get_client,
+            get_order_node_url=self._get_order_node_url,
             paper_mode=paper_mode,
         )
 
         self._rules_by_user: dict[int, list[MonitorRule]] = {}
         self._access_tokens: dict[int, str] = {}
+        self._order_node_urls: dict[int, str] = {}
         # Manual token overrides (for testing / CLI fallback).
         # These take precedence over DB-loaded tokens.
         self._manual_tokens: dict[int, str] = {}
@@ -109,6 +111,10 @@ class MonitorDaemon:
         self._manual_tokens[user_id] = token
         self._access_tokens[user_id] = token
 
+    async def _get_order_node_url(self, user_id: int) -> str | None:
+        """Return the order node URL for a user (loaded during poll)."""
+        return self._order_node_urls.get(user_id)
+
     # ── Token loading ────────────────────────────────────────────────
 
     async def _load_access_token(
@@ -134,6 +140,31 @@ class MonitorDaemon:
 
         # get_user_upstox_token handles expiry detection + TOTP auto-refresh
         return await get_user_upstox_token(user_id, force_refresh=force_refresh)
+
+    async def _load_user_configs(self, user_ids) -> None:
+        """Load access tokens and order_node_urls for all users with active rules."""
+        from database.models import User
+        from sqlalchemy import select
+
+        # Load order_node_urls in one query
+        async with get_db_context() as session:
+            result = await session.execute(
+                select(User.id, User.order_node_url).where(User.id.in_(list(user_ids)))
+            )
+            for uid, node_url in result:
+                if node_url:
+                    self._order_node_urls[uid] = node_url
+                else:
+                    self._order_node_urls.pop(uid, None)
+
+        # Load access tokens (one at a time — each may trigger TOTP refresh)
+        for uid in user_ids:
+            token = await self._load_access_token(uid)
+            if token:
+                self._access_tokens[uid] = token
+            else:
+                self._access_tokens.pop(uid, None)
+                logger.debug("No valid Upstox token for user %d, skipping", uid)
 
     # ── Stream auth failure handling ─────────────────────────────────
 
@@ -221,14 +252,8 @@ class MonitorDaemon:
             schema = crud.db_rule_to_schema(db_rule)
             rules_by_user.setdefault(schema.user_id, []).append(schema)
 
-        # Load access tokens from DB for all users with active rules
-        for uid in rules_by_user:
-            token = await self._load_access_token(uid)
-            if token:
-                self._access_tokens[uid] = token
-            else:
-                self._access_tokens.pop(uid, None)
-                logger.debug("No valid Upstox token for user %d, skipping", uid)
+        # Load access tokens and order node URLs from DB for all users with active rules
+        await self._load_user_configs(rules_by_user.keys())
 
         # Determine users to start/stop/sync
         old_users = set(self._rules_by_user.keys())

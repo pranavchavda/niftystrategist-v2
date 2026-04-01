@@ -820,6 +820,7 @@ ensure to think carefully about the classification before making a decision.
             deps = OrchestratorDeps(
                 state=state,
                 upstox_access_token=upstox_token,
+                order_node_url=user.order_node_url,
                 user_id=user.id,
                 trading_mode=user.trading_mode or "live",
                 is_awakening=True,  # Scheduled awakenings run without a live user

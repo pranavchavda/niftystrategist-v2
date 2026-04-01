@@ -26,6 +26,7 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from base import format_inr, init_client, print_error, print_json, print_success, run_async
+from services.order_node_proxy import init_order_client
 
 # Options instrument cache file (same as equity cache - it contains F&O too)
 OPTIONS_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache", "nse_instruments.csv")
@@ -449,16 +450,63 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
     # Place live order
     if not client.access_token:
         print_error("No access token. Please connect Upstox account.")
-    
+
+    # Route through order node if configured
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.place_order(
+                symbol=tradingsymbol,
+                instrument_token=instrument_key,
+                transaction_type=action.upper(),
+                quantity=quantity,
+                order_type=order_type,
+                price=price if order_type == "LIMIT" else 0,
+                product="D",
+            )
+        except Exception as e:
+            print_error(f"Order failed: {e}")
+
+        if not result.success:
+            print_error(f"Order failed: {result.message}")
+
+        if as_json:
+            print_json({
+                "success": True,
+                "order_id": result.order_id,
+                "tradingsymbol": tradingsymbol,
+                "instrument_key": instrument_key,
+                "action": action,
+                "quantity_lots": quantity_lots,
+                "quantity_units": quantity,
+                "lot_size": lot_size,
+                "order_type": order_type,
+                "price": price,
+                "status": result.status,
+                "mode": "live",
+            })
+        else:
+            emoji = "🟢" if action.upper() == "BUY" else "🔴"
+            print_success(f"Order Placed [🔴 LIVE]")
+            print(f"\n  {emoji} {action.upper()} {quantity_lots} lot(s) = {quantity} units")
+            print(f"  Symbol: {tradingsymbol}")
+            print(f"  Strike: {strike} {option_type} | Expiry: {option['expiry']}")
+            print(f"  Order ID: {result.order_id}")
+            print(f"  Type: {order_type}")
+            if price:
+                print(f"  Price: {format_inr(price)}")
+        return
+
+    # Direct path (no order node configured)
     try:
         import upstox_client
-        
+
         # Auto-detect AMO
         is_amo = not client._is_market_open()
-        
+
         api_client = upstox_client.ApiClient(client._configuration)
         order_api = upstox_client.OrderApiV3(api_client)
-        
+
         body = upstox_client.PlaceOrderV3Request(
             quantity=quantity,
             product="D",  # Delivery (for options carry forward)
@@ -471,14 +519,14 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
             disclosed_quantity=0,
             is_amo=is_amo,
         )
-        
+
         response = order_api.place_order(body)
         order_ids = response.data.order_ids if response.data else []
         order_id = order_ids[0] if order_ids else None
-        
+
         amo_label = " [AMO]" if is_amo else ""
         mode = "Paper" if client.paper_trading else "🔴 LIVE"
-        
+
         if as_json:
             print_json({
                 "success": True,
@@ -504,7 +552,7 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
             print(f"  Type: {order_type}")
             if price:
                 print(f"  Price: {format_inr(price)}")
-    
+
     except Exception as e:
         print_error(f"Order failed: {e}")
 
@@ -1330,6 +1378,31 @@ def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
             "correlation_id": f"{basket_tag}_leg{i+1}",
         })
 
+    # Route through order node if configured
+    order_client = init_order_client()
+    if order_client:
+        try:
+            proxy_result = order_client.place_multi_order(orders)
+        except Exception as e:
+            print_error(f"Spread order failed: {e}")
+
+        if as_json:
+            result["order_result"] = {"success": proxy_result.success, "message": proxy_result.message}
+            print_json(result)
+        elif proxy_result.success:
+            print_success(f"{payoff.get('strategy', 'Spread')} Placed [{basket_tag}]")
+            print(f"\n  {symbol.upper()} | {resolved_legs[0]['expiry']} | {lots} lot(s)")
+            for i, l in enumerate(resolved_legs):
+                print(f"  Leg {i+1}: {l['side']} {l['strike']:.0f} {l['option_type']} @ {format_inr(l['premium'])}")
+            if payoff.get("net_debit"):
+                print(f"  Net Debit: {format_inr(payoff['net_debit'])}")
+            elif payoff.get("net_credit"):
+                print(f"  Net Credit: {format_inr(payoff['net_credit'])}")
+        else:
+            print_error(f"Spread order failed: {proxy_result.message}")
+        return
+
+    # Direct path (no order node configured)
     try:
         place_result = run_async(client.place_multi_order(orders))
     except Exception as e:
