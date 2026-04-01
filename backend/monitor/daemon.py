@@ -111,7 +111,9 @@ class MonitorDaemon:
 
     # ── Token loading ────────────────────────────────────────────────
 
-    async def _load_access_token(self, user_id: int) -> Optional[str]:
+    async def _load_access_token(
+        self, user_id: int, force_refresh: bool = False
+    ) -> Optional[str]:
         """Load access token for a user.
 
         Manual overrides (via ``set_access_token``) take precedence.
@@ -119,14 +121,19 @@ class MonitorDaemon:
         decrypts the token and checks expiry — returns None if expired.
         If the DB token is expired/missing and TOTP credentials are
         configured, attempts automatic token refresh via TOTP.
+
+        Args:
+            force_refresh: Bypass "recently refreshed" guard and force
+                TOTP refresh. Use after 401 from Upstox (token invalidated
+                server-side despite valid DB expiry).
         """
-        if user_id in self._manual_tokens:
+        if user_id in self._manual_tokens and not force_refresh:
             return self._manual_tokens[user_id]
         # Lazy import to avoid circular deps and keep tests lightweight
         from api.upstox_oauth import get_user_upstox_token
 
         # get_user_upstox_token handles expiry detection + TOTP auto-refresh
-        return await get_user_upstox_token(user_id)
+        return await get_user_upstox_token(user_id, force_refresh=force_refresh)
 
     # ── Stream auth failure handling ─────────────────────────────────
 
@@ -161,8 +168,11 @@ class MonitorDaemon:
             # Tear down both streams
             await self._user_manager.stop_user(user_id)
 
-            # Attempt TOTP refresh
-            new_token = await self._load_access_token(user_id)
+            # Attempt TOTP refresh — force=True bypasses "recently refreshed"
+            # guard since Upstox invalidated the token server-side
+            new_token = await self._load_access_token(
+                user_id, force_refresh=True
+            )
 
             if new_token and new_token != stale_token:
                 # Fresh token — restart streams
@@ -244,9 +254,17 @@ class MonitorDaemon:
                     "Stopped session for user %d (token expired)", uid
                 )
                 continue
-            # Check if the token changed (e.g. TOTP refresh) — restart streams
             session = self._user_manager.get_session(uid)
-            if session and session.access_token != token:
+            if session is None:
+                # Session was destroyed (e.g. by auth failure handler)
+                # but user still has rules and a valid token — re-create
+                logger.info(
+                    "Re-creating session for user %d (session lost, token valid)",
+                    uid,
+                )
+                await self._user_manager.start_user(uid, token, rules_by_user[uid])
+            elif session.access_token != token:
+                # Token changed (e.g. TOTP refresh) — restart streams
                 logger.info("Token changed for user %d, restarting streams", uid)
                 await self._user_manager.start_user(uid, token, rules_by_user[uid])
             else:

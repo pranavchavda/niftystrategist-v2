@@ -776,7 +776,7 @@ async def test_load_access_token_delegates_to_get_user_upstox_token():
         token = await daemon._load_access_token(999)
 
     assert token == "refreshed-token"
-    mock_get.assert_awaited_once_with(999)
+    mock_get.assert_awaited_once_with(999, force_refresh=False)
 
 
 # ── Test: _load_access_token returns None when no token ──────────────

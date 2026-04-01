@@ -434,7 +434,7 @@ class TestDaemonAuthFailure:
 
         load_call_count = 0
 
-        async def slow_load(user_id):
+        async def slow_load(user_id, force_refresh=False):
             nonlocal load_call_count
             load_call_count += 1
             await asyncio.sleep(0.05)  # Simulate work
