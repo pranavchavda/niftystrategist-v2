@@ -1,6 +1,7 @@
 """Monitor rules API — CRUD for IFTTT-style trade monitoring rules."""
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -43,6 +44,7 @@ class CreateRuleRequest(BaseModel):
     linked_order_id: Optional[str] = None
     max_fires: Optional[int] = None
     expires_at: Optional[datetime] = None
+    force: bool = False  # Skip instant-fire validation
 
 
 class CreateOCORequest(BaseModel):
@@ -54,6 +56,7 @@ class CreateOCORequest(BaseModel):
     side: str = "SELL"  # Exit side: SELL for long positions, BUY for short positions
     linked_trade_id: Optional[int] = None
     expires_at: Optional[datetime] = None
+    force: bool = False  # Skip instant-fire validation
 
 
 class UpdateRuleRequest(BaseModel):
@@ -90,6 +93,43 @@ def _serialize_rule(rule) -> dict:
         "created_at": rule.created_at.isoformat() if rule.created_at else None,
         "updated_at": rule.updated_at.isoformat() if rule.updated_at else None,
     }
+
+
+async def _check_price_trigger_already_met(
+    condition: str, price: float, instrument_token: str | None,
+    symbol: str | None, force: bool = False, label: str = "Rule",
+) -> float | None:
+    """Validate that a price trigger isn't already met. Returns LTP.
+
+    Raises HTTPException(409) if the condition is already true and force=False.
+    """
+    if condition not in ("gte", "lte") or not instrument_token:
+        return None
+    try:
+        from services.upstox_client import UpstoxClient
+        client = UpstoxClient(
+            os.environ.get("NF_ACCESS_TOKEN", ""),
+            os.environ.get("NF_USER_ID", ""),
+        )
+        quote = await client.get_quote(symbol) if symbol else None
+        ltp = quote.get("ltp") if quote else None
+    except Exception:
+        return None  # Can't validate, allow creation
+
+    if ltp is None:
+        return None
+
+    already_met = (condition == "gte" and ltp >= price) or (condition == "lte" and ltp <= price)
+    if already_met and not force:
+        op = "≥" if condition == "gte" else "≤"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{label}: trigger already met (LTP {ltp} {op} {price}). "
+                f"Rule will fire immediately. Set force=true to create anyway."
+            ),
+        )
+    return ltp
 
 
 def _serialize_log(log) -> dict:
@@ -143,6 +183,17 @@ async def api_create_rule(
     user: User = Depends(get_current_user),
 ):
     """Create a new monitor rule for the current user."""
+    # Validate: block if price trigger condition is already met
+    if body.trigger_type == "price" and body.trigger_config.get("condition") in ("gte", "lte"):
+        await _check_price_trigger_already_met(
+            condition=body.trigger_config["condition"],
+            price=body.trigger_config["price"],
+            instrument_token=body.instrument_token,
+            symbol=body.symbol,
+            force=body.force,
+            label=body.name,
+        )
+
     async with get_db_context() as session:
         rule = await create_rule(
             session=session,
@@ -184,6 +235,16 @@ async def api_create_oco(
     instrument_token = get_instrument_key(body.symbol)
     if not instrument_token:
         raise HTTPException(status_code=400, detail=f"Could not find instrument key for {body.symbol}")
+
+    # Validate: block if SL or target condition is already met
+    await _check_price_trigger_already_met(
+        sl_condition, body.sl, instrument_token, body.symbol,
+        force=body.force, label=f"Stop-Loss @ {body.sl}",
+    )
+    await _check_price_trigger_already_met(
+        target_condition, body.target, instrument_token, body.symbol,
+        force=body.force, label=f"Target @ {body.target}",
+    )
 
     async with get_db_context() as session:
         # Step 1: Create the SL rule
