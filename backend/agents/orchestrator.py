@@ -1003,17 +1003,9 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 
             sections = []
 
-            # Always inject current date/time in IST (Indian Standard Time)
-            utc_now = datetime.now(ZoneInfo("UTC"))
-            ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
-
-            date_section = "\n\n## CURRENT DATE & TIME\n\n"
-            date_section += f"**Today's date:** {ist_now.strftime('%A, %B %d, %Y')}\n"
-            date_section += f"**Current time:** {ist_now.strftime('%I:%M:%S %p IST')}\n"
-            date_section += f"**ISO format:** {ist_now.isoformat()}\n"
-            date_section += "**Timezone:** IST (Indian Standard Time, UTC+5:30)\n"
-            date_section += "\n**IMPORTANT:** All times are in Indian Standard Time (IST). When the user says 'today', 'this morning', 'this afternoon', 'tonight', use this date and time.\n"
-            sections.append(date_section)
+            # NOTE: Date/time injection is at the BOTTOM of dynamic instructions
+            # (after all other sections) so it's closest to the conversation history
+            # and doesn't get lost in the middle of the prompt.
 
             # Inject user information if available
             if ctx.deps.user_name or ctx.deps.user_bio:
@@ -1230,6 +1222,19 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 thread_section += f"**User ID:** `{user_id_str}` (email — pass directly to `--user-id`, the tool resolves it)\n"
                 thread_section += "\nUse these when calling tools that require thread or user context (e.g. `schedule_followup`).\n"
                 sections.append(thread_section)
+
+            # Date/time is the LAST section — placed at the bottom of the system
+            # prompt so it's closest to the conversation history and doesn't get
+            # lost in the middle (needle-in-haystack attention issue).
+            utc_now = datetime.now(ZoneInfo("UTC"))
+            ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
+
+            date_section = "\n\n## ⏰ CURRENT DATE & TIME\n\n"
+            date_section += f"**Right now it is: {ist_now.strftime('%I:%M %p IST')}** on {ist_now.strftime('%A, %B %d, %Y')}\n"
+            date_section += f"**ISO:** {ist_now.isoformat()}\n"
+            date_section += "\nNSE market hours: 9:15 AM – 3:30 PM IST. Broker auto-square-off: 3:15–3:25 PM IST.\n"
+            date_section += "DO NOT place exit/square-off orders before 3:00 PM unless a stop-loss is hit.\n"
+            sections.append(date_section)
 
             return "".join(sections)
 

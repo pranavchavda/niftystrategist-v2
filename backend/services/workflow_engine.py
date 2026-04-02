@@ -788,8 +788,13 @@ ensure to think carefully about the classification before making a decision.
                     f"loaded {len(message_history)} messages from thread {thread_id}"
                 )
                 # Autonomous-mode prompt — no user is present
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _ZI
+                _ist_now = _dt.now(_ZI("UTC")).astimezone(_ZI("Asia/Kolkata"))
+                _time_str = _ist_now.strftime('%I:%M %p IST')
+
                 effective_prompt = (
-                    "[AUTOMATED FOLLOW-UP — NO USER PRESENT]\n"
+                    f"[{_time_str}] [AUTOMATED FOLLOW-UP — NO USER PRESENT]\n"
                     "You are executing a scheduled follow-up in an existing conversation thread. "
                     "The user is NOT available to respond. Rules:\n"
                     "- Execute the task described below completely\n"

@@ -2162,6 +2162,14 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
                 last_user_message = messages[last_user_idx]
                 original_text_content = last_user_message.get("content", "")
 
+                # Prepend IST timestamp to user message so the model always
+                # sees the current time adjacent to the prompt it's responding to.
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _ZI
+                _ist_now = _dt.now(_ZI("UTC")).astimezone(_ZI("Asia/Kolkata"))
+                _time_prefix = f"[{_ist_now.strftime('%I:%M %p IST')}] "
+                messages[last_user_idx]["content"] = _time_prefix + original_text_content
+
                 # Process message for vision capability
                 processed_content = await process_message_with_vision(
                     original_text_content,
