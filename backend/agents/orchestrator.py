@@ -1329,7 +1329,13 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-forecast --watchlist [--json]` — Forecast all watchlist symbols
 - `python cli-tools/nf-forecast --latest SYMBOL [--json]` — Read cached forecast from DB (instant, no ML inference)
 - `python cli-tools/nf-forecast --latest --watchlist [--json]` — All cached watchlist forecasts
-NOTE: Live inference takes ~1-2s/symbol. Use --latest for cached pre-market forecasts when available. Forecasts include signal (bullish/bearish/neutral), confidence, and day-by-day price predictions with confidence intervals. Use as ONE signal among many — combine with nf-analyze TA indicators for confluence. ~50% directional accuracy alone, but useful for price range estimation and trend bias.
+NOTE: Live inference takes ~1-2s/symbol. Use --latest for cached pre-market forecasts when available.
+HOW TO INTERPRET: The forecast's directional accuracy is ~50% (coin flip), but it excels at **magnitude detection** — it identifies stocks likely to make big moves. Use it as a conviction/magnitude filter, NOT a standalone direction signal:
+- **predicted_change_pct > ±2%**: High-conviction forecast. Strong potential move. Use TA (nf-analyze) and Renko for direction, use the forecast magnitude for position sizing and priority.
+- **predicted_change_pct < ±1%**: Low-conviction, expect choppy/sideways action. Lower priority for trading.
+- **Confidence intervals (lower/upper)**: Use for stop-loss and target estimation. The range gives realistic price bounds.
+- **Best used in combination**: Forecast says "big move likely" + Renko shows trend + RSI confirms = high-confluence setup. Forecast alone = weak signal.
+Do NOT rely on the forecast's bullish/bearish signal for trade direction. Use nf-analyze and Renko for direction.
 
 **Portfolio:**
 - `python cli-tools/nf-portfolio [--json]` — Portfolio summary with all holdings + intraday positions
