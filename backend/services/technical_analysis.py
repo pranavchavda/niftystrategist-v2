@@ -16,10 +16,12 @@ class TechnicalAnalysisService:
         self,
         rsi_oversold: float = 30.0,
         rsi_overbought: float = 70.0,
+        renko_brick_size: float = 15.0,
     ):
         """Initialize the service with configurable thresholds."""
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
+        self.renko_brick_size = renko_brick_size
 
     def calculate_indicators(self, ohlcv_data: list[OHLCVData]) -> TechnicalIndicators:
         """Calculate technical indicators from OHLCV data."""
@@ -55,6 +57,10 @@ class TechnicalAnalysisService:
         volume_avg_20 = df["volume"].rolling(window=20).mean().iloc[-1]
         current_volume = float(df["volume"].iloc[-1])
 
+        # Renko
+        closes_list = df["close"].tolist()
+        renko = self.calculate_renko(closes_list, self.renko_brick_size)
+
         def safe_float(val):
             return None if np.isnan(val) else float(val)
 
@@ -70,7 +76,60 @@ class TechnicalAnalysisService:
             atr_14=safe_float(atr_14),
             volume_avg_20=safe_float(volume_avg_20) if not np.isnan(volume_avg_20) else current_volume,
             current_volume=current_volume,
+            renko_trend=renko["trend"],
+            renko_brick_count=renko["brick_count"],
+            renko_brick_size=self.renko_brick_size,
+            renko_last_reversal_price=renko["last_reversal_price"],
         )
+
+    def calculate_renko(self, closes: list[float], brick_size: float) -> dict:
+        """Calculate Renko bricks from close prices.
+
+        Traditional Renko: a new brick is drawn when price moves
+        brick_size points from the last brick's close.
+
+        Returns dict with trend, brick_count, last_reversal_price.
+        """
+        if len(closes) < 2 or brick_size <= 0:
+            return {"trend": None, "brick_count": 0, "last_reversal_price": None}
+
+        # Build bricks
+        bricks = []  # list of ("up" | "down", price)
+        base_price = closes[0]
+
+        for price in closes[1:]:
+            diff = price - base_price
+            while diff >= brick_size:
+                base_price += brick_size
+                bricks.append(("up", base_price))
+                diff = price - base_price
+            while diff <= -brick_size:
+                base_price -= brick_size
+                bricks.append(("down", base_price))
+                diff = price - base_price
+
+        if not bricks:
+            return {"trend": None, "brick_count": 0, "last_reversal_price": None}
+
+        # Count consecutive bricks in current direction
+        current_direction = bricks[-1][0]
+        count = 0
+        last_reversal_price = None
+        for i in range(len(bricks) - 1, -1, -1):
+            if bricks[i][0] == current_direction:
+                count += 1
+            else:
+                last_reversal_price = bricks[i][1]
+                break
+
+        if last_reversal_price is None and len(bricks) > count:
+            last_reversal_price = bricks[0][1]
+
+        return {
+            "trend": current_direction,
+            "brick_count": count,
+            "last_reversal_price": last_reversal_price,
+        }
 
     def interpret_rsi(self, rsi: float | None) -> Literal["oversold", "neutral", "overbought"]:
         """Interpret RSI value."""
@@ -151,6 +210,8 @@ class TechnicalAnalysisService:
         rsi_signal: Literal["oversold", "neutral", "overbought"],
         macd_trend: Literal["bullish", "bearish", "neutral"],
         price_trend: Literal["uptrend", "downtrend", "sideways"],
+        renko_trend: str | None = None,
+        renko_brick_count: int | None = None,
     ) -> tuple[Literal["strong_buy", "buy", "hold", "sell", "strong_sell"], float]:
         """
         Calculate overall signal and confidence from individual indicators.
@@ -178,20 +239,30 @@ class TechnicalAnalysisService:
         elif price_trend == "downtrend":
             score -= 2
 
+        # Renko scoring: +/-1 base, +1 extra if 3+ consecutive bricks (strong trend)
+        if renko_trend == "up":
+            score += 1
+            if renko_brick_count and renko_brick_count >= 3:
+                score += 1
+        elif renko_trend == "down":
+            score -= 1
+            if renko_brick_count and renko_brick_count >= 3:
+                score -= 1
+
         # Convert score to signal
-        # Score range: -6 to +6
-        if score >= 4:
+        # Score range: -8 to +8 (was -6 to +6 before Renko)
+        if score >= 5:
             signal = "strong_buy"
-            confidence = min(0.9, 0.6 + (score - 4) * 0.1)
+            confidence = min(0.9, 0.6 + (score - 5) * 0.1)
         elif score >= 2:
             signal = "buy"
-            confidence = 0.5 + (score - 2) * 0.1
-        elif score <= -4:
+            confidence = 0.5 + (score - 2) * 0.05
+        elif score <= -5:
             signal = "strong_sell"
-            confidence = min(0.9, 0.6 + (abs(score) - 4) * 0.1)
+            confidence = min(0.9, 0.6 + (abs(score) - 5) * 0.1)
         elif score <= -2:
             signal = "sell"
-            confidence = 0.5 + (abs(score) - 2) * 0.1
+            confidence = 0.5 + (abs(score) - 2) * 0.05
         else:
             signal = "hold"
             confidence = 0.3
@@ -227,9 +298,11 @@ class TechnicalAnalysisService:
         # Find support/resistance
         support, resistance = self.find_support_resistance(ohlcv_data, current_price)
 
-        # Calculate overall signal
+        # Calculate overall signal (includes Renko)
         overall_signal, confidence = self.calculate_overall_signal(
-            rsi_signal, macd_trend, price_trend
+            rsi_signal, macd_trend, price_trend,
+            renko_trend=indicators.renko_trend,
+            renko_brick_count=indicators.renko_brick_count,
         )
 
         # Generate reasoning
@@ -324,6 +397,16 @@ class TechnicalAnalysisService:
             parts.append("Volume is higher than average, indicating strong interest.")
         elif volume_signal == "low":
             parts.append("Volume is lower than average, suggesting weak conviction.")
+
+        # Renko
+        if indicators.renko_trend:
+            brick_dir = "bullish (green)" if indicators.renko_trend == "up" else "bearish (red)"
+            parts.append(
+                f"Renko chart (brick size ₹{indicators.renko_brick_size:.0f}) shows "
+                f"{indicators.renko_brick_count} consecutive {brick_dir} bricks."
+            )
+            if indicators.renko_last_reversal_price:
+                parts.append(f"Last Renko reversal was at ₹{indicators.renko_last_reversal_price:.2f}.")
 
         # Overall signal
         signal_text = overall_signal.replace("_", " ").title()

@@ -23,6 +23,15 @@ class BacktestResult:
 
 
 @dataclass
+class _RenkoState:
+    """Tracks Renko brick state across candles."""
+    brick_size: float = 15.0
+    base_price: float = 0.0
+    current_direction: str = ""  # "up" or "down" or "" (no bricks yet)
+    initialized: bool = False
+
+
+@dataclass
 class _RuleState:
     """Mutable state for a rule during backtesting."""
     spec: RuleSpec
@@ -93,6 +102,9 @@ class BacktestEngine:
         # Build rule states
         self._rules: list[_RuleState] = [_RuleState(spec=r) for r in rules]
         self._sim = TradeSimulator(symbol)
+
+        # Renko state: keyed by brick_size so multiple brick sizes can coexist
+        self._renko: dict[float, _RenkoState] = {}
 
     def run(self) -> BacktestResult:
         """Run the backtest candle by candle."""
@@ -169,6 +181,9 @@ class BacktestEngine:
 
         if spec.trigger_type == "trailing_stop":
             return self._check_trailing(rs, candle)
+
+        if spec.trigger_type == "renko":
+            return self._check_renko(tc, candle)
 
         return False
 
@@ -255,6 +270,57 @@ class BacktestEngine:
                 return False
             stop = rs.lowest_price * (1 + trail_pct / 100)
             return candle["high"] >= stop
+
+    def _check_renko(self, tc: dict, candle: dict) -> bool:
+        """Check Renko reversal trigger.
+
+        Builds Renko bricks from candle closes and detects direction changes.
+        """
+        brick_size = tc.get("brick_size", 15.0)
+        condition = tc.get("condition", "")
+
+        # Get or create Renko state for this brick size
+        if brick_size not in self._renko:
+            self._renko[brick_size] = _RenkoState(brick_size=brick_size)
+
+        rs = self._renko[brick_size]
+        price = candle["close"]
+
+        if not rs.initialized:
+            rs.base_price = price
+            rs.initialized = True
+            return False
+
+        prev_direction = rs.current_direction
+        new_bricks = False
+
+        # Build bricks from current price
+        diff = price - rs.base_price
+        while diff >= brick_size:
+            rs.base_price += brick_size
+            rs.current_direction = "up"
+            new_bricks = True
+            diff = price - rs.base_price
+        while diff <= -brick_size:
+            rs.base_price -= brick_size
+            rs.current_direction = "down"
+            new_bricks = True
+            diff = price - rs.base_price
+
+        if not new_bricks:
+            return False
+
+        # Detect reversals
+        if condition == "reversal_up":
+            return prev_direction == "down" and rs.current_direction == "up"
+        elif condition == "reversal_down":
+            return prev_direction == "up" and rs.current_direction == "down"
+        elif condition == "new_brick_up":
+            return rs.current_direction == "up"
+        elif condition == "new_brick_down":
+            return rs.current_direction == "down"
+
+        return False
 
     def _process_fire(self, rs: _RuleState, candle: dict, ts: datetime) -> None:
         """Process a fired rule — open or close position as appropriate."""

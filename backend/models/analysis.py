@@ -20,6 +20,12 @@ class TechnicalIndicators(BaseModel):
     volume_avg_20: float | None = Field(default=None, description="20-period average volume")
     current_volume: float = Field(description="Current/latest volume")
 
+    # Renko
+    renko_trend: str | None = Field(default=None, description="Renko trend: 'up', 'down', or None")
+    renko_brick_count: int | None = Field(default=None, description="Consecutive bricks in current trend direction")
+    renko_brick_size: float | None = Field(default=None, description="Brick size used")
+    renko_last_reversal_price: float | None = Field(default=None, description="Price level of last Renko reversal")
+
 
 class MarketAnalysis(BaseModel):
     """Result of technical analysis on a symbol."""

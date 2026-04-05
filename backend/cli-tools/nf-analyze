@@ -12,7 +12,7 @@ if _backend_dir not in sys.path:
 from base import SYMBOLS, format_inr, init_client, print_error, print_json, run_async, validate_symbol  # noqa: E402
 
 
-def analyze_single(symbol: str, interval: str, as_json: bool):
+def analyze_single(symbol: str, interval: str, as_json: bool, renko_brick: float = 15.0):
     """Run full technical analysis on a single stock."""
     from services.technical_analysis import TechnicalAnalysisService
 
@@ -30,7 +30,7 @@ def analyze_single(symbol: str, interval: str, as_json: bool):
         return
 
 
-    ta = TechnicalAnalysisService()
+    ta = TechnicalAnalysisService(renko_brick_size=renko_brick)
     analysis = ta.analyze(sym, candles)
     ind = analysis.indicators
 
@@ -54,6 +54,10 @@ def analyze_single(symbol: str, interval: str, as_json: bool):
             "atr_14": ind.atr_14,
             "support_level": analysis.support_level,
             "resistance_level": analysis.resistance_level,
+            "renko_trend": ind.renko_trend,
+            "renko_brick_count": ind.renko_brick_count,
+            "renko_brick_size": ind.renko_brick_size,
+            "renko_last_reversal": ind.renko_last_reversal_price,
             "reasoning": analysis.reasoning,
         })
         return
@@ -91,6 +95,14 @@ def analyze_single(symbol: str, interval: str, as_json: bool):
     print(f"     EMA 12: {ema12_str:<12} |  EMA 26: {ema26_str}")
     print()
     print(f"   ATR (14): {atr14_str}")
+
+    if ind.renko_trend:
+        renko_emoji = "🟩" if ind.renko_trend == "up" else "🟥"
+        renko_dir = "UP" if ind.renko_trend == "up" else "DOWN"
+        print(f"\n   Renko (brick ₹{ind.renko_brick_size:.0f}):")
+        print(f"     Trend: {renko_emoji} {renko_dir} ({ind.renko_brick_count} consecutive bricks)")
+        if ind.renko_last_reversal_price:
+            print(f"     Last reversal: {format_inr(ind.renko_last_reversal_price)}")
 
     if analysis.support_level or analysis.resistance_level:
         print()
@@ -187,13 +199,17 @@ Examples:
         choices=["15minute", "30minute", "day"],
         help="Analysis timeframe (default: 15minute)",
     )
+    parser.add_argument(
+        "--renko-brick", type=float, default=15.0,
+        help="Renko brick size in rupees (default: 15)",
+    )
 
     args = parser.parse_args()
 
     if args.compare or len(args.symbols) > 1:
         compare_stocks(args.symbols, args.interval, args.json)
     else:
-        analyze_single(args.symbols[0], args.interval, args.json)
+        analyze_single(args.symbols[0], args.interval, args.json, renko_brick=args.renko_brick)
 
 
 if __name__ == "__main__":
