@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""ML-based price forecasting using TimesFM.
+
+Predicts future stock prices with confidence intervals using Google's
+TimesFM 2.5 foundation model (200M params, PyTorch). Outputs directional
+signal (bullish/bearish/neutral), predicted change %, and day-by-day
+price forecasts with confidence bounds.
+
+Requires: pip install -r requirements-forecast.txt
+"""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+
+
+def _get_user_id() -> int:
+    uid = os.environ.get("NF_USER_ID")
+    if not uid:
+        print_error("NF_USER_ID not set. This tool requires user context for --watchlist.")
+    return int(uid)
+
+
+def _get_session():
+    from database.session import AsyncSessionLocal
+    return AsyncSessionLocal()
+
+
+def _fetch_close_prices(client, symbol: str, days: int = 365) -> tuple[list[float], float]:
+    """Fetch historical close prices and current price for a symbol.
+
+    Returns (close_prices, current_price). close_prices is oldest-first.
+    """
+    candles = run_async(client.get_historical_data(symbol, interval="day", days=days))
+    if not candles:
+        print_error(f"No historical data for {symbol}")
+
+    close_prices = [c.close for c in candles]
+    current_price = close_prices[-1]
+    return close_prices, current_price
+
+
+def _get_forecaster():
+    """Import and instantiate the forecaster, with a helpful error on failure."""
+    try:
+        from services.timesfm_forecaster import TimesFMForecaster
+        return TimesFMForecaster()
+    except ImportError as e:
+        print_error(str(e))
+
+
+def forecast_single(symbol: str, horizon: int, as_json: bool):
+    """Forecast a single stock."""
+    sym = validate_symbol(symbol)
+    client = init_client()
+    forecaster = _get_forecaster()
+
+    print(f"Fetching historical data for {sym}...", file=sys.stderr)
+    close_prices, current_price = _fetch_close_prices(client, sym)
+
+    print(f"Running TimesFM forecast ({len(close_prices)} data points, {horizon}d horizon)...", file=sys.stderr)
+    result = forecaster.forecast_single(
+        symbol=sym,
+        close_prices=close_prices,
+        current_price=current_price,
+        horizon=horizon,
+    )
+
+    # Store in DB if user context available
+    uid = os.environ.get("NF_USER_ID")
+    if uid:
+        _store_forecast(result, int(uid))
+
+    if as_json:
+        print_json(result.to_dict())
+        return
+
+    _print_forecast_human(result)
+
+
+def forecast_multiple(symbols: list[str], horizon: int, as_json: bool):
+    """Forecast multiple stocks."""
+    client = init_client()
+    forecaster = _get_forecaster()
+
+    symbols_data = []
+    for symbol in symbols:
+        sym = validate_symbol(symbol)
+        print(f"Fetching data for {sym}...", file=sys.stderr)
+        try:
+            close_prices, current_price = _fetch_close_prices(client, sym)
+            symbols_data.append({
+                "symbol": sym,
+                "close_prices": close_prices,
+                "current_price": current_price,
+            })
+        except SystemExit:
+            # print_error exits; skip this symbol in batch mode
+            continue
+
+    if not symbols_data:
+        print_error("No valid symbols to forecast")
+
+    print(f"Running batch forecast ({len(symbols_data)} symbols, {horizon}d horizon)...", file=sys.stderr)
+    results = forecaster.forecast_batch(symbols_data, horizon=horizon)
+
+    # Store in DB if user context available
+    uid = os.environ.get("NF_USER_ID")
+    if uid:
+        _store_results(results, int(uid))
+
+    if as_json:
+        print_json([r.to_dict() for r in results])
+        return
+
+    for result in results:
+        _print_forecast_human(result)
+        print()
+
+
+def forecast_watchlist(horizon: int, as_json: bool):
+    """Forecast all symbols in the user's watchlist."""
+    from database.models import WatchlistItem
+    from sqlalchemy import select
+
+    user_id = _get_user_id()
+
+    async def _fetch_watchlist():
+        async with _get_session() as session:
+            result = await session.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.user_id == user_id
+                ).order_by(WatchlistItem.created_at.desc())
+            )
+            return result.scalars().all()
+
+    items = run_async(_fetch_watchlist())
+    if not items:
+        print_error("Watchlist is empty. Add symbols with: nf-watchlist add SYMBOL")
+
+    symbols = [item.symbol for item in items]
+    print(f"Forecasting {len(symbols)} watchlist symbols: {', '.join(symbols)}", file=sys.stderr)
+    forecast_multiple(symbols, horizon, as_json)
+
+
+def _store_forecast(result, user_id: int):
+    """Store a forecast result in the DB."""
+    from database.models import PriceForecast
+
+    async def _save():
+        async with _get_session() as session:
+            forecast = PriceForecast(
+                user_id=user_id,
+                symbol=result.symbol,
+                horizon_days=result.forecast_horizon,
+                current_price=result.current_price,
+                data_points_used=result.data_points_used,
+                signal=result.signal,
+                confidence=result.confidence,
+                predicted_change_pct=result.predicted_change_pct,
+                predictions=[p.__dict__ if hasattr(p, '__dict__') else p for p in result.predictions],
+                model_version=result.model,
+                inference_time_ms=result.inference_time_ms,
+            )
+            session.add(forecast)
+            await session.commit()
+
+    try:
+        run_async(_save())
+    except Exception as e:
+        print(f"Warning: failed to store forecast in DB: {e}", file=sys.stderr)
+
+
+def _store_results(results, user_id: int):
+    """Store multiple forecast results in DB."""
+    for result in results:
+        if result.signal != "error":
+            _store_forecast(result, user_id)
+
+
+def show_latest(symbols: list[str] | None, watchlist: bool, as_json: bool):
+    """Show latest cached forecasts from DB."""
+    from database.models import PriceForecast, WatchlistItem
+    from sqlalchemy import select, func
+
+    user_id = _get_user_id()
+
+    async def _fetch():
+        async with _get_session() as session:
+            if watchlist:
+                # Get watchlist symbols
+                wl_result = await session.execute(
+                    select(WatchlistItem.symbol).where(WatchlistItem.user_id == user_id)
+                )
+                target_symbols = [r[0] for r in wl_result.fetchall()]
+            else:
+                target_symbols = [s.upper() for s in symbols] if symbols else []
+
+            if not target_symbols:
+                return []
+
+            # Get latest forecast per symbol using a subquery
+            latest_subq = (
+                select(
+                    PriceForecast.symbol,
+                    func.max(PriceForecast.created_at).label("max_created")
+                )
+                .where(
+                    PriceForecast.user_id == user_id,
+                    PriceForecast.symbol.in_(target_symbols),
+                )
+                .group_by(PriceForecast.symbol)
+                .subquery()
+            )
+
+            result = await session.execute(
+                select(PriceForecast)
+                .join(
+                    latest_subq,
+                    (PriceForecast.symbol == latest_subq.c.symbol)
+                    & (PriceForecast.created_at == latest_subq.c.max_created)
+                )
+                .where(PriceForecast.user_id == user_id)
+            )
+            return result.scalars().all()
+
+    forecasts = run_async(_fetch())
+
+    if not forecasts:
+        print_error("No cached forecasts found. Run nf-forecast SYMBOL first to generate forecasts.")
+
+    if as_json:
+        print_json([{
+            "symbol": f.symbol,
+            "current_price": f.current_price,
+            "forecast_horizon": f.horizon_days,
+            "signal": f.signal,
+            "confidence": round(f.confidence, 3),
+            "predicted_change_pct": round(f.predicted_change_pct, 2),
+            "predictions": f.predictions,
+            "model": f.model_version,
+            "inference_time_ms": f.inference_time_ms,
+            "data_points_used": f.data_points_used,
+            "generated_at": f.created_at.isoformat() if f.created_at else "",
+        } for f in forecasts])
+        return
+
+    from services.timesfm_forecaster import ForecastResult, PredictionPoint
+    for f in forecasts:
+        result = ForecastResult(
+            symbol=f.symbol,
+            current_price=f.current_price,
+            forecast_horizon=f.horizon_days,
+            signal=f.signal,
+            confidence=f.confidence,
+            predicted_change_pct=f.predicted_change_pct,
+            predictions=[PredictionPoint(**p) for p in f.predictions],
+            model=f.model_version,
+            inference_time_ms=f.inference_time_ms or 0,
+            data_points_used=f.data_points_used,
+            generated_at=f.created_at.isoformat() if f.created_at else "",
+        )
+        _print_forecast_human(result)
+        print()
+
+
+def download_model():
+    """Pre-download model weights."""
+    try:
+        from services.timesfm_forecaster import LocalTimesFM25Provider
+        path = LocalTimesFM25Provider.download_model()
+        print_success(f"Model downloaded to: {path}")
+    except ImportError as e:
+        print_error(str(e))
+
+
+def _print_forecast_human(result):
+    """Print forecast in human-readable format."""
+    signal_emoji = {
+        "bullish": "🟢", "bearish": "🔴", "neutral": "🟡", "error": "❌",
+    }
+
+    emoji = signal_emoji.get(result.signal, "")
+    direction = "▲" if result.predicted_change_pct > 0 else "▼" if result.predicted_change_pct < 0 else "─"
+
+    print(f"🔮 Price Forecast: {result.symbol}")
+    print(f"   Current Price: {format_inr(result.current_price)}")
+    print(f"   Signal: {emoji} {result.signal.upper()} ({direction}{abs(result.predicted_change_pct):.1f}%)")
+    print(f"   Confidence: {result.confidence:.0%}")
+    print(f"   Horizon: {result.forecast_horizon} trading days")
+    print()
+
+    if result.predictions:
+        print(f"   {'Date':<12} {'Predicted':>12} {'Range':>25}")
+        print(f"   {'─' * 12} {'─' * 12} {'─' * 25}")
+        for p in result.predictions:
+            range_str = f"{format_inr(p.lower)} – {format_inr(p.upper)}"
+            print(f"   {p.date:<12} {format_inr(p.price):>12} {range_str:>25}")
+
+    print()
+    print(f"   Model: {result.model}")
+    print(f"   Data points: {result.data_points_used} | Inference: {result.inference_time_ms}ms")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-forecast",
+        description="ML price forecasting using TimesFM",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-forecast RELIANCE                        5-day forecast (default)
+  nf-forecast RELIANCE --horizon 20           20-day forecast
+  nf-forecast RELIANCE TCS INFY --json        Multiple symbols, JSON output
+  nf-forecast --watchlist                     Forecast all watchlist symbols
+  nf-forecast --download-model                Pre-download model weights (~800MB)
+""",
+    )
+    parser.add_argument("symbols", nargs="*", help="Stock symbol(s) to forecast")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument(
+        "--horizon", type=int, default=5,
+        choices=[5, 10, 20, 60],
+        help="Forecast horizon in trading days (default: 5)",
+    )
+    parser.add_argument("--watchlist", action="store_true", help="Forecast all watchlist symbols")
+    parser.add_argument("--latest", action="store_true", help="Show latest cached forecasts from DB (no inference)")
+    parser.add_argument("--download-model", action="store_true", help="Pre-download model weights")
+    parser.add_argument("--weights", default=None,
+                        help="Path to fine-tuned weights (.pt file). Also settable via NF_TIMESFM_WEIGHTS env var.")
+
+    args = parser.parse_args()
+
+    # Set fine-tuned weights path before any model loading
+    if args.weights:
+        os.environ["NF_TIMESFM_WEIGHTS"] = args.weights
+
+    if args.download_model:
+        download_model()
+        return
+
+    if args.latest:
+        show_latest(args.symbols, args.watchlist, args.json)
+    elif args.watchlist:
+        forecast_watchlist(args.horizon, args.json)
+    elif args.symbols:
+        if len(args.symbols) == 1:
+            forecast_single(args.symbols[0], args.horizon, args.json)
+        else:
+            forecast_multiple(args.symbols, args.horizon, args.json)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

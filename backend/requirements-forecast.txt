@@ -1,0 +1,19 @@
+# TimesFM price forecasting dependencies
+# Separate from main requirements.txt to keep prod VPS lean.
+#
+# Install (CPU-only, recommended):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install "timesfm[torch] @ git+https://github.com/google-research/timesfm.git"
+#
+# Install (with CUDA GPU support):
+#   pip install torch
+#   pip install "timesfm[torch] @ git+https://github.com/google-research/timesfm.git"
+#
+# Note: The PyPI timesfm package is JAX-only and requires Python <3.12.
+# The PyTorch backend (v2.5) must be installed from source (GitHub).
+#
+# Model weights (~800MB) download automatically on first use.
+# To pre-download: python cli-tools/nf-forecast --download-model
+
+torch>=2.0.0
+timesfm @ git+https://github.com/google-research/timesfm.git

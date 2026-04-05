@@ -1323,6 +1323,14 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-analyze SYMBOL [--interval 15minute|30minute|day] [--json]` — Full analysis
 - `python cli-tools/nf-analyze SYMBOL1 SYMBOL2 --compare [--json]` — Compare signals
 
+**Price Forecasting (ML-based):**
+- `python cli-tools/nf-forecast SYMBOL [--horizon 5|10|20|60] [--json]` — TimesFM ML price forecast with confidence intervals
+- `python cli-tools/nf-forecast SYMBOL1 SYMBOL2 ... [--json]` — Multiple symbols
+- `python cli-tools/nf-forecast --watchlist [--json]` — Forecast all watchlist symbols
+- `python cli-tools/nf-forecast --latest SYMBOL [--json]` — Read cached forecast from DB (instant, no ML inference)
+- `python cli-tools/nf-forecast --latest --watchlist [--json]` — All cached watchlist forecasts
+NOTE: Live inference takes ~1-2s/symbol. Use --latest for cached pre-market forecasts when available. Forecasts include signal (bullish/bearish/neutral), confidence, and day-by-day price predictions with confidence intervals. Use as ONE signal among many — combine with nf-analyze TA indicators for confluence. ~50% directional accuracy alone, but useful for price range estimation and trend bias.
+
 **Portfolio:**
 - `python cli-tools/nf-portfolio [--json]` — Portfolio summary with all holdings + intraday positions
 - `python cli-tools/nf-portfolio --position SYMBOL [--json]` — Single position details (checks both delivery and intraday)
@@ -1830,6 +1838,10 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                 import os as _os
 
                 subprocess_env = _os.environ.copy()
+                # Ensure subprocess uses the same venv Python as the FastAPI process
+                venv_bin = str(Path(__file__).parent.parent / "venv" / "bin")
+                subprocess_env["PATH"] = venv_bin + ":" + subprocess_env.get("PATH", "")
+                subprocess_env["VIRTUAL_ENV"] = str(Path(__file__).parent.parent / "venv")
                 if ctx.deps.upstox_access_token:
                     subprocess_env["NF_ACCESS_TOKEN"] = ctx.deps.upstox_access_token
                 if ctx.deps.user_id:

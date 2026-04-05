@@ -615,6 +615,35 @@ class WatchlistItem(Base):
     )
 
 
+class PriceForecast(Base):
+    """TimesFM ML price forecasts for watchlist symbols."""
+    __tablename__ = "price_forecasts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    symbol = Column(String(50), nullable=False)
+    exchange = Column(String(10), nullable=False, default="NSE")
+    horizon_days = Column(Integer, nullable=False)
+    current_price = Column(Float, nullable=False)
+    data_points_used = Column(Integer, nullable=False)
+    signal = Column(String(10), nullable=False)  # bullish, bearish, neutral
+    confidence = Column(Float, nullable=False)
+    predicted_change_pct = Column(Float, nullable=False)
+    predictions = Column(JSON, nullable=False)  # [{date, price, lower, upper}, ...]
+    model_version = Column(String(100), nullable=False, default="google/timesfm-2.5-200m-pytorch")
+    inference_time_ms = Column(Integer, nullable=True)
+    actual_prices = Column(JSON, nullable=True)  # filled later for accuracy tracking
+    mape = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    user = relationship("User")
+
+    __table_args__ = (
+        Index('idx_forecasts_user_symbol', 'user_id', 'symbol', 'created_at'),
+        Index('idx_forecasts_user_latest', 'user_id', 'created_at'),
+    )
+
+
 class MonitorRule(Base):
     """IFTTT-style trade monitoring rules evaluated by nf-monitor daemon."""
     __tablename__ = "monitor_rules"

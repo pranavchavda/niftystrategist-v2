@@ -97,3 +97,6 @@ node_modules/
 
 # User uploads (files attached in chat)
 backend/uploads/
+# TimesFM model weights and training data
+backend/checkpoints/
+backend/data/
