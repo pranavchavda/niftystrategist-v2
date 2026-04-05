@@ -64,6 +64,9 @@ class WorkflowScheduler:
         # Add proactive TOTP token refresh job (3:35 AM IST = 22:05 UTC)
         self._add_totp_refresh_job()
 
+        # Add pre-market forecast batch job (08:30 IST = 03:00 UTC, weekdays)
+        self._add_forecast_batch_job()
+
         # Start the scheduler
         self.scheduler.start()
         self._started = True
@@ -384,6 +387,146 @@ class WorkflowScheduler:
 
         except Exception as e:
             logger.exception("Proactive TOTP refresh: fatal error: %s", e)
+
+    def _add_forecast_batch_job(self):
+        """Add a pre-market batch forecast job for all users' watchlist symbols.
+
+        Runs at 03:00 UTC (08:30 IST) on weekdays, before market open.
+        Stores results in price_forecasts table so morning awakenings
+        can read cached forecasts instantly via nf-forecast --latest.
+
+        Skips gracefully if TimesFM is not installed or no watchlists exist.
+        """
+        job_id = "premarket_forecast_batch"
+
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        self.scheduler.add_job(
+            func=self._run_forecast_batch,
+            trigger=CronTrigger(hour=3, minute=0, day_of_week="mon-fri"),
+            id=job_id,
+            name="Pre-market TimesFM batch forecast (08:30 IST)",
+            replace_existing=True,
+        )
+        logger.info("Scheduled pre-market forecast batch at 03:00 UTC (08:30 IST) weekdays")
+
+    async def _run_forecast_batch(self):
+        """Run TimesFM forecasts for all users' watchlist symbols."""
+        from database.models import User as DBUser, WatchlistItem
+        from database.session import get_db_session
+
+        # Check if TimesFM is available
+        try:
+            from services.timesfm_forecaster import TimesFMForecaster, TIMESFM_AVAILABLE
+            if not TIMESFM_AVAILABLE:
+                logger.info("Forecast batch: TimesFM not installed, skipping")
+                return
+        except ImportError:
+            logger.info("Forecast batch: timesfm_forecaster not available, skipping")
+            return
+
+        logger.info("Forecast batch: starting pre-market forecasts")
+
+        try:
+            async with get_db_session() as session:
+                # Get all users with watchlist items
+                result = await session.execute(
+                    select(DBUser.id).join(
+                        WatchlistItem, DBUser.id == WatchlistItem.user_id
+                    ).distinct()
+                )
+                user_ids = [row[0] for row in result.all()]
+
+            if not user_ids:
+                logger.info("Forecast batch: no users with watchlist items, skipping")
+                return
+
+            logger.info("Forecast batch: found %d users with watchlists", len(user_ids))
+
+            for uid in user_ids:
+                await self._forecast_user_watchlist(uid)
+
+        except Exception as e:
+            logger.exception("Forecast batch: fatal error: %s", e)
+
+    async def _forecast_user_watchlist(self, user_id: int):
+        """Run forecasts for a single user's watchlist."""
+        import asyncio
+
+        from api.upstox_oauth import get_user_upstox_token
+        from database.models import PriceForecast, WatchlistItem
+        from database.session import get_db_session
+        from services.timesfm_forecaster import TimesFMForecaster
+        from services.upstox_client import UpstoxClient
+
+        try:
+            # Get user's Upstox token
+            token = await get_user_upstox_token(user_id)
+            if not token:
+                logger.warning("Forecast batch: no valid token for user %d, skipping", user_id)
+                return
+
+            # Get watchlist symbols
+            async with get_db_session() as session:
+                result = await session.execute(
+                    select(WatchlistItem.symbol).where(WatchlistItem.user_id == user_id)
+                )
+                symbols = [row[0] for row in result.all()]
+
+            if not symbols:
+                return
+
+            logger.info("Forecast batch: user %d — %d symbols", user_id, len(symbols))
+
+            client = UpstoxClient(access_token=token, user_id=user_id)
+            forecaster = TimesFMForecaster()
+
+            for sym in symbols:
+                try:
+                    candles = await client.get_historical_data(sym, interval="day", days=365)
+                    if not candles:
+                        continue
+
+                    close_prices = [c.close for c in candles]
+                    current_price = close_prices[-1]
+
+                    result = forecaster.forecast_single(
+                        symbol=sym,
+                        close_prices=close_prices,
+                        current_price=current_price,
+                        horizon=5,
+                    )
+
+                    # Store in DB
+                    async with get_db_session() as session:
+                        forecast = PriceForecast(
+                            user_id=user_id,
+                            symbol=sym,
+                            horizon_days=result.forecast_horizon,
+                            current_price=result.current_price,
+                            data_points_used=result.data_points_used,
+                            signal=result.signal,
+                            confidence=result.confidence,
+                            predicted_change_pct=result.predicted_change_pct,
+                            predictions=[p.__dict__ for p in result.predictions],
+                            model_version=result.model,
+                            inference_time_ms=result.inference_time_ms,
+                        )
+                        session.add(forecast)
+                        await session.commit()
+
+                    logger.info("Forecast batch: user %d — %s: %s (%.1f%%)",
+                                user_id, sym, result.signal, result.predicted_change_pct)
+
+                except Exception as e:
+                    logger.warning("Forecast batch: user %d — %s failed: %s", user_id, sym, e)
+
+                # Brief pause between symbols to avoid hammering Upstox
+                await asyncio.sleep(0.5)
+
+        except Exception as e:
+            logger.error("Forecast batch: user %d failed: %s", user_id, e)
 
     def get_scheduled_jobs(self) -> list:
         """Get all scheduled jobs for debugging/monitoring"""
