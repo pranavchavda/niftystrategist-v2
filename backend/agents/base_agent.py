@@ -166,7 +166,16 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
                 logger.error("OPENROUTER_API_KEY not found in environment or .env file!")
                 raise ValueError("OPENROUTER_API_KEY is required for OpenRouter models")
             logger.info(f"Using OpenRouterProvider with key: {api_key[:8]}...")
-            provider = OpenRouterProvider(api_key=api_key)
+            # Pass a custom AsyncOpenAI client with higher max_retries (default is 2).
+            # Free-tier OpenRouter models have aggressive rate limits — the extra retries
+            # with exponential backoff (~0.5s, 1s, 2s, 4s, 8s) give ~15s for limits to clear.
+            from openai import AsyncOpenAI as AsyncOpenAIClient
+            openai_client = AsyncOpenAIClient(
+                base_url='https://openrouter.ai/api/v1',
+                api_key=api_key,
+                max_retries=5,
+            )
+            provider = OpenRouterProvider(openai_client=openai_client)
             model_name = f"openai/{config.model_name}" if "/" not in config.model_name else config.model_name
             logger.info(f"Using model: {model_name} via OpenRouterProvider")
             use_responses_api = model_name.startswith('openai/')

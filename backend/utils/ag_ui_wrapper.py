@@ -104,19 +104,29 @@ async def enhanced_ag_ui_stream(original_stream: AsyncIterator[bytes], deps=None
             if item_type == 'error':
                 error = item_data
                 error_msg = str(error)
-                logger.error(f"[AG-UI] Stream error from Anthropic API: {error_msg}")
+                logger.error(f"[AG-UI] Stream error: {error_msg}")
 
-                # Check if this is an Anthropic API error (500, rate limit, etc.)
+                # Extract model name from error for better diagnostics
+                model_name = ''
+                if 'model_name:' in error_msg:
+                    try:
+                        model_name = error_msg.split('model_name:')[1].split(',')[0].strip()
+                    except (IndexError, ValueError):
+                        pass
+
+                # Check if this is an API error (500, rate limit, etc.)
                 if 'status_code: 500' in error_msg or 'api_error' in error_msg:
                     error_event = {
                         "type": "ERROR",
                         "error": "The AI model encountered an internal error. This is usually temporary - please try again."
                     }
                 elif 'rate_limit' in error_msg.lower() or '429' in error_msg:
+                    model_hint = f" ({model_name})" if model_name else ""
                     error_event = {
                         "type": "ERROR",
-                        "error": "Rate limit exceeded. Please wait a moment and try again."
+                        "error": f"Rate limit exceeded{model_hint}. The model is temporarily overloaded — please retry in a few seconds."
                     }
+                    logger.warning(f"[AG-UI] 429 rate limit after all SDK retries exhausted for {model_name or 'unknown model'}")
                 else:
                     error_event = {
                         "type": "ERROR",
