@@ -786,7 +786,7 @@ class WorkflowDefinition(Base):
     cron_expression = Column(String(100), nullable=True)
     scheduled_at = Column(DateTime, nullable=True)
 
-    timeout_seconds = Column(Integer, default=120)
+    timeout_seconds = Column(Integer, default=900)
     notify_on_complete = Column(Boolean, default=False)
     notify_on_failure = Column(Boolean, default=True)
 

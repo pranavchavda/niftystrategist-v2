@@ -344,8 +344,8 @@ def main():
     parser.add_argument(
         "--timeout",
         type=int,
-        default=600,
-        help="Execution timeout in seconds (default: 600)",
+        default=900,
+        help="Execution timeout in seconds (default: 900)",
     )
     parser.add_argument(
         "--auth-token",

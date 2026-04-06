@@ -248,23 +248,42 @@ class WorkflowScheduler:
         except Exception as e:
             logger.exception(f"Failed to execute workflow {workflow_type}: {e}")
 
+    # Max auto-retries for failed one-time awakenings (total attempts = MAX_AWAKENING_RETRIES + 1)
+    MAX_AWAKENING_RETRIES = 2
+    AWAKENING_RETRY_DELAY_SECONDS = 90
+
     async def _execute_custom_workflow_job(
         self,
         workflow_def_id: int,
-        user_id: int
+        user_id: int,
+        retry_count: int = 0
     ):
         """
         Execute a scheduled custom workflow job.
 
         This is called by APScheduler when a custom workflow job fires.
+        For one-time awakenings that fail, auto-retries up to MAX_AWAKENING_RETRIES
+        times with a 90-second delay between attempts.
         """
         from services.workflow_engine import WorkflowEngine
 
-        logger.info(f"Executing scheduled custom workflow {workflow_def_id} for user {user_id}")
+        attempt = retry_count + 1
+        attempt_label = f" (attempt {attempt}/{self.MAX_AWAKENING_RETRIES + 1})" if retry_count > 0 else ""
+        logger.info(f"Executing scheduled custom workflow {workflow_def_id} for user {user_id}{attempt_label}")
+
+        failed = False
+        error_msg = None
+        is_one_time = False
 
         try:
             async for session in self.get_db_session():
                 engine = WorkflowEngine(session)
+
+                # Check if this is a one-time workflow (for retry logic)
+                from database.models import WorkflowDefinition
+                wf = await session.get(WorkflowDefinition, workflow_def_id)
+                is_one_time = wf and wf.frequency == "once" and wf.thread_id is not None
+
                 result = await engine.execute_custom_workflow(
                     user_id=user_id,
                     workflow_def_id=workflow_def_id,
@@ -272,14 +291,40 @@ class WorkflowScheduler:
                 )
 
                 if result.success:
-                    logger.info(f"Custom workflow {workflow_def_id} completed successfully")
+                    logger.info(f"Custom workflow {workflow_def_id} completed successfully{attempt_label}")
                 else:
-                    logger.error(f"Custom workflow {workflow_def_id} failed: {result.error}")
+                    logger.error(f"Custom workflow {workflow_def_id} failed: {result.error}{attempt_label}")
+                    failed = True
+                    error_msg = result.error
 
                 break  # Only need one iteration
 
         except Exception as e:
             logger.exception(f"Failed to execute custom workflow {workflow_def_id}: {e}")
+            failed = True
+            error_msg = str(e)
+
+        # Auto-retry failed one-time awakenings
+        if failed and is_one_time and retry_count < self.MAX_AWAKENING_RETRIES:
+            retry_at = datetime.now() + timedelta(seconds=self.AWAKENING_RETRY_DELAY_SECONDS)
+            next_attempt = retry_count + 1
+            job_id = f"custom_workflow_{workflow_def_id}_retry{next_attempt}"
+            logger.warning(
+                f"Scheduling retry {next_attempt}/{self.MAX_AWAKENING_RETRIES} for awakening "
+                f"{workflow_def_id} at {retry_at} (failed: {error_msg})"
+            )
+            self.scheduler.add_job(
+                func=self._execute_custom_workflow_job,
+                trigger=DateTrigger(run_date=retry_at),
+                id=job_id,
+                args=[workflow_def_id, user_id, next_attempt],
+                name=f"Retry {next_attempt}: workflow {workflow_def_id} for user {user_id}",
+                replace_existing=True
+            )
+        elif failed and is_one_time and retry_count >= self.MAX_AWAKENING_RETRIES:
+            logger.error(
+                f"Awakening {workflow_def_id} exhausted all {self.MAX_AWAKENING_RETRIES} retries. Giving up."
+            )
 
     async def add_or_update_workflow(self, config):
         """
