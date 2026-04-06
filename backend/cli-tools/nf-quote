@@ -12,7 +12,6 @@ if _backend_dir not in sys.path:
 
 from base import (  # noqa: E402
     SYMBOLS,
-    NIFTY_50_SYMBOLS,
     format_change,
     format_inr,
     format_volume,
@@ -32,7 +31,7 @@ def fetch_quotes(symbols: list[str], as_json: bool):
     results = []
     errors = []
 
-    from services.instruments_cache import ensure_loaded, symbol_exists, is_nifty50, get_company_name
+    from services.instruments_cache import ensure_loaded, symbol_exists
     ensure_loaded()
 
     for symbol in symbols:
@@ -40,10 +39,6 @@ def fetch_quotes(symbols: list[str], as_json: bool):
         if not symbol_exists(sym):
             errors.append(f"{sym}: Unknown symbol. Use --search to find valid NSE symbols.")
             continue
-        if not is_nifty50(sym):
-            name = get_company_name(sym)
-            label = f" ({name})" if name else ""
-            print(f"ℹ️  {sym}{label} is not a Nifty 50 stock.", file=sys.stderr)
         try:
             quote = run_async(client.get_quote(sym))
             results.append(quote)

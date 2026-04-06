@@ -150,38 +150,46 @@ def forecast_watchlist(horizon: int, as_json: bool):
 
 
 def _store_forecast(result, user_id: int):
-    """Store a forecast result in the DB."""
-    from database.models import PriceForecast
-
-    async def _save():
-        async with _get_session() as session:
-            forecast = PriceForecast(
-                user_id=user_id,
-                symbol=result.symbol,
-                horizon_days=result.forecast_horizon,
-                current_price=result.current_price,
-                data_points_used=result.data_points_used,
-                signal=result.signal,
-                confidence=result.confidence,
-                predicted_change_pct=result.predicted_change_pct,
-                predictions=[p.__dict__ if hasattr(p, '__dict__') else p for p in result.predictions],
-                model_version=result.model,
-                inference_time_ms=result.inference_time_ms,
-            )
-            session.add(forecast)
-            await session.commit()
-
-    try:
-        run_async(_save())
-    except Exception as e:
-        print(f"Warning: failed to store forecast in DB: {e}", file=sys.stderr)
+    """Store a single forecast result in the DB."""
+    _store_results([result], user_id)
 
 
 def _store_results(results, user_id: int):
-    """Store multiple forecast results in DB."""
-    for result in results:
-        if result.signal != "error":
-            _store_forecast(result, user_id)
+    """Store multiple forecast results in a single DB session.
+
+    Uses one asyncio.run() call to avoid the "Future attached to a different loop"
+    error that occurs when multiple run_async() calls create separate event loops
+    while the connection pool is shared.
+    """
+    from database.models import PriceForecast
+
+    valid = [r for r in results if r.signal != "error"]
+    if not valid:
+        return
+
+    async def _save_all():
+        async with _get_session() as session:
+            for result in valid:
+                forecast = PriceForecast(
+                    user_id=user_id,
+                    symbol=result.symbol,
+                    horizon_days=result.forecast_horizon,
+                    current_price=result.current_price,
+                    data_points_used=result.data_points_used,
+                    signal=result.signal,
+                    confidence=result.confidence,
+                    predicted_change_pct=result.predicted_change_pct,
+                    predictions=[p.__dict__ if hasattr(p, '__dict__') else p for p in result.predictions],
+                    model_version=result.model,
+                    inference_time_ms=result.inference_time_ms,
+                )
+                session.add(forecast)
+            await session.commit()
+
+    try:
+        run_async(_save_all())
+    except Exception as e:
+        print(f"Warning: failed to store forecasts in DB: {e}", file=sys.stderr)
 
 
 def show_latest(symbols: list[str] | None, watchlist: bool, as_json: bool):
