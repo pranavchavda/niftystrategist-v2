@@ -99,6 +99,9 @@ class PortfolioPosition(BaseModel):
     product: str | None = Field(
         default=None, description="Product type: 'D' for delivery/CNC, 'I' for intraday/MIS"
     )
+    side: str = Field(
+        default="LONG", description="Position side: 'LONG' or 'SHORT'"
+    )
 
 
 class Portfolio(BaseModel):

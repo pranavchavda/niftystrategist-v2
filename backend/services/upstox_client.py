@@ -895,6 +895,8 @@ class UpstoxClient:
                             sell_qty_map[sym] = sell_qty_map.get(sym, 0) + abs(qty)
                     elif product == 'I' and qty != 0:
                         # Intraday (MIS) position — collect it
+                        # Determine side from raw qty sign: negative = SHORT
+                        position_side = "SHORT" if qty < 0 else "LONG"
                         if sym:
                             # Cache instrument_token for chart/quote lookups
                             inst_token = getattr(pos, 'instrument_token', None)
@@ -916,8 +918,14 @@ class UpstoxClient:
                             if upstox_pnl is not None:
                                 intra_pnl = float(upstox_pnl)
                             else:
-                                # Fallback: compute with abs(qty) to avoid sign bug
-                                intra_pnl = (last_price - avg_price) * abs(qty) if (avg_price and last_price) else 0.0
+                                # Fallback: flip sign for shorts (profit when price drops)
+                                if avg_price and last_price:
+                                    if position_side == "SHORT":
+                                        intra_pnl = (avg_price - last_price) * abs(qty)
+                                    else:
+                                        intra_pnl = (last_price - avg_price) * abs(qty)
+                                else:
+                                    intra_pnl = 0.0
 
                             invested = avg_price * abs(qty)
                             intra_pnl_pct = (intra_pnl / invested * 100) if invested > 0 else 0.0
@@ -948,6 +956,7 @@ class UpstoxClient:
                                     day_change=intra_day_chg,
                                     day_change_percentage=intra_day_chg_pct,
                                     product='I',
+                                    side=position_side,
                                 )
                             )
             except Exception as e:
