@@ -40,6 +40,7 @@ def show_portfolio(as_json: bool):
                     "day_change": p.day_change,
                     "day_change_percentage": p.day_change_percentage,
                     "product": p.product or "D",
+                    "side": p.side,
                 }
                 for p in portfolio.positions
             ],
@@ -54,6 +55,7 @@ def show_portfolio(as_json: bool):
                     "day_change": p.day_change,
                     "day_change_percentage": p.day_change_percentage,
                     "product": "I",
+                    "side": p.side,
                 }
                 for p in portfolio.intraday_positions
             ],
@@ -85,12 +87,14 @@ def show_portfolio(as_json: bool):
 
     if portfolio.intraday_positions:
         print(f"\n⚡ Intraday Positions (MIS)")
-        print(f"{'Symbol':<12} {'Qty':>5} {'Avg Price':>12} {'Current':>12} {'P&L':>12} {'%':>8}")
-        print("-" * 65)
+        print(f"{'Symbol':<12} {'Side':<7} {'Qty':>5} {'Avg Price':>12} {'Current':>12} {'P&L':>12} {'%':>8}")
+        print("-" * 74)
         for p in portfolio.intraday_positions:
             arrow = "▲" if p.pnl >= 0 else "▼"
+            side_label = "SHORT" if p.side == "SHORT" else "LONG"
+            side_icon = "\U0001f534" if p.side == "SHORT" else "\U0001f7e2"
             print(
-                f"{p.symbol:<12} {p.quantity:>5} {format_inr(p.average_price):>12} "
+                f"{p.symbol:<12} {side_icon} {side_label:<5} {p.quantity:>5} {format_inr(p.average_price):>12} "
                 f"{format_inr(p.current_price):>12} {arrow} {format_inr(p.pnl):>10} {p.pnl_percentage:>+7.2f}%"
             )
 
@@ -121,10 +125,13 @@ def show_position(symbol: str, as_json: bool):
             "day_change": position.day_change,
             "day_change_percentage": position.day_change_percentage,
             "total_value": position.quantity * position.current_price,
+            "side": position.side,
         })
         return
 
-    print(f"📊 Position: {position.symbol}\n")
+    side_label = "\U0001f534 SHORT" if position.side == "SHORT" else "\U0001f7e2 LONG"
+    print(f"📊 Position: {position.symbol} ({side_label})\n")
+    print(f"  Side:          {position.side}")
     print(f"  Quantity:      {position.quantity} shares")
     print(f"  Avg Price:     {format_inr(position.average_price)}")
     print(f"  Current Price: {format_inr(position.current_price)}")
