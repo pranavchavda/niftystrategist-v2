@@ -294,6 +294,10 @@ async def save_assistant_message_to_db(
                 output_tokens=output_tokens  # Estimated output tokens
             )
             db.add(msg)
+
+            # Mark thread as needing embedding (cross-thread search)
+            conv.needs_processing_since = utc_now_naive()
+
             await db.commit()
 
             # Log what was saved
@@ -322,9 +326,6 @@ async def save_assistant_message_to_db(
                     'output_tokens': output_tokens
                 }
             )
-
-            # Mark thread as needing embedding (cross-thread search)
-            conv.needs_processing_since = utc_now_naive()
 
             # Check if auto-compaction is needed (fire and forget)
             try:
