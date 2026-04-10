@@ -345,7 +345,8 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             "z-ai/glm-5.1",
             "moonshotai/kimi-k2.5",
             "minimax/minimax-m2.7",
-            "deepseek/deepseek-chat",
+            "qwen/qwen3.6-plus",
+            "deepseek/deepseek-v3.2",
         ]
         fallback_slugs = None
         if use_openrouter:
