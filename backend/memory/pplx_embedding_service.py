@@ -103,19 +103,15 @@ class PplxEmbeddingService:
         response.raise_for_status()
         data = response.json()
 
-        # Response data is flat list of embeddings with document_index + chunk_index
-        # Reconstruct nested structure
-        result: Dict[int, Dict[int, List[float]]] = {}
-        for item in data["data"]:
-            doc_idx = item.get("document_index", 0)
-            chunk_idx = item.get("index", item.get("chunk_index", 0))
-            result.setdefault(doc_idx, {})[chunk_idx] = self._decode_int8_embedding(item["embedding"])
-
-        # Convert to ordered nested list
+        # Response: data is a list of documents, each with a nested "data" array
+        # of chunk embeddings. Structure:
+        #   data[0] = {index: 0, object: "list", data: [{embedding: "...", index: 0}, ...]}
         nested = []
-        for doc_idx in sorted(result.keys()):
-            chunks = result[doc_idx]
-            nested.append([chunks[i] for i in sorted(chunks.keys())])
+        for doc_item in sorted(data["data"], key=lambda x: x.get("index", 0)):
+            chunk_embeddings = []
+            for chunk in sorted(doc_item["data"], key=lambda x: x.get("index", 0)):
+                chunk_embeddings.append(self._decode_int8_embedding(chunk["embedding"]))
+            nested.append(chunk_embeddings)
         return nested
 
     async def _call_standard_api(self, texts: List[str]) -> List[List[float]]:
