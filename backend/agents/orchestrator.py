@@ -1248,15 +1248,15 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 current_thread = ctx.deps.state.thread_id
 
                 async with AsyncSessionLocal() as _db:
-                    _result = await _db.execute(
-                        select(ConvModel.id, ConvModel.title, ConvModel.updated_at)
-                        .where(ConvModel.user_id == user_email)
-                        .where(ConvModel.id != current_thread)
-                        .where(ConvModel.is_archived == False)  # noqa: E712
-                        .where(ConvModel.title.isnot(None))
-                        .order_by(ConvModel.updated_at.desc())
-                        .limit(15)
-                    )
+                    from sqlalchemy import text as sa_text
+                    _result = await _db.execute(sa_text(
+                        "SELECT c.id, c.title, "
+                        "  (SELECT MAX(m.timestamp) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at "
+                        "FROM conversations c "
+                        "WHERE c.user_id = :user_id AND c.id != :current_thread "
+                        "AND c.is_archived = false AND c.title IS NOT NULL "
+                        "ORDER BY last_message_at DESC NULLS LAST LIMIT 15"
+                    ), {"user_id": user_email, "current_thread": current_thread})
                     recent_threads = _result.fetchall()
 
                 if recent_threads:
