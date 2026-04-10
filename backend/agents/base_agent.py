@@ -38,6 +38,7 @@ class AgentConfig(BaseModel):
     max_retries: int = 5  # Allow multiple retries for API errors and self-correction
     temperature: Optional[float] = None  # Optional temperature (defaults per model type)
     thinking_effort: Optional[str] = None  # Unified thinking: 'high', 'medium', 'low', or None
+    fallback_model_slug: Optional[str] = None  # If set, wraps primary model with FallbackModel
 
 
 class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
@@ -76,6 +77,24 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
         # Set up the model with OpenRouter or direct OpenAI
         # Returns (model, model_settings) tuple — settings needed for Agent constructor
         self.model, self.model_settings = self._setup_model(config)
+
+        # Wrap with FallbackModel if a fallback is configured.
+        # Falls back on ModelAPIError (default) — when the primary model's API
+        # returns 4xx/5xx errors or is unreachable.
+        if config.fallback_model_slug:
+            from pydantic_ai.models.fallback import FallbackModel
+            fallback_config = AgentConfig(
+                name=config.name,
+                description=config.description,
+                model_name=config.fallback_model_slug,
+                use_openrouter=True,  # Fallback is always via OpenRouter
+                thinking_effort=None,  # Keep fallback simple
+            )
+            fallback_model, _ = self._setup_model(fallback_config)
+            self.model = FallbackModel(self.model, fallback_model)
+            logger.info(
+                f"FallbackModel enabled: {config.model_name} → {config.fallback_model_slug}"
+            )
 
         # Create the Pydantic AI agent
         # Use instructions instead of system_prompt per Pydantic AI docs

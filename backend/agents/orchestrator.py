@@ -338,12 +338,20 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             f"Initializing orchestrator with model: {model_id} (slug: {model_slug}, openrouter: {use_openrouter}, thinking: {thinking_effort})"
         )
 
+        # Fallback model: if the primary model's API fails (4xx/5xx),
+        # automatically retry with a reliable OpenRouter model.
+        # Anthropic models don't need this (direct API, very stable).
+        fallback_slug = None
+        if use_openrouter:
+            fallback_slug = "deepseek/deepseek-chat"
+
         config = AgentConfig(
             name="orchestrator",
             description="Main orchestrator coordinating all specialized agents",
             model_name=model_slug,
             use_openrouter=use_openrouter,
             thinking_effort=thinking_effort,
+            fallback_model_slug=fallback_slug,
         )
 
         # Initialize builtin tools for Claude models
@@ -1688,15 +1696,25 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                 "tool not available",
             ]
 
-            if not command or any(p in command.lower() for p in hallucination_patterns):
-                # If command is empty or matches hallucination pattern
+            # Detect JSON fragment garbage (e.g. "}", "true}", "120}", ",")
+            # This happens when the model emits malformed tool call arguments
+            import re
+            _json_fragment_re = re.compile(r'^[\s{}\[\],:"0-9a-z]+$')
+            is_json_fragment = (
+                len(command) <= 10
+                and _json_fragment_re.match(command)
+                and not command.startswith("cd")
+                and not command.startswith("ls")
+            )
+
+            if not command or is_json_fragment or any(p in command.lower() for p in hallucination_patterns):
                 logger.warning(
                     f"Detected invalid bash command input: '{original_command}'"
                 )
-                return (
-                    f"❌ ERROR: You sent an invalid command string: '{original_command}'\n"
-                    f"You must send the ACTUAL bash command to execute (e.g., 'ls -la', 'python script.py').\n"
-                    f"Do not send conversational filler or 'nothing to execute'."
+                raise ModelRetry(
+                    f"You sent '{original_command}' which is not a valid bash command. "
+                    f"You must send the ACTUAL bash command to execute. "
+                    f"Example: python cli-tools/nf-morning-scan --universe nifty500 --top 10 --json"
                 )
 
             # HITL: Request approval before executing write operation
