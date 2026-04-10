@@ -38,7 +38,7 @@ class AgentConfig(BaseModel):
     max_retries: int = 5  # Allow multiple retries for API errors and self-correction
     temperature: Optional[float] = None  # Optional temperature (defaults per model type)
     thinking_effort: Optional[str] = None  # Unified thinking: 'high', 'medium', 'low', or None
-    fallback_model_slug: Optional[str] = None  # If set, wraps primary model with FallbackModel
+    fallback_model_slugs: Optional[List[str]] = None  # If set, wraps primary model with FallbackModel chain
 
 
 class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
@@ -78,23 +78,25 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
         # Returns (model, model_settings) tuple — settings needed for Agent constructor
         self.model, self.model_settings = self._setup_model(config)
 
-        # Wrap with FallbackModel if a fallback is configured.
+        # Wrap with FallbackModel chain if fallbacks are configured.
         # Falls back on ModelAPIError (default) — when the primary model's API
-        # returns 4xx/5xx errors or is unreachable.
-        if config.fallback_model_slug:
+        # returns 4xx/5xx errors or is unreachable. Tries each fallback in order.
+        if config.fallback_model_slugs:
             from pydantic_ai.models.fallback import FallbackModel
-            fallback_config = AgentConfig(
-                name=config.name,
-                description=config.description,
-                model_name=config.fallback_model_slug,
-                use_openrouter=True,  # Fallback is always via OpenRouter
-                thinking_effort=None,  # Keep fallback simple
-            )
-            fallback_model, _ = self._setup_model(fallback_config)
-            self.model = FallbackModel(self.model, fallback_model)
-            logger.info(
-                f"FallbackModel enabled: {config.model_name} → {config.fallback_model_slug}"
-            )
+            fallback_models = []
+            for slug in config.fallback_model_slugs:
+                fb_config = AgentConfig(
+                    name=config.name,
+                    description=config.description,
+                    model_name=slug,
+                    use_openrouter=True,  # Fallbacks are always via OpenRouter
+                    thinking_effort=None,  # Keep fallbacks simple/fast
+                )
+                fb_model, _ = self._setup_model(fb_config)
+                fallback_models.append(fb_model)
+            self.model = FallbackModel(self.model, *fallback_models)
+            chain = " → ".join(config.fallback_model_slugs)
+            logger.info(f"FallbackModel chain: {config.model_name} → {chain}")
 
         # Create the Pydantic AI agent
         # Use instructions instead of system_prompt per Pydantic AI docs

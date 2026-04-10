@@ -173,7 +173,24 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "supports_vision": False,
         "speed": "fast",
         "intelligence": "very-high",
-        "recommended_for": ["Default orchestrator", "Tool calling", "Cost-effective"],
+        "recommended_for": ["Tool calling", "Cost-effective"],
+    },
+    "glm-5.1": {
+        "id": "glm-5.1",
+        "name": "GLM 5.1",
+        "slug": "z-ai/glm-5.1",
+        "provider": ModelProvider.OPENROUTER,
+        "description": "Long-horizon agentic coding, 8h+ autonomous tasks",
+        "context_window": 202_752,
+        "max_output": 16_000,
+        "cost_input": "$0.80",
+        "cost_output": "$2.56",
+        "supports_thinking": True,
+        "thinking_effort": "high",
+        "supports_vision": False,
+        "speed": "fast",
+        "intelligence": "frontier",
+        "recommended_for": ["Default orchestrator", "Agentic tasks", "Tool calling"],
     },
     "gpt-5.1": {
         "id": "gpt-5.1",
@@ -212,7 +229,7 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
 }
 
 # Default model
-DEFAULT_MODEL_ID = "glm-5"
+DEFAULT_MODEL_ID = "glm-5.1"
 
 
 def get_model_info(model_id: str) -> ModelInfo:

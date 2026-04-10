@@ -338,12 +338,19 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             f"Initializing orchestrator with model: {model_id} (slug: {model_slug}, openrouter: {use_openrouter}, thinking: {thinking_effort})"
         )
 
-        # Fallback model: if the primary model's API fails (4xx/5xx),
-        # automatically retry with a reliable OpenRouter model.
+        # Fallback chain: if the primary model's API fails (4xx/5xx),
+        # automatically try the next model. Ordered by preference.
         # Anthropic models don't need this (direct API, very stable).
-        fallback_slug = None
+        FALLBACK_CHAIN = [
+            "z-ai/glm-5.1",
+            "moonshotai/kimi-k2.5",
+            "minimax/minimax-m2.7",
+            "deepseek/deepseek-chat",
+        ]
+        fallback_slugs = None
         if use_openrouter:
-            fallback_slug = "deepseek/deepseek-chat"
+            # Build fallback list, skipping the primary model itself
+            fallback_slugs = [s for s in FALLBACK_CHAIN if s != model_slug]
 
         config = AgentConfig(
             name="orchestrator",
@@ -351,7 +358,7 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             model_name=model_slug,
             use_openrouter=use_openrouter,
             thinking_effort=thinking_effort,
-            fallback_model_slug=fallback_slug,
+            fallback_model_slugs=fallback_slugs,
         )
 
         # Initialize builtin tools for Claude models
