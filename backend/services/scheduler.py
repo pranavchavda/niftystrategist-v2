@@ -58,6 +58,9 @@ class WorkflowScheduler:
 
         logger.info("Starting workflow scheduler...")
 
+        # Clean up orphaned "running" workflow runs from previous process
+        await self._cleanup_orphaned_runs()
+
         # Load all enabled workflows
         await self._load_enabled_workflows()
 
@@ -82,6 +85,41 @@ class WorkflowScheduler:
         self.scheduler.shutdown(wait=False)
         self._started = False
         logger.info("Workflow scheduler stopped")
+
+    async def _cleanup_orphaned_runs(self):
+        """Mark any 'running' workflow runs as failed on startup.
+
+        If the service was restarted (deploy, crash, etc.) while a workflow
+        was executing, its DB status stays 'running' forever. This catches
+        those orphans and marks them as failed so the UI doesn't show them
+        as perpetually running.
+        """
+        from sqlalchemy import update, text
+        from database.models import WorkflowRun
+
+        try:
+            async for session in self.get_db_session():
+                stmt = (
+                    update(WorkflowRun)
+                    .where(WorkflowRun.status == "running")
+                    .values(
+                        status="failed",
+                        completed_at=datetime.utcnow(),
+                        error_message="Service restarted while workflow was running",
+                    )
+                    .returning(WorkflowRun.id)
+                )
+                result = await session.execute(stmt)
+                orphaned_ids = [row[0] for row in result.fetchall()]
+                await session.commit()
+                if orphaned_ids:
+                    logger.warning(
+                        "Cleaned up %d orphaned 'running' workflow runs on startup: %s",
+                        len(orphaned_ids), orphaned_ids,
+                    )
+                break
+        except Exception as e:
+            logger.error("Failed to clean up orphaned workflow runs: %s", e)
 
     async def _load_enabled_workflows(self):
         """Load all enabled workflows from database and create jobs"""
