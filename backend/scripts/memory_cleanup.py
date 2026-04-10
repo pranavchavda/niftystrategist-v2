@@ -323,6 +323,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Memory Cleanup Tool")
     parser.add_argument("--analyze", action="store_true", help="Analyze only (no changes)")
     parser.add_argument("--execute", action="store_true", help="Execute cleanup")
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation (for cron)")
     parser.add_argument("--backup-only", action="store_true", help="Backup only")
     parser.add_argument("--user", type=str, help="Filter by user email")
     args = parser.parse_args()
@@ -373,10 +374,11 @@ async def main():
                 print("\nNothing to clean up!")
                 return
 
-            confirm = input(f"\nProceed with cleanup? ({total_deletions} deletions) [y/N]: ")
-            if confirm.lower() != "y":
-                print("Cancelled.")
-                return
+            if not args.yes:
+                confirm = input(f"\nProceed with cleanup? ({total_deletions} deletions) [y/N]: ")
+                if confirm.lower() != "y":
+                    print("Cancelled.")
+                    return
 
             await analyzer.execute_cleanup()
 
