@@ -165,14 +165,14 @@ async def _embed_thread(conversation_id: str, user_id: str) -> None:
             texts = [txt for _, txt in new_turns]
             embeddings = await svc.get_embeddings_batch(texts)
 
-            # Upsert via raw SQL (halfvec needs raw insert)
+            # Upsert via raw SQL (halfvec needs CAST, not :: which conflicts with SQLAlchemy bind syntax)
             for (idx, txt), emb_result in zip(new_turns, embeddings):
                 vec_str = "[" + ",".join(f"{v:.6f}" for v in emb_result.embedding) + "]"
                 await session.execute(text(
                     "INSERT INTO thread_embeddings (conversation_id, user_id, turn_index, content, embedding, created_at) "
-                    "VALUES (:conv_id, :user_id, :turn_idx, :content, :embedding::halfvec, NOW() AT TIME ZONE 'utc') "
+                    "VALUES (:conv_id, :user_id, :turn_idx, :content, CAST(:embedding AS halfvec), NOW() AT TIME ZONE 'utc') "
                     "ON CONFLICT (conversation_id, turn_index) DO UPDATE SET "
-                    "content = EXCLUDED.content, embedding = EXCLUDED.embedding"
+                    "content = EXCLUDED.content, embedding = CAST(EXCLUDED.embedding AS halfvec)"
                 ), {
                     "conv_id": conversation_id,
                     "user_id": user_id,
@@ -242,12 +242,12 @@ async def search_threads(
     async with get_db_context() as session:
         result = await session.execute(text(
             "SELECT te.conversation_id, te.content, "
-            "1 - (te.embedding <=> :query_vec::halfvec) AS similarity, "
+            "1 - (te.embedding <=> CAST(:query_vec AS halfvec)) AS similarity, "
             "c.title "
             "FROM thread_embeddings te "
             "JOIN conversations c ON c.id = te.conversation_id "
             "WHERE te.user_id = :user_id "
-            "ORDER BY te.embedding <=> :query_vec::halfvec "
+            "ORDER BY te.embedding <=> CAST(:query_vec AS halfvec) "
             "LIMIT :limit"
         ), {"user_id": user_id, "query_vec": vec_str, "limit": limit})
 
