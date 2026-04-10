@@ -1,10 +1,14 @@
-"""Perplexity Embedding Service for cross-thread search.
+"""Perplexity Contextualized Embedding Service for cross-thread search.
 
-Uses pplx-embed-v1-0.6b — 1024 dimensions, 32K token context, $0.004/1M tokens.
-API requires base64_int8 encoding — we decode to float for pgvector storage.
+Uses pplx-embed-context-v1-0.6b — contextualized embeddings optimized
+for document chunks that share context (conversation turns from the same thread).
 
-Note: context-aware models (pplx-embed-context-v1-*) are listed in docs but
-not yet available via API. Using standard model for now.
+1024 dimensions, 32K token context per document, $0.008/1M tokens.
+API: POST https://api.perplexity.ai/v1/contextualizedembeddings
+
+The contextualized endpoint takes nested arrays: [[chunk1, chunk2, ...]]
+where each inner array is a "document" — chunks within the same document
+get embeddings that are aware of their siblings, improving retrieval quality.
 """
 
 import base64
@@ -19,7 +23,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-API_URL = "https://api.perplexity.ai/v1/embeddings"
+# Contextualized embeddings use a separate endpoint from standard embeddings
+CONTEXT_API_URL = "https://api.perplexity.ai/v1/contextualizedembeddings"
+# Standard embeddings endpoint (fallback for single-query search)
+STANDARD_API_URL = "https://api.perplexity.ai/v1/embeddings"
 
 
 @dataclass
@@ -29,11 +36,12 @@ class PplxEmbeddingResult:
 
 
 class PplxEmbeddingService:
-    """Async singleton service for Perplexity embeddings."""
+    """Async singleton service for Perplexity contextualized embeddings."""
 
-    MODEL = "pplx-embed-v1-0.6b"
+    CONTEXT_MODEL = "pplx-embed-context-v1-0.6b"
+    STANDARD_MODEL = "pplx-embed-v1-0.6b"
     DIMENSIONS = 1024
-    MAX_BATCH_SIZE = 50
+    MAX_CHUNKS_PER_DOC = 500  # API allows up to 16,000 total chunks
 
     def __init__(self):
         api_key = os.getenv("PERPLEXITY_API_KEY")
@@ -70,16 +78,56 @@ class PplxEmbeddingService:
             self._client = httpx.AsyncClient(timeout=30.0)
         return self._client
 
-    async def _call_api(self, texts: List[str]) -> List[List[float]]:
-        """Call Perplexity embedding API and return decoded float vectors."""
+    async def _call_context_api(self, documents: List[List[str]]) -> List[List[List[float]]]:
+        """Call Perplexity contextualized embedding API.
+
+        Args:
+            documents: Nested array — each inner array is chunks from one document.
+                      e.g., [[turn1, turn2, turn3]] for one thread's turns.
+
+        Returns:
+            Nested list matching input structure: [[emb1, emb2, emb3]]
+        """
         response = await self._get_client().post(
-            API_URL,
+            CONTEXT_API_URL,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },
             json={
-                "model": self.MODEL,
+                "model": self.CONTEXT_MODEL,
+                "input": documents,
+                "encoding_format": "base64_int8",
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        # Response data is flat list of embeddings with document_index + chunk_index
+        # Reconstruct nested structure
+        result: Dict[int, Dict[int, List[float]]] = {}
+        for item in data["data"]:
+            doc_idx = item.get("document_index", 0)
+            chunk_idx = item.get("index", item.get("chunk_index", 0))
+            result.setdefault(doc_idx, {})[chunk_idx] = self._decode_int8_embedding(item["embedding"])
+
+        # Convert to ordered nested list
+        nested = []
+        for doc_idx in sorted(result.keys()):
+            chunks = result[doc_idx]
+            nested.append([chunks[i] for i in sorted(chunks.keys())])
+        return nested
+
+    async def _call_standard_api(self, texts: List[str]) -> List[List[float]]:
+        """Call standard (non-contextualized) embedding API for search queries."""
+        response = await self._get_client().post(
+            STANDARD_API_URL,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.STANDARD_MODEL,
                 "input": texts,
                 "encoding_format": "base64_int8",
             },
@@ -93,7 +141,10 @@ class PplxEmbeddingService:
         return embeddings
 
     async def get_embedding(self, text: str) -> PplxEmbeddingResult:
-        """Embed a single text. Returns cached result if available."""
+        """Embed a single text (for search queries). Uses standard endpoint.
+
+        Search queries don't need contextualization — they're standalone.
+        """
         key = self._cache_key(text)
         if key in self._cache:
             self._cache_hits += 1
@@ -103,7 +154,7 @@ class PplxEmbeddingService:
         text = " ".join(text.split())
 
         try:
-            embeddings = await self._call_api([text])
+            embeddings = await self._call_standard_api([text])
             self._cache[key] = embeddings[0]
             return PplxEmbeddingResult(embedding=embeddings[0], cached=False)
         except Exception as e:
@@ -111,7 +162,12 @@ class PplxEmbeddingService:
             raise
 
     async def get_embeddings_batch(self, texts: List[str]) -> List[PplxEmbeddingResult]:
-        """Embed multiple texts. Uses cache where possible."""
+        """Embed multiple texts from the same thread using contextualized API.
+
+        All texts are sent as chunks of a single "document" so the model
+        produces context-aware embeddings — each turn's embedding considers
+        the surrounding conversation.
+        """
         results: List[PplxEmbeddingResult] = [None] * len(texts)  # type: ignore
         uncached_indices: List[int] = []
         uncached_texts: List[str] = []
@@ -128,19 +184,22 @@ class PplxEmbeddingService:
 
         if uncached_texts:
             try:
-                for chunk_start in range(0, len(uncached_texts), self.MAX_BATCH_SIZE):
-                    chunk = uncached_texts[chunk_start : chunk_start + self.MAX_BATCH_SIZE]
-                    chunk_indices = uncached_indices[chunk_start : chunk_start + self.MAX_BATCH_SIZE]
+                # Send all turns as one document for contextualized embedding
+                for chunk_start in range(0, len(uncached_texts), self.MAX_CHUNKS_PER_DOC):
+                    chunk = uncached_texts[chunk_start : chunk_start + self.MAX_CHUNKS_PER_DOC]
+                    chunk_indices = uncached_indices[chunk_start : chunk_start + self.MAX_CHUNKS_PER_DOC]
 
-                    embeddings = await self._call_api(chunk)
+                    # Wrap as single document: [[turn1, turn2, ...]]
+                    nested_result = await self._call_context_api([chunk])
+                    doc_embeddings = nested_result[0]  # First (only) document
 
-                    for j, embedding in enumerate(embeddings):
+                    for j, embedding in enumerate(doc_embeddings):
                         idx = chunk_indices[j]
                         self._cache[self._cache_key(texts[idx])] = embedding
                         results[idx] = PplxEmbeddingResult(embedding=embedding, cached=False)
 
             except Exception as e:
-                logger.error("Perplexity batch embedding failed: %s", e)
+                logger.error("Perplexity contextualized batch embedding failed: %s", e)
                 raise
 
         return results
@@ -164,7 +223,9 @@ def get_pplx_embedding_service() -> PplxEmbeddingService:
     if _service is None:
         _service = PplxEmbeddingService()
         logger.info(
-            "Initialized Perplexity embedding service (model=%s, dims=%d)",
-            PplxEmbeddingService.MODEL, PplxEmbeddingService.DIMENSIONS,
+            "Initialized Perplexity embedding service (context=%s, search=%s, dims=%d)",
+            PplxEmbeddingService.CONTEXT_MODEL,
+            PplxEmbeddingService.STANDARD_MODEL,
+            PplxEmbeddingService.DIMENSIONS,
         )
     return _service
