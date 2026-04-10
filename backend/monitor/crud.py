@@ -1,10 +1,10 @@
 """CRUD operations for monitor rules and logs."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update, delete
+from sqlalchemy import or_, select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitorRule as MonitorRuleDB, MonitorLog as MonitorLogDB, utc_now
@@ -116,7 +116,11 @@ async def record_fire(
     action_taken: str,
     action_result: dict | None,
 ) -> MonitorLogDB:
-    """Log a rule firing and update the rule's fire_count/fired_at."""
+    """Log a rule firing to MonitorLog.
+
+    Does NOT update rule state (fire_count, enabled) — the daemon owns
+    that in-memory and persists it via sync_rule_fire_state().
+    """
     log = MonitorLogDB(
         user_id=user_id,
         rule_id=rule_id,
@@ -125,19 +129,29 @@ async def record_fire(
         action_result=action_result,
     )
     session.add(log)
-
-    # Update fire count on the rule
-    rule = await session.get(MonitorRuleDB, rule_id)
-    if rule:
-        rule.fire_count = (rule.fire_count or 0) + 1
-        rule.fired_at = utc_now()
-        # Auto-disable if max fires reached
-        if rule.max_fires is not None and rule.fire_count >= rule.max_fires:
-            rule.enabled = False
-
     await session.commit()
     await session.refresh(log)
     return log
+
+
+async def sync_rule_fire_state(
+    session: AsyncSession,
+    rule_id: int,
+    fire_count: int,
+    enabled: bool,
+) -> None:
+    """Persist the daemon's authoritative fire_count/enabled/fired_at to DB.
+
+    Called from the background fire-and-forget task after order placement.
+    The daemon is the single source of truth for fire_count; this just
+    syncs the DB so restarts pick up where we left off.
+    """
+    rule = await session.get(MonitorRuleDB, rule_id)
+    if rule:
+        rule.fire_count = fire_count
+        rule.fired_at = utc_now()
+        rule.enabled = enabled
+        await session.commit()
 
 
 async def get_logs(
@@ -242,14 +256,82 @@ async def disable_opposite_direction_rules(
 
 
 async def get_active_rules_for_daemon(session: AsyncSession) -> list[MonitorRuleDB]:
-    """Get all enabled rules across all users (for the daemon to load)."""
+    """Get all enabled, non-expired rules across all users (for the daemon to load)."""
     stmt = (
         select(MonitorRuleDB)
         .where(MonitorRuleDB.enabled == True)  # noqa: E712
+        .where(
+            or_(
+                MonitorRuleDB.expires_at.is_(None),
+                MonitorRuleDB.expires_at > utc_now(),
+            )
+        )
         .order_by(MonitorRuleDB.user_id)
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def auto_disable_expired_rules(session: AsyncSession) -> int:
+    """Disable all enabled rules whose expires_at has passed. Returns count."""
+    stmt = (
+        update(MonitorRuleDB)
+        .where(MonitorRuleDB.enabled == True)  # noqa: E712
+        .where(MonitorRuleDB.expires_at.isnot(None))
+        .where(MonitorRuleDB.expires_at < utc_now())
+        .values(enabled=False, updated_at=utc_now())
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.rowcount
+
+
+async def cleanup_stale_rules(session: AsyncSession, disabled_hours: int = 24) -> int:
+    """Delete rules that are disabled AND max-fired for over N hours.
+
+    These are "fully spent" rules: they fired all their allowed times,
+    were auto-disabled, and have been sitting idle. Safe to remove.
+    MonitorLog entries survive (FK is ON DELETE SET NULL).
+    Returns count of deleted rules.
+    """
+    cutoff = utc_now() - timedelta(hours=disabled_hours)
+    stmt = (
+        delete(MonitorRuleDB)
+        .where(MonitorRuleDB.enabled == False)  # noqa: E712
+        .where(MonitorRuleDB.max_fires.isnot(None))
+        .where(MonitorRuleDB.fire_count >= MonitorRuleDB.max_fires)
+        .where(MonitorRuleDB.updated_at < cutoff)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.rowcount
+
+
+async def bulk_delete_rules(
+    session: AsyncSession, user_id: int, rule_ids: list[int]
+) -> tuple[int, list[int]]:
+    """Bulk delete rules by ID, scoped to user.
+
+    Returns (deleted_count, not_found_ids).
+    """
+    stmt = select(MonitorRuleDB.id).where(
+        MonitorRuleDB.id.in_(rule_ids),
+        MonitorRuleDB.user_id == user_id,
+    )
+    result = await session.execute(stmt)
+    found_ids = {row[0] for row in result.fetchall()}
+    not_found = [rid for rid in rule_ids if rid not in found_ids]
+
+    deleted = 0
+    if found_ids:
+        del_stmt = (
+            delete(MonitorRuleDB)
+            .where(MonitorRuleDB.id.in_(list(found_ids)))
+        )
+        result = await session.execute(del_stmt)
+        await session.commit()
+        deleted = result.rowcount
+    return deleted, not_found
 
 
 def db_rule_to_schema(db_rule: MonitorRuleDB) -> MonitorRuleSchema:

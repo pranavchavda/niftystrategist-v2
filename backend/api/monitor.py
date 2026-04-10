@@ -21,6 +21,7 @@ from services.instruments_cache import search_symbols, get_instrument_key
 from monitor.crud import (
     create_rule, list_rules, get_rule, update_rule,
     enable_rule, disable_rule, delete_rule, get_logs,
+    bulk_delete_rules,
 )
 
 logger = logging.getLogger(__name__)
@@ -368,6 +369,28 @@ async def api_delete_rule(
 
         await delete_rule(session, rule_id)
         return {"deleted": rule_id}
+
+
+# ---------------------------------------------------------------------------
+# DELETE /rules/bulk — bulk delete rules
+# ---------------------------------------------------------------------------
+
+class BulkDeleteRequest(BaseModel):
+    rule_ids: list[int]
+
+
+@router.delete("/rules/bulk")
+async def api_bulk_delete_rules(
+    body: BulkDeleteRequest,
+    user: User = Depends(get_current_user),
+):
+    """Bulk delete monitor rules. Only deletes rules owned by the current user."""
+    if not body.rule_ids:
+        return {"deleted": 0, "not_found": []}
+
+    async with get_db_context() as session:
+        deleted, not_found = await bulk_delete_rules(session, user.id, body.rule_ids)
+        return {"deleted": deleted, "not_found": not_found}
 
 
 # ---------------------------------------------------------------------------

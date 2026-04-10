@@ -815,6 +815,108 @@ def cmd_delete(args):
         print_success(f"Rule #{args.rule_id} deleted")
 
 
+def cmd_cleanup(args):
+    """Purge expired, max-fired, and orphaned rules."""
+    from datetime import datetime
+    from database.session import get_db_context
+    from monitor.crud import auto_disable_expired_rules, cleanup_stale_rules
+    from sqlalchemy import select
+    from database.models import MonitorRule as MonitorRuleDB
+
+    user_id = _get_user_id()
+
+    async def _cleanup():
+        results = {"expired_disabled": 0, "stale_deleted": 0, "orphaned_disabled": 0, "orphaned_ids": []}
+        async with get_db_context() as session:
+            if args.dry_run:
+                # Count expired
+                from sqlalchemy import func
+                from database.models import utc_now as _utc_now
+                now = _utc_now()
+
+                # Expired: enabled + expires_at < now
+                stmt = select(func.count()).select_from(MonitorRuleDB).where(
+                    MonitorRuleDB.user_id == user_id,
+                    MonitorRuleDB.enabled == True,  # noqa: E712
+                    MonitorRuleDB.expires_at.isnot(None),
+                    MonitorRuleDB.expires_at < now,
+                )
+                results["expired_disabled"] = (await session.execute(stmt)).scalar() or 0
+
+                # Stale: disabled + max-fired + updated > 24h ago
+                from datetime import timedelta
+                cutoff = now - timedelta(hours=24)
+                stmt = select(func.count()).select_from(MonitorRuleDB).where(
+                    MonitorRuleDB.user_id == user_id,
+                    MonitorRuleDB.enabled == False,  # noqa: E712
+                    MonitorRuleDB.max_fires.isnot(None),
+                    MonitorRuleDB.fire_count >= MonitorRuleDB.max_fires,
+                    MonitorRuleDB.updated_at < cutoff,
+                )
+                results["stale_deleted"] = (await session.execute(stmt)).scalar() or 0
+
+                # Orphaned: price/indicator/compound/trailing_stop with NULL instrument_token
+                stmt = select(MonitorRuleDB.id, MonitorRuleDB.name).where(
+                    MonitorRuleDB.user_id == user_id,
+                    MonitorRuleDB.enabled == True,  # noqa: E712
+                    MonitorRuleDB.trigger_type.in_(["price", "indicator", "compound", "trailing_stop"]),
+                    MonitorRuleDB.instrument_token.is_(None),
+                )
+                rows = (await session.execute(stmt)).fetchall()
+                results["orphaned_disabled"] = len(rows)
+                results["orphaned_ids"] = [{"id": r[0], "name": r[1]} for r in rows]
+            else:
+                # Expired — disable (all users, same as daemon does)
+                results["expired_disabled"] = await auto_disable_expired_rules(session)
+
+                # Stale — delete (all users, same as daemon does)
+                results["stale_deleted"] = await cleanup_stale_rules(session)
+
+                # Orphaned — disable (this user only)
+                from sqlalchemy import update
+                from database.models import utc_now as _utc_now
+                stmt = (
+                    update(MonitorRuleDB)
+                    .where(MonitorRuleDB.user_id == user_id)
+                    .where(MonitorRuleDB.enabled == True)  # noqa: E712
+                    .where(MonitorRuleDB.trigger_type.in_(["price", "indicator", "compound", "trailing_stop"]))
+                    .where(MonitorRuleDB.instrument_token.is_(None))
+                    .values(enabled=False, updated_at=_utc_now())
+                    .returning(MonitorRuleDB.id, MonitorRuleDB.name)
+                )
+                rows = (await session.execute(stmt)).fetchall()
+                await session.commit()
+                results["orphaned_disabled"] = len(rows)
+                results["orphaned_ids"] = [{"id": r[0], "name": r[1]} for r in rows]
+
+        return results
+
+    results = run_async(_cleanup())
+
+    if args.json:
+        print_json(results)
+        return
+
+    prefix = "[DRY RUN] " if args.dry_run else ""
+    total = results["expired_disabled"] + results["stale_deleted"] + results["orphaned_disabled"]
+
+    if total == 0:
+        print(f"{prefix}Nothing to clean up. All rules are healthy.")
+        return
+
+    if results["expired_disabled"]:
+        print(f"{prefix}Disabled {results['expired_disabled']} expired rule(s)")
+    if results["stale_deleted"]:
+        print(f"{prefix}Deleted {results['stale_deleted']} stale (max-fired + disabled >24h) rule(s)")
+    if results["orphaned_disabled"]:
+        print(f"{prefix}Disabled {results['orphaned_disabled']} orphaned rule(s) (missing instrument_token):")
+        for r in results["orphaned_ids"]:
+            print(f"  #{r['id']}: {r['name']}")
+
+    if not args.dry_run:
+        print_success(f"Cleanup complete: {total} rule(s) affected")
+
+
 def cmd_logs(args):
     """Show rule firing history."""
     from database.session import get_db_context
@@ -1124,6 +1226,11 @@ Option contract example:
     p_logs.add_argument("--limit", type=int, default=20, help="Max entries (default: 20)")
     p_logs.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # ---- cleanup ----
+    p_cleanup = sub.add_parser("cleanup", help="Purge expired, max-fired, and orphaned rules")
+    p_cleanup.add_argument("--dry-run", action="store_true", help="Show what would be cleaned up without making changes")
+    p_cleanup.add_argument("--json", action="store_true", help="Output as JSON")
+
     # ---- start ----
     p_start = sub.add_parser("start", help="Start the trade monitor daemon")
     p_start.add_argument("--paper", action="store_true", help="Paper trading mode (no real orders)")
@@ -1154,6 +1261,8 @@ Option contract example:
         cmd_delete(args)
     elif args.command == "logs":
         cmd_logs(args)
+    elif args.command == "cleanup":
+        cmd_cleanup(args)
     elif args.command == "start":
         cmd_start(args)
 

@@ -147,6 +147,7 @@ async def test_delete_nonexistent(db_session):
 
 @pytest.mark.asyncio
 async def test_record_fire(db_session):
+    """record_fire is pure logging — does NOT update rule state."""
     from monitor.crud import create_rule, record_fire, get_rule
 
     r = await create_rule(db_session, **_rule_kwargs(max_fires=2))
@@ -156,24 +157,38 @@ async def test_record_fire(db_session):
     assert log.id is not None
     assert log.action_taken == "place_order"
     r = await get_rule(db_session, r.id)
+    assert r.fire_count == 0  # record_fire does NOT increment fire_count
+    assert r.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_sync_rule_fire_state(db_session):
+    """sync_rule_fire_state persists daemon's authoritative state to DB."""
+    from monitor.crud import create_rule, sync_rule_fire_state, get_rule
+
+    r = await create_rule(db_session, **_rule_kwargs(max_fires=2))
+    await sync_rule_fire_state(db_session, r.id, fire_count=1, enabled=True)
+    r = await get_rule(db_session, r.id)
     assert r.fire_count == 1
     assert r.fired_at is not None
     assert r.enabled is True  # Still enabled (1 < 2)
 
 
 @pytest.mark.asyncio
-async def test_record_fire_auto_disables(db_session):
-    from monitor.crud import create_rule, record_fire, get_rule
+async def test_sync_rule_fire_state_disables(db_session):
+    """sync_rule_fire_state can persist disabled state from daemon."""
+    from monitor.crud import create_rule, sync_rule_fire_state, get_rule
 
     r = await create_rule(db_session, **_rule_kwargs(max_fires=1))
-    await record_fire(db_session, r.id, 999, {}, "place_order", {})
+    await sync_rule_fire_state(db_session, r.id, fire_count=1, enabled=False)
     r = await get_rule(db_session, r.id)
     assert r.fire_count == 1
-    assert r.enabled is False  # Auto-disabled
+    assert r.enabled is False
 
 
 @pytest.mark.asyncio
-async def test_record_fire_increments_count(db_session):
+async def test_record_fire_does_not_increment_count(db_session):
+    """Multiple record_fire calls should NOT change fire_count (daemon owns it)."""
     from monitor.crud import create_rule, record_fire, get_rule
 
     r = await create_rule(db_session, **_rule_kwargs(max_fires=5))
@@ -181,7 +196,7 @@ async def test_record_fire_increments_count(db_session):
     await record_fire(db_session, r.id, 999, {}, "place_order", {})
     await record_fire(db_session, r.id, 999, {}, "place_order", {})
     r = await get_rule(db_session, r.id)
-    assert r.fire_count == 3
+    assert r.fire_count == 0  # Unchanged — daemon is the authority
     assert r.enabled is True  # Still enabled (3 < 5)
 
 

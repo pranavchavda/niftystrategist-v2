@@ -107,6 +107,19 @@ class ActionExecutor:
         except Exception as e:
             logger.error("Failed to record fire for rule %d: %s", rule.id, e, exc_info=True)
 
+        # Sync the daemon's authoritative fire_count/enabled to DB.
+        # The daemon already updated these in-memory before launching this
+        # background task; this persists them for crash recovery.
+        try:
+            await crud.sync_rule_fire_state(
+                session=session,
+                rule_id=rule.id,
+                fire_count=rule.fire_count,
+                enabled=rule.enabled,
+            )
+        except Exception as e:
+            logger.error("Failed to sync rule fire state for rule %d: %s", rule.id, e, exc_info=True)
+
         return action_result
 
     async def _execute_place_order(self, rule: MonitorRule, config: dict) -> dict:

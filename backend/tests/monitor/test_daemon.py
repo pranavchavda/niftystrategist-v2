@@ -1,6 +1,7 @@
 """Tests for MonitorDaemon — main daemon loop that ties everything together."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
@@ -427,6 +428,9 @@ async def test_evaluate_and_execute_fires_action():
         mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
         await daemon._evaluate_and_execute(rule, ctx)
+        # _evaluate_and_execute launches a background task for order + DB writes;
+        # let it complete before asserting.
+        await asyncio.sleep(0)
 
     mock_exec.assert_awaited_once()
     call_args = mock_exec.call_args
@@ -491,6 +495,8 @@ async def test_market_hours_guard_allows_cancel_rule_outside_hours():
         mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
         await daemon._evaluate_and_execute(rule, ctx)
+        # Let background task run
+        await asyncio.sleep(0)
 
     # cancel_rule should still execute even outside market hours
     mock_exec.assert_awaited_once()
@@ -732,6 +738,8 @@ async def test_evaluate_and_execute_persists_trigger_config_update():
         mock_crud.update_rule = AsyncMock()
 
         await daemon._evaluate_and_execute(rule, ctx)
+        # Let background persist task run
+        await asyncio.sleep(0)
 
     # Should persist the trigger_config_update to DB
     mock_crud.update_rule.assert_awaited_once_with(
@@ -894,12 +902,15 @@ async def test_max_fires_prevents_second_fire_on_next_tick():
 
         # Tick 1: price >= 100, should fire
         await daemon._on_tick(999, "NSE_EQ|INE002A01018", {"ltp": 105.0})
+        await asyncio.sleep(0)  # Let background task run
 
         # Tick 2: price still >= 100, should NOT fire (max_fires reached)
         await daemon._on_tick(999, "NSE_EQ|INE002A01018", {"ltp": 106.0})
+        await asyncio.sleep(0)
 
         # Tick 3: just to be safe
         await daemon._on_tick(999, "NSE_EQ|INE002A01018", {"ltp": 107.0})
+        await asyncio.sleep(0)
 
     # Only 1 execution despite 3 qualifying ticks
     assert execute_call_count == 1
@@ -982,6 +993,7 @@ async def test_orb_entry_disables_opposite_direction_rules():
         daemon._action_executor.execute = AsyncMock()
 
         await daemon._on_tick(999, TOKEN, {"ltp": 3100.0})
+        await asyncio.sleep(0)  # Let background tasks run
 
     # Only Long Entry should fire — short side starts disabled, long SL not yet triggered
     executed_rule_ids = [

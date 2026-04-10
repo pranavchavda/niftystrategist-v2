@@ -243,6 +243,19 @@ class MonitorDaemon:
         - Stops sessions for users whose tokens have expired
         - Syncs rules for users whose sessions already exist
         """
+        # ── Periodic cleanup: disable expired, delete stale ──
+        try:
+            async with get_db_context() as session:
+                expired = await crud.auto_disable_expired_rules(session)
+                if expired:
+                    logger.info("Auto-disabled %d expired rules", expired)
+                stale = await crud.cleanup_stale_rules(session)
+                if stale:
+                    logger.info("Cleaned up %d stale (max-fired+disabled >24h) rules", stale)
+        except Exception as e:
+            logger.error("Rule cleanup failed: %s", e)
+
+        # ── Load active rules ──
         async with get_db_context() as session:
             db_rules = await crud.get_active_rules_for_daemon(session)
 
@@ -312,18 +325,20 @@ class MonitorDaemon:
     ) -> None:
         """Called on every market data tick. Evaluate price/indicator/compound rules.
 
-        Serialized per-user via _tick_locks to prevent concurrent evaluation
-        of the same rule from rapid WebSocket ticks. Without this, a rule
-        with max_fires=1 can fire multiple times before fire_count is
-        incremented (the fire_count += 1 only protects sequential ticks,
-        not concurrent ones).
+        Serialized per instrument+user via _tick_locks to prevent concurrent
+        evaluation of the same rule from rapid WebSocket ticks. Per-instrument
+        granularity allows NIFTY and BANKNIFTY (or any two instruments) to
+        evaluate in parallel for the same user — safe because rules are
+        filtered by instrument_token match (line below), so two instruments
+        never touch the same rule.
         """
         ltp = market_data.get("ltp")
         logger.debug(
             "Tick user=%d inst=%s ltp=%s", user_id, instrument_token, ltp,
         )
 
-        lock = self._tick_locks.setdefault(user_id, asyncio.Lock())
+        lock_key = f"{user_id}:{instrument_token}"
+        lock = self._tick_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
             session_obj = self._user_manager.get_session(user_id)
             if session_obj is None:
@@ -390,8 +405,15 @@ class MonitorDaemon:
     ) -> None:
         """Evaluate a rule and execute its action if fired.
 
-        Also persists trigger_config_update (used by trailing_stop to
-        track highest_price) to DB and updates the in-memory rule.
+        Two-phase design for scalping-speed execution:
+
+        Phase 1 (under tick lock, ~1ms): Evaluate rule, update all in-memory
+        state (fire_count, enabled, kill/activate chains). This is the only
+        part that needs serialization to prevent double-fires.
+
+        Phase 2 (background task, ~200-500ms): Order placement + DB writes.
+        Launched via asyncio.create_task() so the tick lock is released
+        immediately and the next tick can be processed.
         """
         result = evaluate_rule(rule, ctx)
 
@@ -406,21 +428,13 @@ class MonitorDaemon:
                 rule.id, rule.name, ctx.market_data.get("ltp"),
             )
 
-        # Persist trigger_config_update if present (e.g. trailing stop highest_price)
+        # Persist trigger_config_update if present (e.g. trailing stop highest_price).
+        # Update in-memory immediately; defer DB write to background.
         if result.trigger_config_update is not None:
-            try:
-                async with get_db_context() as db_session:
-                    await crud.update_rule(
-                        db_session, rule.id,
-                        trigger_config=result.trigger_config_update,
-                    )
-                # Update in-memory rule so next tick uses new values
-                rule.trigger_config = result.trigger_config_update
-            except Exception as e:
-                logger.error(
-                    "Failed to persist trigger_config_update for rule %d: %s",
-                    rule.id, e,
-                )
+            rule.trigger_config = result.trigger_config_update
+            asyncio.create_task(
+                self._persist_trigger_config(rule.id, result.trigger_config_update)
+            )
 
         if not result.fired:
             return
@@ -437,6 +451,8 @@ class MonitorDaemon:
             )
             return
 
+        # ── Phase 1: In-memory state updates (synchronous, under lock) ──
+
         # Immediately increment in-memory fire_count so the next tick's
         # should_evaluate check sees the updated count.  Without this,
         # rules with max_fires=1 and level-triggered conditions (gte/lte)
@@ -450,38 +466,72 @@ class MonitorDaemon:
 
         logger.info("Rule %d (%s) FIRED", rule.id, rule.name)
 
+        # Sync in-memory state for kill chain (rules_to_cancel) and
+        # activate chain (rules_to_enable) BEFORE releasing the lock,
+        # so same-tick evaluation of other rules sees the changes.
+        session_obj = self._user_manager.get_session(rule.user_id)
+        if session_obj:
+            if result.rules_to_cancel:
+                for r in session_obj.rules:
+                    if r.id in result.rules_to_cancel:
+                        r.enabled = False
+                logger.info(
+                    "Rule %d kill chain: disabled %d rules in-memory: %s",
+                    rule.id, len(result.rules_to_cancel), result.rules_to_cancel,
+                )
+            if result.rules_to_enable:
+                for r in session_obj.rules:
+                    if r.id in result.rules_to_enable:
+                        r.enabled = True
+                logger.info(
+                    "Rule %d activate chain: enabled %d rules in-memory: %s",
+                    rule.id, len(result.rules_to_enable), result.rules_to_enable,
+                )
+
+        # ── Phase 2: Fire-and-forget order + DB writes (background) ──
+
         trigger_snapshot = {
             "market_data": ctx.market_data,
             "now": str(ctx.now),
         }
 
-        async with get_db_context() as db_session:
-            await self._action_executor.execute(
-                rule, result, trigger_snapshot, db_session
+        asyncio.create_task(
+            self._execute_and_record(rule, result, trigger_snapshot)
+        )
+
+    async def _execute_and_record(
+        self, rule: MonitorRule, result, trigger_snapshot: dict
+    ) -> None:
+        """Background task: place order + persist fire to DB.
+
+        Runs outside the tick lock so the daemon can process the next tick
+        immediately. Errors are logged but don't crash the daemon.
+        """
+        try:
+            async with get_db_context() as db_session:
+                await self._action_executor.execute(
+                    rule, result, trigger_snapshot, db_session
+                )
+        except Exception as e:
+            logger.error(
+                "Background execute_and_record failed for rule %d: %s",
+                rule.id, e, exc_info=True,
             )
 
-            # Sync in-memory state for kill chain (rules_to_cancel) and
-            # activate chain (rules_to_enable).  The DB was already updated
-            # by action_executor; here we keep the in-memory session in sync
-            # so same-tick evaluation sees the changes immediately.
-            session_obj = self._user_manager.get_session(rule.user_id)
-            if session_obj:
-                if result.rules_to_cancel:
-                    for r in session_obj.rules:
-                        if r.id in result.rules_to_cancel:
-                            r.enabled = False
-                    logger.info(
-                        "Rule %d kill chain: disabled %d rules in-memory: %s",
-                        rule.id, len(result.rules_to_cancel), result.rules_to_cancel,
-                    )
-                if result.rules_to_enable:
-                    for r in session_obj.rules:
-                        if r.id in result.rules_to_enable:
-                            r.enabled = True
-                    logger.info(
-                        "Rule %d activate chain: enabled %d rules in-memory: %s",
-                        rule.id, len(result.rules_to_enable), result.rules_to_enable,
-                    )
+    async def _persist_trigger_config(
+        self, rule_id: int, trigger_config: dict
+    ) -> None:
+        """Background task: persist trailing stop trigger_config to DB."""
+        try:
+            async with get_db_context() as db_session:
+                await crud.update_rule(
+                    db_session, rule_id, trigger_config=trigger_config,
+                )
+        except Exception as e:
+            logger.error(
+                "Failed to persist trigger_config for rule %d: %s",
+                rule_id, e,
+            )
 
     # ── Market hours ────────────────────────────────────────────────
 
