@@ -10,7 +10,7 @@ Keeps max 20 embedded threads per user (auto-purges oldest).
 import logging
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, delete, text, func, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Conversation, Message, ThreadEmbedding, utc_now
@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 # Config
 IDLE_THRESHOLD_SECONDS = 120  # 2 min debounce — don't embed active conversations
-MAX_THREADS_PER_USER = 20     # Auto-purge oldest beyond this
+
+# Recency-weighted search: no hard purge, old threads decay in relevance instead
+DEFAULT_MIN_SIMILARITY = 0.25   # Floor — don't return poor matches even if recent
+RECENCY_WEIGHT = 0.15           # 15% recency, 85% semantic similarity
+RECENCY_HALF_LIFE_DAYS = 14     # Recency boost halves every 14 days
 
 
 async def process_dirty_threads() -> int:
@@ -56,14 +60,6 @@ async def process_dirty_threads() -> int:
                 processed += 1
             except Exception as e:
                 logger.error("Failed to embed thread %s: %s", conv_id, e)
-
-        # Purge excess threads per user (run once per cycle)
-        users_processed = {user_id for _, user_id in dirty}
-        for user_id in users_processed:
-            try:
-                await _purge_excess_threads(user_id)
-            except Exception as e:
-                logger.error("Failed to purge excess threads for user %s: %s", user_id, e)
 
         if processed:
             logger.info("Embedded %d thread(s)", processed)
@@ -195,43 +191,19 @@ async def _embed_thread(conversation_id: str, user_id: str) -> None:
         await session.commit()
 
 
-async def _purge_excess_threads(user_id: str) -> None:
-    """Keep only MAX_THREADS_PER_USER most recent embedded threads per user."""
-    async with get_db_context() as session:
-        # Get distinct conversation_ids with embeddings, ordered by newest
-        stmt = text(
-            "SELECT DISTINCT conversation_id, MAX(created_at) as latest "
-            "FROM thread_embeddings WHERE user_id = :user_id "
-            "GROUP BY conversation_id ORDER BY latest DESC"
-        )
-        result = await session.execute(stmt, {"user_id": user_id})
-        all_convs = result.fetchall()
-
-        if len(all_convs) <= MAX_THREADS_PER_USER:
-            return
-
-        # Delete embeddings for oldest threads beyond the limit
-        to_purge = [row[0] for row in all_convs[MAX_THREADS_PER_USER:]]
-        if to_purge:
-            await session.execute(
-                delete(ThreadEmbedding)
-                .where(ThreadEmbedding.conversation_id.in_(to_purge))
-            )
-            await session.commit()
-            logger.info(
-                "Purged embeddings for %d old threads for user %s (keeping %d)",
-                len(to_purge), user_id, MAX_THREADS_PER_USER,
-            )
-
-
 async def search_threads(
     user_id: str,
     query: str,
     limit: int = 5,
+    min_similarity: float = DEFAULT_MIN_SIMILARITY,
 ) -> list[dict]:
-    """Semantic search across embedded thread turns.
+    """Recency-weighted semantic search across embedded thread turns.
 
-    Returns list of {conversation_id, title, turn_content, similarity} dicts.
+    Combines cosine similarity (85%) with exponential recency decay (15%).
+    Old threads still surface if the semantic match is strong enough,
+    but recent threads get a natural boost. No hard purging needed.
+
+    Returns list of {conversation_id, title, turn_content, similarity, score} dicts.
     """
     from memory.pplx_embedding_service import get_pplx_embedding_service
 
@@ -242,22 +214,38 @@ async def search_threads(
     async with get_db_context() as session:
         result = await session.execute(text(
             "SELECT te.conversation_id, te.content, "
-            "1 - (te.embedding <=> CAST(:query_vec AS halfvec)) AS similarity, "
-            "c.title "
+            "  1 - (te.embedding <=> CAST(:query_vec AS halfvec)) AS similarity, "
+            "  c.title, "
+            "  c.updated_at, "
+            # Exponential recency decay: half-life of N days
+            # 0.693 = ln(2), converts half-life to decay constant
+            "  EXP(-0.693 * EXTRACT(EPOCH FROM (NOW() - c.updated_at)) / 86400.0 / :half_life) AS recency, "
+            # Combined score: weighted blend of similarity + recency
+            "  (1 - (te.embedding <=> CAST(:query_vec AS halfvec))) * (1 - :recency_w) + "
+            "    EXP(-0.693 * EXTRACT(EPOCH FROM (NOW() - c.updated_at)) / 86400.0 / :half_life) * :recency_w AS score "
             "FROM thread_embeddings te "
             "JOIN conversations c ON c.id = te.conversation_id "
             "WHERE te.user_id = :user_id "
-            "ORDER BY te.embedding <=> CAST(:query_vec AS halfvec) "
+            "  AND 1 - (te.embedding <=> CAST(:query_vec AS halfvec)) >= :min_sim "
+            "ORDER BY score DESC "
             "LIMIT :limit"
-        ), {"user_id": user_id, "query_vec": vec_str, "limit": limit})
+        ), {
+            "user_id": user_id,
+            "query_vec": vec_str,
+            "limit": limit,
+            "half_life": RECENCY_HALF_LIFE_DAYS,
+            "recency_w": RECENCY_WEIGHT,
+            "min_sim": min_similarity,
+        })
 
         rows = result.fetchall()
         return [
             {
                 "conversation_id": row[0],
-                "turn_content": row[1][:500],  # Truncate for display
+                "turn_content": row[1][:500],
                 "similarity": round(float(row[2]), 3),
                 "title": row[3] or "(untitled)",
+                "score": round(float(row[6]), 3),
             }
             for row in rows
         ]
