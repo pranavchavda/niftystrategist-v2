@@ -142,6 +142,70 @@ def cmd_recent(args):
         print(f"  └─ {t['id']}")
 
 
+def cmd_read(args):
+    """Read full conversation messages from a thread."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    async def _read():
+        async with get_db_context() as session:
+            t = await session.execute(
+                text("SELECT title, user_id, created_at, updated_at FROM conversations WHERE id = :tid"),
+                {"tid": args.thread_id},
+            )
+            thread_info = t.fetchone()
+            if not thread_info:
+                return None
+
+            r = await session.execute(text(
+                "SELECT role, content, timestamp FROM messages "
+                "WHERE conversation_id = :tid AND role IN ('user', 'assistant') "
+                "AND content IS NOT NULL AND LENGTH(TRIM(content)) > 0 "
+                "ORDER BY timestamp ASC"
+            ), {"tid": args.thread_id})
+            messages = r.fetchall()
+
+            if args.tail and len(messages) > args.tail:
+                messages = messages[-args.tail:]
+
+            return {
+                "thread_id": args.thread_id,
+                "title": thread_info[0] or "(untitled)",
+                "created_at": str(thread_info[2]),
+                "updated_at": str(thread_info[3]),
+                "message_count": len(messages),
+                "messages": [
+                    {
+                        "role": row[0],
+                        "content": row[1][:args.max_length] if args.max_length else row[1],
+                        "timestamp": _fmt_ts(row[2]),
+                    }
+                    for row in messages
+                ],
+            }
+
+    result = run_async(_read())
+
+    if result is None:
+        print_error(f"Thread not found: {args.thread_id}")
+        return
+
+    if args.json:
+        import json
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    print(f"Thread: {result['title']}")
+    print(f"ID: {result['thread_id']}")
+    print(f"Messages: {result['message_count']}")
+    print(f"Updated: {result['updated_at']}")
+    print("-" * 60)
+    for msg in result["messages"]:
+        role_label = "USER" if msg["role"] == "user" else "ASSISTANT"
+        print(f"\n[{msg['timestamp']}] {role_label}:")
+        print(msg["content"])
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-threads",
@@ -158,6 +222,12 @@ def main():
     p_recent.add_argument("--limit", type=int, default=20, help="Max threads (default: 20)")
     p_recent.add_argument("--json", action="store_true", help="Output as JSON")
 
+    p_read = sub.add_parser("read", help="Read full conversation from a thread")
+    p_read.add_argument("thread_id", help="Thread/conversation ID")
+    p_read.add_argument("--tail", type=int, default=None, help="Only show last N messages")
+    p_read.add_argument("--max-length", type=int, default=2000, help="Max chars per message (default: 2000, 0=unlimited)")
+    p_read.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -168,6 +238,8 @@ def main():
         cmd_search(args)
     elif args.command == "recent":
         cmd_recent(args)
+    elif args.command == "read":
+        cmd_read(args)
 
 
 if __name__ == "__main__":

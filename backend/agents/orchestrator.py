@@ -1520,7 +1520,8 @@ NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on
 **Cross-Thread Search:**
 - `python cli-tools/nf-threads search "query" [--limit 5] [--json]` — Semantic search across past conversations
 - `python cli-tools/nf-threads recent [--limit 20] [--json]` — List recent thread titles
-- Use when user references something from a past conversation or you need context from another thread
+- `python cli-tools/nf-threads read THREAD_ID [--tail 10] [--json]` — Read full conversation from a thread
+- Workflow: search → find relevant thread_id → read to get full context
 
 For full documentation: `cat cli-tools/INDEX.md`
 
