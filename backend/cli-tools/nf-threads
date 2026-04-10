@@ -40,28 +40,24 @@ def _fmt_ts(dt) -> str:
 def cmd_search(args):
     """Semantic search across past conversation threads."""
 
-    user_email = _get_user_id()
-    if not user_email:
-        # Fallback: look up email from user ID
+    async def _search():
         from database.session import get_db_context
-        from sqlalchemy import text
+        from sqlalchemy import text as sa_text
+        from services.thread_embedder import search_threads
 
-        async def _get_email():
+        user_email = _get_user_id()
+        if not user_email:
             async with get_db_context() as session:
                 r = await session.execute(
-                    text("SELECT email FROM users WHERE id = :uid"),
+                    sa_text("SELECT email FROM users WHERE id = :uid"),
                     {"uid": _get_user_id_int()},
                 )
                 row = r.fetchone()
-                return row[0] if row else None
+                user_email = row[0] if row else None
 
-        user_email = run_async(_get_email())
         if not user_email:
-            print_error("Could not determine user email. Set NF_USER_EMAIL.")
-            return
+            return None
 
-    async def _search():
-        from services.thread_embedder import search_threads
         return await search_threads(
             user_id=user_email,
             query=args.query,
@@ -72,6 +68,10 @@ def cmd_search(args):
         results = run_async(_search())
     except Exception as e:
         print_error(f"Search failed: {e}")
+        return
+
+    if results is None:
+        print_error("Could not determine user email. Set NF_USER_EMAIL.")
         return
 
     if args.json:

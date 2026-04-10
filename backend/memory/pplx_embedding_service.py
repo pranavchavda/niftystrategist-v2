@@ -45,7 +45,7 @@ class PplxEmbeddingService:
             raise ValueError("PERPLEXITY_API_KEY is required for thread embeddings")
 
         self._api_key = api_key
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client: httpx.AsyncClient | None = None
         self._cache: Dict[str, List[float]] = {}
         self._cache_hits = 0
         self._cache_misses = 0
@@ -64,9 +64,15 @@ class PplxEmbeddingService:
         int8_values = struct.unpack(f"{len(raw)}b", raw)
         return [v / 127.0 for v in int8_values]
 
+    def _get_client(self) -> httpx.AsyncClient:
+        """Lazy-create httpx client in the current event loop."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        return self._client
+
     async def _call_api(self, texts: List[str]) -> List[List[float]]:
         """Call Perplexity embedding API and return decoded float vectors."""
-        response = await self._client.post(
+        response = await self._get_client().post(
             API_URL,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
