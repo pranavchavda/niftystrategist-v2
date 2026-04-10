@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Search past conversations and list recent threads.
+
+Enables cross-thread awareness — the orchestrator can find context
+from previous conversations when users reference past discussions.
+"""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import print_error, print_json, run_async  # noqa: E402
+
+
+def _get_user_id() -> str:
+    """Get user email from environment (conversations use email as user_id)."""
+    return os.environ.get("NF_USER_EMAIL", "")
+
+
+def _get_user_id_int() -> int:
+    """Get numeric user ID for DB queries that use integer user_id."""
+    return int(os.environ.get("NF_USER_ID", "999"))
+
+
+def _fmt_ts(dt) -> str:
+    if dt is None:
+        return "—"
+    from zoneinfo import ZoneInfo
+    from datetime import timezone
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist = dt.astimezone(ZoneInfo("Asia/Kolkata"))
+    return ist.strftime("%b %d %I:%M %p")
+
+
+def cmd_search(args):
+    """Semantic search across past conversation threads."""
+
+    user_email = _get_user_id()
+    if not user_email:
+        # Fallback: look up email from user ID
+        from database.session import get_db_context
+        from sqlalchemy import text
+
+        async def _get_email():
+            async with get_db_context() as session:
+                r = await session.execute(
+                    text("SELECT email FROM users WHERE id = :uid"),
+                    {"uid": _get_user_id_int()},
+                )
+                row = r.fetchone()
+                return row[0] if row else None
+
+        user_email = run_async(_get_email())
+        if not user_email:
+            print_error("Could not determine user email. Set NF_USER_EMAIL.")
+            return
+
+    async def _search():
+        from services.thread_embedder import search_threads
+        return await search_threads(
+            user_id=user_email,
+            query=args.query,
+            limit=args.limit,
+        )
+
+    try:
+        results = run_async(_search())
+    except Exception as e:
+        print_error(f"Search failed: {e}")
+        return
+
+    if args.json:
+        print_json({"query": args.query, "results": results, "count": len(results)})
+        return
+
+    if not results:
+        print(f"No matching threads found for: \"{args.query}\"")
+        return
+
+    print(f"Thread Search: \"{args.query}\" ({len(results)} results)\n")
+    for i, r in enumerate(results, 1):
+        sim = f"{r['similarity']:.0%}"
+        title = r["title"]
+        content = r["turn_content"].replace("\n", " ")[:150]
+        print(f"  {i}. [{sim}] {title}")
+        print(f"     {content}...")
+        print(f"     Thread: {r['conversation_id']}")
+        print()
+
+
+def cmd_recent(args):
+    """List recent conversation threads with titles."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    user_email = _get_user_id()
+    if not user_email:
+        async def _get_email():
+            async with get_db_context() as session:
+                r = await session.execute(
+                    text("SELECT email FROM users WHERE id = :uid"),
+                    {"uid": _get_user_id_int()},
+                )
+                row = r.fetchone()
+                return row[0] if row else None
+        user_email = run_async(_get_email())
+
+    async def _recent():
+        async with get_db_context() as session:
+            r = await session.execute(text(
+                "SELECT id, title, updated_at, "
+                "(SELECT count(*) FROM messages WHERE conversation_id = c.id) as msg_count "
+                "FROM conversations c "
+                "WHERE user_id = :user_id AND is_archived = false "
+                "ORDER BY updated_at DESC LIMIT :limit"
+            ), {"user_id": user_email, "limit": args.limit})
+            return [
+                {"id": row[0], "title": row[1] or "(untitled)",
+                 "updated_at": _fmt_ts(row[2]), "messages": row[3]}
+                for row in r.fetchall()
+            ]
+
+    threads = run_async(_recent())
+
+    if args.json:
+        print_json({"threads": threads, "count": len(threads)})
+        return
+
+    if not threads:
+        print("No recent threads found.")
+        return
+
+    print(f"Recent Threads ({len(threads)})\n")
+    for t in threads:
+        title = t["title"][:50]
+        print(f"  {t['updated_at']:<18}  {title:<50}  ({t['messages']} msgs)")
+        print(f"  └─ {t['id']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-threads",
+        description="Search and browse past conversations for cross-thread context",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    p_search = sub.add_parser("search", help="Semantic search across past threads")
+    p_search.add_argument("query", help="Search query")
+    p_search.add_argument("--limit", type=int, default=5, help="Max results (default: 5)")
+    p_search.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_recent = sub.add_parser("recent", help="List recent conversation threads")
+    p_recent.add_argument("--limit", type=int, default=20, help="Max threads (default: 20)")
+    p_recent.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "search":
+        cmd_search(args)
+    elif args.command == "recent":
+        cmd_recent(args)
+
+
+if __name__ == "__main__":
+    main()

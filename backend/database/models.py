@@ -193,6 +193,10 @@ class Conversation(Base):
     # Compaction tracking
     last_compacted_at = Column(DateTime, nullable=True)  # When thread was last compacted
 
+    # Thread embedding tracking (cross-thread awareness)
+    needs_processing_since = Column(DateTime, nullable=True)  # Set on message save, cleared after embedding
+    last_embedded_at = Column(DateTime, nullable=True)  # When thread turns were last embedded
+
     # Relationships
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
     memories = relationship("Memory", back_populates="conversation")
@@ -842,6 +846,31 @@ class WorkflowActionLog(Base):
         Index('idx_workflow_action_logs_workflow', 'workflow_run_id'),
         Index('idx_workflow_action_logs_user', 'user_id'),
         Index('idx_workflow_action_logs_tool', 'tool_name'),
+    )
+
+
+class ThreadEmbedding(Base):
+    """Embedded conversation turns for cross-thread semantic search.
+
+    Each row is one user+assistant turn pair, embedded via
+    pplx-embed-context-v1-0.6b (1024 dims). Max 20 recent threads
+    per user, auto-purged by the thread embedder.
+    """
+    __tablename__ = "thread_embeddings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String, nullable=False)
+    turn_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    # halfvec(1024) — pgvector half-precision vector
+    embedding_halfvec = Column(String, nullable=True)  # Stored as halfvec in DB via raw SQL
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        Index('idx_thread_emb_user', 'user_id'),
+        Index('idx_thread_emb_conv', 'conversation_id'),
+        # UniqueConstraint handled by UNIQUE(conversation_id, turn_index) in migration
     )
 
 

@@ -1239,6 +1239,47 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 thread_section += "\nUse these when calling tools that require thread or user context (e.g. `schedule_followup`).\n"
                 sections.append(thread_section)
 
+            # Inject recent thread titles for cross-thread awareness
+            try:
+                from sqlalchemy import select
+                from database.session import AsyncSessionLocal
+                from database.models import Conversation as ConvModel
+                user_email = ctx.deps.state.user_id  # email
+                current_thread = ctx.deps.state.thread_id
+
+                async with AsyncSessionLocal() as _db:
+                    _result = await _db.execute(
+                        select(ConvModel.id, ConvModel.title, ConvModel.updated_at)
+                        .where(ConvModel.user_id == user_email)
+                        .where(ConvModel.id != current_thread)
+                        .where(ConvModel.is_archived == False)  # noqa: E712
+                        .where(ConvModel.title.isnot(None))
+                        .order_by(ConvModel.updated_at.desc())
+                        .limit(15)
+                    )
+                    recent_threads = _result.fetchall()
+
+                if recent_threads:
+                    from datetime import timezone
+                    thread_section = "\n\n## RECENT CONVERSATION THREADS\n\n"
+                    thread_section += 'Use `python cli-tools/nf-threads search "query" --json` to find context from past conversations.\n\n'
+                    for t_id, t_title, t_updated in recent_threads:
+                        # Simple relative time
+                        if t_updated:
+                            delta = utc_now.replace(tzinfo=None) - (t_updated if t_updated.tzinfo is None else t_updated.replace(tzinfo=None))
+                            if delta.days == 0:
+                                age = "today"
+                            elif delta.days == 1:
+                                age = "yesterday"
+                            else:
+                                age = f"{delta.days}d ago"
+                        else:
+                            age = ""
+                        thread_section += f"- \"{t_title}\" ({age})\n"
+                    sections.append(thread_section)
+            except Exception as e:
+                logger.debug(f"Thread titles injection failed (non-fatal): {e}")
+
             # Date/time is the LAST section — placed at the bottom of the system
             # prompt so it's closest to the conversation history and doesn't get
             # lost in the middle (needle-in-haystack attention issue).
@@ -1463,11 +1504,23 @@ NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on
 **Morning scan with auto-deploy:**
 - `python cli-tools/nf-morning-scan --auto-deploy TEMPLATE --capital AMOUNT --top N [--dry-run] --json` — Scan + auto-deploy strategies on top candidates
 
+**Awakening/Workflow Status:**
+- `python cli-tools/nf-awakening status [--json]` — Recent awakening runs (status, duration, errors)
+- `python cli-tools/nf-awakening status --run-id 541 [--json]` — Detailed view with tool call audit trail
+- `python cli-tools/nf-awakening list [--json]` — Scheduled/enabled workflow definitions
+- `python cli-tools/nf-awakening logs --run-id 541 [--json]` — Full tool call log for a run
+- Use these when users ask "why didn't you wake up?" or "what happened with my scheduled task?"
+
 **Workflow Action Logs (audit trail for awakening tool calls):**
 - `python cli-tools/nf-actions recent [--limit 20] [--tool nf-order] [--json]` — Recent actions across all awakenings
 - `python cli-tools/nf-actions run RUN_ID [--json]` — All tool calls for a specific workflow run
 - `python cli-tools/nf-actions symbol SYMBOL [--limit 20] [--json]` — Actions involving a specific symbol
 - Use this to investigate what happened during an awakening (e.g., which tool closed a position)
+
+**Cross-Thread Search:**
+- `python cli-tools/nf-threads search "query" [--limit 5] [--json]` — Semantic search across past conversations
+- `python cli-tools/nf-threads recent [--limit 20] [--json]` — List recent thread titles
+- Use when user references something from a past conversation or you need context from another thread
 
 For full documentation: `cat cli-tools/INDEX.md`
 
@@ -1479,6 +1532,21 @@ For full documentation: `cat cli-tools/INDEX.md`
 - **write_to_scratchpad(content)**: Store working notes
 
 ---
+
+## Cross-Thread Awareness
+
+Users may reference past conversations or ask about events from other threads (e.g., "why didn't you wake up?", "what happened with that trade?", "remember when we discussed...").
+
+**When you don't have context for something the user is asking about:**
+1. Use `python cli-tools/nf-awakening status --json` to check recent workflow/awakening history
+2. Use `python cli-tools/nf-threads search "relevant query" --json` to search past conversations
+3. **NEVER guess, hallucinate, or apologize about past events** — always search first
+4. If search returns nothing, honestly say you couldn't find context and ask the user to clarify
+
+**Common cross-thread patterns:**
+- "Why didn't you wake up?" → `nf-awakening status` to check if the run failed/succeeded
+- "What did we discuss about X?" → `nf-threads search "X"` for context from past threads
+- "Remember the trade we planned?" → `nf-threads search "trade plan"` + check thread titles
 
 ## Response Guidelines
 

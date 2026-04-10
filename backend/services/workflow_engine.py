@@ -696,6 +696,14 @@ ensure to think carefully about the classification before making a decision.
         await self.db.commit()
         logger.info(f"Thread awakening: wrote follow-up response to thread {thread_id}")
 
+        # Embed immediately for cross-thread discoverability (bypass 2min debounce)
+        try:
+            import asyncio
+            from services.thread_embedder import embed_thread_immediately
+            asyncio.create_task(embed_thread_immediately(thread_id))
+        except Exception as e:
+            logger.warning(f"Thread embedding after awakening failed (non-fatal): {e}")
+
     async def execute_custom_workflow(
         self,
         user_id: int,

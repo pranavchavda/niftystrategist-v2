@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Check awakening/workflow status, scheduled tasks, and execution history.
+
+Gives the orchestrator visibility into its own operational state —
+whether awakenings fired, failed, or are scheduled.
+"""
+
+import argparse
+import sys
+import os
+from datetime import datetime
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import print_error, print_json, print_success, run_async  # noqa: E402
+
+
+def _get_user_id() -> int:
+    return int(os.environ.get("NF_USER_ID", "999"))
+
+
+def _fmt_ts(dt) -> str:
+    """Format a datetime for display (IST)."""
+    if dt is None:
+        return "—"
+    from zoneinfo import ZoneInfo
+    if dt.tzinfo is None:
+        # Assume UTC
+        from datetime import timezone
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist = dt.astimezone(ZoneInfo("Asia/Kolkata"))
+    return ist.strftime("%b %d %I:%M %p IST")
+
+
+def _fmt_duration(ms) -> str:
+    if ms is None:
+        return "—"
+    if ms < 1000:
+        return f"{ms}ms"
+    secs = ms / 1000
+    if secs < 60:
+        return f"{secs:.1f}s"
+    mins = secs / 60
+    return f"{mins:.1f}min"
+
+
+def cmd_status(args):
+    """Show recent awakening/workflow runs."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    user_id = _get_user_id()
+
+    async def _status():
+        async with get_db_context() as session:
+            if args.run_id:
+                # Detailed view of a specific run
+                r = await session.execute(text(
+                    "SELECT r.id, r.status, r.started_at, r.completed_at, r.duration_ms, "
+                    "r.error_message, r.result, r.trigger_type, r.workflow_type, "
+                    "d.name, d.prompt, d.thread_id "
+                    "FROM workflow_runs r "
+                    "LEFT JOIN workflow_definitions d ON d.id = r.workflow_config_id "
+                    "WHERE r.id = :run_id AND r.user_id = :user_id"
+                ), {"run_id": args.run_id, "user_id": user_id})
+                row = r.fetchone()
+                if not row:
+                    return None
+
+                run = {
+                    "run_id": row[0], "status": row[1],
+                    "started_at": _fmt_ts(row[2]), "completed_at": _fmt_ts(row[3]),
+                    "duration": _fmt_duration(row[4]),
+                    "error": row[5], "trigger_type": row[7],
+                    "workflow_type": row[8], "name": row[9],
+                    "prompt": (row[10][:200] + "...") if row[10] and len(row[10]) > 200 else row[10],
+                    "thread_id": row[11],
+                }
+
+                # Get action logs for this run
+                r2 = await session.execute(text(
+                    "SELECT tool_name, execution_status, duration_ms, error_message, sequence_order "
+                    "FROM workflow_action_logs "
+                    "WHERE workflow_run_id = :run_id ORDER BY sequence_order"
+                ), {"run_id": args.run_id})
+                run["action_logs"] = [
+                    {"seq": a[4], "tool": a[0], "status": a[1],
+                     "duration": _fmt_duration(a[2]), "error": a[3]}
+                    for a in r2.fetchall()
+                ]
+
+                # Get result response if available
+                if row[6] and isinstance(row[6], dict):
+                    resp = row[6].get("response", "")
+                    if resp and len(resp) > 300:
+                        resp = resp[:300] + "..."
+                    run["response_preview"] = resp
+
+                return {"run": run}
+            else:
+                # Recent runs
+                r = await session.execute(text(
+                    "SELECT r.id, r.status, r.started_at, r.completed_at, r.duration_ms, "
+                    "r.error_message, r.trigger_type, d.name "
+                    "FROM workflow_runs r "
+                    "LEFT JOIN workflow_definitions d ON d.id = r.workflow_config_id "
+                    "WHERE r.user_id = :user_id "
+                    "ORDER BY r.started_at DESC LIMIT :limit"
+                ), {"user_id": user_id, "limit": args.limit})
+                runs = [
+                    {"run_id": row[0], "status": row[1],
+                     "started_at": _fmt_ts(row[2]), "completed_at": _fmt_ts(row[3]),
+                     "duration": _fmt_duration(row[4]),
+                     "error": (row[5][:100] + "...") if row[5] and len(row[5]) > 100 else row[5],
+                     "trigger": row[6], "name": row[7]}
+                    for row in r.fetchall()
+                ]
+                return {"runs": runs, "count": len(runs)}
+
+    result = run_async(_status())
+
+    if result is None:
+        print_error(f"Run #{args.run_id} not found for user {user_id}")
+        return
+
+    if args.json:
+        print_json(result)
+        return
+
+    if args.run_id:
+        run = result["run"]
+        print(f"Run #{run['run_id']}  [{run['status'].upper()}]")
+        print(f"  Name:     {run.get('name') or '(unnamed)'}")
+        print(f"  Type:     {run['workflow_type']}  Trigger: {run['trigger_type']}")
+        print(f"  Started:  {run['started_at']}")
+        print(f"  Finished: {run['completed_at']}  Duration: {run['duration']}")
+        if run.get("thread_id"):
+            print(f"  Thread:   {run['thread_id']}")
+        if run.get("error"):
+            print(f"  Error:    {run['error']}")
+        if run.get("response_preview"):
+            print(f"  Response: {run['response_preview']}")
+        if run.get("action_logs"):
+            print(f"\n  Tool Calls ({len(run['action_logs'])}):")
+            for a in run["action_logs"]:
+                status_icon = "✓" if a["status"] == "success" else "✗"
+                err = f" — {a['error'][:60]}" if a.get("error") else ""
+                print(f"    {a['seq']:>2}. {status_icon} {a['tool']:<25} {a['duration']:>8}{err}")
+    else:
+        runs = result["runs"]
+        if not runs:
+            print("No awakening runs found.")
+            return
+        print(f"Recent Awakening Runs (last {len(runs)})\n")
+        print(f"{'ID':>5}  {'Status':<10}  {'Started':<22}  {'Duration':>8}  {'Name'}")
+        print("-" * 80)
+        for r in runs:
+            name = (r.get("name") or "(unnamed)")[:30]
+            status = r["status"].upper()
+            if status == "COMPLETED":
+                status = "OK"
+            elif status == "RUNNING":
+                status = "RUNNING ⏳"
+            print(f"{r['run_id']:>5}  {status:<10}  {r['started_at']:<22}  {r['duration']:>8}  {name}")
+            if r.get("error"):
+                print(f"       └─ {r['error']}")
+
+
+def cmd_list(args):
+    """List scheduled/enabled workflow definitions."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    user_id = _get_user_id()
+
+    async def _list():
+        async with get_db_context() as session:
+            r = await session.execute(text(
+                "SELECT id, name, enabled, frequency, scheduled_at, thread_id, "
+                "last_run_at, run_count, prompt "
+                "FROM workflow_definitions "
+                "WHERE user_id = :user_id ORDER BY created_at DESC LIMIT :limit"
+            ), {"user_id": user_id, "limit": args.limit})
+            return [
+                {"id": row[0], "name": row[1], "enabled": row[2],
+                 "frequency": row[3], "scheduled_at": _fmt_ts(row[4]),
+                 "thread_id": row[5], "last_run_at": _fmt_ts(row[6]),
+                 "run_count": row[7],
+                 "prompt": (row[8][:150] + "...") if row[8] and len(row[8]) > 150 else row[8]}
+                for row in r.fetchall()
+            ]
+
+    defs = run_async(_list())
+
+    if args.json:
+        print_json({"definitions": defs, "count": len(defs)})
+        return
+
+    if not defs:
+        print("No workflow definitions found.")
+        return
+
+    print(f"Workflow Definitions ({len(defs)})\n")
+    for d in defs:
+        status = "✓ ON" if d["enabled"] else "✗ OFF"
+        print(f"  #{d['id']}  [{status}]  {d['name'][:50]}")
+        print(f"     Freq: {d['frequency']}  Runs: {d['run_count']}  Last: {d['last_run_at']}")
+        if d.get("scheduled_at") and d["scheduled_at"] != "—":
+            print(f"     Scheduled: {d['scheduled_at']}")
+        if d.get("thread_id"):
+            print(f"     Thread: {d['thread_id']}")
+        print()
+
+
+def cmd_logs(args):
+    """Show tool call audit trail for a specific run."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    async def _logs():
+        async with get_db_context() as session:
+            r = await session.execute(text(
+                "SELECT tool_name, execution_status, duration_ms, error_message, "
+                "sequence_order, started_at, tool_args "
+                "FROM workflow_action_logs "
+                "WHERE workflow_run_id = :run_id ORDER BY sequence_order"
+            ), {"run_id": args.run_id})
+            return [
+                {"seq": row[4], "tool": row[0], "status": row[1],
+                 "duration": _fmt_duration(row[2]), "error": row[3],
+                 "started_at": _fmt_ts(row[5]),
+                 "args": row[6]}
+                for row in r.fetchall()
+            ]
+
+    logs = run_async(_logs())
+
+    if args.json:
+        print_json({"run_id": args.run_id, "logs": logs, "count": len(logs)})
+        return
+
+    if not logs:
+        print(f"No action logs found for run #{args.run_id}")
+        return
+
+    print(f"Action Logs for Run #{args.run_id} ({len(logs)} tool calls)\n")
+    for log in logs:
+        icon = "✓" if log["status"] == "success" else "✗"
+        print(f"  {log['seq']:>2}. {icon} {log['tool']:<30} {log['duration']:>8}  {log['started_at']}")
+        if log.get("error"):
+            print(f"      Error: {log['error'][:100]}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-awakening",
+        description="Check awakening/workflow status and execution history",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # ---- status ----
+    p_status = sub.add_parser("status", help="Show recent awakening runs")
+    p_status.add_argument("--run-id", type=int, help="Show detailed view of specific run")
+    p_status.add_argument("--limit", type=int, default=10, help="Max runs to show (default: 10)")
+    p_status.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- list ----
+    p_list = sub.add_parser("list", help="List workflow definitions")
+    p_list.add_argument("--limit", type=int, default=20, help="Max definitions (default: 20)")
+    p_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- logs ----
+    p_logs = sub.add_parser("logs", help="Show tool call audit trail for a run")
+    p_logs.add_argument("--run-id", type=int, required=True, help="Workflow run ID")
+    p_logs.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "status":
+        cmd_status(args)
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "logs":
+        cmd_logs(args)
+
+
+if __name__ == "__main__":
+    main()

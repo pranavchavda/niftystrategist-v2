@@ -70,6 +70,9 @@ class WorkflowScheduler:
         # Add pre-market forecast batch job (08:30 IST = 03:00 UTC, weekdays)
         self._add_forecast_batch_job()
 
+        # Add thread embedding processor (cross-thread search)
+        self._add_thread_embedding_job()
+
         # Start the scheduler
         self.scheduler.start()
         self._started = True
@@ -610,6 +613,34 @@ class WorkflowScheduler:
 
         except Exception as e:
             logger.error("Forecast batch: user %d failed: %s", user_id, e)
+
+    def _add_thread_embedding_job(self):
+        """Add periodic thread embedding processor for cross-thread search.
+
+        Runs every 60 seconds, processes threads that have been idle for 2+ minutes
+        with new unembedded content. Lightweight — skips quickly if nothing to do.
+        """
+        job_id = "thread_embedding_processor"
+
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        self.scheduler.add_job(
+            func=self._run_thread_embeddings,
+            trigger=IntervalTrigger(seconds=60),
+            id=job_id,
+            name="Thread Embedding Processor (60s)",
+            replace_existing=True,
+        )
+        logger.info("Scheduled thread embedding processor (every 60s)")
+
+    async def _run_thread_embeddings(self):
+        """Process dirty threads — called every 60s by scheduler."""
+        try:
+            from services.thread_embedder import process_dirty_threads
+            await process_dirty_threads()
+        except Exception as e:
+            logger.error("Thread embedding processor failed: %s", e)
 
     def get_scheduled_jobs(self) -> list:
         """Get all scheduled jobs for debugging/monitoring"""

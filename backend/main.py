@@ -323,6 +323,9 @@ async def save_assistant_message_to_db(
                 }
             )
 
+            # Mark thread as needing embedding (cross-thread search)
+            conv.needs_processing_since = utc_now_naive()
+
             # Check if auto-compaction is needed (fire and forget)
             try:
                 from api.conversations import COMPACTION_THRESHOLD
