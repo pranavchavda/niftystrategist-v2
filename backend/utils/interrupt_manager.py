@@ -7,7 +7,7 @@ while preserving partial progress and queuing additional messages.
 
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,10 @@ class InterruptSignal:
         self.event = asyncio.Event()
         self.created_at = datetime.now()
         self.reason: Optional[str] = None
+        # Steering: non-blocking mid-run guidance from user
+        self._steering_messages: List[str] = []
+        self._steering_lock = asyncio.Lock()
+        self._steering_was_consumed: bool = False
 
     def set(self, reason: str = "User interrupt"):
         """Signal interruption"""
@@ -55,6 +59,33 @@ class InterruptSignal:
         """Clear interrupt signal"""
         self.event.clear()
         self.reason = None
+
+    async def add_steering(self, message: str):
+        """Queue a steering message for the next model call."""
+        async with self._steering_lock:
+            self._steering_messages.append(message)
+        logger.info(f"[Steer] Queued for {self.thread_id}: {message[:80]}")
+
+    async def consume_steerings(self) -> List[str]:
+        """Pop all pending steering messages (called from hook)."""
+        async with self._steering_lock:
+            messages = self._steering_messages[:]
+            self._steering_messages.clear()
+        if messages:
+            self._steering_was_consumed = True
+        return messages
+
+    def has_pending_steerings(self) -> bool:
+        """Non-blocking check for pending steerings."""
+        return len(self._steering_messages) > 0
+
+    def was_steering_consumed(self) -> bool:
+        """Check if steering was consumed (for skipping output validators)."""
+        return self._steering_was_consumed
+
+    def clear_steering_consumed(self):
+        """Reset the flag after output validators have checked it."""
+        self._steering_was_consumed = False
 
 
 class InterruptManager:
@@ -114,6 +145,20 @@ class InterruptManager:
         signal.set(reason)
 
         logger.info(f"[Interrupt] Interrupted {thread_id}: {reason}")
+        return True
+
+    async def steer(self, thread_id: str, message: str) -> bool:
+        """
+        Send a steering message to an active stream.
+
+        Non-blocking — message is queued and injected before next model call.
+        Returns True if stream found, False otherwise.
+        """
+        signal = self.active_signals.get(thread_id)
+        if signal is None:
+            logger.warning(f"[Steer] No active signal for {thread_id}")
+            return False
+        await signal.add_steering(message)
         return True
 
     def unregister_stream(self, thread_id: str):

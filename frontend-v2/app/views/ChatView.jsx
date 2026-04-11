@@ -1241,6 +1241,41 @@ function ChatView({ authToken, onConversationChange }) {
     setProcessingStartTime(null);
   };
 
+  const handleSteer = async (text) => {
+    if (!threadId || !text.trim() || !isLoading) return;
+
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
+      // Add steering message to chat with distinct styling
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `steer_${Date.now()}`,
+          role: "user",
+          content: text,
+          timestamp: new Date().toISOString(),
+          isSteering: true,
+        },
+      ]);
+
+      const response = await fetch("/api/agent/steer", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ threadId, message: text }),
+      });
+
+      if (response.ok) {
+        console.log("[Steer] Steering message sent");
+      } else {
+        console.error("[Steer] Failed:", response.status);
+      }
+    } catch (error) {
+      console.error("[Steer] Error:", error);
+    }
+  };
+
   const handleFileAttachment = (files) => {
     // Handle both single file and array of files
     const fileArray = Array.isArray(files) ? files : [files];
@@ -1951,6 +1986,7 @@ function ChatView({ authToken, onConversationChange }) {
             onSubmit={handleSubmit}
             onFileAttach={handleFileAttachment}
             onCancel={handleCancel}
+            onSteer={handleSteer}
             disabled={isLoading}
             isLoading={isLoading}
             placeholder="Message Nifty Strategist..."

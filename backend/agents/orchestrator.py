@@ -392,6 +392,12 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
         async def validate_malformed_tool_calls(
             ctx: RunContext[OrchestratorDeps], result: str
         ) -> str:
+            # Skip validation right after steering — the model is pivoting,
+            # not making malformed tool calls
+            signal = ctx.deps.interrupt_signal
+            if signal and signal.was_steering_consumed():
+                return result
+
             from utils.function_call_validator import get_function_call_validator
 
             validator = get_function_call_validator()
@@ -422,11 +428,18 @@ class OrchestratorAgent(IntelligentBaseAgent[OrchestratorDeps, str]):
             """Use LLM to detect fake tool call claims.
 
             Multi-layer validation:
+            0. Skip if steering was just consumed (model is pivoting, not faking)
             1. Skip if tools were called this turn (ctx.messages)
             2. Skip if response is too short
             3. Skip for follow-up/educational/conversational patterns (heuristic)
             4. LLM validation with enriched context (user question + conversation history)
             """
+
+            # 0. Skip after steering — model is acknowledging redirect, not faking claims
+            signal = ctx.deps.interrupt_signal
+            if signal and signal.was_steering_consumed():
+                logger.info("[VALIDATOR] Skipping - steering was just consumed")
+                return result
 
             # 1. Extract actual tool calls from current run's message history
             actual_tool_calls = []
@@ -1301,6 +1314,65 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
         Uses Pydantic AI's history_processors pattern for sliding window.
         """
         return [sliding_window_history_processor]
+
+    def _get_capabilities(self) -> list | None:
+        """Orchestrator hooks for steering and observability."""
+        from pydantic_ai.capabilities.hooks import Hooks
+        from pydantic_ai.models import ModelRequestContext
+
+        hooks = Hooks()
+
+        @hooks.on.before_model_request
+        async def inject_steering(ctx: RunContext[OrchestratorDeps], request_context: ModelRequestContext) -> ModelRequestContext:
+            """Check for pending steering messages and inject before next model call."""
+            signal = ctx.deps.interrupt_signal
+            if not signal:
+                return request_context
+
+            # Reset the consumed flag at the start of each model turn
+            # (validators from the previous turn already checked it)
+            signal.clear_steering_consumed()
+
+            if signal.has_pending_steerings():
+                steerings = await signal.consume_steerings()
+                if steerings:
+                    combined = "\n\n".join(steerings)
+                    steering_content = (
+                        f"[URGENT STEERING — The user has redirected you mid-task. "
+                        f"STOP your current plan. Follow this new direction immediately. "
+                        f"Discard any pending steps that no longer apply. "
+                        f"The user's latest guidance OVERRIDES your previous plan.]\n\n{combined}"
+                    )
+                    steer_request = ModelRequest(
+                        parts=[UserPromptPart(content=steering_content)]
+                    )
+                    request_context.messages.append(steer_request)
+                    logger.info(f"[Steer] Injected {len(steerings)} steering message(s) at step {ctx.run_step}")
+
+            return request_context
+
+        @hooks.on.before_tool_execute
+        async def block_tool_if_steering(ctx: RunContext[OrchestratorDeps], *, call: ToolCallPart, tool_def, args: dict) -> dict:
+            """If user sent steering, skip this tool so model re-evaluates.
+
+            Uses ModelRetry (not RuntimeError) because pydantic-ai only catches
+            ModelRetry from before_tool_execute hooks — RuntimeError propagates
+            as a fatal RUN_ERROR and kills the stream.
+            """
+            tool_name = call.tool_name
+            logger.info(f"[HOOK] Tool execute: {tool_name}")
+
+            signal = ctx.deps.interrupt_signal
+            if signal and signal.has_pending_steerings():
+                logger.info(f"[Steer] Blocking tool {tool_name} — pending steering, forcing model re-evaluation")
+                raise ModelRetry(
+                    f"Tool execution skipped: user sent new guidance mid-run. "
+                    f"Re-read the conversation for updated instructions."
+                )
+
+            return args
+
+        return [hooks]
 
     def _get_system_prompt(self) -> str:
         """

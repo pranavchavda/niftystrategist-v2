@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, forwardRef } from 'react';
-import { ImagePlus, Paperclip, Send, X, Square, Mic, MicOff } from 'lucide-react';
+import { ImagePlus, Paperclip, Send, X, Square, Mic, MicOff, Navigation } from 'lucide-react';
 import { Button } from './catalyst/button';
 
 /**
@@ -22,6 +22,7 @@ const ChatInput = forwardRef(({
   onSubmit,
   onFileAttach,
   onCancel,
+  onSteer,
   disabled = false,
   isLoading = false,
   placeholder = "Message Nifty Strategist...",
@@ -230,7 +231,13 @@ const ChatInput = forwardRef(({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (value.trim() && !disabled) {
-        onSubmit();
+        if (isLoading && onSteer) {
+          // During loading, Enter sends a steering message
+          onSteer(value.trim());
+          onChange('');
+        } else if (!isLoading) {
+          onSubmit();
+        }
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
@@ -381,7 +388,15 @@ const ChatInput = forwardRef(({
       )}
 
       {/* Main input container */}
-      <form onSubmit={(e) => { e.preventDefault(); onSubmit(); }}>
+      <form onSubmit={(e) => {
+        e.preventDefault();
+        if (isLoading && onSteer && value.trim()) {
+          onSteer(value.trim());
+          onChange('');
+        } else if (!isLoading) {
+          onSubmit();
+        }
+      }}>
         <div
           className={`
             relative flex flex-col gap-2 p-3 rounded-2xl transition-all duration-300
@@ -403,8 +418,8 @@ const ChatInput = forwardRef(({
               onChange={handleChange}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={placeholder}
-              disabled={disabled}
+              placeholder={isLoading ? "Steer the agent..." : placeholder}
+              disabled={disabled && !isLoading}
               rows={1}
               className="w-full py-2 px-1 bg-transparent border-0 resize-none text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 text-base leading-relaxed max-h-[200px] custom-scrollbar"
               style={{ minHeight: '44px' }}
@@ -459,9 +474,9 @@ const ChatInput = forwardRef(({
               </button>
             </div>
 
-            {/* Send Button */}
-            <div>
-              {isLoading ? (
+            {/* Send / Steer / Stop Buttons */}
+            <div className="flex items-center gap-1.5">
+              {isLoading && (
                 <button
                   type="button"
                   onClick={(e) => {
@@ -473,7 +488,16 @@ const ChatInput = forwardRef(({
                 >
                   <Square className="w-5 h-5" />
                 </button>
-              ) : (
+              )}
+              {isLoading && value.trim() && onSteer ? (
+                <button
+                  type="submit"
+                  className="p-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-white shadow-md hover:shadow-lg transition-all duration-200 active:scale-105"
+                  title="Steer agent (redirect without stopping)"
+                >
+                  <Navigation className="w-5 h-5" />
+                </button>
+              ) : !isLoading ? (
                 <Button
                   outline
                   type="submit"
@@ -489,7 +513,7 @@ const ChatInput = forwardRef(({
                 >
                   <Send className="w-5 h-5 translate-x-0.5 -translate-y-0.5" />Send
                 </Button>
-              )}
+              ) : null}
             </div>
           </div>
 

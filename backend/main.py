@@ -2582,6 +2582,62 @@ async def agent_interrupt(request: Request, user: User = Depends(get_current_use
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/agent/steer")
+async def agent_steer(request: Request, user: User = Depends(get_current_user_optional)):
+    """
+    Send a steering message to a running agent.
+
+    Non-blocking — message is queued and injected before the agent's next model call,
+    allowing the user to redirect without stopping the current operation.
+    """
+    try:
+        from utils.interrupt_manager import get_interrupt_manager
+
+        body = await request.json()
+        thread_id = body.get("threadId")
+        message = body.get("message", "").strip()
+
+        if not thread_id:
+            raise HTTPException(status_code=400, detail="threadId required")
+        if not message:
+            raise HTTPException(status_code=400, detail="message required")
+
+        interrupt_mgr = get_interrupt_manager()
+        steered = await interrupt_mgr.steer(thread_id, message)
+
+        if not steered:
+            # Look for active run keyed by run_id (same pattern as interrupt endpoint)
+            from services.run_manager import run_manager
+            async with db_manager.async_session() as session:
+                runs = await run_manager.get_active_runs_for_user(
+                    str(user.id) if user else "anonymous", session
+                )
+                for run in runs:
+                    if run["thread_id"] == thread_id:
+                        steered = await interrupt_mgr.steer(run["id"], message)
+                        if steered:
+                            break
+
+        if steered:
+            logger.info(f"[Steer] Message accepted for {thread_id}: {message[:80]}")
+            return {
+                "status": "success",
+                "message": "Steering message queued",
+                "threadId": thread_id
+            }
+        else:
+            logger.warning(f"[Steer] No active stream for {thread_id}")
+            return {
+                "status": "warning",
+                "message": "No active operation to steer",
+                "threadId": thread_id
+            }
+
+    except Exception as e:
+        logger.error(f"Steer error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/agent/approve")
 async def agent_approve(request: Request):
     """Approve agent action"""

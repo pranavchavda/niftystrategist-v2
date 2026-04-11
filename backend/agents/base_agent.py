@@ -124,6 +124,11 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
         if builtin_tools:
             agent_kwargs['builtin_tools'] = builtin_tools
 
+        # Add capabilities (hooks, etc.) if subclass provides them
+        capabilities = self._get_capabilities()
+        if capabilities:
+            agent_kwargs['capabilities'] = capabilities
+
         self.agent = Agent(**agent_kwargs)
 
         # Register dynamic instructions (for memory injection, etc.)
@@ -305,6 +310,16 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
         """
         # Default: no dynamic instructions
         pass
+
+    def _get_capabilities(self) -> list | None:
+        """
+        Get capabilities (hooks, etc.) for the agent.
+        Can be overridden by subclasses to add hooks like before_model_request.
+
+        Returns:
+            List of Capability objects, or None for no capabilities.
+        """
+        return None
 
     def _get_history_processors(self) -> list:
         """

@@ -19,6 +19,7 @@ function MessageBubble({
   onSendMessage = null,
 }) {
   const isUser = message.role === 'user';
+  const isSteering = message.isSteering === true;
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
@@ -368,9 +369,12 @@ function MessageBubble({
   };
 
   return (
-    <div className={`group py-8 px-4 animate-slide-in-bottom ${isUser
-      ? 'bg-white dark:bg-zinc-950'
-      : 'bg-zinc-50/50 dark:bg-zinc-900/50'
+    <div className={`group py-8 px-4 animate-slide-in-bottom ${
+      isSteering
+        ? 'bg-amber-50/50 dark:bg-amber-950/20 border-l-2 border-amber-400 dark:border-amber-600'
+        : isUser
+          ? 'bg-white dark:bg-zinc-950'
+          : 'bg-zinc-50/50 dark:bg-zinc-900/50'
       }`}>
       <div className="max-w-3xl mx-auto">
         {/* Message with optional avatar */}
@@ -391,8 +395,8 @@ function MessageBubble({
             {/* Message Label */}
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
-                  {isUser ? 'You' : 'Nifty Strategist'}
+                <div className={`text-xs font-semibold ${isSteering ? 'text-amber-700 dark:text-amber-400' : 'text-zinc-900 dark:text-zinc-100'}`}>
+                  {isSteering ? 'Steering' : isUser ? 'You' : 'Nifty Strategist'}
                 </div>
                 {/* Show "edited" indicator */}
                 {message.edited_at && (
