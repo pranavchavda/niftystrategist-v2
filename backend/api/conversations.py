@@ -41,14 +41,14 @@ async def debug_db():
     # Test direct database access
     async with db_manager.async_session() as session:
         # Test with ConversationOps
-        conversations = await ConversationOps.list_conversations(
+        rows = await ConversationOps.list_conversations(
             session,
             user_id="dev@localhost",
             limit=10,
             offset=0,
             include_archived=False
         )
-        result["conversations_ops_count"] = len(conversations)
+        result["conversations_ops_count"] = len(rows)
 
         # Test with direct query
         query = select(Conversation)
@@ -173,10 +173,10 @@ async def test_simple(
     db: AsyncSession = Depends(get_db)
 ):
     """Simple test endpoint"""
-    conversations = await ConversationOps.list_conversations(
+    rows = await ConversationOps.list_conversations(
         db, user.email, 10, 0, False
     )
-    return {"count": len(conversations), "user": user.email}
+    return {"count": len(rows), "user": user.email}
 
 
 @router.get("/")
@@ -192,13 +192,13 @@ async def list_conversations(
     logger = logging.getLogger(__name__)
     logger.info(f"Listing conversations for user: {user.email}")
 
-    conversations = await ConversationOps.list_conversations(
+    rows = await ConversationOps.list_conversations(
         db, user.email, limit, offset, include_archived
     )
-    logger.info(f"Found {len(conversations)} conversations for {user.email}")
+    logger.info(f"Found {len(rows)} conversations for {user.email}")
 
     # Get total count
-    total = len(conversations)  # Would use COUNT query in production
+    total = len(rows)  # Would use COUNT query in production
 
     # Return plain dict for debugging
     return {
@@ -209,12 +209,13 @@ async def list_conversations(
                 "title": conv.title,
                 "created_at": conv.created_at.isoformat() + 'Z' if conv.created_at else None,
                 "updated_at": conv.updated_at.isoformat() + 'Z' if conv.updated_at else None,
+                "last_message_at": last_msg_at.isoformat() + 'Z' if last_msg_at else (conv.updated_at.isoformat() + 'Z' if conv.updated_at else None),
                 "is_starred": conv.is_starred,
                 "is_archived": conv.is_archived,
                 "summary": conv.summary,
                 "message_count": 0  # Simplified for now
             }
-            for conv in conversations
+            for conv, last_msg_at in rows
         ],
         "total": total,
         "has_more": (offset + limit) < total

@@ -69,20 +69,42 @@ class ConversationOps:
         limit: int = 20,
         offset: int = 0,
         include_archived: bool = False
-    ) -> List[Conversation]:
-        """List user's conversations"""
-        query = select(Conversation).where(
-            Conversation.user_id == user_id
+    ) -> List[tuple]:
+        """List user's conversations, ordered by last message timestamp.
+
+        Returns list of (Conversation, last_message_at) tuples.
+        Uses MAX(messages.timestamp) instead of updated_at so that cron jobs
+        (memory extraction, thread embedding, compaction) don't bump recency.
+        """
+        from sqlalchemy import func
+
+        # Subquery: MAX(messages.timestamp) per conversation
+        last_msg_sub = (
+            select(
+                Message.conversation_id,
+                func.max(Message.timestamp).label("last_message_at")
+            )
+            .group_by(Message.conversation_id)
+            .subquery()
+        )
+
+        query = (
+            select(Conversation, last_msg_sub.c.last_message_at)
+            .outerjoin(last_msg_sub, Conversation.id == last_msg_sub.c.conversation_id)
+            .where(Conversation.user_id == user_id)
         )
 
         if not include_archived:
             query = query.where(Conversation.is_archived == False)
 
-        query = query.order_by(Conversation.updated_at.desc())
+        # Order by last message time (fall back to updated_at for threads with no messages)
+        query = query.order_by(
+            func.coalesce(last_msg_sub.c.last_message_at, Conversation.updated_at).desc()
+        )
         query = query.limit(limit).offset(offset)
 
         result = await session.execute(query)
-        return result.scalars().all()
+        return result.all()
 
     @staticmethod
     async def update_conversation_title(

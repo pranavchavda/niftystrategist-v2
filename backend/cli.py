@@ -731,12 +731,13 @@ async def list_conversations_command(args):
 
     try:
         async with AsyncSessionLocal() as session:
-            convos = await ConversationOps.list_conversations(
+            rows = await ConversationOps.list_conversations(
                 session=session,
                 user_id=args.user,
                 limit=args.limit,
                 include_archived=args.archived
             )
+            convos = [c for c, _ in rows]
 
             # Filter starred if requested
             if args.starred:
@@ -821,13 +822,13 @@ async def resume_conversation_command(args):
             thread_id = args.thread_id
             if len(args.thread_id) <= 8:
                 # Query for conversations ending with these chars
-                convos = await ConversationOps.list_conversations(
+                rows = await ConversationOps.list_conversations(
                     session=session,
                     user_id=args.user,
                     limit=100,
                     include_archived=True
                 )
-                matching = [c for c in convos if c.id.endswith(args.thread_id)]
+                matching = [c for c, _ in rows if c.id.endswith(args.thread_id)]
 
                 if not matching:
                     console.print(f"[red]❌ No conversation found ending with '{args.thread_id}'[/red]")

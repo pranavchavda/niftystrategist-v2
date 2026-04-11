@@ -142,7 +142,7 @@ function ConversationItem({
               )}
 
               <div className="text-xs text-zinc-400 dark:text-zinc-500 mt-1 font-medium">
-                {new Date(conversation.updated_at).toLocaleTimeString([], {
+                {new Date(conversation.last_message_at || conversation.updated_at).toLocaleTimeString([], {
                   hour: "2-digit",
                   minute: "2-digit",
                   timeZone: "Asia/Kolkata",
@@ -357,7 +357,7 @@ export default function Sidebar({
     };
 
     recentConversations.forEach((conv) => {
-      const convDate = new Date(conv.updated_at);
+      const convDate = new Date(conv.last_message_at || conv.updated_at);
       convDate.setHours(0, 0, 0, 0);
 
       if (convDate.getTime() === today.getTime()) {

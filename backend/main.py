@@ -1024,7 +1024,7 @@ async def test_db():
     from database.operations import ConversationOps
 
     async with db_manager.async_session() as session:
-        conversations = await ConversationOps.list_conversations(
+        rows = await ConversationOps.list_conversations(
             session,
             user_id="dev@localhost",
             limit=10,
@@ -1032,10 +1032,10 @@ async def test_db():
             include_archived=False
         )
         return {
-            "count": len(conversations),
+            "count": len(rows),
             "conversations": [
                 {"id": c.id, "title": c.title, "user": c.user_id}
-                for c in conversations
+                for c, _ in rows
             ]
         }
 
