@@ -59,6 +59,13 @@ class TrailingStopTrigger(BaseModel):
     reference: Literal["ltp", "bid", "ask", "open", "high", "low"] = "ltp"
 
 
+class RenkoTrigger(BaseModel):
+    brick_size: float
+    condition: Literal["reversal_up", "reversal_down"]
+    base_price: float | None = None   # Reference price for next brick (init from first LTP)
+    trend: Literal["up", "down"] | None = None  # Direction of last completed brick
+
+
 class PlaceOrderAction(BaseModel):
     symbol: str
     transaction_type: Literal["BUY", "SELL"]
@@ -84,7 +91,7 @@ class MonitorRule(BaseModel):
     name: str
     enabled: bool = True
 
-    trigger_type: Literal["price", "time", "indicator", "order_status", "compound", "trailing_stop"]
+    trigger_type: Literal["price", "time", "indicator", "order_status", "compound", "trailing_stop", "renko"]
     trigger_config: dict[str, Any]
 
     action_type: Literal["place_order", "cancel_order", "modify_order", "cancel_rule"]

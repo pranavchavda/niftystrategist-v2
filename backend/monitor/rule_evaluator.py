@@ -5,8 +5,11 @@ whether the trigger condition fires (True) or not (False).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from monitor.models import (
     CancelRuleAction,
@@ -15,6 +18,7 @@ from monitor.models import (
     MonitorRule,
     OrderStatusTrigger,
     PriceTrigger,
+    RenkoTrigger,
     TimeTrigger,
     TrailingStopTrigger,
 )
@@ -127,6 +131,69 @@ def evaluate_trailing_stop_trigger(
             return False, updated
 
     return False, None
+
+
+# ── Renko triggers ─────────────────────────────────────────────────
+
+def evaluate_renko_trigger(
+    rule: MonitorRule,
+    market_data: dict,
+) -> tuple[bool, dict | None]:
+    """Evaluate a Renko reversal trigger using tick-based brick tracking.
+
+    Maintains brick state in trigger_config (base_price, trend) rather
+    than fetching historical candles.  On each tick: form bricks if LTP
+    moved >= brick_size from base_price, detect trend reversal.
+
+    Returns (fired, trigger_config_update_or_None).
+    """
+    cfg = RenkoTrigger(**rule.trigger_config)
+
+    ltp = market_data.get("ltp")
+    if ltp is None:
+        return False, None
+
+    # First tick — seed base_price, can't detect reversal yet
+    if cfg.base_price is None:
+        updated = rule.trigger_config.copy()
+        updated["base_price"] = ltp
+        return False, updated
+
+    old_trend = cfg.trend
+    base_price = cfg.base_price
+    trend = cfg.trend
+    brick_size = cfg.brick_size
+
+    # Form bricks — process all complete bricks in this tick
+    diff = ltp - base_price
+    while diff >= brick_size:
+        base_price += brick_size
+        trend = "up"
+        diff = ltp - base_price
+    while diff <= -brick_size:
+        base_price -= brick_size
+        trend = "down"
+        diff = ltp - base_price
+
+    # Did any bricks form?
+    state_changed = (base_price != cfg.base_price) or (trend != cfg.trend)
+
+    # Detect reversal (trend must have changed from a known direction)
+    fired = False
+    if trend != old_trend and old_trend is not None:
+        if cfg.condition == "reversal_up" and trend == "up":
+            fired = True
+        elif cfg.condition == "reversal_down" and trend == "down":
+            fired = True
+
+    # Persist updated brick state
+    config_update = None
+    if state_changed:
+        config_update = rule.trigger_config.copy()
+        config_update["base_price"] = base_price
+        config_update["trend"] = trend
+
+    return fired, config_update
 
 
 # ── Time triggers ────────────────────────────────────────────────────
@@ -374,6 +441,11 @@ def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
     elif rule.trigger_type == "trailing_stop":
         fired, config_update = evaluate_trailing_stop_trigger(rule, ctx.market_data)
         result.trigger_config_update = config_update
+    elif rule.trigger_type == "renko":
+        fired, config_update = evaluate_renko_trigger(rule, ctx.market_data)
+        result.trigger_config_update = config_update
+    else:
+        logger.warning("Unknown trigger_type %r on rule %s — skipping", rule.trigger_type, rule.id)
 
     result.fired = fired
 

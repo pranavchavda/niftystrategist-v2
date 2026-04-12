@@ -166,6 +166,11 @@ def cmd_deploy(args):
         params["direction"] = args.direction
     if hasattr(args, "entry_time") and args.entry_time is not None:
         params["entry_time"] = args.entry_time
+    # Renko-specific
+    if hasattr(args, "brick_size") and args.brick_size is not None:
+        params["brick_size"] = args.brick_size
+    if hasattr(args, "sl_bricks") and args.sl_bricks is not None:
+        params["sl_bricks"] = args.sl_bricks
 
     # Generate the plan
     try:
@@ -442,6 +447,10 @@ Examples:
   nf-strategy deploy orb --symbol M&M --capital 100000 \\
     --range-high 3075 --range-low 3025 --enable-reversal --json
 
+  # Deploy a Renko reversal strategy
+  nf-strategy deploy renko --symbol RELIANCE --capital 50000 \\
+    --brick-size 20 --sl-bricks 3 --direction long --json
+
   # Show deployed strategies
   nf-strategy status --json
 
@@ -504,8 +513,12 @@ Examples:
     p_deploy.add_argument("--call-buy-strike", type=float, help="F&O: call buy strike (iron condor)")
     p_deploy.add_argument("--put-sell-strike", type=float, help="F&O: put sell strike (iron condor)")
     p_deploy.add_argument("--put-buy-strike", type=float, help="F&O: put buy strike (iron condor)")
-    p_deploy.add_argument("--direction", choices=["buy", "sell"], help="F&O: buy or sell (straddle/strangle)")
+    p_deploy.add_argument("--direction", help="Direction: long/short/both (renko) or buy/sell (F&O)")
     p_deploy.add_argument("--entry-time", type=str, help="F&O: entry time HH:MM")
+
+    # Renko-specific
+    p_deploy.add_argument("--brick-size", type=float, help="Renko: brick size in ₹ (default: 15)")
+    p_deploy.add_argument("--sl-bricks", type=int, help="Renko: SL distance in bricks (default: 2)")
 
     p_deploy.add_argument("--dry-run", action="store_true", help="Preview rules without creating them")
     p_deploy.add_argument("--json", action="store_true", help="Output as JSON")
