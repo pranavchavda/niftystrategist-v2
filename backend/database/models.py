@@ -161,6 +161,10 @@ class User(Base):
     # e.g., "http://localhost:8001" or "http://<nanode-ip>:8001"
     order_node_url = Column(String(255), nullable=True)
 
+    # Standing trading mandate for autonomous awakenings (JSONB)
+    # {risk_per_trade, daily_loss_cap, allowed_instruments, cutoff_time, auto_squareoff_time, approved_at}
+    trading_mandate = Column(JSON, nullable=True)
+
     # Relationships
     roles = relationship("Role", secondary=user_roles, back_populates="users")
     trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")
@@ -189,6 +193,10 @@ class Conversation(Base):
     # Fork tracking
     forked_from_id = Column(String, ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
     fork_summary = Column(Text, nullable=True)  # Comprehensive summary of parent conversation
+
+    # Daily thread tracking (recurring awakenings)
+    is_daily_thread = Column(Boolean, default=False)
+    daily_thread_date = Column(DateTime, nullable=True)  # DATE column — store as date, not string
 
     # Compaction tracking
     last_compacted_at = Column(DateTime, nullable=True)  # When thread was last compacted
@@ -871,6 +879,53 @@ class ThreadEmbedding(Base):
         Index('idx_thread_emb_user', 'user_id'),
         Index('idx_thread_emb_conv', 'conversation_id'),
         # UniqueConstraint handled by UNIQUE(conversation_id, turn_index) in migration
+    )
+
+
+# ==============================================================================
+# Recurring Awakening Models
+# ==============================================================================
+
+class UserAwakeningSchedule(Base):
+    """Per-user recurring awakening schedule.
+
+    Each row represents a scheduled awakening window (e.g., "Morning Scan" at 9:20 AM IST).
+    The scheduler converts IST times to UTC CronTrigger jobs at startup.
+    All awakenings for a given day write to a single daily trading thread.
+    """
+    __tablename__ = "user_awakening_schedules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Schedule identity
+    name = Column(String(100), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+
+    # Timing (IST — converted to UTC at scheduler load)
+    cron_hour = Column(Integer, nullable=False)      # 0-23 IST
+    cron_minute = Column(Integer, default=0, nullable=False)  # 0-59
+    weekdays_only = Column(Boolean, default=True, nullable=False)
+
+    # Prompt
+    prompt = Column(Text, nullable=False)
+
+    # Execution config
+    timeout_seconds = Column(Integer, default=600, nullable=False)
+    model_override = Column(String(100), nullable=True)
+
+    # Tracking
+    last_run_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    run_count = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'name', name='unique_awakening_schedule'),
+        Index('idx_awakening_schedules_user', 'user_id'),
+        Index('idx_awakening_schedules_enabled', 'enabled'),
     )
 
 

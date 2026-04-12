@@ -70,8 +70,11 @@ class WorkflowScheduler:
         # Add pre-market forecast batch job (08:30 IST = 03:00 UTC, weekdays)
         self._add_forecast_batch_job()
 
-        # Add thread embedding processor (cross-thread search)
-        self._add_thread_embedding_job()
+        # Thread embedding is now event-driven (triggered on message save)
+        # instead of polling every 60s. See thread_embedder.schedule_debounced_embed()
+
+        # Load recurring awakening schedules
+        await self._load_awakening_schedules()
 
         # Start the scheduler
         self.scheduler.start()
@@ -641,6 +644,156 @@ class WorkflowScheduler:
             await process_dirty_threads()
         except Exception as e:
             logger.error("Thread embedding processor failed: %s", e)
+
+    # ========================================================================
+    # Recurring Awakening Schedules
+    # ========================================================================
+
+    async def _load_awakening_schedules(self):
+        """Load all enabled awakening schedules and create CronTrigger jobs."""
+        from database.models import UserAwakeningSchedule
+        from services.awakening_scheduler import ist_to_utc
+
+        async for session in self.get_db_session():
+            try:
+                result = await session.execute(
+                    select(UserAwakeningSchedule).where(
+                        UserAwakeningSchedule.enabled == True
+                    )
+                )
+                schedules = result.scalars().all()
+
+                for schedule in schedules:
+                    self._add_awakening_job(schedule)
+
+                logger.info("Loaded %d enabled awakening schedules", len(schedules))
+            except Exception as e:
+                logger.error("Failed to load awakening schedules: %s", e)
+            finally:
+                break
+
+    def _add_awakening_job(self, schedule):
+        """Add a CronTrigger job for an awakening schedule.
+
+        Uses timezone='Asia/Kolkata' directly so the user's IST times fire
+        correctly regardless of server timezone (dev=EDT, prod=UTC, etc.).
+        """
+        from zoneinfo import ZoneInfo
+
+        job_id = f"awakening_{schedule.id}"
+
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        day_of_week = "mon-fri" if schedule.weekdays_only else "*"
+
+        trigger = CronTrigger(
+            hour=schedule.cron_hour,
+            minute=schedule.cron_minute,
+            day_of_week=day_of_week,
+            timezone=ZoneInfo("Asia/Kolkata"),
+        )
+
+        self.scheduler.add_job(
+            func=self._execute_awakening_job,
+            trigger=trigger,
+            id=job_id,
+            args=[schedule.id, schedule.user_id],
+            name=f"Awakening: {schedule.name} for user {schedule.user_id} ({schedule.cron_hour:02d}:{schedule.cron_minute:02d} IST)",
+            replace_existing=True,
+        )
+
+        logger.info(
+            "Scheduled awakening '%s' (id=%d) at %02d:%02d IST for user %d",
+            schedule.name, schedule.id,
+            schedule.cron_hour, schedule.cron_minute,
+            schedule.user_id,
+        )
+
+    async def _execute_awakening_job(self, schedule_id: int, user_id: int):
+        """Execute a recurring awakening — called by APScheduler."""
+        from services.awakening_scheduler import execute_awakening
+        from database.models import UserAwakeningSchedule
+
+        logger.info("Firing awakening schedule %d for user %d", schedule_id, user_id)
+
+        try:
+            async for session in self.get_db_session():
+                schedule = await session.get(UserAwakeningSchedule, schedule_id)
+                if not schedule:
+                    logger.warning("Awakening schedule %d not found, removing job", schedule_id)
+                    self._remove_awakening_job(schedule_id)
+                    break
+
+                if not schedule.enabled:
+                    logger.info("Awakening schedule %d is disabled, skipping", schedule_id)
+                    break
+
+                result = await execute_awakening(session, schedule)
+
+                if result.get("success"):
+                    if result.get("skipped"):
+                        logger.info("Awakening %d skipped: %s", schedule_id, result.get("reason"))
+                    else:
+                        logger.info(
+                            "Awakening %d completed in %dms",
+                            schedule_id, result.get("duration_ms", 0)
+                        )
+                else:
+                    logger.error("Awakening %d failed: %s", schedule_id, result.get("error"))
+
+                break
+        except Exception as e:
+            logger.exception("Failed to execute awakening %d: %s", schedule_id, e)
+
+    def _remove_awakening_job(self, schedule_id: int):
+        """Remove an awakening job from the scheduler."""
+        job_id = f"awakening_{schedule_id}"
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+            logger.info("Removed awakening job %s", job_id)
+
+    async def add_or_update_awakening(self, schedule):
+        """Add, update, or remove an awakening schedule job.
+
+        Called by the API when a user creates/updates/enables/disables a schedule.
+        """
+        if schedule.enabled:
+            self._add_awakening_job(schedule)
+        else:
+            self._remove_awakening_job(schedule.id)
+
+    async def reload_awakening_schedules(self, user_id: int):
+        """Reload all awakening jobs for a specific user.
+
+        Called when the user changes multiple schedules at once.
+        """
+        from database.models import UserAwakeningSchedule
+
+        # Remove all existing awakening jobs for this user
+        for job in self.scheduler.get_jobs():
+            if job.id.startswith("awakening_"):
+                # Check if this job belongs to the user
+                if len(job.args) >= 2 and job.args[1] == user_id:
+                    self.scheduler.remove_job(job.id)
+
+        # Reload from DB
+        async for session in self.get_db_session():
+            try:
+                result = await session.execute(
+                    select(UserAwakeningSchedule).where(
+                        UserAwakeningSchedule.user_id == user_id,
+                        UserAwakeningSchedule.enabled == True,
+                    )
+                )
+                schedules = result.scalars().all()
+                for schedule in schedules:
+                    self._add_awakening_job(schedule)
+                logger.info("Reloaded %d awakening schedules for user %d", len(schedules), user_id)
+            except Exception as e:
+                logger.error("Failed to reload awakening schedules for user %d: %s", user_id, e)
+            finally:
+                break
 
     def get_scheduled_jobs(self) -> list:
         """Get all scheduled jobs for debugging/monitoring"""

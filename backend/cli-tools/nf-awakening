@@ -214,6 +214,53 @@ def cmd_list(args):
         print()
 
 
+def cmd_schedules(args):
+    """List recurring awakening schedules."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    user_id = _get_user_id()
+
+    async def _schedules():
+        async with get_db_context() as session:
+            r = await session.execute(text(
+                "SELECT id, name, enabled, cron_hour, cron_minute, weekdays_only, "
+                "last_run_at, last_error, run_count, prompt "
+                "FROM user_awakening_schedules "
+                "WHERE user_id = :user_id ORDER BY cron_hour, cron_minute"
+            ), {"user_id": user_id})
+            return [
+                {"id": row[0], "name": row[1], "enabled": row[2],
+                 "time_ist": f"{row[3]:02d}:{row[4]:02d}",
+                 "weekdays_only": row[5],
+                 "last_run_at": _fmt_ts(row[6]), "last_error": row[7],
+                 "run_count": row[8],
+                 "prompt": (row[9][:150] + "...") if row[9] and len(row[9]) > 150 else row[9]}
+                for row in r.fetchall()
+            ]
+
+    schedules = run_async(_schedules())
+
+    if args.json:
+        print_json({"schedules": schedules, "count": len(schedules)})
+        return
+
+    if not schedules:
+        print("No recurring awakening schedules configured.")
+        print("Set them up at /mandates or use nf-mandate.")
+        return
+
+    print(f"Recurring Awakening Schedules ({len(schedules)})\n")
+    for s in schedules:
+        status = "✓ ON" if s["enabled"] else "✗ OFF"
+        days = "Mon-Fri" if s["weekdays_only"] else "Daily"
+        print(f"  #{s['id']}  [{status}]  {s['name']:<25}  {s['time_ist']} IST  {days}")
+        print(f"     Runs: {s['run_count']}  Last: {s['last_run_at']}")
+        if s.get("last_error"):
+            print(f"     ⚠ Error: {s['last_error'][:80]}")
+        print()
+
+
 def cmd_logs(args):
     """Show tool call audit trail for a specific run."""
     from database.session import get_db_context
@@ -276,6 +323,10 @@ def main():
     p_logs.add_argument("--run-id", type=int, required=True, help="Workflow run ID")
     p_logs.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # ---- schedules ----
+    p_sched = sub.add_parser("schedules", help="List recurring awakening schedules")
+    p_sched.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -288,6 +339,8 @@ def main():
         cmd_list(args)
     elif args.command == "logs":
         cmd_logs(args)
+    elif args.command == "schedules":
+        cmd_schedules(args)
 
 
 if __name__ == "__main__":

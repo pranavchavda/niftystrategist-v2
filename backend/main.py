@@ -300,6 +300,13 @@ async def save_assistant_message_to_db(
 
             await db.commit()
 
+            # Schedule debounced embed (replaces 60s polling)
+            try:
+                from services.thread_embedder import schedule_debounced_embed
+                schedule_debounced_embed(thread_id)
+            except Exception as embed_err:
+                logger.warning(f"Debounced embed schedule failed (non-fatal): {embed_err}")
+
             # Log what was saved
             log_parts = [f"Saved assistant message {message_id}"]
             if tool_calls:
@@ -853,6 +860,10 @@ app.include_router(workflows_routes.router)
 # Include Workflow action logs router (audit trail for tool calls during awakenings)
 from api.workflow_actions import router as workflow_actions_router
 app.include_router(workflow_actions_router)
+
+# Include Awakenings router (recurring awakening schedules + mandates)
+from api.awakenings import router as awakenings_router
+app.include_router(awakenings_router, prefix="/api/awakenings", tags=["awakenings"])
 
 # Configure CORS for frontend
 _cors_env = os.getenv("CORS_ORIGINS", "http://localhost:5173")

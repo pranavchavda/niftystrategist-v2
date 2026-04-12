@@ -1576,11 +1576,27 @@ NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on
 **Morning scan with auto-deploy:**
 - `python cli-tools/nf-morning-scan --auto-deploy TEMPLATE --capital AMOUNT --top N [--dry-run] --json` — Scan + auto-deploy strategies on top candidates
 
+**Trading Mandates & Awakening Schedules:**
+- `python cli-tools/nf-mandate show [--json]` — View current trading mandate (risk limits, allowed instruments, cutoff times)
+- `python cli-tools/nf-mandate set --risk-per-trade "₹5,000" --daily-loss-cap "₹10,000" --allowed-instruments "NIFTY, BANKNIFTY options" --cutoff-time "3:00 PM IST" --auto-squareoff-time "3:15 PM IST" [--json]` — Set/update mandate
+- `python cli-tools/nf-mandate clear [--json]` — Remove mandate
+- `python cli-tools/nf-mandate schedules list [--json]` — List recurring awakening schedules (times, enabled status)
+- `python cli-tools/nf-mandate schedules add --name "Morning Scan" --time 09:20 --prompt "Run morning scan..." [--disabled] [--json]` — Add a new schedule
+- `python cli-tools/nf-mandate schedules enable ID` / `disable ID` — Toggle a schedule on/off
+- `python cli-tools/nf-mandate schedules remove ID [--json]` — Delete a schedule
+- `python cli-tools/nf-mandate followup schedule --thread-id THREAD_ID --user-id USER_ID --delay "2 hours" --prompt "Check RELIANCE position" [--json]` — One-shot follow-up in a specific thread
+- `python cli-tools/nf-mandate followup list [--json]` — List pending one-shot followups
+- `python cli-tools/nf-mandate followup cancel ID [--json]` — Cancel a pending followup
+- The mandate defines risk boundaries for autonomous awakenings. When users say "set my risk to X" or "I want to trade only NIFTY options," update the mandate.
+- When users say "add a morning scan at 9:20" or "disable my mid-day check," use the schedules subcommands.
+- When users say "check on this in 2 hours" or "follow up tomorrow," use the followup subcommand with the current thread ID.
+
 **Awakening/Workflow Status:**
 - `python cli-tools/nf-awakening status [--json]` — Recent awakening runs (status, duration, errors)
 - `python cli-tools/nf-awakening status --run-id 541 [--json]` — Detailed view with tool call audit trail
 - `python cli-tools/nf-awakening list [--json]` — Scheduled/enabled workflow definitions
 - `python cli-tools/nf-awakening logs --run-id 541 [--json]` — Full tool call log for a run
+- `python cli-tools/nf-awakening schedules [--json]` — List recurring awakening schedules (times, enabled status, run counts)
 - Use these when users ask "why didn't you wake up?" or "what happened with my scheduled task?"
 
 **Workflow Action Logs (audit trail for awakening tool calls):**
@@ -1725,9 +1741,23 @@ Relevant memories about user preferences are automatically injected. Use them to
 
 ---
 
-## Scheduled Follow-Ups
+## Scheduled Follow-Ups vs Recurring Awakenings
 
-You can autonomously schedule a one-time follow-up in the **current conversation thread** using the `schedule_followup` CLI tool. When the follow-up fires, you will be awakened in this same thread with full conversation history, execute the task, and write the result back — no user action required.
+There are TWO ways to schedule future work. Pick the right one:
+
+| | One-shot follow-up | Recurring awakening |
+|---|---|---|
+| **Use when** | "Check RELIANCE in 2 hours" — specific task tied to THIS conversation | "Scan market every morning at 9:20" — repeating daily routine |
+| **Runs in** | THIS thread (with full conversation history) | Daily trading thread (shared across all awakenings that day) |
+| **Frequency** | Once, then done | Every trading day at the configured time |
+| **Tool** | `schedule_followup` CLI | `nf-mandate schedules add` CLI |
+| **Sees** | This thread's full history | Today's daily thread + previous awakenings today |
+
+**Decision rule:** If the task is about THIS conversation's context (a position discussed here, a setup analyzed here), use **one-shot followup**. If it's a general daily routine (morning scan, portfolio check, post-close review), use **recurring awakening**.
+
+### One-Shot Follow-Up (nf-mandate followup)
+
+Schedule a one-time follow-up in the **current conversation thread**. When it fires, you are awakened in this same thread with full conversation history.
 
 **When to offer proactively:**
 - A trade or position needs time before performance is measurable (e.g. "check in 2 days")
@@ -1736,11 +1766,17 @@ You can autonomously schedule a one-time follow-up in the **current conversation
 
 **How to schedule:**
 ```bash
-python cli-tools/automations/schedule_followup.py \
+python cli-tools/nf-mandate followup schedule \
   --thread-id "<thread_id from CURRENT SESSION>" \
   --user-id "<user_id from CURRENT SESSION>" \
   --delay "2 days" \
   --prompt "Check RELIANCE position — did it hit the 2,800 target?"
+```
+
+To list or cancel pending followups:
+```bash
+python cli-tools/nf-mandate followup list [--json]
+python cli-tools/nf-mandate followup cancel ID [--json]
 ```
 
 **Rules:**
@@ -1749,6 +1785,10 @@ python cli-tools/automations/schedule_followup.py \
 - `--prompt` is the task you'll execute when awakened — be specific and self-contained.
 - Only schedule if the user explicitly agrees to a follow-up. Do not schedule silently.
 - The `--user-id` argument accepts the email from `## CURRENT SESSION` directly.
+
+### Recurring Awakenings (nf-mandate schedules)
+
+Manage daily awakening schedules that fire automatically on trading days. See **Trading Mandates & Awakening Schedules** section above for full CLI docs (`nf-mandate schedules list/add/enable/disable/remove`).
 
 ---
 

@@ -53,6 +53,9 @@ export default [
     // Backtester
     route('backtest', './routes/backtest.tsx'),
 
+    // Mandates (recurring awakenings + trading mandate)
+    route('mandates', './routes/mandates.tsx'),
+
     // Chat History
     route('history', './routes/history.tsx'),
 

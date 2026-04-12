@@ -232,6 +232,39 @@ This allows a user to pre-approve a bounded trading mandate once via HITL and ha
 
 **APScheduler timezone gotcha:** Server runs in EST; naive UTC datetimes stored in `scheduled_at` are interpreted as EST by APScheduler (5-hour offset). `_get_trigger()` also returns `None` for past `scheduled_at` times. For testing, set `scheduled_at` to local system time + a small delta rather than a UTC future time.
 
+## Recurring Awakenings (Daily Trading Thread + Mandates)
+
+Per-user recurring awakening schedules that fire at configured IST times on trading days. All awakenings for one day write to a single "daily thread" so each awakening sees previous results.
+
+**Architecture:**
+```
+APScheduler CronTrigger (timezone=Asia/Kolkata)
+  → _execute_awakening_job(schedule_id, user_id)
+    → get_or_create_daily_thread() — one thread per user per day
+    → load thread history (previous awakenings' results)
+    → orchestrator.agent.run() with is_awakening=True
+    → _write_followup_to_thread() — result back to daily thread
+    → embed_thread_immediately() — cross-thread search
+```
+
+**Key files:**
+- DB migration: `backend/migrations/024_add_awakening_schedules.sql`
+- ORM: `UserAwakeningSchedule` in `database/models.py`, `trading_mandate` JSON on `User`, `is_daily_thread`/`daily_thread_date` on `Conversation`
+- Daily thread: `backend/services/daily_thread.py` — `get_or_create_daily_thread()`, `get_daily_thread_id()`
+- Schedule CRUD + executor: `backend/services/awakening_scheduler.py` — `list_schedules()`, `create_schedule()`, `execute_awakening()`
+- Scheduler integration: `backend/services/scheduler.py` — `_load_awakening_schedules()`, `_add_awakening_job()`, `_execute_awakening_job()`
+- REST API: `backend/api/awakenings.py` — schedules CRUD, mandate CRUD, daily thread lookup, manual trigger
+- CLI: `backend/cli-tools/nf-mandate` — `show`, `set`, `clear` for trading mandate
+- Frontend: `frontend-v2/app/routes/mandates.tsx` — Mandates page (schedules + mandate management)
+
+**Trading Mandate:** JSON on `users.trading_mandate` — defines risk boundaries (risk per trade, daily loss cap, allowed instruments, cutoff time, auto-squareoff). Injected into daily thread's first message so all awakenings see it.
+
+**Default schedules (seeded via API/UI):** Morning Scan (9:20), Mid-Day Check (11:30), Pre-Close Positioning (14:00), Post-Close Review (15:45). All IST, weekdays only, created disabled.
+
+**Critical: `Conversation.user_id` must be the user's email** (not integer ID as string). The chat view filters by email. Daily thread creation uses `user_email` parameter.
+
+**CronTrigger uses `timezone=ZoneInfo("Asia/Kolkata")`** — fires at the correct IST time regardless of server timezone (dev=EDT, prod=UTC).
+
 ## Deploy Pipeline
 
 `.github/workflows/deploy.yml` uses **uv** (Rust-based pip replacement) for `pip install`, which is 10-100x faster than plain pip for large requirement sets. The venv is created with plain Python but deps installed via `pip install -q uv && uv pip install -r requirements.txt`.

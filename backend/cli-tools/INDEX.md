@@ -19,6 +19,7 @@ CLI tools for stock market data and trading operations. Run from `backend/` dire
 | `nf-watchlist` | Manage watchlist with price alerts | Yes | `python cli-tools/nf-watchlist` |
 | `nf-strategy` | Deploy strategy templates (algo trading) | Yes | `python cli-tools/nf-strategy deploy breakout --symbol RELIANCE --capital 50000 --entry 2450 --sl 2430 --json` |
 | `nf-backtest` | Backtest strategies against historical data | Yes | `python cli-tools/nf-backtest --strategy breakout --symbol RELIANCE --days 30 --entry-pct 1.0 --sl-pct 1.5 --json` |
+| `nf-mandate` | View/set/clear trading mandate for awakenings | No | `python cli-tools/nf-mandate show --json` |
 
 All tools support `--json` for structured output and `--help` for usage info.
 
@@ -344,3 +345,28 @@ python cli-tools/nf-backtest --strategy breakout --symbols RELIANCE,HDFCBANK,INF
 - Outputs: win rate, profit factor, Sharpe ratio, max drawdown, expectancy, trade list
 - ORB auto-detects opening range from first candle of each day
 - Use `--entry-pct` and `--sl-pct` for multi-day backtests (levels computed per day)
+
+---
+
+### nf-mandate
+
+View and manage the trading mandate for autonomous awakenings.
+
+```
+python cli-tools/nf-mandate show [--json]
+python cli-tools/nf-mandate set [--risk-per-trade "₹5,000"] [--daily-loss-cap "₹10,000"] [--allowed-instruments "..."] [--cutoff-time "3:00 PM IST"] [--auto-squareoff-time "3:15 PM IST"] [--json]
+python cli-tools/nf-mandate clear [--json]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-mandate show                                    # Current mandate
+python cli-tools/nf-mandate show --json                             # JSON output
+python cli-tools/nf-mandate set --risk-per-trade "₹5,000" \
+  --daily-loss-cap "₹10,000" --allowed-instruments "Nifty 500"     # Set mandate
+python cli-tools/nf-mandate clear                                   # Remove mandate
+```
+
+- Mandate defines risk boundaries for autonomous awakenings
+- Merges with existing mandate (update, don't replace)
+- Requires `NF_USER_ID` env var

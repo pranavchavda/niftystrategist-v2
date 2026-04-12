@@ -70,6 +70,9 @@ type Pages = {
   "/backtest": {
     params: {};
   };
+  "/mandates": {
+    params: {};
+  };
   "/history": {
     params: {};
   };
@@ -93,7 +96,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/reset-password" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/reset-password" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/mandates" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -121,7 +124,7 @@ type RouteFiles = {
   };
   "./routes/_auth.tsx": {
     id: "routes/_auth";
-    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/mandates" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/chat.$threadId.tsx": {
     id: "routes/chat.$threadId";
@@ -170,6 +173,10 @@ type RouteFiles = {
   "./routes/backtest.tsx": {
     id: "routes/backtest";
     page: "/backtest";
+  };
+  "./routes/mandates.tsx": {
+    id: "routes/mandates";
+    page: "/mandates";
   };
   "./routes/history.tsx": {
     id: "routes/history";

@@ -17,6 +17,7 @@ import {
   BeakerIcon,
   ChatBubbleLeftRightIcon,
   LightBulbIcon,
+  ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
@@ -34,12 +35,28 @@ const sections = [
     permission: 'dashboard.access',
   },
   {
+    title: 'Chat History',
+    description:
+      'Browse past conversations and analysis threads.',
+    icon: ChatBubbleLeftRightIcon,
+    href: '/history',
+    permission: 'chat.access',
+  },
+  {
     title: 'Monitor',
     description:
       'IFTTT-style rules engine for automated trade triggers.',
     icon: BellAlertIcon,
     href: '/monitor',
     permission: 'chat.access',
+  },
+  {
+    title: 'Mandates',
+    description:
+      'Autonomous trading rules and recurring awakening schedules.',
+    icon: ShieldCheckIcon,
+    href: '/mandates',
+    permission: 'settings.access',
   },
   {
     title: 'Automations',
@@ -72,14 +89,6 @@ const sections = [
     icon: DocumentTextIcon,
     href: '/notes',
     permission: 'notes.access',
-  },
-  {
-    title: 'Chat History',
-    description:
-      'Browse past conversations and analysis threads.',
-    icon: ChatBubbleLeftRightIcon,
-    href: '/history',
-    permission: 'chat.access',
   },
   {
     title: 'Memory',

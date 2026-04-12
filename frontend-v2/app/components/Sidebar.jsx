@@ -28,6 +28,7 @@ import {
   StickyNote,
   Layers,
   FlaskConical,
+  ScrollText,
 } from "lucide-react";
 import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
 import { hasPermission, PERMISSIONS } from "../utils/permissions";
@@ -531,6 +532,18 @@ export default function Sidebar({
                 >
                   <FlaskConical className="w-4 h-4" />
                 </NavLink>
+                <NavLink
+                  to="/mandates"
+                  title="Mandates"
+                  className={({ isActive }) =>
+                    `p-2 rounded-lg transition-colors ${isActive
+                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`
+                  }
+                >
+                  <ScrollText className="w-4 h-4" />
+                </NavLink>
                 {hasPermission(user, PERMISSIONS.GOOGLE_WORKSPACE_ACCESS) && (
                   <NavLink
                     to="/tasks"
@@ -821,6 +834,10 @@ export default function Sidebar({
                 <DropdownItem href="/backtest">
                   <FlaskConical data-slot="icon" />
                   <DropdownLabel>Backtester</DropdownLabel>
+                </DropdownItem>
+                <DropdownItem href="/mandates">
+                  <ScrollText data-slot="icon" />
+                  <DropdownLabel>Mandates</DropdownLabel>
                 </DropdownItem>
                 <DropdownDivider />
                 <DropdownItem href="/help">

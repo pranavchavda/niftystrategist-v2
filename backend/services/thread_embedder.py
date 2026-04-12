@@ -1,12 +1,13 @@
 """Thread Embedding Processor — event-driven with debounce.
 
 Embeds conversation turns (user+assistant pairs) for cross-thread
-semantic search. Runs as a periodic APScheduler job (every 60s),
-processing threads that have been idle for 2+ minutes.
+semantic search. Triggered after each assistant message save with a
+2-minute debounce (to avoid embedding active conversations).
 
 Keeps max 20 embedded threads per user (auto-purges oldest).
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -17,6 +18,11 @@ from database.models import Conversation, Message, ThreadEmbedding, utc_now
 from database.session import get_db_context
 
 logger = logging.getLogger(__name__)
+
+# Pending debounced embed tasks — keyed by conversation_id.
+# When a new message arrives for a thread that already has a pending task,
+# the old task is cancelled and a new one is scheduled.
+_pending_embeds: dict[str, asyncio.Task] = {}
 
 # Config
 IDLE_THRESHOLD_SECONDS = 120  # 2 min debounce — don't embed active conversations
@@ -75,6 +81,9 @@ async def embed_thread_immediately(conversation_id: str) -> None:
 
     Used by awakening write-back to make results searchable immediately.
     """
+    # Cancel any pending debounced task for this thread
+    _cancel_pending(conversation_id)
+
     try:
         async with get_db_context() as session:
             conv = await session.get(Conversation, conversation_id)
@@ -83,6 +92,40 @@ async def embed_thread_immediately(conversation_id: str) -> None:
                 logger.info("Immediately embedded thread %s", conversation_id)
     except Exception as e:
         logger.error("Immediate embed failed for thread %s: %s", conversation_id, e)
+
+
+def schedule_debounced_embed(conversation_id: str) -> None:
+    """Schedule a thread embed after the idle debounce period.
+
+    Called from save_assistant_message_to_db. If a previous embed is pending
+    for this thread (user sent another message), cancels it and restarts
+    the debounce timer. This replaces the 60s APScheduler polling job.
+    """
+    _cancel_pending(conversation_id)
+
+    async def _delayed_embed():
+        try:
+            await asyncio.sleep(IDLE_THRESHOLD_SECONDS)
+            async with get_db_context() as session:
+                conv = await session.get(Conversation, conversation_id)
+                if conv and conv.needs_processing_since:
+                    await _embed_thread(conversation_id, conv.user_id)
+                    logger.info("Debounced embed completed for thread %s", conversation_id)
+        except asyncio.CancelledError:
+            pass  # New message arrived, debounce restarted
+        except Exception as e:
+            logger.error("Debounced embed failed for thread %s: %s", conversation_id, e)
+        finally:
+            _pending_embeds.pop(conversation_id, None)
+
+    _pending_embeds[conversation_id] = asyncio.create_task(_delayed_embed())
+
+
+def _cancel_pending(conversation_id: str) -> None:
+    """Cancel a pending debounced embed task if one exists."""
+    task = _pending_embeds.pop(conversation_id, None)
+    if task and not task.done():
+        task.cancel()
 
 
 async def _embed_thread(conversation_id: str, user_id: str) -> None:

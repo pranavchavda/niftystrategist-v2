@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+"""View and manage the user's trading mandate for autonomous awakenings.
+
+The mandate defines risk boundaries that recurring awakenings operate within:
+risk per trade, daily loss cap, allowed instruments, cutoff time, etc.
+"""
+
+import argparse
+import sys
+import os
+from datetime import datetime
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import print_error, print_json, print_success, run_async  # noqa: E402
+
+
+def _get_user_id() -> int:
+    return int(os.environ.get("NF_USER_ID", "999"))
+
+
+def cmd_show(args):
+    """Show the current trading mandate."""
+    from database.session import get_db_context
+    from database.models import User
+
+    user_id = _get_user_id()
+
+    async def _show():
+        async with get_db_context() as session:
+            user = await session.get(User, user_id)
+            if not user:
+                print_error(f"User {user_id} not found")
+            return user.trading_mandate
+
+    mandate = run_async(_show())
+
+    if args.json:
+        print_json({"mandate": mandate})
+        return
+
+    if not mandate:
+        print("No trading mandate configured.")
+        print("Use: nf-mandate set --risk-per-trade '₹5,000' --daily-loss-cap '₹10,000' ...")
+        return
+
+    print("📋 Trading Mandate\n")
+    fields = [
+        ("Risk per trade", "risk_per_trade"),
+        ("Daily loss cap", "daily_loss_cap"),
+        ("Allowed instruments", "allowed_instruments"),
+        ("Cutoff time", "cutoff_time"),
+        ("Auto-squareoff", "auto_squareoff_time"),
+        ("Approved at", "approved_at"),
+    ]
+    for label, key in fields:
+        value = mandate.get(key)
+        if value:
+            print(f"  {label}: {value}")
+
+    custom = mandate.get("custom_instructions")
+    if custom:
+        print(f"\n  Custom Instructions:\n    {custom}")
+
+
+def cmd_set(args):
+    """Set or update the trading mandate."""
+    from database.session import get_db_context
+    from database.models import User, utc_now
+
+    user_id = _get_user_id()
+
+    # Build mandate from args
+    updates = {}
+    if args.risk_per_trade:
+        updates["risk_per_trade"] = args.risk_per_trade
+    if args.daily_loss_cap:
+        updates["daily_loss_cap"] = args.daily_loss_cap
+    if args.allowed_instruments:
+        updates["allowed_instruments"] = args.allowed_instruments
+    if args.cutoff_time:
+        updates["cutoff_time"] = args.cutoff_time
+    if args.auto_squareoff_time:
+        updates["auto_squareoff_time"] = args.auto_squareoff_time
+    if args.custom_instructions:
+        updates["custom_instructions"] = args.custom_instructions
+
+    if not updates:
+        print_error("No fields provided. Use --risk-per-trade, --daily-loss-cap, etc.")
+
+    async def _set():
+        async with get_db_context() as session:
+            user = await session.get(User, user_id)
+            if not user:
+                print_error(f"User {user_id} not found")
+
+            # Merge with existing mandate (update, don't replace)
+            mandate = user.trading_mandate or {}
+            mandate.update(updates)
+            mandate["approved_at"] = utc_now().isoformat()
+            user.trading_mandate = mandate
+            await session.commit()
+            return mandate
+
+    mandate = run_async(_set())
+
+    if args.json:
+        print_json({"mandate": mandate})
+    else:
+        print_success("Trading mandate updated")
+        for key, value in updates.items():
+            label = key.replace("_", " ").title()
+            print(f"  {label}: {value}")
+
+
+def cmd_clear(args):
+    """Clear the trading mandate."""
+    from database.session import get_db_context
+    from database.models import User
+
+    user_id = _get_user_id()
+
+    async def _clear():
+        async with get_db_context() as session:
+            user = await session.get(User, user_id)
+            if not user:
+                print_error(f"User {user_id} not found")
+            user.trading_mandate = None
+            await session.commit()
+
+    run_async(_clear())
+
+    if args.json:
+        print_json({"mandate": None})
+    else:
+        print_success("Trading mandate cleared")
+
+
+# ============================================================================
+# One-shot followup (wraps automations/schedule_followup.py)
+# ============================================================================
+
+def cmd_followup(args):
+    """Dispatch followup subcommands: schedule (default), list, cancel."""
+    if args.followup_action == "list":
+        cmd_followup_list(args)
+    elif args.followup_action == "cancel":
+        cmd_followup_cancel(args)
+    else:
+        cmd_followup_schedule(args)
+
+
+def cmd_followup_schedule(args):
+    """Schedule a one-shot follow-up in a specific thread."""
+    sys.path.insert(0, os.path.join(_backend_dir, "cli-tools"))
+    from automations.schedule_followup import parse_delay, insert_workflow, activate_workflow, resolve_user_id
+
+    user_id_raw = args.user_id or os.environ.get("NF_USER_ID", "999")
+
+    async def _followup():
+        user_id = await resolve_user_id(str(user_id_raw))
+
+        delta = parse_delay(args.delay)
+        from datetime import timezone
+        scheduled_at = datetime.now(timezone.utc).replace(tzinfo=None) + delta
+
+        name = args.name or f"Follow up: {args.prompt[:80]}"
+
+        result = await insert_workflow(
+            thread_id=args.thread_id,
+            user_id=user_id,
+            prompt=args.prompt,
+            scheduled_at=scheduled_at,
+            name=name[:100],
+            agent_hint=None,
+            timeout=args.timeout,
+        )
+
+        # Poke the scheduler
+        activation = await activate_workflow(result["workflow_id"], None)
+
+        output = {
+            "status": "scheduled",
+            "workflow_id": result["workflow_id"],
+            "name": result["name"],
+            "thread_id": args.thread_id,
+            "scheduled_at": result["scheduled_at"],
+            "delay": args.delay,
+            "message": f"Follow-up scheduled for {result['scheduled_at']} (in {args.delay})",
+        }
+        if activation and "activation_error" in activation:
+            output["activation_warning"] = activation["activation_error"]
+        elif activation:
+            output["activation"] = "ok"
+        return output
+
+    try:
+        result = run_async(_followup())
+    except ValueError as e:
+        print_error(str(e))
+    except Exception as e:
+        print_error(f"Failed to schedule follow-up: {e}")
+
+    if args.json:
+        print_json(result)
+    else:
+        print_success(result["message"])
+        print(f"  Workflow ID: {result['workflow_id']}")
+        print(f"  Thread: {result['thread_id']}")
+        if result.get("activation_warning"):
+            print(f"  ⚠ Activation: {result['activation_warning']}")
+
+
+def cmd_followup_list(args):
+    """List pending one-shot followups."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    user_id = _get_user_id()
+
+    async def _list():
+        async with get_db_context() as session:
+            r = await session.execute(text(
+                "SELECT id, name, enabled, scheduled_at, thread_id, last_run_at, run_count, prompt "
+                "FROM workflow_definitions "
+                "WHERE user_id = :user_id AND frequency = 'once' "
+                "ORDER BY scheduled_at DESC LIMIT :limit"
+            ), {"user_id": user_id, "limit": args.limit})
+            return [
+                {"id": row[0], "name": row[1], "enabled": row[2],
+                 "scheduled_at": row[3].isoformat() if row[3] else None,
+                 "thread_id": row[4],
+                 "last_run_at": row[5].isoformat() if row[5] else None,
+                 "run_count": row[6],
+                 "prompt": (row[7][:150] + "...") if row[7] and len(row[7]) > 150 else row[7]}
+                for row in r.fetchall()
+            ]
+
+    followups = run_async(_list())
+
+    if args.json:
+        print_json({"followups": followups, "count": len(followups)})
+        return
+
+    if not followups:
+        print("No one-shot followups found.")
+        return
+
+    print(f"One-Shot Followups ({len(followups)})\n")
+    for f in followups:
+        status = "PENDING" if f["enabled"] and f["run_count"] == 0 else "DONE" if f["run_count"] > 0 else "OFF"
+        icon = "⏳" if status == "PENDING" else "✓" if status == "DONE" else "✗"
+        print(f"  #{f['id']}  [{icon} {status}]  {(f['name'] or '(unnamed)')[:40]}")
+        print(f"     Scheduled: {f['scheduled_at'] or '—'}")
+        if f.get("thread_id"):
+            print(f"     Thread: {f['thread_id']}")
+        print()
+
+
+def cmd_followup_cancel(args):
+    """Cancel (delete) a one-shot followup."""
+    from database.session import get_db_context
+    from sqlalchemy import text
+
+    user_id = _get_user_id()
+
+    async def _cancel():
+        async with get_db_context() as session:
+            # Verify ownership and that it's a one-shot
+            r = await session.execute(text(
+                "SELECT id, name FROM workflow_definitions "
+                "WHERE id = :id AND user_id = :user_id"
+            ), {"id": args.followup_id, "user_id": user_id})
+            row = r.fetchone()
+            if not row:
+                return None
+
+            # Delete it
+            await session.execute(text(
+                "DELETE FROM workflow_definitions WHERE id = :id AND user_id = :user_id"
+            ), {"id": args.followup_id, "user_id": user_id})
+            await session.commit()
+
+            # Remove from scheduler
+            try:
+                from services.scheduler import get_scheduler
+                sched = get_scheduler()
+                if sched:
+                    job_id = f"custom_workflow_{args.followup_id}"
+                    if sched.scheduler.get_job(job_id):
+                        sched.scheduler.remove_job(job_id)
+            except Exception:
+                pass
+
+            return {"id": row[0], "name": row[1]}
+
+    result = run_async(_cancel())
+
+    if result is None:
+        print_error(f"Followup #{args.followup_id} not found for user {user_id}")
+
+    if args.json:
+        print_json({"deleted": True, **result})
+    else:
+        print_success(f"Followup #{result['id']} '{result['name']}' cancelled")
+
+
+# ============================================================================
+# Schedule management
+# ============================================================================
+
+def _fmt_time(hour, minute):
+    h = hour % 12 or 12
+    ampm = "AM" if hour < 12 else "PM"
+    return f"{h}:{minute:02d} {ampm}"
+
+
+def cmd_schedules_list(args):
+    """List recurring awakening schedules."""
+    from database.session import get_db_context
+    from database.models import UserAwakeningSchedule
+    from sqlalchemy import select
+
+    user_id = _get_user_id()
+
+    async def _list():
+        async with get_db_context() as session:
+            result = await session.execute(
+                select(UserAwakeningSchedule)
+                .where(UserAwakeningSchedule.user_id == user_id)
+                .order_by(UserAwakeningSchedule.cron_hour, UserAwakeningSchedule.cron_minute)
+            )
+            return list(result.scalars().all())
+
+    schedules = run_async(_list())
+
+    if args.json:
+        print_json({
+            "schedules": [
+                {"id": s.id, "name": s.name, "enabled": s.enabled,
+                 "time_ist": f"{s.cron_hour:02d}:{s.cron_minute:02d}",
+                 "weekdays_only": s.weekdays_only, "run_count": s.run_count,
+                 "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+                 "last_error": s.last_error,
+                 "prompt": s.prompt}
+                for s in schedules
+            ],
+            "count": len(schedules),
+        })
+        return
+
+    if not schedules:
+        print("No recurring awakening schedules configured.")
+        print("Use: nf-mandate schedules add --name 'Morning Scan' --time 09:20 --prompt '...'")
+        return
+
+    print(f"Recurring Awakening Schedules ({len(schedules)})\n")
+    for s in schedules:
+        status = "ON " if s.enabled else "OFF"
+        icon = "✓" if s.enabled else "✗"
+        days = "Mon-Fri" if s.weekdays_only else "Daily"
+        print(f"  #{s.id}  [{icon} {status}]  {s.name:<25}  {_fmt_time(s.cron_hour, s.cron_minute)} IST  {days}  ({s.run_count} runs)")
+        if s.last_error:
+            print(f"     ⚠ Last error: {s.last_error[:80]}")
+
+
+def cmd_schedules_add(args):
+    """Add a new awakening schedule."""
+    from database.session import get_db_context
+    from services.awakening_scheduler import create_schedule
+
+    user_id = _get_user_id()
+
+    # Parse time
+    parts = args.time.split(":")
+    if len(parts) != 2:
+        print_error("Time must be HH:MM format (IST), e.g., 09:20")
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except ValueError:
+        print_error("Invalid time. Use HH:MM (24h IST), e.g., 09:20 or 15:45")
+
+    async def _add():
+        async with get_db_context() as session:
+            return await create_schedule(
+                session,
+                user_id=user_id,
+                name=args.name,
+                cron_hour=hour,
+                cron_minute=minute,
+                prompt=args.prompt,
+                enabled=not args.disabled,
+                weekdays_only=not args.include_weekends,
+                timeout_seconds=args.timeout,
+            )
+
+    try:
+        schedule = run_async(_add())
+    except Exception as e:
+        if "unique" in str(e).lower():
+            print_error(f"Schedule '{args.name}' already exists")
+        raise
+
+    # Notify scheduler
+    try:
+        _notify_scheduler_update(schedule)
+    except Exception:
+        pass
+
+    if args.json:
+        print_json({"id": schedule.id, "name": schedule.name,
+                     "time_ist": f"{hour:02d}:{minute:02d}", "enabled": schedule.enabled})
+    else:
+        status = "enabled" if schedule.enabled else "disabled"
+        print_success(f"Schedule '{schedule.name}' added at {_fmt_time(hour, minute)} IST ({status})")
+
+
+def cmd_schedules_remove(args):
+    """Remove an awakening schedule."""
+    from database.session import get_db_context
+    from services.awakening_scheduler import delete_schedule
+
+    user_id = _get_user_id()
+
+    async def _remove():
+        async with get_db_context() as session:
+            return await delete_schedule(session, args.schedule_id, user_id)
+
+    deleted = run_async(_remove())
+
+    if not deleted:
+        print_error(f"Schedule #{args.schedule_id} not found")
+
+    if args.json:
+        print_json({"deleted": True, "id": args.schedule_id})
+    else:
+        print_success(f"Schedule #{args.schedule_id} deleted")
+
+
+def cmd_schedules_toggle(args):
+    """Enable or disable an awakening schedule."""
+    from database.session import get_db_context
+    from services.awakening_scheduler import update_schedule
+
+    user_id = _get_user_id()
+    enable = args.action == "enable"
+
+    async def _toggle():
+        async with get_db_context() as session:
+            return await update_schedule(session, args.schedule_id, user_id, enabled=enable)
+
+    schedule = run_async(_toggle())
+
+    if not schedule:
+        print_error(f"Schedule #{args.schedule_id} not found")
+
+    try:
+        _notify_scheduler_update(schedule)
+    except Exception:
+        pass
+
+    if args.json:
+        print_json({"id": schedule.id, "name": schedule.name, "enabled": schedule.enabled})
+    else:
+        state = "enabled" if enable else "disabled"
+        print_success(f"Schedule '{schedule.name}' {state}")
+
+
+def _notify_scheduler_update(schedule):
+    """Best-effort notify the running scheduler about a schedule change."""
+    # This only works when called from the FastAPI process (same scheduler instance).
+    # From CLI, the scheduler is in a different process — changes take effect on next restart.
+    try:
+        from services.scheduler import get_scheduler
+        sched = get_scheduler()
+        if sched:
+            import asyncio
+            asyncio.run(sched.add_or_update_awakening(schedule))
+    except Exception:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-mandate",
+        description="View and manage trading mandate and awakening schedules",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-mandate show                                      Show current mandate
+  nf-mandate set --risk-per-trade "₹5,000"             Set risk per trade
+  nf-mandate clear                                     Remove mandate
+
+  nf-mandate followup schedule --thread-id THREAD \\
+      --delay "2h" --prompt "Check RELIANCE position"   One-shot in-thread followup
+  nf-mandate followup list                              List pending followups
+  nf-mandate followup cancel 666                        Cancel a followup
+
+  nf-mandate schedules list                             List awakening schedules
+  nf-mandate schedules add --name "Morning Scan" \\
+      --time 09:20 --prompt "Run morning scan..."       Add schedule
+  nf-mandate schedules enable 3                         Enable schedule #3
+  nf-mandate schedules disable 3                        Disable schedule #3
+  nf-mandate schedules remove 3                         Delete schedule #3
+""",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # show
+    p_show = sub.add_parser("show", help="Show current trading mandate")
+    p_show.add_argument("--json", action="store_true", help="JSON output")
+
+    # set
+    p_set = sub.add_parser("set", help="Set or update trading mandate")
+    p_set.add_argument("--risk-per-trade", help="Max risk per trade (e.g., '₹5,000')")
+    p_set.add_argument("--daily-loss-cap", help="Max daily loss (e.g., '₹10,000')")
+    p_set.add_argument("--allowed-instruments", help="Allowed instruments")
+    p_set.add_argument("--cutoff-time", help="Stop new trades after this time (e.g., '3:00 PM IST')")
+    p_set.add_argument("--auto-squareoff-time", help="Auto-squareoff time (e.g., '3:15 PM IST')")
+    p_set.add_argument("--custom-instructions", help="Free-form trading instructions for awakenings")
+    p_set.add_argument("--json", action="store_true", help="JSON output")
+
+    # clear
+    p_clear = sub.add_parser("clear", help="Clear trading mandate")
+    p_clear.add_argument("--json", action="store_true", help="JSON output")
+
+    # followup (with sub-subcommands)
+    p_fu = sub.add_parser("followup", help="Manage one-shot follow-ups")
+    fu_sub = p_fu.add_subparsers(dest="followup_action")
+
+    # followup schedule (default when --thread-id is given)
+    p_fu_sched = fu_sub.add_parser("schedule", help="Schedule a follow-up in a thread")
+    p_fu_sched.add_argument("--thread-id", required=True, help="Thread ID to follow up in")
+    p_fu_sched.add_argument("--delay", required=True, help='Delay: "2 hours", "1 day", "30 minutes"')
+    p_fu_sched.add_argument("--prompt", required=True, help="Task to execute when awakened")
+    p_fu_sched.add_argument("--user-id", default=None, help="User ID or email (defaults to NF_USER_ID)")
+    p_fu_sched.add_argument("--name", default=None, help="Workflow name (auto-generated if omitted)")
+    p_fu_sched.add_argument("--timeout", type=int, default=900, help="Timeout in seconds (default: 900)")
+    p_fu_sched.add_argument("--json", action="store_true", help="JSON output")
+
+    # followup list
+    p_fu_list = fu_sub.add_parser("list", help="List pending one-shot followups")
+    p_fu_list.add_argument("--limit", type=int, default=20, help="Max results (default: 20)")
+    p_fu_list.add_argument("--json", action="store_true", help="JSON output")
+
+    # followup cancel
+    p_fu_cancel = fu_sub.add_parser("cancel", help="Cancel a followup")
+    p_fu_cancel.add_argument("followup_id", type=int, help="Workflow definition ID to cancel")
+    p_fu_cancel.add_argument("--json", action="store_true", help="JSON output")
+
+    # schedules (with sub-subcommands)
+    p_sched = sub.add_parser("schedules", help="Manage awakening schedules")
+    sched_sub = p_sched.add_subparsers(dest="sched_command")
+
+    # schedules list
+    p_sl = sched_sub.add_parser("list", help="List awakening schedules")
+    p_sl.add_argument("--json", action="store_true", help="JSON output")
+
+    # schedules add
+    p_sa = sched_sub.add_parser("add", help="Add awakening schedule")
+    p_sa.add_argument("--name", required=True, help="Schedule name (e.g., 'Morning Scan')")
+    p_sa.add_argument("--time", required=True, help="Time in IST HH:MM (e.g., 09:20)")
+    p_sa.add_argument("--prompt", required=True, help="Task prompt for the orchestrator")
+    p_sa.add_argument("--disabled", action="store_true", help="Create as disabled")
+    p_sa.add_argument("--include-weekends", action="store_true", help="Run on weekends too")
+    p_sa.add_argument("--timeout", type=int, default=600, help="Timeout in seconds (default: 600)")
+    p_sa.add_argument("--json", action="store_true", help="JSON output")
+
+    # schedules remove
+    p_sr = sched_sub.add_parser("remove", help="Remove awakening schedule")
+    p_sr.add_argument("schedule_id", type=int, help="Schedule ID to remove")
+    p_sr.add_argument("--json", action="store_true", help="JSON output")
+
+    # schedules enable
+    p_se = sched_sub.add_parser("enable", help="Enable awakening schedule")
+    p_se.add_argument("schedule_id", type=int, help="Schedule ID to enable")
+    p_se.add_argument("--json", action="store_true", help="JSON output")
+
+    # schedules disable
+    p_sd = sched_sub.add_parser("disable", help="Disable awakening schedule")
+    p_sd.add_argument("schedule_id", type=int, help="Schedule ID to disable")
+    p_sd.add_argument("--json", action="store_true", help="JSON output")
+
+    args = parser.parse_args()
+
+    if args.command == "show":
+        cmd_show(args)
+    elif args.command == "set":
+        cmd_set(args)
+    elif args.command == "clear":
+        cmd_clear(args)
+    elif args.command == "followup":
+        cmd_followup(args)
+    elif args.command == "schedules":
+        if args.sched_command == "list":
+            cmd_schedules_list(args)
+        elif args.sched_command == "add":
+            cmd_schedules_add(args)
+        elif args.sched_command == "remove":
+            cmd_schedules_remove(args)
+        elif args.sched_command in ("enable", "disable"):
+            args.action = args.sched_command
+            cmd_schedules_toggle(args)
+        else:
+            # Default: list
+            args.json = False
+            cmd_schedules_list(args)
+    else:
+        # Default to show
+        args.json = False
+        cmd_show(args)
+
+
+if __name__ == "__main__":
+    main()
