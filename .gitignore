@@ -100,3 +100,5 @@ backend/uploads/
 # TimesFM model weights and training data
 backend/checkpoints/
 backend/data/
+supabase/.temp/
+backend/gemma-project.txt
