@@ -2573,6 +2573,7 @@ Available agents: {allowed_agents}
                 user_id = ctx.deps.state.user_id
 
                 # Try to get user from database
+                from database.session import AsyncSessionLocal
                 async with AsyncSessionLocal() as db:
                     from database.models import User as DBUser
                     from sqlalchemy import select
