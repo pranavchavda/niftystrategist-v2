@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { ArrowTrendingUpIcon } from "@heroicons/react/24/outline";
+import { useState, useEffect } from "react";
+import { ArrowTrendingUpIcon, FingerPrintIcon } from "@heroicons/react/24/outline";
+import { bufferToBase64url, base64urlToBuffer } from "../utils/webauthn";
 
 // For now, we'll use client-side auth check
 export function clientLoader({ request }: { request: Request }) {
@@ -39,6 +40,92 @@ export default function Login() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
+  const [passkeyAvailable, setPasskeyAvailable] = useState(false);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
+
+  useEffect(() => {
+    setPasskeyAvailable(
+      typeof window !== "undefined" &&
+        !!window.PublicKeyCredential &&
+        typeof window.PublicKeyCredential.isConditionalMediationAvailable === "function"
+    );
+  }, []);
+
+  const handlePasskeyLogin = async () => {
+    setError("");
+    setSuccess("");
+    setPasskeyLoading(true);
+
+    try {
+      const optionsRes = await fetch("/api/auth/passkey/login/options", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!optionsRes.ok) {
+        throw new Error("Failed to get passkey options");
+      }
+      const { options } = await optionsRes.json();
+
+      const publicKeyOptions: PublicKeyCredentialRequestOptions = {
+        challenge: base64urlToBuffer(options.challenge),
+        rpId: options.rpId,
+        timeout: options.timeout || 60000,
+        userVerification: options.userVerification || "preferred",
+        allowCredentials: (options.allowCredentials || []).map(
+          (cred: { id: string; type: string; transports?: string[] }) => ({
+            id: base64urlToBuffer(cred.id),
+            type: cred.type,
+            transports: cred.transports,
+          })
+        ),
+      };
+
+      const credential = (await navigator.credentials.get({
+        publicKey: publicKeyOptions,
+      })) as PublicKeyCredential;
+
+      if (!credential) {
+        throw new Error("No credential returned");
+      }
+
+      const response = credential.response as AuthenticatorAssertionResponse;
+
+      const verifyRes = await fetch("/api/auth/passkey/login/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          credential: {
+            id: credential.id,
+            rawId: bufferToBase64url(credential.rawId),
+            type: credential.type,
+            response: {
+              authenticatorData: bufferToBase64url(response.authenticatorData),
+              clientDataJSON: bufferToBase64url(response.clientDataJSON),
+              signature: bufferToBase64url(response.signature),
+              userHandle: response.userHandle ? bufferToBase64url(response.userHandle) : null,
+            },
+          },
+        }),
+      });
+
+      const data = await verifyRes.json();
+      if (!verifyRes.ok) {
+        setError(data.detail || "Passkey login failed");
+        return;
+      }
+
+      localStorage.setItem("auth_token", data.access_token);
+      window.location.href = "/";
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "NotAllowedError") {
+        setError("");
+      } else {
+        setError(err instanceof Error ? err.message : "Passkey login failed");
+      }
+    } finally {
+      setPasskeyLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -210,6 +297,18 @@ export default function Login() {
               {loading ? "Please wait..." : isForgotPassword ? "Send Reset Link" : isRegister ? "Create Account" : "Sign In"}
             </button>
           </form>
+
+          {passkeyAvailable && !isForgotPassword && !isRegister && (
+            <button
+              type="button"
+              onClick={handlePasskeyLogin}
+              disabled={passkeyLoading}
+              className="mt-4 inline-flex w-full items-center justify-center gap-3 rounded-full border border-zinc-200/70 bg-white/90 px-5 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50 disabled:hover:translate-y-0 dark:border-white/15 dark:bg-white/10 dark:text-white"
+            >
+              <FingerPrintIcon className="h-5 w-5 text-indigo-500" />
+              {passkeyLoading ? "Verifying..." : "Sign in with Passkey"}
+            </button>
+          )}
 
           <div className="mt-6 flex flex-col items-center gap-2">
             {isForgotPassword ? (

@@ -20,11 +20,15 @@ import {
   X,
   Smartphone,
   RefreshCw,
+  Fingerprint,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router';
 import { Button } from './catalyst/button';
 import { Switch } from '@headlessui/react';
 import { useTheme } from '../context/ThemeContext';
+import { bufferToBase64url, base64urlToBuffer } from '../utils/webauthn';
 
 export default function Settings({ authToken, user, setUser }) {
   // Theme context
@@ -105,6 +109,149 @@ export default function Settings({ authToken, user, setUser }) {
 
     fetchHITLPreference();
   }, [authToken]);
+
+  // Passkey state
+  const [passkeys, setPasskeys] = useState([]);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
+  const [passkeySupported, setPasskeySupported] = useState(false);
+
+  useEffect(() => {
+    setPasskeySupported(
+      typeof window !== 'undefined' && !!window.PublicKeyCredential
+    );
+  }, []);
+
+  useEffect(() => {
+    const fetchPasskeys = async () => {
+      if (!authToken) return;
+      try {
+        const res = await fetch('/api/auth/passkeys', {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setPasskeys(data.passkeys || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch passkeys:', err);
+      }
+    };
+    fetchPasskeys();
+  }, [authToken]);
+
+  const handleRegisterPasskey = async () => {
+    setPasskeyLoading(true);
+    try {
+      const optionsRes = await fetch('/api/auth/passkey/register/options', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+      });
+      if (!optionsRes.ok) throw new Error('Failed to get registration options');
+      const { options } = await optionsRes.json();
+
+      const publicKeyOptions = {
+        challenge: base64urlToBuffer(options.challenge),
+        rp: options.rp,
+        user: {
+          ...options.user,
+          id: base64urlToBuffer(options.user.id),
+        },
+        pubKeyCredParams: options.pubKeyCredParams,
+        timeout: options.timeout || 60000,
+        attestation: options.attestation || 'none',
+        authenticatorSelection: options.authenticatorSelection,
+        excludeCredentials: (options.excludeCredentials || []).map((c) => ({
+          id: base64urlToBuffer(c.id),
+          type: c.type,
+          transports: c.transports,
+        })),
+      };
+
+      const credential = await navigator.credentials.create({
+        publicKey: publicKeyOptions,
+      });
+      if (!credential) throw new Error('No credential created');
+
+      const response = credential.response;
+
+      const deviceName =
+        prompt(
+          'Name this passkey (e.g. "MacBook Touch ID", "YubiKey"):',
+          'My Passkey'
+        ) || 'Passkey';
+
+      const verifyRes = await fetch('/api/auth/passkey/register/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          credential: {
+            id: credential.id,
+            rawId: bufferToBase64url(credential.rawId),
+            type: credential.type,
+            response: {
+              attestationObject: bufferToBase64url(response.attestationObject),
+              clientDataJSON: bufferToBase64url(response.clientDataJSON),
+              transports: response.getTransports ? response.getTransports() : [],
+            },
+          },
+          device_name: deviceName,
+        }),
+      });
+
+      if (!verifyRes.ok) {
+        const errData = await verifyRes.json();
+        throw new Error(errData.detail || 'Registration failed');
+      }
+
+      showSaveStatus('Passkey registered successfully', 'success');
+
+      const listRes = await fetch('/api/auth/passkeys', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (listRes.ok) {
+        const data = await listRes.json();
+        setPasskeys(data.passkeys || []);
+      }
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        // user cancelled
+      } else {
+        showSaveStatus(err.message || 'Failed to register passkey', 'error');
+      }
+    } finally {
+      setPasskeyLoading(false);
+    }
+  };
+
+  const handleDeletePasskey = async (passkeyId, deviceName) => {
+    if (
+      !confirm(
+        `Remove passkey "${deviceName}"? You won't be able to sign in with it anymore.`
+      )
+    )
+      return;
+
+    try {
+      const res = await fetch(`/api/auth/passkeys/${passkeyId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        setPasskeys(passkeys.filter((p) => p.id !== passkeyId));
+        showSaveStatus('Passkey removed', 'success');
+      } else {
+        showSaveStatus('Failed to remove passkey', 'error');
+      }
+    } catch {
+      showSaveStatus('Failed to remove passkey', 'error');
+    }
+  };
 
   // Fetch Upstox/trading status
   useEffect(() => {
@@ -1036,6 +1183,72 @@ export default function Settings({ authToken, user, setUser }) {
             </Link>
           </div>
         </section>
+
+        {/* Passkeys Section */}
+        {passkeySupported && (
+          <section className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800">
+                <Fingerprint className="w-5 h-5 text-zinc-700 dark:text-zinc-300" />
+              </div>
+              <div className="flex-1">
+                <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
+                  Passkeys
+                </h2>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                  Sign in with biometrics or security keys instead of passwords
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {passkeys.length > 0 ? (
+                passkeys.map((pk) => (
+                  <div
+                    key={pk.id}
+                    className="flex items-center justify-between p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Fingerprint className="w-5 h-5 text-indigo-500" />
+                      <div>
+                        <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100">
+                          {pk.device_name || 'Passkey'}
+                        </div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                          Added {pk.created_at ? new Date(pk.created_at).toLocaleDateString() : 'unknown'}
+                          {pk.last_used_at && ` \u00b7 Last used ${new Date(pk.last_used_at).toLocaleDateString()}`}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleDeletePasskey(pk.id, pk.device_name)}
+                      className="p-2 rounded-lg text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                      title="Remove passkey"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
+                  <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                    No passkeys registered yet. Add one to enable passwordless sign-in.
+                  </p>
+                </div>
+              )}
+
+              <Button
+                onClick={handleRegisterPasskey}
+                disabled={passkeyLoading}
+                variant="outline"
+                className="mt-2"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                {passkeyLoading ? 'Registering...' : 'Add Passkey'}
+              </Button>
+            </div>
+          </section>
+        )}
 
         {/* User Profile Section */}
         <section className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm">

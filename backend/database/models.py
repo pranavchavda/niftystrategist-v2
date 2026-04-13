@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import (
     Column, String, Text, Integer, DateTime, JSON, Boolean,
-    ForeignKey, Index, Float, Table, UniqueConstraint, Enum
+    ForeignKey, Index, Float, Table, UniqueConstraint, Enum, LargeBinary
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -169,6 +169,24 @@ class User(Base):
     roles = relationship("Role", secondary=user_roles, back_populates="users")
     trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")
     watchlist_items = relationship("WatchlistItem", back_populates="user", cascade="all, delete-orphan")
+    passkeys = relationship("UserPasskey", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserPasskey(Base):
+    """WebAuthn passkey credentials linked to a user"""
+    __tablename__ = "user_passkeys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    credential_id = Column(LargeBinary, unique=True, nullable=False)  # Raw credential ID bytes
+    public_key = Column(LargeBinary, nullable=False)  # COSE public key bytes
+    sign_count = Column(Integer, nullable=False, default=0)
+    device_name = Column(String(255), nullable=True)  # Friendly name for the passkey
+    transports = Column(JSON, nullable=True)  # e.g. ["usb", "ble", "nfc", "internal"]
+    created_at = Column(DateTime, default=utc_now)
+    last_used_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="passkeys")
 
 
 class Conversation(Base):

@@ -865,6 +865,10 @@ app.include_router(workflow_actions_router)
 from api.awakenings import router as awakenings_router
 app.include_router(awakenings_router, prefix="/api/awakenings", tags=["awakenings"])
 
+# Passkey (WebAuthn) authentication routes
+from routes.passkey_routes import router as passkey_router
+app.include_router(passkey_router)
+
 # Configure CORS for frontend
 _cors_env = os.getenv("CORS_ORIGINS", "http://localhost:5173")
 _cors_origins = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
