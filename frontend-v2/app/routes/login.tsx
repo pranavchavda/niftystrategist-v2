@@ -319,22 +319,12 @@ export default function Login() {
                 Back to Sign In
               </button>
             ) : (
-              <>
-                {!isRegister && (
-                  <button
-                    onClick={() => { setIsForgotPassword(true); setError(""); setSuccess(""); }}
-                    className="text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-300"
-                  >
-                    Forgot password?
-                  </button>
-                )}
-                <button
-                  onClick={() => { setIsRegister(!isRegister); setError(""); setSuccess(""); }}
-                  className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-                >
-                  {isRegister ? "Already have an account? Sign in" : "Don't have an account? Register"}
-                </button>
-              </>
+              <button
+                onClick={() => { setIsForgotPassword(true); setError(""); setSuccess(""); }}
+                className="text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-300"
+              >
+                Forgot password?
+              </button>
             )}
           </div>
 
