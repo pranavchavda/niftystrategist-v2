@@ -81,6 +81,7 @@ const INDICATORS = [
   { value: 'vwap', label: 'VWAP' },
   { value: 'bollinger', label: 'Bollinger Bands' },
   { value: 'supertrend', label: 'Supertrend' },
+  { value: 'utbot', label: 'UT Bot (ATR Trailing Stop)' },
 ];
 
 const TIMEFRAMES = [
@@ -110,9 +111,14 @@ function triggerSummary(rule: MonitorRule): string {
       return `Price ${condMap[tc.condition] || tc.condition} ${tc.price}`;
     }
     case 'indicator': {
-      const paramStr = tc.indicator === 'ema_crossover'
-        ? `${tc.params?.fast || 9}/${tc.params?.slow || 21}`
-        : tc.params?.period || '';
+      let paramStr = '';
+      if (tc.indicator === 'ema_crossover') {
+        paramStr = `${tc.params?.fast || 9}/${tc.params?.slow || 21}`;
+      } else if (tc.indicator === 'utbot') {
+        paramStr = `${tc.params?.period || 10}, ${tc.params?.sensitivity || 1.0}`;
+      } else {
+        paramStr = String(tc.params?.period || '');
+      }
       return `${tc.indicator}(${paramStr}) ${tc.condition} ${tc.value ?? tc.threshold ?? ''}`;
     }
     case 'time':
@@ -1400,6 +1406,7 @@ function CreateRuleWizard({
                         vwap: { params: {}, condition: 'gte', value: 0 },
                         bollinger: { params: { period: 20, std_dev: 2.0, band: 'pctb' }, condition: 'lte', value: 0 },
                         supertrend: { params: { period: 10, multiplier: 3.0 }, condition: 'gte', value: 1 },
+                        utbot: { params: { period: 10, sensitivity: 1.0, output: 'trend' }, condition: 'crosses_above', value: 0 },
                       };
                       const defaults = paramDefaults[ind] || { params: {}, condition: 'gte', value: 0 };
                       setFormData((prev: any) => ({
@@ -1454,6 +1461,30 @@ function CreateRuleWizard({
                       min={1}
                       value={formData.trigger_config.params?.slow || 21}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, slow: parseInt(e.target.value) || 21 })}
+                      className="text-sm"
+                    />
+                  </div>
+                </div>
+              ) : formData.trigger_config.indicator === 'utbot' ? (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">ATR Period</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={formData.trigger_config.params?.period || 10}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, period: parseInt(e.target.value) || 10 })}
+                      className="text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Sensitivity (Key Value)</label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min={0.1}
+                      value={formData.trigger_config.params?.sensitivity || 1.0}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('params', { ...formData.trigger_config.params, sensitivity: parseFloat(e.target.value) || 1.0 })}
                       className="text-sm"
                     />
                   </div>
@@ -1530,12 +1561,12 @@ function CreateRuleWizard({
                     onChange={e => updateTC('condition', e.target.value)}
                     className={selectClassName}
                   >
-                    {formData.trigger_config.indicator === 'ema_crossover' || formData.trigger_config.indicator === 'macd' ? (
+                    {formData.trigger_config.indicator === 'ema_crossover' || formData.trigger_config.indicator === 'macd' || formData.trigger_config.indicator === 'utbot' ? (
                       <>
-                        <option value="crosses_above">Crosses above (bullish)</option>
-                        <option value="crosses_below">Crosses below (bearish)</option>
-                        <option value="gte">&gt;= (at or above)</option>
-                        <option value="lte">&lt;= (at or below)</option>
+                        <option value="crosses_above">Crosses above (bullish flip)</option>
+                        <option value="crosses_below">Crosses below (bearish flip)</option>
+                        <option value="gte">&gt;= (currently long)</option>
+                        <option value="lte">&lt;= (currently short)</option>
                       </>
                     ) : (
                       PRICE_CONDITIONS.map(c => (
@@ -1548,6 +1579,8 @@ function CreateRuleWizard({
                   <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">
                     {formData.trigger_config.indicator === 'ema_crossover' || formData.trigger_config.indicator === 'macd'
                       ? 'Value (0 = crossover line)'
+                      : formData.trigger_config.indicator === 'utbot'
+                      ? 'Threshold (0 = trend flip; +1 = long, -1 = short)'
                       : 'Threshold'}
                   </label>
                   <Input
