@@ -148,6 +148,28 @@ Option B (Manual): web_search → web_fetch multiple URLs → synthesize
 - Use financial terms: "HDFC Bank NPA ratio Q3 2026"
 - For global context: "US Fed rate impact on Indian markets"
 
+## FRESHNESS — CRITICAL FOR NEWS
+
+Stale news is worse than no news in a trading context. When the user asks about
+"today", "latest", "current", "recent", earnings just announced, or any market-moving
+event, ALWAYS pass `search_recency_filter` to `web_search`:
+
+- `"hour"` — breaking news, live events, circuit halts, just-released results
+- `"day"` — today's market action, intraday moves, daily closing commentary
+- `"week"` — weekly wrap-ups, recent earnings within the week
+- `"month"` — monthly themes, recent quarterly results
+- `"year"` — annual trends, historical-but-recent context
+
+If a tight filter returns no results, retry with the next broader window.
+
+When you cite a source, **state its date explicitly** (e.g. "per Moneycontrol, 2026-04-11").
+If a result has no visible date or is older than the user's implied window, flag it as
+"date not confirmed" rather than presenting it as current.
+
+For sonar/perplexity_ask/perplexity_research responses (which you cannot date-filter
+directly), explicitly write the current date in your query — e.g. "As of 2026-04-12,
+what is the latest on ...". Today's date is injected into your deps.
+
 ## TRUSTED SOURCES FOR INDIAN MARKETS
 
 Prioritize these domains when relevant:
@@ -180,6 +202,7 @@ NEVER respond without citing sources. The orchestrator will format your citation
             country: Optional[str] = "IN",  # default to India
             search_domain_filter: Optional[List[str]] = None,
             queries: Optional[List[str]] = None,
+            search_recency_filter: Optional[str] = None,
         ) -> str:
             """
             Perform a web search using Perplexity Search API
@@ -187,12 +210,15 @@ NEVER respond without citing sources. The orchestrator will format your citation
             Args:
                 query: Search query string
                 max_results: Maximum number of results (default: 10)
-                country: Two-letter country code (default: "CA" for Canada)
-                search_domain_filter: List of domains to prioritize/filter (e.g., ["example.com", "test.com"])
+                country: Two-letter country code (default: "IN" for India)
+                search_domain_filter: List of domains to prioritize/filter
                 queries: List of additional related queries for batch searching
+                search_recency_filter: Freshness window — "hour" | "day" | "week" | "month" | "year".
+                    Use "hour"/"day" for breaking news and current-session queries.
+                    On zero results the tool automatically retries with the next broader window.
 
             Returns:
-                Formatted search results with sources
+                Formatted search results with publication/update dates and sources
             """
             import time
 
@@ -201,7 +227,8 @@ NEVER respond without citing sources. The orchestrator will format your citation
                 span = logfire.span(
                     "web_search.perplexity",
                     query=query[:100],
-                    max_results=max_results
+                    max_results=max_results,
+                    recency=search_recency_filter or "none",
                 )
             else:
                 from contextlib import nullcontext
@@ -219,20 +246,23 @@ NEVER respond without citing sources. The orchestrator will format your citation
                     if not api_key:
                         return "Error: Perplexity API key not configured. Please set PERPLEXITY_SEARCH_KEY environment variable."
 
-                    # Prepare request payload for Search API
-                    # Using the new Search API endpoint - no model parameter needed
-                    payload = {
-                        "query": query,
-                        "max_results": max_results,
-                    }
+                    # Auto-widen on empty results: hour → day → week → month → None
+                    _widen = {"hour": "day", "day": "week", "week": "month", "month": "year", "year": None}
 
-                    # Only include optional parameters if they're provided
-                    if country:
-                        payload["country"] = country
-                    if search_domain_filter:
-                        payload["search_domain_filter"] = search_domain_filter
-                    if queries:
-                        payload["queries"] = queries
+                    def _build_payload(recency: Optional[str]) -> dict:
+                        p = {"query": query, "max_results": max_results}
+                        if country:
+                            p["country"] = country
+                        if search_domain_filter:
+                            p["search_domain_filter"] = search_domain_filter
+                        if queries:
+                            p["queries"] = queries
+                        if recency:
+                            p["search_recency_filter"] = recency
+                        return p
+
+                    payload = _build_payload(search_recency_filter)
+                    current_recency = search_recency_filter
 
                     # Make API request
                     headers = {
@@ -240,43 +270,69 @@ NEVER respond without citing sources. The orchestrator will format your citation
                         "Content-Type": "application/json"
                     }
 
-                    # Make the API request with timeout
+                    # Make the API request with timeout, auto-widening recency on empty results
+                    results: list = []
+                    data: dict = {}
                     async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            "https://api.perplexity.ai/search",
-                            json=payload,
-                            headers=headers,
-                            timeout=30.0
-                        ) as response:
-                            if response.status != 200:
-                                error_text = await response.text()
-                                logger.error(f"Perplexity Search API error: {response.status} - {error_text}")
-                                if logfire:
-                                    logfire.error("web_search.api_error", status=response.status, error=error_text[:200])
-                                return f"Error: Search API returned status {response.status}"
+                        while True:
+                            async with session.post(
+                                "https://api.perplexity.ai/search",
+                                json=payload,
+                                headers=headers,
+                                timeout=30.0
+                            ) as response:
+                                if response.status != 200:
+                                    error_text = await response.text()
+                                    logger.error(f"Perplexity Search API error: {response.status} - {error_text}")
+                                    if logfire:
+                                        logfire.error("web_search.api_error", status=response.status, error=error_text[:200])
+                                    return f"Error: Search API returned status {response.status}"
 
-                            data = await response.json()
+                                data = await response.json()
+
+                            results = data.get("results", [])
+                            if results or current_recency is None:
+                                break
+                            # Auto-widen and retry once per step
+                            next_recency = _widen.get(current_recency)
+                            if logfire:
+                                logfire.info("web_search.widen_recency", from_=current_recency, to=next_recency)
+                            current_recency = next_recency
+                            payload = _build_payload(current_recency)
 
                     # Extract and format response from Search API
-                    # API returns: {"results": [{"title": "...", "url": "...", "snippet": "...", "crawl_date": "...", "last_updated": "..."}]}
-                    response_text = f"🔍 Search Results for: '{query}'\n\n"
-
-                    results = data.get("results", [])
+                    # API returns: {"results": [{"title": "...", "url": "...", "snippet": "...", "date": "...", "last_updated": "..."}]}
+                    header = f"🔍 Search Results for: '{query}'"
+                    if current_recency:
+                        header += f"  (recency: {current_recency})"
+                    if search_recency_filter and current_recency != search_recency_filter:
+                        header += f"  [widened from {search_recency_filter}]"
+                    response_text = header + "\n\n"
 
                     if not results:
                         if logfire:
                             logfire.info("web_search.no_results", query=query)
-                        return f"No results found for query: '{query}'"
+                        return f"No results found for query: '{query}' (recency: {search_recency_filter or 'any'})"
 
                     sources_count = len(results)
 
-                    # Format results
+                    # Format results with dates so the agent can judge freshness
                     for i, result in enumerate(results[:max_results], 1):
                         title = result.get("title", "No title")
                         url = result.get("url", "")
                         snippet = result.get("snippet", "")
+                        published = result.get("date") or result.get("crawl_date") or ""
+                        updated = result.get("last_updated", "")
+                        date_bits = []
+                        if published:
+                            date_bits.append(f"published {published}")
+                        if updated and updated != published:
+                            date_bits.append(f"updated {updated}")
+                        date_line = " · ".join(date_bits)
 
                         response_text += f"**{i}. {title}**\n"
+                        if date_line:
+                            response_text += f"📅 {date_line}\n"
                         if snippet:
                             response_text += f"{snippet}\n"
                         if url:
@@ -455,6 +511,14 @@ NEVER respond without citing sources. The orchestrator will format your citation
         # Skip MCP/tool machinery and call the model directly.
         if "perplexity/" in self.config.model_name:
             try:
+                from datetime import datetime, timezone, timedelta
+                ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+                dated_prompt = (
+                    f"[Context: today is {ist_now.strftime('%Y-%m-%d')} (IST). "
+                    f"Prioritize sources published within the last 48 hours unless the user "
+                    f"explicitly asks for historical context. Always state the publication date "
+                    f"of every cited source.]\n\n{prompt}"
+                )
                 direct_agent = Agent(
                     model=self.model,
                     name=self.name,
@@ -463,7 +527,7 @@ NEVER respond without citing sources. The orchestrator will format your citation
                     instructions=self._get_system_prompt(),
                     retries=self.config.max_retries,
                 )
-                result = await direct_agent.run(prompt, deps=deps, **kwargs)
+                result = await direct_agent.run(dated_prompt, deps=deps, **kwargs)
                 logger.info("✅ Web Search agent (sonar direct) completed")
                 return result
             except Exception as e:
@@ -515,9 +579,10 @@ NEVER respond without citing sources. The orchestrator will format your citation
                 ctx: RunContext[WebSearchDeps],
                 query: str,
                 max_results: int = 10,
-                country: Optional[str] = "CA",
+                country: Optional[str] = "IN",
                 search_domain_filter: Optional[List[str]] = None,
                 queries: Optional[List[str]] = None,
+                search_recency_filter: Optional[str] = None,
             ) -> str:
                 """
                 Perform a web search using Perplexity Search API (direct, fast).
@@ -525,17 +590,24 @@ NEVER respond without citing sources. The orchestrator will format your citation
                 Args:
                     query: Search query string
                     max_results: Maximum number of results (default: 10)
-                    country: Two-letter country code (default: "CA" for Canada)
+                    country: Two-letter country code (default: "IN")
                     search_domain_filter: List of domains to prioritize/filter
                     queries: List of additional related queries for batch searching
+                    search_recency_filter: "hour" | "day" | "week" | "month" | "year".
+                        Use for news / current-session queries. Auto-widens on empty results.
 
                 Returns:
-                    Formatted search results with sources
+                    Formatted search results with publication/update dates
                 """
                 import time
 
                 if logfire:
-                    span = logfire.span("web_search.perplexity", query=query[:100], max_results=max_results)
+                    span = logfire.span(
+                        "web_search.perplexity",
+                        query=query[:100],
+                        max_results=max_results,
+                        recency=search_recency_filter or "none",
+                    )
                 else:
                     from contextlib import nullcontext
                     span = nullcontext()
@@ -554,45 +626,76 @@ NEVER respond without citing sources. The orchestrator will format your citation
                         if not search_api_key:
                             return "Error: Perplexity API key not configured."
 
-                        payload = {"query": query, "max_results": max_results}
-                        if country:
-                            payload["country"] = country
-                        if search_domain_filter:
-                            payload["search_domain_filter"] = search_domain_filter
-                        if queries:
-                            payload["queries"] = queries
+                        _widen = {"hour": "day", "day": "week", "week": "month", "month": "year", "year": None}
+
+                        def _build(recency: Optional[str]) -> dict:
+                            p = {"query": query, "max_results": max_results}
+                            if country:
+                                p["country"] = country
+                            if search_domain_filter:
+                                p["search_domain_filter"] = search_domain_filter
+                            if queries:
+                                p["queries"] = queries
+                            if recency:
+                                p["search_recency_filter"] = recency
+                            return p
+
+                        payload = _build(search_recency_filter)
+                        current_recency = search_recency_filter
 
                         headers = {
                             "Authorization": f"Bearer {search_api_key}",
                             "Content-Type": "application/json"
                         }
 
+                        results: list = []
                         async with aiohttp.ClientSession() as session:
-                            async with session.post(
-                                "https://api.perplexity.ai/search",
-                                json=payload,
-                                headers=headers,
-                                timeout=30.0
-                            ) as response:
-                                if response.status != 200:
-                                    error_text = await response.text()
-                                    logger.error(f"Perplexity Search API error: {response.status} - {error_text}")
-                                    return f"Error: Search API returned status {response.status}"
+                            while True:
+                                async with session.post(
+                                    "https://api.perplexity.ai/search",
+                                    json=payload,
+                                    headers=headers,
+                                    timeout=30.0
+                                ) as response:
+                                    if response.status != 200:
+                                        error_text = await response.text()
+                                        logger.error(f"Perplexity Search API error: {response.status} - {error_text}")
+                                        return f"Error: Search API returned status {response.status}"
 
-                                data = await response.json()
+                                    data = await response.json()
 
-                        response_text = f"🔍 Search Results for: '{query}'\n\n"
-                        results = data.get("results", [])
+                                results = data.get("results", [])
+                                if results or current_recency is None:
+                                    break
+                                current_recency = _widen.get(current_recency)
+                                payload = _build(current_recency)
+
+                        header = f"🔍 Search Results for: '{query}'"
+                        if current_recency:
+                            header += f"  (recency: {current_recency})"
+                        if search_recency_filter and current_recency != search_recency_filter:
+                            header += f"  [widened from {search_recency_filter}]"
+                        response_text = header + "\n\n"
 
                         if not results:
-                            return f"No results found for query: '{query}'"
+                            return f"No results found for query: '{query}' (recency: {search_recency_filter or 'any'})"
 
                         for i, result in enumerate(results[:max_results], 1):
                             title = result.get("title", "No title")
                             url = result.get("url", "")
                             snippet = result.get("snippet", "")
+                            published = result.get("date") or result.get("crawl_date") or ""
+                            updated = result.get("last_updated", "")
+                            date_bits = []
+                            if published:
+                                date_bits.append(f"published {published}")
+                            if updated and updated != published:
+                                date_bits.append(f"updated {updated}")
+                            date_line = " · ".join(date_bits)
 
                             response_text += f"**{i}. {title}**\n"
+                            if date_line:
+                                response_text += f"📅 {date_line}\n"
                             if snippet:
                                 response_text += f"{snippet}\n"
                             if url:

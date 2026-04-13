@@ -622,22 +622,35 @@ def _get_perplexity_key() -> str | None:
     return os.environ.get("PERPLEXITY_API_KEY") or os.environ.get("PPLX_API_KEY")
 
 
-def _sonar_query(api_key: str, system_prompt: str, user_prompt: str) -> dict | None:
-    """Make a single Sonar API call. Returns {content, citations} or None."""
+def _sonar_query(
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+    recency: str = "day",
+) -> dict | None:
+    """Make a single Sonar API call. Returns {content, citations} or None.
+
+    `recency` is passed as Perplexity's `search_recency_filter`
+    ("hour"|"day"|"week"|"month"|"year"). Default "day" for morning-scan — we
+    only want last-24h news for pre-market context.
+    """
     try:
+        payload = {
+            "model": "sonar",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if recency:
+            payload["search_recency_filter"] = recency
         response = requests.post(
             "https://api.perplexity.ai/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": "sonar",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
+            json=payload,
             timeout=20,
         )
         response.raise_for_status()
@@ -675,26 +688,31 @@ def fetch_news_context(
     if verbose:
         print("Phase 3: Fetching market news context...", file=sys.stderr)
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
     system_prompt = (
         "You are a professional financial analyst with expertise in Indian stock markets. "
         "Your task is to provide comprehensive financial news updates and market analysis. "
-        "Focus on accuracy, relevance, and actionable insights. Always cite recent sources "
-        "and provide balanced analysis."
+        "Focus on accuracy, relevance, and actionable insights. "
+        f"Today is {today_str}. "
+        "CRITICAL: Only cite sources published within the last 24 hours. "
+        "State the publication date of every news item you reference (YYYY-MM-DD). "
+        "If you cannot confirm a source's date is recent, mark it 'date not confirmed' "
+        "and de-prioritize it. Never pad with year-old or generic material."
     )
 
     # Query 1: Market overview
     market_dir = "up" if nifty_pct > 0 else "down" if nifty_pct < 0 else "flat"
-    market_prompt = f"""Provide a comprehensive market update for Indian stock markets (NSE/BSE) today.
+    market_prompt = f"""Provide a comprehensive market update for Indian stock markets (NSE/BSE) today ({today_str}).
 Nifty 50 is currently {market_dir} {abs(nifty_pct):.1f}%.
 
 Please include:
-1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW)
+1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW) — include publication date for each
 2. Overall market sentiment (BULLISH/BEARISH/NEUTRAL) and analysis
 3. Key market drivers and risks
 4. Sector themes driving today's action
 5. Global cues (US markets, Asia, crude oil, dollar/rupee)
 
-Focus on the most significant developments from last night and this morning."""
+Focus only on developments from the last 24 hours. Exclude anything older."""
 
     if verbose:
         print("  Fetching market overview...", file=sys.stderr)
@@ -707,16 +725,16 @@ Focus on the most significant developments from last night and this morning."""
         if verbose:
             print(f"  Fetching news for {sym}...", file=sys.stderr)
 
-        stock_prompt = f"""Provide a comprehensive financial news update and analysis for NSE:{sym} today.
+        stock_prompt = f"""Provide a comprehensive financial news update and analysis for NSE:{sym} today ({today_str}).
 
 Please include:
-1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW)
+1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW) — include publication date for each item
 2. Overall market sentiment and analysis for this stock
 3. Key drivers: any catalysts, order wins, earnings, sector tailwinds
 4. Risks or concerns
 5. Key price levels, valuation context, and institutional activity
 
-Focus on the most significant and recent developments from the last 24 hours."""
+Focus only on developments from the last 24 hours. Exclude anything older. If no fresh news exists, say so explicitly rather than citing older material."""
 
         result = _sonar_query(api_key, system_prompt, stock_prompt)
         if result:

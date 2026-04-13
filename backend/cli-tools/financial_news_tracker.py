@@ -204,24 +204,31 @@ class FinancialNewsTracker:
         # Transform NSE symbols for better API results
         transformed_query = _transform_nse_query(query)
 
-        system_prompt = """You are a professional financial analyst with expertise in market research and news analysis.
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        system_prompt = f"""You are a professional financial analyst with expertise in market research and news analysis.
         Your task is to provide comprehensive financial news updates and market analysis.
-        Focus on accuracy, relevance, and actionable insights. Always cite recent sources and provide balanced analysis."""
+        Focus on accuracy, relevance, and actionable insights.
+
+        CRITICAL FRESHNESS RULES:
+        - Today is {today_str}. Only cite sources from within the requested time window.
+        - State the publication date of every news item you cite (YYYY-MM-DD).
+        - If you cannot confirm a source's date, mark it "date not confirmed" and de-prioritize it.
+        - Never present year-old or generic analysis as "recent". Reject stale material."""
 
         time_context = self._get_time_context(time_range)
 
         user_prompt = f"""Provide a comprehensive financial news update and analysis for: {transformed_query}
 
-Time period: {time_context}
+Time period: {time_context} (as of {today_str})
 
 Please include:
-1. Recent relevant news items with their potential market impact
+1. Recent relevant news items with their potential market impact (include each item's publication date)
 2. Overall market sentiment and analysis
 3. Key market drivers and risks
 4. Sectors or companies most affected
 5. Investment insights or recommendations
 
-Focus on the most significant and recent developments."""
+Focus on the most significant and recent developments. Exclude anything outside the time window."""
 
         headers = {
             "accept": "application/json",
@@ -236,6 +243,10 @@ Focus on the most significant and recent developments."""
                 {"role": "user", "content": user_prompt}
             ]
         }
+
+        recency = self._recency_filter_for(time_range)
+        if recency:
+            data["search_recency_filter"] = recency
 
         can_use_structured_output = model in self.STRUCTURED_OUTPUT_MODELS and use_structured_output
         if can_use_structured_output:
@@ -274,6 +285,16 @@ Focus on the most significant and recent developments."""
             return {"error": f"API request failed: {str(e)}"}
         except Exception as e:
             return {"error": f"Unexpected error: {str(e)}"}
+
+    def _recency_filter_for(self, time_range: str) -> Optional[str]:
+        """Map CLI time_range to Perplexity search_recency_filter enum."""
+        return {
+            "24h": "day",
+            "1w": "week",
+            "1m": "month",
+            "3m": "month",
+            "1y": "year",
+        }.get(time_range)
 
     def _get_time_context(self, time_range: str) -> str:
         """
