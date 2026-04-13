@@ -69,12 +69,12 @@ class IronCondorTemplate(StrategyTemplate):
             "market_only": True,
         }
 
-        # Define all 4 legs: (label, instrument, entry_side, exit_side)
+        # Define all 4 legs: (label, instrument, entry_side, exit_side, role_suffix)
         legs = [
-            (f"SELL {call_sell}CE", ce_sell, "SELL", "BUY"),
-            (f"BUY {call_buy}CE", ce_buy, "BUY", "SELL"),
-            (f"SELL {put_sell}PE", pe_sell, "SELL", "BUY"),
-            (f"BUY {put_buy}PE", pe_buy, "BUY", "SELL"),
+            (f"SELL {call_sell}CE", ce_sell, "SELL", "BUY", "short_call"),
+            (f"BUY {call_buy}CE", ce_buy, "BUY", "SELL", "long_call"),
+            (f"SELL {put_sell}PE", pe_sell, "SELL", "BUY", "short_put"),
+            (f"BUY {put_buy}PE", pe_buy, "BUY", "SELL", "long_put"),
         ]
 
         plan = StrategyPlan(
@@ -88,10 +88,12 @@ class IronCondorTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Unique role per leg. Squareoffs start disabled; each entry
+        # activates its own leg's squareoff. Prevents a rogue squareoff at
+        # 15:15 if entry never fired (e.g. deploy after entry_time).
         rules: list[RuleSpec] = []
 
-        # Entry rules (4 legs)
-        for label, inst, entry_side, _ in legs:
+        for label, inst, entry_side, _, suffix in legs:
             rules.append(RuleSpec(
                 name=f"{underlying} IC {label}",
                 trigger_type="time",
@@ -105,11 +107,11 @@ class IronCondorTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="entry",
+                role=f"entry_{suffix}",
+                activates_roles=[f"squareoff_{suffix}"],
             ))
 
-        # Squareoff rules (4 legs)
-        for label, inst, _, exit_side in legs:
+        for label, inst, _, exit_side, suffix in legs:
             rules.append(RuleSpec(
                 name=f"{underlying} IC Squareoff {label} @ {squareoff}",
                 trigger_type="time",
@@ -123,7 +125,8 @@ class IronCondorTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="squareoff",
+                role=f"squareoff_{suffix}",
+                enabled=False,
             ))
 
         plan.rules = rules

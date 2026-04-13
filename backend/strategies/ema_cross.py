@@ -44,6 +44,9 @@ class EMACrossLongTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Squareoff starts disabled; entry activates it to prevent a rogue
+        # SELL at 15:15 if the bullish cross never fired (which would open a
+        # naked short).
         plan.rules = [
             RuleSpec(
                 name=f"{symbol} EMA {fast}/{slow} Bullish Cross — BUY",
@@ -64,6 +67,7 @@ class EMACrossLongTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="entry",
+                activates_roles=["squareoff"],
             ),
             RuleSpec(
                 name=f"{symbol} EMA Cross Square-Off @ {squareoff}",
@@ -82,6 +86,7 @@ class EMACrossLongTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="squareoff",
+                enabled=False,
             ),
         ]
 
@@ -140,6 +145,7 @@ class EMACrossShortTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="entry",
+                activates_roles=["squareoff"],
             ),
             RuleSpec(
                 name=f"{symbol} EMA Cross Square-Off @ {squareoff}",
@@ -158,6 +164,7 @@ class EMACrossShortTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="squareoff",
+                enabled=False,
             ),
         ]
 
@@ -196,6 +203,9 @@ class EMACrossPairTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Exit + squareoff start disabled; entry activates them. Prevents a
+        # bearish cross (or 15:15 squareoff) from opening a rogue short when
+        # no bullish cross ever fired.
         plan.rules = [
             RuleSpec(
                 name=f"{symbol} EMA {fast}/{slow} Bullish Cross — ENTRY BUY",
@@ -216,6 +226,7 @@ class EMACrossPairTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="entry",
+                activates_roles=["exit", "squareoff"],
             ),
             RuleSpec(
                 name=f"{symbol} EMA {fast}/{slow} Bearish Cross — EXIT SELL",
@@ -236,6 +247,7 @@ class EMACrossPairTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="exit",
+                enabled=False,
                 kills_roles=["squareoff"],
             ),
             RuleSpec(
@@ -255,6 +267,7 @@ class EMACrossPairTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="squareoff",
+                enabled=False,
                 kills_roles=["exit"],
             ),
         ]

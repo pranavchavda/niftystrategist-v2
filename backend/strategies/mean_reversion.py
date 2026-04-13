@@ -61,8 +61,8 @@ class MeanReversionTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Exits start disabled; entry activates them. Prevents rogue exits.
         plan.rules = [
-            # RSI entry
             RuleSpec(
                 name=f"{symbol} MeanRev RSI Entry (RSI {entry_cond} {rsi_entry})",
                 trigger_type="indicator",
@@ -76,8 +76,8 @@ class MeanReversionTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="entry",
+                activates_roles=["target", "sl", "squareoff"],
             ),
-            # RSI exit
             RuleSpec(
                 name=f"{symbol} MeanRev RSI Exit (RSI {exit_cond} {rsi_exit})",
                 trigger_type="indicator",
@@ -91,9 +91,9 @@ class MeanReversionTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="target",
+                enabled=False,
                 kills_roles=["sl", "squareoff"],
             ),
-            # Price SL
             RuleSpec(
                 name=f"{symbol} MeanRev SL @ {sl}",
                 trigger_type="price",
@@ -104,9 +104,9 @@ class MeanReversionTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl",
+                enabled=False,
                 kills_roles=["target", "squareoff"],
             ),
-            # Auto square-off
             RuleSpec(
                 name=f"{symbol} MeanRev Square-Off @ {squareoff}",
                 trigger_type="time",
@@ -117,6 +117,7 @@ class MeanReversionTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                enabled=False,
                 kills_roles=["sl", "target"],
             ),
         ]

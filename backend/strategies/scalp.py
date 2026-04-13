@@ -59,8 +59,11 @@ class ScalpTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Exits start disabled; entry activates them on each fire so that
+        # re-entries (max_fires > 1) re-arm the exits after a prior exit fired.
+        # Exits also self-disable via kills_roles so a single SL fire doesn't
+        # keep firing every tick while price sits at or past the SL level.
         plan.rules = [
-            # Entry (allows re-entries)
             RuleSpec(
                 name=f"{symbol} Scalp {label} Entry @ {entry}",
                 trigger_type="price",
@@ -72,8 +75,8 @@ class ScalpTemplate(StrategyTemplate):
                 },
                 max_fires=max_entries,
                 role="entry",
+                activates_roles=["sl", "target", "trailing", "squareoff"],
             ),
-            # SL (fires for each entry)
             RuleSpec(
                 name=f"{symbol} Scalp SL @ {sl}",
                 trigger_type="price",
@@ -85,9 +88,9 @@ class ScalpTemplate(StrategyTemplate):
                 },
                 max_fires=max_entries,
                 role="sl",
-                kills_roles=["target", "trailing", "squareoff"],
+                enabled=False,
+                kills_roles=["sl", "target", "trailing", "squareoff"],
             ),
-            # Target
             RuleSpec(
                 name=f"{symbol} Scalp Target @ {target}",
                 trigger_type="price",
@@ -99,9 +102,9 @@ class ScalpTemplate(StrategyTemplate):
                 },
                 max_fires=max_entries,
                 role="target",
-                kills_roles=["sl", "trailing", "squareoff"],
+                enabled=False,
+                kills_roles=["sl", "target", "trailing", "squareoff"],
             ),
-            # Trailing stop
             RuleSpec(
                 name=f"{symbol} Scalp Trail {trail_pct}%",
                 trigger_type="trailing_stop",
@@ -116,9 +119,9 @@ class ScalpTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="trailing",
-                kills_roles=["sl", "target", "squareoff"],
+                enabled=False,
+                kills_roles=["sl", "target", "trailing", "squareoff"],
             ),
-            # Auto square-off
             RuleSpec(
                 name=f"{symbol} Scalp Square-Off @ {squareoff}",
                 trigger_type="time",
@@ -129,6 +132,7 @@ class ScalpTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                enabled=False,
                 kills_roles=["sl", "target", "trailing"],
             ),
         ]

@@ -65,10 +65,16 @@ class StraddleTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Each leg uses a unique role suffix (_ce / _pe) so the deploy-time
+        # role_to_id map doesn't collapse multiple rules under one role.
+        # Exits start disabled; each entry activates its own leg's exits.
         rules: list[RuleSpec] = []
 
-        # Entry legs
         for leg_name, inst in [("CE", ce), ("PE", pe)]:
+            suffix = leg_name.lower()
+            activates = [f"squareoff_{suffix}"]
+            if direction == "sell":
+                activates.append(f"sl_{suffix}")
             rules.append(RuleSpec(
                 name=f"{underlying} {label} Straddle {entry_side} {strike}{leg_name}",
                 trigger_type="time",
@@ -82,21 +88,25 @@ class StraddleTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="entry",
+                role=f"entry_{suffix}",
+                activates_roles=activates,
             ))
 
-        # Stop-loss legs (price-triggered on the option premium)
         if direction == "sell":
-            # For short straddle: SL when premium rises by sl_percent
+            # SL rules for short straddle: rewritten at deploy time to
+            # entry_premium * (1 + sl_pct/100) by nf-strategy via
+            # premium_sl_multiplier. Placeholder trigger_config.price is 0
+            # until the deployer enriches it.
+            multiplier = 1 + sl_pct / 100
             for leg_name, inst in [("CE", ce), ("PE", pe)]:
+                suffix = leg_name.lower()
                 rules.append(RuleSpec(
                     name=f"{underlying} Straddle SL {strike}{leg_name} (+{sl_pct}%)",
                     trigger_type="price",
                     trigger_config={
                         "condition": "gte",
-                        "price": 0,  # Will be set at deployment from live premium
+                        "price": 0,
                         "reference": "ltp",
-                        "note": f"Set to entry_premium * {1 + sl_pct/100:.2f} at deployment",
                     },
                     action_type="place_order",
                     action_config={
@@ -107,12 +117,14 @@ class StraddleTemplate(StrategyTemplate):
                         "order_type": "MARKET",
                         "product": product,
                     },
-                    role="sl",
-                    kills_roles=["squareoff"],
+                    role=f"sl_{suffix}",
+                    enabled=False,
+                    kills_roles=[f"squareoff_{suffix}"],
+                    premium_sl_multiplier=multiplier,
                 ))
 
-        # Auto square-off
         for leg_name, inst in [("CE", ce), ("PE", pe)]:
+            suffix = leg_name.lower()
             rules.append(RuleSpec(
                 name=f"{underlying} Straddle Squareoff {strike}{leg_name} @ {squareoff}",
                 trigger_type="time",
@@ -130,8 +142,9 @@ class StraddleTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="squareoff",
-                kills_roles=["sl"],
+                role=f"squareoff_{suffix}",
+                enabled=False,
+                kills_roles=[f"sl_{suffix}"] if direction == "sell" else [],
             ))
 
         plan.rules = rules

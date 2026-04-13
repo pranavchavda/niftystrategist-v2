@@ -69,13 +69,17 @@ class RenkoTemplate(StrategyTemplate):
         return plan
 
     def _long_rules(self, symbol, brick_size, sl_bricks, qty, trail_pct, product, squareoff):
+        # Long-side rules. Each side owns its own squareoff so direction=short
+        # also gets a time-based safety net (previously only the long side
+        # emitted one). Exits start disabled and self-disable so re-entry
+        # re-activates them.
         return [
             RuleSpec(
                 name=f"{symbol} Renko Long Entry (brick ₹{brick_size})",
                 trigger_type="renko",
                 trigger_config={
                     "brick_size": brick_size,
-                    "condition": "reversal_up",  # red → green
+                    "condition": "reversal_up",
                 },
                 action_type="place_order",
                 action_config={
@@ -83,14 +87,15 @@ class RenkoTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="entry_long",
-                max_fires=None,  # Re-enter on each reversal
+                max_fires=None,
+                activates_roles=["sl_long", "trailing_long", "squareoff_long"],
             ),
             RuleSpec(
                 name=f"{symbol} Renko Long Exit (reversal down)",
                 trigger_type="renko",
                 trigger_config={
                     "brick_size": brick_size,
-                    "condition": "reversal_down",  # green → red
+                    "condition": "reversal_down",
                 },
                 action_type="place_order",
                 action_config={
@@ -98,7 +103,8 @@ class RenkoTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl_long",
-                kills_roles=["trailing_long", "squareoff"],
+                enabled=False,
+                kills_roles=["sl_long", "trailing_long", "squareoff_long"],
                 max_fires=None,
             ),
             RuleSpec(
@@ -114,10 +120,11 @@ class RenkoTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="trailing_long",
-                kills_roles=["sl_long", "squareoff"],
+                enabled=False,
+                kills_roles=["sl_long", "trailing_long", "squareoff_long"],
             ),
             RuleSpec(
-                name=f"{symbol} Renko Square-Off @ {squareoff}",
+                name=f"{symbol} Renko Long Square-Off @ {squareoff}",
                 trigger_type="time",
                 trigger_config={"at": squareoff, "on_days": ["mon", "tue", "wed", "thu", "fri"], "market_only": True},
                 action_type="place_order",
@@ -125,19 +132,22 @@ class RenkoTemplate(StrategyTemplate):
                     "symbol": symbol, "transaction_type": "SELL",
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
-                role="squareoff",
-                kills_roles=["sl_long", "trailing_long", "sl_short", "trailing_short"],
+                role="squareoff_long",
+                enabled=False,
+                kills_roles=["sl_long", "trailing_long"],
             ),
         ]
 
     def _short_rules(self, symbol, brick_size, sl_bricks, qty, trail_pct, product, squareoff):
+        # Short-side rules with their own squareoff (previously missing —
+        # direction="short" had no time-based auto close).
         return [
             RuleSpec(
                 name=f"{symbol} Renko Short Entry (brick ₹{brick_size})",
                 trigger_type="renko",
                 trigger_config={
                     "brick_size": brick_size,
-                    "condition": "reversal_down",  # green → red
+                    "condition": "reversal_down",
                 },
                 action_type="place_order",
                 action_config={
@@ -146,13 +156,14 @@ class RenkoTemplate(StrategyTemplate):
                 },
                 role="entry_short",
                 max_fires=None,
+                activates_roles=["sl_short", "trailing_short", "squareoff_short"],
             ),
             RuleSpec(
                 name=f"{symbol} Renko Short Exit (reversal up)",
                 trigger_type="renko",
                 trigger_config={
                     "brick_size": brick_size,
-                    "condition": "reversal_up",  # red → green
+                    "condition": "reversal_up",
                 },
                 action_type="place_order",
                 action_config={
@@ -160,7 +171,8 @@ class RenkoTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl_short",
-                kills_roles=["trailing_short", "squareoff"],
+                enabled=False,
+                kills_roles=["sl_short", "trailing_short", "squareoff_short"],
                 max_fires=None,
             ),
             RuleSpec(
@@ -176,6 +188,20 @@ class RenkoTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="trailing_short",
-                kills_roles=["sl_short", "squareoff"],
+                enabled=False,
+                kills_roles=["sl_short", "trailing_short", "squareoff_short"],
+            ),
+            RuleSpec(
+                name=f"{symbol} Renko Short Square-Off @ {squareoff}",
+                trigger_type="time",
+                trigger_config={"at": squareoff, "on_days": ["mon", "tue", "wed", "thu", "fri"], "market_only": True},
+                action_type="place_order",
+                action_config={
+                    "symbol": symbol, "transaction_type": "BUY",
+                    "quantity": qty, "order_type": "MARKET", "product": product,
+                },
+                role="squareoff_short",
+                enabled=False,
+                kills_roles=["sl_short", "trailing_short"],
             ),
         ]

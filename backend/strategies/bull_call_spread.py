@@ -65,8 +65,12 @@ class BullCallSpreadTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Unique role per leg so the deploy-time role_to_id map doesn't
+        # collapse duplicates. Squareoffs start disabled; each entry
+        # activates its own leg's squareoff. Prevents a rogue squareoff
+        # from firing at 15:15 if entry_time never ran (e.g. deploy after
+        # 09:20 or the instrument_token lookup failed silently).
         plan.rules = [
-            # Buy lower strike CE
             RuleSpec(
                 name=f"{underlying} BCS BUY {buy_strike}CE",
                 trigger_type="time",
@@ -80,9 +84,9 @@ class BullCallSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="entry",
+                role="entry_long_ce",
+                activates_roles=["squareoff_long_ce"],
             ),
-            # Sell higher strike CE
             RuleSpec(
                 name=f"{underlying} BCS SELL {sell_strike}CE",
                 trigger_type="time",
@@ -96,9 +100,9 @@ class BullCallSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="entry",
+                role="entry_short_ce",
+                activates_roles=["squareoff_short_ce"],
             ),
-            # Squareoff: close both legs
             RuleSpec(
                 name=f"{underlying} BCS Squareoff BUY {buy_strike}CE @ {squareoff}",
                 trigger_type="time",
@@ -116,7 +120,8 @@ class BullCallSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="squareoff",
+                role="squareoff_long_ce",
+                enabled=False,
             ),
             RuleSpec(
                 name=f"{underlying} BCS Squareoff SELL {sell_strike}CE @ {squareoff}",
@@ -135,7 +140,8 @@ class BullCallSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="squareoff",
+                role="squareoff_short_ce",
+                enabled=False,
             ),
         ]
 

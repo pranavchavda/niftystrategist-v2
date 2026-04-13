@@ -63,8 +63,8 @@ class VWAPBounceTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Exits start disabled; entry activates them. Prevents rogue exits.
         plan.rules = [
-            # Price entry near VWAP
             RuleSpec(
                 name=f"{symbol} VWAP Bounce Entry @ ~{entry_price:.2f}",
                 trigger_type="price",
@@ -75,8 +75,8 @@ class VWAPBounceTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="entry",
+                activates_roles=["sl", "target", "squareoff"],
             ),
-            # SL
             RuleSpec(
                 name=f"{symbol} VWAP Bounce SL @ {sl}",
                 trigger_type="price",
@@ -87,9 +87,9 @@ class VWAPBounceTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl",
+                enabled=False,
                 kills_roles=["target", "squareoff"],
             ),
-            # Target
             RuleSpec(
                 name=f"{symbol} VWAP Bounce Target @ {target}",
                 trigger_type="price",
@@ -100,9 +100,9 @@ class VWAPBounceTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="target",
+                enabled=False,
                 kills_roles=["sl", "squareoff"],
             ),
-            # Auto square-off
             RuleSpec(
                 name=f"{symbol} VWAP Bounce Square-Off @ {squareoff}",
                 trigger_type="time",
@@ -113,6 +113,7 @@ class VWAPBounceTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                enabled=False,
                 kills_roles=["sl", "target"],
             ),
         ]

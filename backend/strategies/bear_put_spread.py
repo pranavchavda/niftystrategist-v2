@@ -64,8 +64,10 @@ class BearPutSpreadTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Unique role per leg. Squareoffs start disabled; each entry
+        # activates its own leg's squareoff. Prevents rogue exits if entry
+        # never fired.
         plan.rules = [
-            # Buy higher strike PE
             RuleSpec(
                 name=f"{underlying} BPS BUY {buy_strike}PE",
                 trigger_type="time",
@@ -79,9 +81,9 @@ class BearPutSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="entry",
+                role="entry_long_pe",
+                activates_roles=["squareoff_long_pe"],
             ),
-            # Sell lower strike PE
             RuleSpec(
                 name=f"{underlying} BPS SELL {sell_strike}PE",
                 trigger_type="time",
@@ -95,9 +97,9 @@ class BearPutSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="entry",
+                role="entry_short_pe",
+                activates_roles=["squareoff_short_pe"],
             ),
-            # Squareoff
             RuleSpec(
                 name=f"{underlying} BPS Squareoff {buy_strike}PE @ {squareoff}",
                 trigger_type="time",
@@ -115,7 +117,8 @@ class BearPutSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="squareoff",
+                role="squareoff_long_pe",
+                enabled=False,
             ),
             RuleSpec(
                 name=f"{underlying} BPS Squareoff {sell_strike}PE @ {squareoff}",
@@ -134,7 +137,8 @@ class BearPutSpreadTemplate(StrategyTemplate):
                     "order_type": "MARKET",
                     "product": product,
                 },
-                role="squareoff",
+                role="squareoff_short_pe",
+                enabled=False,
             ),
         ]
 

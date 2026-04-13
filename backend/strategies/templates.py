@@ -29,6 +29,11 @@ class RuleSpec:
     # Activate chain: when this rule fires, enable rules with these roles.
     # Resolved to actual rule IDs at deploy time.
     activates_roles: list[str] = field(default_factory=list)
+    # For option SL rules that key off the entry premium: at deploy time the
+    # deployer fetches the live LTP of action_config["instrument_token"],
+    # multiplies by this value, and writes the result into trigger_config
+    # ["price"], replacing the placeholder 0. None means no enrichment.
+    premium_sl_multiplier: float | None = None
 
 
 @dataclass

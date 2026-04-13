@@ -178,6 +178,45 @@ def cmd_deploy(args):
     except ValueError as e:
         print_error(str(e))
 
+    # Enrich premium-keyed SL rules with live LTP before deployment.
+    # This only runs for real deployments, not dry-runs — dry-run keeps
+    # the placeholder so the preview shows the multiplier-based intent.
+    def _enrich_premium_sl(plan_obj) -> list[tuple[str, float, float]]:
+        """Rewrite trigger_config.price for SL rules that key off premium.
+
+        Returns a list of (rule_name, live_ltp, computed_sl_price) tuples
+        for display. Raises ValueError if a premium fetch fails.
+        """
+        premium_rules = [s for s in plan_obj.rules if s.premium_sl_multiplier is not None]
+        if not premium_rules:
+            return []
+
+        keys = [s.action_config["instrument_token"] for s in premium_rules]
+        unique_keys = list(dict.fromkeys(keys))
+
+        client = init_client()
+        greeks = run_async(client.get_option_greeks(unique_keys))
+        if not greeks:
+            raise ValueError(
+                "Could not fetch live option premiums for SL enrichment. "
+                "Check that the market is open and the Upstox token is valid."
+            )
+
+        results: list[tuple[str, float, float]] = []
+        for spec in premium_rules:
+            key = spec.action_config["instrument_token"]
+            data = greeks.get(key)
+            ltp = data.get("last_price") if isinstance(data, dict) else None
+            if ltp is None or ltp <= 0:
+                raise ValueError(
+                    f"No live premium for {key} (rule '{spec.name}'). "
+                    "Cannot enrich SL price."
+                )
+            sl_price = round(ltp * spec.premium_sl_multiplier, 2)
+            spec.trigger_config["price"] = sl_price
+            results.append((spec.name, float(ltp), sl_price))
+        return results
+
     # Dry run — just show what would be created
     if args.dry_run:
         rules_preview = []
@@ -185,12 +224,16 @@ def cmd_deploy(args):
             rules_preview.append({
                 "name": spec.name,
                 "role": spec.role,
+                "enabled": spec.enabled,
                 "trigger_type": spec.trigger_type,
                 "trigger_config": spec.trigger_config,
                 "action_type": spec.action_type,
                 "action_config": spec.action_config,
                 "max_fires": spec.max_fires,
                 "expires": spec.expires,
+                "activates_roles": spec.activates_roles,
+                "kills_roles": spec.kills_roles,
+                "premium_sl_multiplier": spec.premium_sl_multiplier,
             })
         output = {
             "dry_run": True,
@@ -209,13 +252,32 @@ def cmd_deploy(args):
             print(f"  Group ID:  {plan.group_id}")
             print(f"  Rules to create: {len(plan.rules)}\n")
             for i, spec in enumerate(plan.rules, 1):
-                print(f"  [{i}] {spec.name}")
+                state = "ON" if spec.enabled else "off (gated)"
+                print(f"  [{i}] {spec.name}  [{state}]  role={spec.role!r}")
                 print(f"      Trigger: {spec.trigger_type} → {spec.trigger_config}")
                 print(f"      Action:  {spec.action_type} → {spec.action_config}")
+                if spec.activates_roles:
+                    print(f"      On fire, enables: {spec.activates_roles}")
+                if spec.kills_roles:
+                    print(f"      On fire, disables: {spec.kills_roles}")
+                if spec.premium_sl_multiplier is not None:
+                    print(f"      SL = entry_premium × {spec.premium_sl_multiplier} (rewritten at deploy)")
                 if spec.max_fires:
                     print(f"      Max fires: {spec.max_fires}")
                 print()
         return
+
+    # Enrich premium-based SL rules (live deploy only).
+    try:
+        enriched = _enrich_premium_sl(plan)
+    except ValueError as e:
+        print_error(str(e))
+    else:
+        if enriched and not args.json:
+            print("SL rules enriched from live premium:")
+            for name, ltp, sl_price in enriched:
+                print(f"  • {name}: LTP ₹{ltp:.2f} → SL ₹{sl_price}")
+            print()
 
     # Parse expires
     expires_at = None

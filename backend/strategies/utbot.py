@@ -31,6 +31,9 @@ def _utbot_trigger_config(timeframe: str, condition: str, period: int, sensitivi
 
 
 def _squareoff_rule(symbol: str, qty: int, side: str, product: str, squareoff: str) -> RuleSpec:
+    # Starts disabled; entry rule activates it. Without this, the squareoff
+    # time-trigger would fire at 15:15 even if no UT Bot flip ever triggered
+    # an entry, opening a naked position on the exit side.
     return RuleSpec(
         name=f"{symbol} UT Bot Square-Off @ {squareoff}",
         trigger_type="time",
@@ -48,6 +51,7 @@ def _squareoff_rule(symbol: str, qty: int, side: str, product: str, squareoff: s
             "product": product,
         },
         role="squareoff",
+        enabled=False,
     )
 
 
@@ -101,6 +105,7 @@ class UTBotLongTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="entry",
+                activates_roles=["squareoff"],
             ),
             _squareoff_rule(symbol, qty, "SELL", product, squareoff),
         ]
@@ -157,6 +162,7 @@ class UTBotShortTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="entry",
+                activates_roles=["squareoff"],
             ),
             _squareoff_rule(symbol, qty, "BUY", product, squareoff),
         ]
@@ -199,6 +205,9 @@ class UTBotPairTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Exit + squareoff start disabled; entry activates them. Prevents a
+        # bearish flip (or 15:15 squareoff) from opening a rogue short if the
+        # bullish entry never fired.
         plan.rules = [
             RuleSpec(
                 name=f"{symbol} UT Bot Bullish Flip — ENTRY BUY",
@@ -213,6 +222,7 @@ class UTBotPairTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="entry",
+                activates_roles=["exit", "squareoff"],
             ),
             RuleSpec(
                 name=f"{symbol} UT Bot Bearish Flip — EXIT SELL",
@@ -227,6 +237,7 @@ class UTBotPairTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="exit",
+                enabled=False,
                 kills_roles=["squareoff"],
             ),
             RuleSpec(
@@ -246,6 +257,7 @@ class UTBotPairTemplate(StrategyTemplate):
                     "product": product,
                 },
                 role="squareoff",
+                enabled=False,
                 kills_roles=["exit"],
             ),
         ]

@@ -57,8 +57,10 @@ class BreakoutTemplate(StrategyTemplate):
             params=p,
         )
 
+        # Exits start disabled and are activated only when the entry fires.
+        # Prevents rogue positions if an exit level is hit before entry (e.g. SL
+        # triggers a BUY on a short-side strategy that never entered the market).
         plan.rules = [
-            # Entry
             RuleSpec(
                 name=f"{symbol} Breakout {label} Entry @ {entry}",
                 trigger_type="price",
@@ -69,8 +71,8 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="entry",
+                activates_roles=["sl", "target", "trailing", "squareoff"],
             ),
-            # SL
             RuleSpec(
                 name=f"{symbol} Breakout SL @ {sl}",
                 trigger_type="price",
@@ -81,9 +83,9 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="sl",
+                enabled=False,
                 kills_roles=["target", "trailing", "squareoff"],
             ),
-            # Target
             RuleSpec(
                 name=f"{symbol} Breakout Target @ {target}",
                 trigger_type="price",
@@ -94,9 +96,9 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="target",
+                enabled=False,
                 kills_roles=["sl", "trailing", "squareoff"],
             ),
-            # Trailing stop
             RuleSpec(
                 name=f"{symbol} Breakout Trail {trail_pct}%",
                 trigger_type="trailing_stop",
@@ -111,9 +113,9 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="trailing",
+                enabled=False,
                 kills_roles=["sl", "target", "squareoff"],
             ),
-            # Auto square-off
             RuleSpec(
                 name=f"{symbol} Breakout Square-Off @ {squareoff}",
                 trigger_type="time",
@@ -124,6 +126,7 @@ class BreakoutTemplate(StrategyTemplate):
                     "quantity": qty, "order_type": "MARKET", "product": product,
                 },
                 role="squareoff",
+                enabled=False,
                 kills_roles=["sl", "target", "trailing"],
             ),
         ]
