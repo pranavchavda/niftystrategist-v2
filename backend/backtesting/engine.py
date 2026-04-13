@@ -48,6 +48,7 @@ class _RuleState:
     @property
     def is_exit(self) -> bool:
         return self.spec.role in ("sl", "target", "trailing", "squareoff",
+                                   "exit",
                                    "sl_long", "sl_short", "target_long",
                                    "target_short", "trailing_long", "trailing_short")
 
