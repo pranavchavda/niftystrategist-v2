@@ -171,12 +171,62 @@ def cmd_deploy(args):
         params["brick_size"] = args.brick_size
     if hasattr(args, "sl_bricks") and args.sl_bricks is not None:
         params["sl_bricks"] = args.sl_bricks
+    # Indicator strategy params (UT Bot, EMA cross, utbot-scalp)
+    if hasattr(args, "quantity") and args.quantity is not None:
+        params["quantity"] = args.quantity
+    if hasattr(args, "timeframe") and args.timeframe is not None:
+        params["timeframe"] = args.timeframe
+    if hasattr(args, "period") and args.period is not None:
+        params["period"] = args.period
+    if hasattr(args, "sensitivity") and args.sensitivity is not None:
+        params["sensitivity"] = args.sensitivity
+    if hasattr(args, "fast_ema") and args.fast_ema is not None:
+        params["fast_ema"] = args.fast_ema
+    if hasattr(args, "slow_ema") and args.slow_ema is not None:
+        params["slow_ema"] = args.slow_ema
+    # Cycling params (utbot-scalp and future scalp variants)
+    if hasattr(args, "cycles") and args.cycles is not None:
+        params["cycles"] = args.cycles
+    if hasattr(args, "cooldown") and args.cooldown is not None:
+        params["cooldown_seconds"] = args.cooldown
+    # Option-contract selector (utbot-scalp-options)
+    if hasattr(args, "option_type") and args.option_type is not None:
+        params["option_type"] = args.option_type
+    # LR channel exit params (utbot-scalp equity opt-in, utbot-scalp-options always on)
+    if hasattr(args, "lr_exit") and args.lr_exit:
+        params["lr_exit_enabled"] = True
+    if hasattr(args, "lr_period") and args.lr_period is not None:
+        params["lr_period"] = args.lr_period
+    if hasattr(args, "lr_stdev") and args.lr_stdev is not None:
+        params["lr_stdev"] = args.lr_stdev
 
     # Generate the plan
     try:
         plan = template.plan(symbol, params)
     except ValueError as e:
         print_error(str(e))
+
+    # Validate role references — every role named in activates_roles or
+    # kills_roles must correspond to an actual rule in the plan. Catches
+    # broken template authoring before anything hits the DB. A spec whose
+    # activates_roles points at a non-existent role would silently resolve
+    # to an empty also_enable_rules list, leaving entry rules that fire
+    # without arming any exits (the exact RELIANCE 2026-04-13 class of bug).
+    _defined_roles = {s.role for s in plan.rules if s.role}
+    for spec in plan.rules:
+        missing_activates = [r for r in spec.activates_roles if r not in _defined_roles]
+        missing_kills = [r for r in spec.kills_roles if r not in _defined_roles]
+        if missing_activates or missing_kills:
+            problems = []
+            if missing_activates:
+                problems.append(f"activates_roles={missing_activates}")
+            if missing_kills:
+                problems.append(f"kills_roles={missing_kills}")
+            print_error(
+                f"Template '{args.template}' has rule {spec.role!r} referencing "
+                f"undefined roles: {', '.join(problems)}. Known roles: "
+                f"{sorted(_defined_roles)}. This is a template bug — refusing to deploy."
+            )
 
     # Enrich premium-keyed SL rules with live LTP before deployment.
     # This only runs for real deployments, not dry-runs — dry-run keeps
@@ -530,7 +580,7 @@ Examples:
     # ---- deploy ----
     p_deploy = sub.add_parser("deploy", help="Deploy a strategy template",
                               formatter_class=argparse.RawDescriptionHelpFormatter)
-    p_deploy.add_argument("template", help="Strategy template name (orb, breakout, mean-reversion, vwap-bounce, scalp)")
+    p_deploy.add_argument("template", help="Strategy template name (run 'nf-strategy list' to see all)")
     p_deploy.add_argument("--symbol", help="Stock symbol (required for equity, optional for F&O if --underlying is given)")
 
     # Common params
@@ -545,6 +595,18 @@ Examples:
     p_deploy.add_argument("--side", choices=["long", "short", "both"], help="Trade direction")
     p_deploy.add_argument("--squareoff-time", help="Auto square-off time HH:MM IST (default: 15:15)")
     p_deploy.add_argument("--max-entries", type=int, help="Max entries for scalp template")
+    p_deploy.add_argument("--quantity", type=int, help="Fixed share/lot count (UT Bot, EMA cross, utbot-scalp)")
+    p_deploy.add_argument("--timeframe", help="Indicator timeframe (e.g. 1m, 5m, 15m) — UT Bot, EMA cross")
+    p_deploy.add_argument("--period", type=int, help="UT Bot ATR period (default 10)")
+    p_deploy.add_argument("--sensitivity", type=float, help="UT Bot sensitivity multiplier (default 1.0)")
+    p_deploy.add_argument("--fast-ema", type=int, help="EMA cross: fast EMA period")
+    p_deploy.add_argument("--slow-ema", type=int, help="EMA cross: slow EMA period")
+    p_deploy.add_argument("--cycles", type=int, help="Cycling templates (utbot-scalp): max round-trips per day")
+    p_deploy.add_argument("--cooldown", type=int, help="Cycling templates: min seconds between consecutive fires of the same rule")
+    p_deploy.add_argument("--option-type", choices=["CE", "PE"], help="F&O: option type (CE or PE) for utbot-scalp-options")
+    p_deploy.add_argument("--lr-exit", action="store_true", help="Enable LR channel exits (utbot-scalp): upper-band profit take + lower-band SL")
+    p_deploy.add_argument("--lr-period", type=int, help="LR channel: period of the fit window (default 20)")
+    p_deploy.add_argument("--lr-stdev", type=float, help="LR channel: std-dev multiplier for band width (default 2.0)")
     p_deploy.add_argument("--expires", help="Expiry: 'today' (default) or ISO datetime")
 
     # ORB-specific

@@ -459,6 +459,11 @@ class MonitorDaemon:
         # fire on every tick until the next _poll_rules() DB reload.
         rule.fire_count += 1
 
+        # Also stamp fired_at in-memory so cooldown checks in the next tick
+        # see fresh values. The background task (sync_rule_fire_state) will
+        # persist this to DB; we just can't wait for that round-trip.
+        rule.fired_at = ctx.now
+
         # Also disable the rule in-memory if max_fires is reached, so even
         # concurrent ticks on other async tasks see it as disabled immediately.
         if rule.max_fires and rule.fire_count >= rule.max_fires:

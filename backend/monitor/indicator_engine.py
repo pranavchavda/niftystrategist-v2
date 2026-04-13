@@ -1,6 +1,7 @@
 """Compute technical indicators from candle data for the monitor."""
 from __future__ import annotations
 from typing import Any
+import numpy as np
 import pandas as pd
 import ta
 
@@ -183,6 +184,67 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
             if pd.isna(val) or val == 0.0:
                 return None
             return float(val)
+        elif indicator == "linear_regression":
+            # Linear Regression Channel. Fits a least-squares line through
+            # the last `period` closes and exposes several outputs:
+            #
+            #   output="line"  → endpoint of fitted line (acts like a low-lag MA)
+            #   output="slope" → price/bar slope (positive=up, negative=down)
+            #   output="upper" → line endpoint + stdev*k
+            #   output="lower" → line endpoint − stdev*k
+            #   output="pctb"  → (close − lower) / (upper − lower)
+            #                    0 = at lower band, 1 = at upper band,
+            #                    >1 above upper, <0 below lower.
+            #                    Use this with condition gte 1.0 for "touched upper"
+            #                    or lte 0.0 for "touched lower" — ideal for exits.
+            #   output="r2"    → fit quality 0..1 (trend strength filter)
+            #
+            # stdev is computed as the population standard deviation of
+            # residuals (close − fitted value) over the fit window.
+            period = int(params.get("period", 20))
+            stdev_k = float(params.get("stdev", 2.0))
+            output = params.get("output", "pctb")
+            if len(df) < period:
+                return None
+            closes = df["close"].astype(float).iloc[-period:].to_numpy()
+            x = np.arange(period, dtype=float)
+            # numpy.polyfit(deg=1) → [slope, intercept]
+            slope, intercept = np.polyfit(x, closes, 1)
+            fitted = slope * x + intercept
+            residuals = closes - fitted
+            # population stdev of residuals (matches most trading platforms)
+            resid_std = float(np.sqrt(np.mean(residuals ** 2)))
+            endpoint = float(fitted[-1])
+            upper = endpoint + stdev_k * resid_std
+            lower = endpoint - stdev_k * resid_std
+            last_close = float(closes[-1])
+
+            if output == "line":
+                return endpoint
+            if output == "slope":
+                return float(slope)
+            if output == "upper":
+                return upper
+            if output == "lower":
+                return lower
+            if output == "r2":
+                ss_res = float(np.sum(residuals ** 2))
+                mean_y = float(np.mean(closes))
+                ss_tot = float(np.sum((closes - mean_y) ** 2))
+                if ss_tot == 0:
+                    return 1.0  # perfectly flat → perfect fit by convention
+                return 1.0 - (ss_res / ss_tot)
+            # default: pctb
+            band_width = upper - lower
+            # Treat vanishingly small band widths as degenerate — happens
+            # when the fit is effectively perfect (flat or pure-linear data).
+            # Float noise otherwise produces nonzero bands that sit at the
+            # sub-paisa level but still yield a wrong pctb. Return 0.5
+            # (midline) so threshold triggers don't spuriously fire.
+            epsilon = 1e-9 * max(abs(last_close), 1.0)
+            if band_width < epsilon:
+                return 0.5
+            return (last_close - lower) / band_width
     except Exception:
         return None
     return None

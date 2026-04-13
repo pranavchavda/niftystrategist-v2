@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -446,6 +446,23 @@ def evaluate_rule(rule: MonitorRule, ctx: EvalContext) -> RuleResult:
         result.trigger_config_update = config_update
     else:
         logger.warning("Unknown trigger_type %r on rule %s — skipping", rule.trigger_type, rule.id)
+
+    # 2b. Cooldown suppression — if the rule fired within the cooldown window
+    # of its last fire, suppress this fire. Used by cycling templates (e.g.
+    # utbot-scalp) to prevent rapid re-fires in chop. Keyed off rule.fired_at
+    # which the daemon updates in-memory synchronously in Phase 1 of
+    # _evaluate_and_execute so same-tick decisions see fresh values.
+    if fired:
+        cooldown_seconds = rule.trigger_config.get("cooldown_seconds") if rule.trigger_config else None
+        if cooldown_seconds and rule.fired_at is not None:
+            elapsed = ctx.now - rule.fired_at
+            if elapsed < timedelta(seconds=cooldown_seconds):
+                logger.info(
+                    "Rule %d (%s) fired but suppressed by cooldown "
+                    "(elapsed=%.1fs < %ds)",
+                    rule.id, rule.name, elapsed.total_seconds(), cooldown_seconds,
+                )
+                fired = False
 
     result.fired = fired
 

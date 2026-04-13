@@ -119,7 +119,13 @@ def _register_all() -> None:
     from strategies.ema_cross import EMACrossLongTemplate, EMACrossShortTemplate, EMACrossPairTemplate
     from strategies.ema_stochastic_scalper import EMAStochasticScalperTemplate
     from strategies.renko import RenkoTemplate
-    from strategies.utbot import UTBotLongTemplate, UTBotShortTemplate, UTBotPairTemplate
+    from strategies.utbot import (
+        UTBotLongTemplate,
+        UTBotShortTemplate,
+        UTBotPairTemplate,
+        UTBotScalpTemplate,
+        UTBotScalpOptionsTemplate,
+    )
 
     for cls in (
         ORBTemplate, BreakoutTemplate, MeanReversionTemplate,
@@ -130,6 +136,7 @@ def _register_all() -> None:
         EMAStochasticScalperTemplate,
         RenkoTemplate,
         UTBotLongTemplate, UTBotShortTemplate, UTBotPairTemplate,
+        UTBotScalpTemplate, UTBotScalpOptionsTemplate,
     ):
         register(cls())
 
