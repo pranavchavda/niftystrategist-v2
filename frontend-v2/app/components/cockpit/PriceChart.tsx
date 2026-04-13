@@ -1,10 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, CandlestickSeries, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, LineSeries, LineStyle, createSeriesMarkers, type IChartApi, type ISeriesApi, type CandlestickData, type Time, type LineData, type SeriesMarker } from 'lightweight-charts';
 
 interface LiveQuote {
   price: number;
   change: number;
   changePct: number;
+}
+
+interface OverlayLinePoint {
+  time: string | number;
+  value: number;
+}
+
+interface OverlayMarker {
+  time: string | number;
+  type: 'buy' | 'sell';
+  text?: string;
+}
+
+interface ChartOverlays {
+  lines: Record<string, OverlayLinePoint[]>;
+  markers: OverlayMarker[];
 }
 
 interface PriceChartProps {
@@ -14,14 +30,23 @@ interface PriceChartProps {
   activeTimeframe?: string;
   onTimeframeChange?: (tf: string) => void;
   liveQuote?: LiveQuote | null;
+  overlays?: ChartOverlays;
+  enabledIndicators?: string[];
+  onToggleIndicator?: (name: string) => void;
 }
+
+const LINE_STYLE: Record<string, { color: string; title: string }> = {
+  utbot_stop: { color: '#f59e0b', title: 'UT Bot' },
+};
 
 const TIMEFRAMES = ['1D', '5D', '1W', '1M', '3M', '6M', '1Y'] as const;
 
-export default function PriceChart({ symbol, data, className = '', activeTimeframe: controlledTf, onTimeframeChange, liveQuote }: PriceChartProps) {
+export default function PriceChart({ symbol, data, className = '', activeTimeframe: controlledTf, onTimeframeChange, liveQuote, overlays, enabledIndicators, onToggleIndicator }: PriceChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const overlayLineSeriesRef = useRef<Record<string, ISeriesApi<'Line'>>>({});
+  const markersPluginRef = useRef<ReturnType<typeof createSeriesMarkers> | null>(null);
   const [internalTf, setInternalTf] = useState<typeof TIMEFRAMES[number]>('3M');
   const activeTimeframe = controlledTf || internalTf;
   const [isDark, setIsDark] = useState(false);
@@ -105,6 +130,8 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
 
     chartRef.current = chart;
     seriesRef.current = series;
+    overlayLineSeriesRef.current = {};
+    markersPluginRef.current = null;
 
     // Handle resize
     const resizeObserver = new ResizeObserver((entries) => {
@@ -121,6 +148,67 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
       chartRef.current = null;
     };
   }, [data, isDark, activeTimeframe]);
+
+  // Render indicator overlays (lines + markers) whenever they change. This
+  // runs as a separate effect so swapping indicators doesn't recreate the
+  // whole chart.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candleSeries = seriesRef.current;
+    if (!chart || !candleSeries) return;
+
+    // Remove previous overlay lines
+    for (const key in overlayLineSeriesRef.current) {
+      try {
+        chart.removeSeries(overlayLineSeriesRef.current[key]);
+      } catch {
+        /* already removed */
+      }
+    }
+    overlayLineSeriesRef.current = {};
+
+    if (!overlays) {
+      if (markersPluginRef.current) {
+        markersPluginRef.current.setMarkers([]);
+      }
+      return;
+    }
+
+    // Add line series for each overlay line
+    for (const [name, points] of Object.entries(overlays.lines || {})) {
+      if (!points || points.length === 0) continue;
+      const style = LINE_STYLE[name] || { color: '#8b5cf6', title: name };
+      const line = chart.addSeries(LineSeries, {
+        color: style.color,
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: style.title,
+      });
+      const lineData: LineData<Time>[] = points.map((p) => ({
+        time: p.time as Time,
+        value: p.value,
+      }));
+      line.setData(lineData);
+      overlayLineSeriesRef.current[name] = line;
+    }
+
+    // Markers go on the candle series
+    const markers: SeriesMarker<Time>[] = (overlays.markers || []).map((m) => ({
+      time: m.time as Time,
+      position: m.type === 'buy' ? 'belowBar' : 'aboveBar',
+      color: m.type === 'buy' ? '#16a34a' : '#dc2626',
+      shape: m.type === 'buy' ? 'arrowUp' : 'arrowDown',
+      text: m.text || '',
+    }));
+
+    if (markersPluginRef.current) {
+      markersPluginRef.current.setMarkers(markers);
+    } else {
+      markersPluginRef.current = createSeriesMarkers(candleSeries, markers);
+    }
+  }, [overlays, data]);
 
   // Get current price info — prefer live quote over last candle
   const lastCandle = data[data.length - 1];
@@ -148,21 +236,46 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
           )}
         </div>
 
-        {/* Timeframe Selector */}
-        <div className="flex items-center gap-0.5 bg-zinc-100/80 dark:bg-zinc-800/80 rounded-md p-0.5">
-          {TIMEFRAMES.map((tf) => (
-            <button
-              key={tf}
-              onClick={() => { setInternalTf(tf); onTimeframeChange?.(tf); }}
-              className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${
-                activeTimeframe === tf
-                  ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm'
-                  : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-              }`}
-            >
-              {tf}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          {/* Indicator toggles */}
+          {onToggleIndicator && (
+            <div className="flex items-center gap-0.5 bg-zinc-100/80 dark:bg-zinc-800/80 rounded-md p-0.5">
+              {(['utbot'] as const).map((name) => {
+                const active = (enabledIndicators || []).includes(name);
+                return (
+                  <button
+                    key={name}
+                    onClick={() => onToggleIndicator(name)}
+                    title={`Toggle ${name.toUpperCase()} overlay`}
+                    className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${
+                      active
+                        ? 'bg-amber-500 text-white shadow-sm'
+                        : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                    }`}
+                  >
+                    {name.toUpperCase()}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Timeframe Selector */}
+          <div className="flex items-center gap-0.5 bg-zinc-100/80 dark:bg-zinc-800/80 rounded-md p-0.5">
+            {TIMEFRAMES.map((tf) => (
+              <button
+                key={tf}
+                onClick={() => { setInternalTf(tf); onTimeframeChange?.(tf); }}
+                className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${
+                  activeTimeframe === tf
+                    ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm'
+                    : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

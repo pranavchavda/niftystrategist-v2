@@ -395,6 +395,63 @@ async def cockpit_chart(
 
 
 # ---------------------------------------------------------------------------
+# GET /chart/{symbol}/overlays
+# ---------------------------------------------------------------------------
+@router.get("/chart/{symbol}/overlays")
+async def cockpit_chart_overlays(
+    symbol: str,
+    days: int = Query(default=90, ge=1, le=365),
+    interval: str = Query(default="day"),
+    indicators: str = Query(default="utbot", description="Comma-separated overlay names"),
+    utbot_period: int = Query(default=10, ge=1, le=100),
+    utbot_sensitivity: float = Query(default=1.0, gt=0.0, le=10.0),
+    user: User = Depends(get_current_user),
+):
+    """Return indicator overlay series (lines + markers) for a symbol.
+
+    Time-aligned with /chart/{symbol} output so the frontend can layer them
+    on top of the candlestick series.
+    """
+    from services.chart_overlays import compute_overlays
+
+    names = [n.strip() for n in indicators.split(",") if n.strip()]
+    if not names:
+        return {"lines": {}, "markers": []}
+
+    client = await _get_client_for_user(user)
+    try:
+        raw_candles = await client.get_historical_data(
+            symbol.upper(), interval=interval, days=days
+        )
+        raw_candles.sort(key=lambda c: c.timestamp)
+        intraday = interval in ("1minute", "5minute", "15minute", "30minute")
+
+        # Normalize candles to the same shape the chart endpoint returns so
+        # overlay times align exactly with candle times in the frontend.
+        candles = [
+            {
+                "time": int(datetime.fromisoformat(c.timestamp).timestamp())
+                if intraday
+                else (c.timestamp[:10] if len(c.timestamp) >= 10 else c.timestamp),
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume,
+            }
+            for c in raw_candles
+        ]
+
+        params = {
+            "utbot": {"period": utbot_period, "sensitivity": utbot_sensitivity},
+        }
+        return compute_overlays(candles, names=names, params=params)
+    except Exception as e:
+        logger.error(f"Error computing overlays for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # GET /scorecard
 # ---------------------------------------------------------------------------
 @router.get("/scorecard")

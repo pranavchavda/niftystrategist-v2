@@ -17,11 +17,15 @@ class TechnicalAnalysisService:
         rsi_oversold: float = 30.0,
         rsi_overbought: float = 70.0,
         renko_brick_size: float = 15.0,
+        utbot_period: int = 10,
+        utbot_sensitivity: float = 1.0,
     ):
         """Initialize the service with configurable thresholds."""
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
         self.renko_brick_size = renko_brick_size
+        self.utbot_period = utbot_period
+        self.utbot_sensitivity = utbot_sensitivity
 
     def calculate_indicators(self, ohlcv_data: list[OHLCVData]) -> TechnicalIndicators:
         """Calculate technical indicators from OHLCV data."""
@@ -61,6 +65,9 @@ class TechnicalAnalysisService:
         closes_list = df["close"].tolist()
         renko = self.calculate_renko(closes_list, self.renko_brick_size)
 
+        # UT Bot (ATR trailing stop)
+        utbot = self.calculate_utbot(df, self.utbot_period, self.utbot_sensitivity)
+
         def safe_float(val):
             return None if np.isnan(val) else float(val)
 
@@ -80,6 +87,11 @@ class TechnicalAnalysisService:
             renko_brick_count=renko["brick_count"],
             renko_brick_size=self.renko_brick_size,
             renko_last_reversal_price=renko["last_reversal_price"],
+            utbot_trend=utbot["trend"],
+            utbot_stop=utbot["stop"],
+            utbot_signal=utbot["signal"],
+            utbot_period=self.utbot_period,
+            utbot_sensitivity=self.utbot_sensitivity,
         )
 
     def calculate_renko(self, closes: list[float], brick_size: float) -> dict:
@@ -130,6 +142,74 @@ class TechnicalAnalysisService:
             "brick_count": count,
             "last_reversal_price": last_reversal_price,
         }
+
+    def calculate_utbot(
+        self,
+        df: pd.DataFrame,
+        period: int = 10,
+        sensitivity: float = 1.0,
+    ) -> dict:
+        """Calculate UT Bot trailing stop, trend, and flip signal.
+
+        Pine-faithful implementation: ATR (Wilder RMA) × sensitivity = nLoss,
+        trailing stop = close ± nLoss ratcheted in the trend direction,
+        trend flips when close crosses the previous stop.
+
+        Returns dict with keys: trend ("long"|"short"|None), stop (float|None),
+        signal ("buy"|"sell"|None for a flip occurring on the latest bar).
+        """
+        if len(df) < period + 2:
+            return {"trend": None, "stop": None, "signal": None}
+
+        atr = ta.volatility.AverageTrueRange(
+            df["high"], df["low"], df["close"], window=period
+        ).average_true_range()
+        n_loss = sensitivity * atr
+        src = df["close"].astype(float).reset_index(drop=True)
+        nl = n_loss.reset_index(drop=True)
+
+        stops = [0.0] * len(df)
+        positions = [0] * len(df)
+        for i in range(len(df)):
+            # ta's ATR returns 0.0 during the warm-up window rather than NaN.
+            if pd.isna(nl.iloc[i]) or nl.iloc[i] == 0.0:
+                if i > 0:
+                    stops[i] = stops[i - 1]
+                    positions[i] = positions[i - 1]
+                continue
+            prev_stop = stops[i - 1] if i > 0 else 0.0
+            prev_src = src.iloc[i - 1] if i > 0 else src.iloc[i]
+            cur = src.iloc[i]
+            if cur > prev_stop and prev_src > prev_stop:
+                stops[i] = max(prev_stop, cur - nl.iloc[i])
+            elif cur < prev_stop and prev_src < prev_stop:
+                stops[i] = min(prev_stop, cur + nl.iloc[i])
+            elif cur > prev_stop:
+                stops[i] = cur - nl.iloc[i]
+            else:
+                stops[i] = cur + nl.iloc[i]
+            prev_pos = positions[i - 1] if i > 0 else 0
+            if i > 0 and prev_src < prev_stop and cur > prev_stop:
+                positions[i] = 1
+            elif i > 0 and prev_src > prev_stop and cur < prev_stop:
+                positions[i] = -1
+            else:
+                positions[i] = prev_pos
+            # Cold start: a steady trend never crosses the stop, so seed the
+            # position from price-vs-stop the first bar ATR is ready.
+            if positions[i] == 0:
+                positions[i] = 1 if cur > stops[i] else -1
+
+        last_pos = positions[-1]
+        prev_pos_last = positions[-2] if len(positions) > 1 else 0
+        trend = "long" if last_pos == 1 else "short" if last_pos == -1 else None
+        stop_val = stops[-1] if stops[-1] != 0.0 else None
+        signal = None
+        if last_pos == 1 and prev_pos_last != 1:
+            signal = "buy"
+        elif last_pos == -1 and prev_pos_last != -1:
+            signal = "sell"
+        return {"trend": trend, "stop": stop_val, "signal": signal}
 
     def interpret_rsi(self, rsi: float | None) -> Literal["oversold", "neutral", "overbought"]:
         """Interpret RSI value."""
@@ -212,6 +292,8 @@ class TechnicalAnalysisService:
         price_trend: Literal["uptrend", "downtrend", "sideways"],
         renko_trend: str | None = None,
         renko_brick_count: int | None = None,
+        utbot_trend: str | None = None,
+        utbot_signal: str | None = None,
     ) -> tuple[Literal["strong_buy", "buy", "hold", "sell", "strong_sell"], float]:
         """
         Calculate overall signal and confidence from individual indicators.
@@ -249,8 +331,18 @@ class TechnicalAnalysisService:
             if renko_brick_count and renko_brick_count >= 3:
                 score -= 1
 
+        # UT Bot scoring: +/-1 for trend direction, +1 extra on a fresh flip
+        if utbot_trend == "long":
+            score += 1
+            if utbot_signal == "buy":
+                score += 1
+        elif utbot_trend == "short":
+            score -= 1
+            if utbot_signal == "sell":
+                score -= 1
+
         # Convert score to signal
-        # Score range: -8 to +8 (was -6 to +6 before Renko)
+        # Score range: -10 to +10 (was -8 to +8 before UT Bot)
         if score >= 5:
             signal = "strong_buy"
             confidence = min(0.9, 0.6 + (score - 5) * 0.1)
@@ -298,11 +390,13 @@ class TechnicalAnalysisService:
         # Find support/resistance
         support, resistance = self.find_support_resistance(ohlcv_data, current_price)
 
-        # Calculate overall signal (includes Renko)
+        # Calculate overall signal (includes Renko + UT Bot)
         overall_signal, confidence = self.calculate_overall_signal(
             rsi_signal, macd_trend, price_trend,
             renko_trend=indicators.renko_trend,
             renko_brick_count=indicators.renko_brick_count,
+            utbot_trend=indicators.utbot_trend,
+            utbot_signal=indicators.utbot_signal,
         )
 
         # Generate reasoning
@@ -397,6 +491,19 @@ class TechnicalAnalysisService:
             parts.append("Volume is higher than average, indicating strong interest.")
         elif volume_signal == "low":
             parts.append("Volume is lower than average, suggesting weak conviction.")
+
+        # UT Bot
+        if indicators.utbot_trend:
+            direction_word = "bullish" if indicators.utbot_trend == "long" else "bearish"
+            stop_str = f"₹{indicators.utbot_stop:.2f}" if indicators.utbot_stop else "N/A"
+            parts.append(
+                f"UT Bot (ATR {indicators.utbot_period}, sensitivity {indicators.utbot_sensitivity}) "
+                f"is {direction_word}, trailing stop at {stop_str}."
+            )
+            if indicators.utbot_signal == "buy":
+                parts.append("UT Bot just flipped to a fresh BUY signal on the latest bar.")
+            elif indicators.utbot_signal == "sell":
+                parts.append("UT Bot just flipped to a fresh SELL signal on the latest bar.")
 
         # Renko
         if indicators.renko_trend:

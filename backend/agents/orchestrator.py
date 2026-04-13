@@ -1571,7 +1571,7 @@ NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on
 **Compound triggers (multi-condition rules):**
 - `nf-monitor add-rule --trigger compound --operator and --sub-condition "price:gte:2450" --sub-condition "indicator:rsi:lte:30:5m" ...`
 - Condition formats: `price:COND:PRICE`, `indicator:NAME:COND:VALUE:TF`, `time:HH:MM`
-- New indicators available: `vwap`, `bollinger` (with band param: upper/lower/width/pctb), `supertrend` (returns 1.0 bullish / -1.0 bearish)
+- New indicators available: `vwap`, `bollinger` (with band param: upper/lower/width/pctb), `supertrend` (returns 1.0 bullish / -1.0 bearish), `utbot` (ATR trailing-stop trend follower, returns 1.0 long / -1.0 short — use `--ind-period 10 --ind-sensitivity 1.0`; detect flip with `crosses_above 0` or `crosses_below 0`)
 
 **Morning scan with auto-deploy:**
 - `python cli-tools/nf-morning-scan --auto-deploy TEMPLATE --capital AMOUNT --top N [--dry-run] --json` — Scan + auto-deploy strategies on top candidates

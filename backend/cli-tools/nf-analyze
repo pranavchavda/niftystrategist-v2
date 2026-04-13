@@ -12,7 +12,14 @@ if _backend_dir not in sys.path:
 from base import SYMBOLS, format_inr, init_client, print_error, print_json, run_async, validate_symbol  # noqa: E402
 
 
-def analyze_single(symbol: str, interval: str, as_json: bool, renko_brick: float = 15.0):
+def analyze_single(
+    symbol: str,
+    interval: str,
+    as_json: bool,
+    renko_brick: float = 15.0,
+    utbot_period: int = 10,
+    utbot_sensitivity: float = 1.0,
+):
     """Run full technical analysis on a single stock."""
     from services.technical_analysis import TechnicalAnalysisService
 
@@ -30,7 +37,11 @@ def analyze_single(symbol: str, interval: str, as_json: bool, renko_brick: float
         return
 
 
-    ta = TechnicalAnalysisService(renko_brick_size=renko_brick)
+    ta = TechnicalAnalysisService(
+        renko_brick_size=renko_brick,
+        utbot_period=utbot_period,
+        utbot_sensitivity=utbot_sensitivity,
+    )
     analysis = ta.analyze(sym, candles)
     ind = analysis.indicators
 
@@ -58,6 +69,11 @@ def analyze_single(symbol: str, interval: str, as_json: bool, renko_brick: float
             "renko_brick_count": ind.renko_brick_count,
             "renko_brick_size": ind.renko_brick_size,
             "renko_last_reversal": ind.renko_last_reversal_price,
+            "utbot_trend": ind.utbot_trend,
+            "utbot_stop": ind.utbot_stop,
+            "utbot_signal": ind.utbot_signal,
+            "utbot_period": ind.utbot_period,
+            "utbot_sensitivity": ind.utbot_sensitivity,
             "reasoning": analysis.reasoning,
         })
         return
@@ -103,6 +119,17 @@ def analyze_single(symbol: str, interval: str, as_json: bool, renko_brick: float
         print(f"     Trend: {renko_emoji} {renko_dir} ({ind.renko_brick_count} consecutive bricks)")
         if ind.renko_last_reversal_price:
             print(f"     Last reversal: {format_inr(ind.renko_last_reversal_price)}")
+
+    if ind.utbot_trend:
+        utbot_emoji = "🟩" if ind.utbot_trend == "long" else "🟥"
+        utbot_dir = "LONG" if ind.utbot_trend == "long" else "SHORT"
+        stop_str = format_inr(ind.utbot_stop) if ind.utbot_stop is not None else "N/A"
+        print(f"\n   UT Bot (ATR {ind.utbot_period}, sensitivity {ind.utbot_sensitivity}):")
+        print(f"     Trend: {utbot_emoji} {utbot_dir}  |  Trailing stop: {stop_str}")
+        if ind.utbot_signal == "buy":
+            print("     Signal: 🟢 FRESH BUY (flip on latest bar)")
+        elif ind.utbot_signal == "sell":
+            print("     Signal: 🔴 FRESH SELL (flip on latest bar)")
 
     if analysis.support_level or analysis.resistance_level:
         print()
@@ -203,13 +230,28 @@ Examples:
         "--renko-brick", type=float, default=15.0,
         help="Renko brick size in rupees (default: 15)",
     )
+    parser.add_argument(
+        "--utbot-period", type=int, default=10,
+        help="UT Bot ATR period (default: 10)",
+    )
+    parser.add_argument(
+        "--utbot-sensitivity", type=float, default=1.0,
+        help="UT Bot sensitivity / key value — nLoss multiplier (default: 1.0)",
+    )
 
     args = parser.parse_args()
 
     if args.compare or len(args.symbols) > 1:
         compare_stocks(args.symbols, args.interval, args.json)
     else:
-        analyze_single(args.symbols[0], args.interval, args.json, renko_brick=args.renko_brick)
+        analyze_single(
+            args.symbols[0],
+            args.interval,
+            args.json,
+            renko_brick=args.renko_brick,
+            utbot_period=args.utbot_period,
+            utbot_sensitivity=args.utbot_sensitivity,
+        )
 
 
 if __name__ == "__main__":

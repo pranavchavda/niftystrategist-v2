@@ -16,6 +16,7 @@ import DailyScorecard from './cockpit/DailyScorecard';
 import CockpitChat from './cockpit/CockpitChat';
 import { useCockpitData } from '../hooks/useCockpitData';
 import { useChartData } from '../hooks/useChartData';
+import { useChartOverlays } from '../hooks/useChartOverlays';
 
 const Dashboard = ({ authToken }) => {
   // Left panel collapse state
@@ -30,6 +31,12 @@ const Dashboard = ({ authToken }) => {
   // Active symbol + timeframe for chart
   const [activeSymbol, setActiveSymbol] = useState('NIFTY 50');
   const [activeTimeframe, setActiveTimeframe] = useState('3M');
+
+  // Indicator overlays (persist toggle state)
+  const [enabledIndicators, setEnabledIndicators] = useState(() => {
+    const saved = localStorage.getItem('cockpit-chart-indicators');
+    return saved ? JSON.parse(saved) : [];
+  });
 
   // Chat context
   const [chatContext, setChatContext] = useState(null);
@@ -54,6 +61,13 @@ const Dashboard = ({ authToken }) => {
   };
   const chartConfig = TIMEFRAME_CONFIG[activeTimeframe] || { days: 90, interval: 'day' };
   const chartResult = useChartData(authToken, activeSymbol, chartConfig.days, chartConfig.interval);
+  const { overlays } = useChartOverlays(
+    authToken,
+    activeSymbol,
+    chartConfig.days,
+    chartConfig.interval,
+    enabledIndicators,
+  );
 
   // Build live quote for the chart header from cockpit data (indices, holdings, watchlist)
   const liveQuote = useMemo(() => {
@@ -90,6 +104,17 @@ const Dashboard = ({ authToken }) => {
   useEffect(() => {
     localStorage.setItem('cockpit-auto-refresh', String(autoRefresh));
   }, [autoRefresh]);
+
+  // Persist indicator toggles
+  useEffect(() => {
+    localStorage.setItem('cockpit-chart-indicators', JSON.stringify(enabledIndicators));
+  }, [enabledIndicators]);
+
+  const toggleIndicator = useCallback((name) => {
+    setEnabledIndicators((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+    );
+  }, []);
 
   const handleSymbolSelect = useCallback((symbol) => {
     setActiveSymbol(symbol);
@@ -238,6 +263,9 @@ const Dashboard = ({ authToken }) => {
               activeTimeframe={activeTimeframe}
               onTimeframeChange={(tf) => setActiveTimeframe(tf)}
               liveQuote={liveQuote}
+              overlays={overlays}
+              enabledIndicators={enabledIndicators}
+              onToggleIndicator={toggleIndicator}
             />
           </div>
 

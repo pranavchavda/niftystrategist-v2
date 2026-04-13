@@ -26,6 +26,13 @@ class TechnicalIndicators(BaseModel):
     renko_brick_size: float | None = Field(default=None, description="Brick size used")
     renko_last_reversal_price: float | None = Field(default=None, description="Price level of last Renko reversal")
 
+    # UT Bot (ATR-based trailing stop trend follower)
+    utbot_trend: Literal["long", "short"] | None = Field(default=None, description="UT Bot position: 'long' (+1) or 'short' (-1)")
+    utbot_stop: float | None = Field(default=None, description="UT Bot trailing stop price level on the latest bar")
+    utbot_signal: Literal["buy", "sell"] | None = Field(default=None, description="Fresh UT Bot flip on the latest bar: 'buy', 'sell', or None")
+    utbot_period: int | None = Field(default=None, description="ATR period used")
+    utbot_sensitivity: float | None = Field(default=None, description="nLoss multiplier (key value) used")
+
 
 class MarketAnalysis(BaseModel):
     """Result of technical analysis on a symbol."""
