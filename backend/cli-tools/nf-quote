@@ -22,6 +22,11 @@ from base import (  # noqa: E402
     search_symbols,
     validate_symbol,
 )
+from services.instruments_cache import (  # noqa: E402
+    index_exists,
+    list_indices,
+    search_indices,
+)
 
 
 def fetch_quotes(symbols: list[str], as_json: bool):
@@ -37,10 +42,16 @@ def fetch_quotes(symbols: list[str], as_json: bool):
     for symbol in symbols:
         sym = symbol.upper()
         if not symbol_exists(sym):
-            errors.append(f"{sym}: Unknown symbol. Use --search to find valid NSE symbols.")
+            errors.append(
+                f"{sym}: Unknown symbol. Use --search to find NSE stocks "
+                f"or --list-indices for indices."
+            )
             continue
         try:
             quote = run_async(client.get_quote(sym))
+            # Preserve user-supplied label; flag indices for display.
+            quote["symbol"] = sym
+            quote["is_index"] = index_exists(sym)
             results.append(quote)
         except Exception as e:
             errors.append(f"{sym}: {e}")
@@ -61,14 +72,18 @@ def fetch_quotes(symbols: list[str], as_json: bool):
         else:
             change_pct = None
 
-        sym_display = q["symbol"].ljust(12)
+        sym_display = q["symbol"].ljust(14)
         price = format_inr(ltp)
         change = format_change(change_pct)
         high = format_inr(q.get("high"))
         low = format_inr(q.get("low"))
-        vol = format_volume(q.get("volume"))
 
-        print(f"{sym_display} {price}  {change}  H: {high}  L: {low}  Vol: {vol}")
+        if q.get("is_index"):
+            # Indices have no volume; show range only.
+            print(f"{sym_display} {price}  {change}  H: {high}  L: {low}")
+        else:
+            vol = format_volume(q.get("volume"))
+            print(f"{sym_display} {price}  {change}  H: {high}  L: {low}  Vol: {vol}")
 
     for err in errors:
         print(f"❌ {err}", file=sys.stderr)
@@ -118,10 +133,13 @@ Examples:
   nf-quote RELIANCE                   Live quote for Reliance
   nf-quote RELIANCE TCS INFY          Multiple quotes
   nf-quote GOLDBEES --json            Any NSE symbol (not just Nifty 50)
+  nf-quote NIFTY BANKNIFTY FINNIFTY   Index quotes
+  nf-quote "NIFTY IT" "NIFTY AUTO"    Sectoral indices (quote names with spaces)
   nf-quote RELIANCE --historical      Daily OHLCV (last 30 days)
   nf-quote TCS --historical --interval 15minute --days 5
   nf-quote --list                     Show Nifty 50 symbols
-  nf-quote --search GOLD              Search any NSE stock by name/symbol
+  nf-quote --list-indices             Show all NSE indices
+  nf-quote --search GOLD              Search NSE stocks + indices by name/symbol
 
 Supported intervals: 1minute, 5minute, 15minute, 30minute, day
 
@@ -131,7 +149,8 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     parser.add_argument("symbols", nargs="*", help="Stock symbol(s) (e.g., RELIANCE, TCS)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--list", action="store_true", help="List Nifty 50 stock symbols")
-    parser.add_argument("--search", metavar="TERM", help="Search any NSE stock by name or symbol")
+    parser.add_argument("--list-indices", action="store_true", help="List all NSE indices")
+    parser.add_argument("--search", metavar="TERM", help="Search NSE stocks + indices by name or symbol")
     parser.add_argument("--historical", action="store_true", help="Fetch historical OHLCV data")
     parser.add_argument(
         "--interval",
@@ -144,19 +163,45 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     args = parser.parse_args()
 
     if args.search:
-        results = search_symbols(args.search)
+        equity_results = search_symbols(args.search)
+        index_results = search_indices(args.search)
         if args.json:
-            print_json(results)
+            print_json({"equity": equity_results, "indices": index_results})
         else:
-            if not results:
+            if not equity_results and not index_results:
                 print(f"No symbols matching '{args.search}'.")
             else:
-                print(f"NSE symbols matching '{args.search}' ({len(results)} results):\n")
-                print(f"{'Symbol':<14} {'Name':<40} {'Nifty 50'}")
-                print("-" * 62)
-                for r in results:
-                    n50 = "Yes" if r["nifty50"] else ""
-                    print(f"{r['symbol']:<14} {r['name'][:38]:<40} {n50}")
+                if equity_results:
+                    print(f"NSE equity matching '{args.search}' ({len(equity_results)}):\n")
+                    print(f"{'Symbol':<14} {'Name':<40} {'Nifty 50'}")
+                    print("-" * 62)
+                    for r in equity_results:
+                        n50 = "Yes" if r["nifty50"] else ""
+                        print(f"{r['symbol']:<14} {r['name'][:38]:<40} {n50}")
+                if index_results:
+                    if equity_results:
+                        print()
+                    print(f"NSE indices matching '{args.search}' ({len(index_results)}):\n")
+                    print(f"{'Symbol':<22} {'Name'}")
+                    print("-" * 50)
+                    for r in index_results:
+                        print(f"{r['symbol'][:20]:<22} {r['name']}")
+        return
+
+    if args.list_indices:
+        indices = list_indices()
+        if args.json:
+            print_json(indices)
+        else:
+            print(f"NSE indices ({len(indices)}):\n")
+            print(f"{'Symbol':<22} {'Name'}")
+            print("-" * 50)
+            for i in indices:
+                print(f"{i['symbol'][:20]:<22} {i['name']}")
+            print(
+                "\nTip: quote index names with spaces, e.g. nf-quote \"NIFTY IT\". "
+                "Common aliases: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, VIX."
+            )
         return
 
     if args.list:

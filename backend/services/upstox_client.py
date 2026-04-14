@@ -300,10 +300,18 @@ class UpstoxClient:
             return self._dynamic_symbols[sym]
 
         # Fallback: instruments cache (covers all NSE symbols)
-        from services.instruments_cache import get_instrument_key as cache_get_key
+        from services.instruments_cache import (
+            get_instrument_key as cache_get_key,
+            get_index_key,
+        )
         cached_key = cache_get_key(sym)
         if cached_key:
             return cached_key
+
+        # Index lookup (NIFTY, BANKNIFTY, FINNIFTY, sectoral indices, etc.)
+        index_key = get_index_key(symbol)
+        if index_key:
+            return index_key
 
         raise ValueError(
             f"No instrument mapping for symbol '{symbol}'. "
@@ -496,13 +504,20 @@ class UpstoxClient:
                 api_version="v2",
             )
 
-            # Response key format is "NSE_EQ:SYMBOL" not "NSE_EQ|ISIN"
-            response_key = f"NSE_EQ:{symbol.upper()}"
-            quote_data = response.data.get(response_key) if response.data else None
-
-            if not quote_data:
-                # Try with instrument_key as fallback
-                quote_data = response.data.get(instrument_key) if response.data else None
+            # Response key format is "NSE_EQ:SYMBOL" for equity, or
+            # "NSE_INDEX:Nifty 50" for indices (the pipe in instrument_key
+            # becomes a colon in the response).
+            quote_data = None
+            if response.data:
+                candidates = [
+                    f"NSE_EQ:{symbol.upper()}",
+                    instrument_key.replace("|", ":"),
+                    instrument_key,
+                ]
+                for rk in candidates:
+                    quote_data = response.data.get(rk)
+                    if quote_data:
+                        break
 
             if not quote_data:
                 raise ValueError(f"No quote data returned for {symbol}. Keys: {list(response.data.keys()) if response.data else []}")

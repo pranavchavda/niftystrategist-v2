@@ -1439,10 +1439,13 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-market-status [--json]` — Check if market is open/closed (no token needed)
 - `python cli-tools/nf-market-status --holidays [YYYY-MM-DD]` — Show all market holidays this year, or check if a specific date is a holiday
 - `python cli-tools/nf-market-status --timings YYYY-MM-DD [--json]` — Exchange open/close timings for a specific date
-- `python cli-tools/nf-quote SYMBOL [SYMBOL2 ...] [--json]` — Live quotes
+- `python cli-tools/nf-quote SYMBOL [SYMBOL2 ...] [--json]` — Live quotes (stocks or indices)
+- `python cli-tools/nf-quote NIFTY BANKNIFTY FINNIFTY` — Index quotes (aliases: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50, VIX)
+- `python cli-tools/nf-quote "NIFTY IT" "NIFTY AUTO"` — Sectoral indices (quote names with spaces)
 - `python cli-tools/nf-quote SYMBOL --historical [--interval day] [--days 30]` — OHLCV candles
 - `python cli-tools/nf-quote --list` — Nifty 50 stocks (curated)
-- `python cli-tools/nf-quote --search TERM` — Search any NSE stock by name/symbol (8000+ available)
+- `python cli-tools/nf-quote --list-indices` — All 135 NSE indices
+- `python cli-tools/nf-quote --search TERM` — Search NSE stocks + indices by name/symbol (8000+ equities, 135 indices)
 
 **Morning Scanner:**
 - `python cli-tools/nf-morning-scan [--universe nifty50|nifty100|nifty500] [--top N] [--min-score N] [--news] [--json]` — Morning momentum scan: ranks stocks by gap, relative strength vs Nifty, RVOL-T (volume by time-of-day), RSI, VWAP. Defaults to Nifty 500 universe. Best run 9:20-9:30 IST. Outputs top trade candidates with setups (ORB breakout, VWAP pullback, momentum continuation). Use --news to include market news context via Perplexity. Use --universe nifty50 for faster scans.

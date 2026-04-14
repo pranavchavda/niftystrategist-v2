@@ -67,8 +67,50 @@ NIFTY_500_SYMBOLS: set[str] = set()
 # In-memory lookup tables (populated by ensure_loaded)
 _symbol_to_instrument_key: dict[str, str] = {}
 _symbol_to_name: dict[str, str] = {}
+_index_alias_to_key: dict[str, str] = {}  # canonicalized alias → instrument_key
+_index_key_to_name: dict[str, str] = {}  # instrument_key → display name
+_index_key_to_tradingsymbol: dict[str, str] = {}  # instrument_key → tradingsymbol
 _loaded = False
 _nifty500_loaded = False
+
+# Common index aliases not directly in the CSV. Keys are canonicalized
+# (uppercase, spaces/underscores/hyphens stripped). Values are the canonical
+# tradingsymbol as it appears in the Upstox instruments CSV.
+_INDEX_ALIASES: dict[str, str] = {
+    "BANKNIFTY": "NIFTY BANK",
+    "NIFTYBANK": "NIFTY BANK",
+    "NIFTY": "NIFTY 50",
+    "NIFTY50": "NIFTY 50",
+    "FINNIFTY": "NIFTY FIN SERVICE",
+    "NIFTYFIN": "NIFTY FIN SERVICE",
+    "MIDCPNIFTY": "NIFTY MID SELECT",
+    "NIFTYMIDCAPSELECT": "NIFTY MID SELECT",
+    "NIFTYNEXT50": "NIFTY NEXT 50",
+    "NIFTYNXT50": "NIFTY NEXT 50",
+    "NNF": "NIFTY NEXT 50",
+    "INDIAVIX": "INDIA VIX",
+    "VIX": "INDIA VIX",
+}
+
+# Static BSE indices — not present in the NSE CSV we download. Values are
+# (instrument_key, display_name). Registered directly during cache load.
+_BSE_INDICES: dict[str, tuple[str, str]] = {
+    "SENSEX": ("BSE_INDEX|SENSEX", "Sensex"),
+    "BSESENSEX": ("BSE_INDEX|SENSEX", "Sensex"),
+    "BANKEX": ("BSE_INDEX|BANKEX", "BSE Bankex"),
+    "BSEBANKEX": ("BSE_INDEX|BANKEX", "BSE Bankex"),
+    "SENSEX50": ("BSE_INDEX|SNSX50", "BSE Sensex 50"),
+    "BSE100": ("BSE_INDEX|BSE100", "BSE 100"),
+    "BSE200": ("BSE_INDEX|BSE200", "BSE 200"),
+    "BSE500": ("BSE_INDEX|BSE500", "BSE 500"),
+    "BSEMIDCAP": ("BSE_INDEX|MIDCAP", "BSE Midcap"),
+    "BSESMLCAP": ("BSE_INDEX|SMLCAP", "BSE Smallcap"),
+}
+
+
+def _canon_index(s: str) -> str:
+    """Canonicalize an index alias: uppercase, strip spaces/underscores/hyphens."""
+    return "".join(s.upper().split()).replace("_", "").replace("-", "")
 
 
 def _cache_is_fresh() -> bool:
@@ -111,40 +153,67 @@ def _download() -> bool:
 def _load_from_disk() -> bool:
     """Parse the cached CSV into in-memory dicts. Returns True if successful."""
     global _symbol_to_instrument_key, _symbol_to_name, _loaded
+    global _index_alias_to_key, _index_key_to_name, _index_key_to_tradingsymbol
 
     if not os.path.exists(_CACHE_CSV):
         return False
 
     sym_to_key: dict[str, str] = {}
     sym_to_name: dict[str, str] = {}
+    idx_alias_to_key: dict[str, str] = {}
+    idx_key_to_name: dict[str, str] = {}
+    idx_key_to_tsym: dict[str, str] = {}
 
     try:
         with open(_CACHE_CSV, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                itype = row.get("instrument_type", "")
                 exchange = row.get("exchange", "")
-                # Keep EQUITY rows from NSE only
-                if exchange != "NSE_EQ":
-                    continue
-                if itype not in ("EQUITY", "ETF", ""):
-                    # Some rows have empty instrument_type; include them
-                    # as long as exchange is NSE_EQ
-                    pass
-
-                symbol = row.get("tradingsymbol", "").upper()
                 inst_key = row.get("instrument_key", "")
+                tsym = row.get("tradingsymbol", "")
                 name = row.get("name", "")
 
-                if symbol and inst_key:
-                    sym_to_key[symbol] = inst_key
-                    if name:
-                        sym_to_name[symbol] = name
+                if exchange == "NSE_EQ":
+                    symbol = tsym.upper()
+                    if symbol and inst_key:
+                        sym_to_key[symbol] = inst_key
+                        if name:
+                            sym_to_name[symbol] = name
+                elif exchange == "NSE_INDEX" and inst_key:
+                    idx_key_to_name[inst_key] = name or tsym
+                    if tsym:
+                        idx_key_to_tsym[inst_key] = tsym.upper()
+                    # Register every canonicalized alias for this index
+                    for raw in (tsym, name):
+                        if not raw:
+                            continue
+                        alias = _canon_index(raw)
+                        if alias:
+                            idx_alias_to_key.setdefault(alias, inst_key)
+
+        # Apply hand-curated aliases (map to the canonicalized tradingsymbol
+        # we already registered above).
+        for alias, canonical_tsym in _INDEX_ALIASES.items():
+            target = idx_alias_to_key.get(_canon_index(canonical_tsym))
+            if target:
+                idx_alias_to_key.setdefault(alias, target)
+
+        # Register BSE indices (not in the NSE CSV).
+        for alias, (inst_key, display_name) in _BSE_INDICES.items():
+            idx_alias_to_key.setdefault(alias, inst_key)
+            idx_key_to_name.setdefault(inst_key, display_name)
+            idx_key_to_tsym.setdefault(inst_key, alias)
 
         _symbol_to_instrument_key = sym_to_key
         _symbol_to_name = sym_to_name
+        _index_alias_to_key = idx_alias_to_key
+        _index_key_to_name = idx_key_to_name
+        _index_key_to_tradingsymbol = idx_key_to_tsym
         _loaded = True
-        logger.info(f"Instruments cache loaded: {len(sym_to_key)} symbols")
+        logger.info(
+            f"Instruments cache loaded: {len(sym_to_key)} equity, "
+            f"{len(idx_key_to_name)} indices"
+        )
         return True
     except Exception as e:
         logger.warning(f"Failed to parse instruments cache: {e}")
@@ -283,9 +352,78 @@ def get_universe(name: str = "nifty500") -> set[str]:
 
 
 def symbol_exists(symbol: str) -> bool:
-    """Return True if symbol exists in the NSE instruments cache."""
+    """Return True if symbol exists as an NSE equity OR index."""
+    ensure_loaded()
+    if symbol.upper() in _symbol_to_instrument_key:
+        return True
+    return _canon_index(symbol) in _index_alias_to_key
+
+
+def equity_exists(symbol: str) -> bool:
+    """Return True if symbol exists as an NSE equity (excludes indices)."""
     ensure_loaded()
     return symbol.upper() in _symbol_to_instrument_key
+
+
+def index_exists(symbol: str) -> bool:
+    """Return True if symbol resolves to an NSE index."""
+    ensure_loaded()
+    return _canon_index(symbol) in _index_alias_to_key
+
+
+def get_index_key(symbol: str) -> str | None:
+    """Return the Upstox instrument_key for an index, or None if unknown."""
+    ensure_loaded()
+    return _index_alias_to_key.get(_canon_index(symbol))
+
+
+def get_index_name(symbol_or_key: str) -> str | None:
+    """Return the display name for an index, given either an alias or the instrument_key."""
+    ensure_loaded()
+    if symbol_or_key in _index_key_to_name:
+        return _index_key_to_name[symbol_or_key]
+    key = get_index_key(symbol_or_key)
+    return _index_key_to_name.get(key) if key else None
+
+
+def list_indices() -> list[dict]:
+    """Return sorted list of all known NSE indices as {symbol, name, instrument_key}."""
+    ensure_loaded()
+    results = []
+    for inst_key, display_name in _index_key_to_name.items():
+        results.append({
+            "symbol": _index_key_to_tradingsymbol.get(inst_key, display_name.upper()),
+            "name": display_name,
+            "instrument_key": inst_key,
+        })
+    results.sort(key=lambda r: r["name"])
+    return results
+
+
+def search_indices(term: str, limit: int = 20) -> list[dict]:
+    """Substring search across NSE indices (name + tradingsymbol)."""
+    ensure_loaded()
+    term_upper = term.upper()
+    term_canon = _canon_index(term)
+    results = []
+    for inst_key, display_name in _index_key_to_name.items():
+        tsym = _index_key_to_tradingsymbol.get(inst_key, "")
+        if (
+            term_upper in display_name.upper()
+            or term_upper in tsym
+            or term_canon and term_canon in _canon_index(display_name)
+        ):
+            results.append({
+                "symbol": tsym or display_name.upper(),
+                "name": display_name,
+                "instrument_key": inst_key,
+            })
+    results.sort(key=lambda r: (
+        0 if r["name"].upper() == term_upper else 1,
+        0 if r["name"].upper().startswith(term_upper) else 1,
+        r["name"],
+    ))
+    return results[:limit]
 
 
 def get_all_symbols() -> list[str]:
