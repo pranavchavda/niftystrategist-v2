@@ -462,6 +462,10 @@ class UpstoxClient:
                     candles_data.extend(chunk_candles)
                     chunk_from = chunk_end + timedelta(days=1)
 
+            # Sort all candles by timestamp ascending (API returns newest→oldest within each chunk).
+            # Without this: multi-chunk fetches corrupt candle ordering.
+            candles_data.sort(key=lambda c: c[0] if isinstance(c[0], str) else c[0].isoformat())
+
             if not candles_data:
                 raise ValueError(f"No candle data returned for {symbol}. Market may be closed or symbol invalid.")
 
