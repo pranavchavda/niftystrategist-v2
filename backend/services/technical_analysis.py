@@ -375,8 +375,7 @@ class TechnicalAnalysisService:
         if not ohlcv_data:
             raise ValueError("Empty data provided for analysis")
 
-        # Data comes from API with newest first, so index 0 is the latest candle
-        current_price = ohlcv_data[0].close
+        current_price = ohlcv_data[-1].close
         indicators = self.calculate_indicators(ohlcv_data)
 
         # Interpret indicators
