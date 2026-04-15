@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from strategies.fno_utils import resolve_option_instrument
+from strategies.fno_utils import get_strike_interval, resolve_option_instrument
 from strategies.templates import RuleSpec, StrategyPlan, StrategyTemplate
 
 
@@ -435,6 +435,174 @@ class UTBotScalpTemplate(StrategyTemplate):
         return plan
 
 
+def _build_scalp_options_rules(
+    *,
+    underlying: str,
+    expiry: str,
+    strike: float,
+    option_type: str,
+    lots: int,
+    period: int,
+    sensitivity: float,
+    timeframe: str,
+    product: str,
+    cycles: int,
+    cooldown: int,
+    lr_period: int,
+    lr_stdev: float,
+    squareoff_time: str,
+    role_suffix: str = "",
+) -> list[RuleSpec]:
+    """Construct the 5-rule chain for one utbot-scalp-options strike.
+
+    Shared by ``UTBotScalpOptionsTemplate`` (single strike, empty suffix)
+    and ``UTBotScalpOptionsLadderTemplate`` (N strikes, unique suffix per
+    strike). Suffix is appended to every role name and every reference in
+    ``activates_roles`` / ``kills_roles`` so multiple instances of this
+    chain can coexist in one plan without role collision during deploy.
+
+    Rules produced (suffix applied to each role):
+      entry            UT Bot bullish flip → BUY option premium
+      exit_utbot       UT Bot bearish flip → SELL (trend exit)
+      exit_lr_upper    LR pctb crosses above 1.0 → SELL (profit take)
+      exit_lr_lower    LR pctb crosses below 0.0 → SELL (dynamic SL)
+      squareoff        Time trigger at ``squareoff_time`` → SELL (safety net)
+
+    The mutual-activate chain is fully self-contained within the suffix:
+    entry activates all exits + squareoff, exits kill themselves + each
+    other + squareoff and re-activate entry, squareoff kills everything.
+    This is the same post-2026-04-15 pattern that survived live testing
+    (see commit d655b92 and project_stateful_strategies_direction.md).
+
+    Caller is responsible for numeric param validation — the helper only
+    raises ValueError on option_type mismatch.
+    """
+    if option_type not in ("CE", "PE"):
+        raise ValueError(f"option_type must be CE or PE, got {option_type}")
+
+    inst = resolve_option_instrument(underlying, expiry, strike, option_type)
+    instrument_key = inst["instrument_key"]
+    lot_size = inst["lot_size"]
+    qty = lots * lot_size
+
+    def _utbot_trig(condition: str) -> dict:
+        cfg = _utbot_trigger_config(timeframe, condition, period, sensitivity)
+        if cooldown > 0:
+            cfg["cooldown_seconds"] = cooldown
+        return cfg
+
+    def _lr_trig(condition: str, threshold: float) -> dict:
+        cfg = {
+            "indicator": "linear_regression",
+            "timeframe": timeframe,
+            "condition": condition,
+            "value": threshold,
+            "params": {
+                "period": lr_period,
+                "stdev": lr_stdev,
+                "output": "pctb",
+            },
+        }
+        if cooldown > 0:
+            cfg["cooldown_seconds"] = cooldown
+        return cfg
+
+    r_entry = f"entry{role_suffix}"
+    r_exit_utbot = f"exit_utbot{role_suffix}"
+    r_exit_lr_upper = f"exit_lr_upper{role_suffix}"
+    r_exit_lr_lower = f"exit_lr_lower{role_suffix}"
+    r_squareoff = f"squareoff{role_suffix}"
+
+    all_exits = [r_exit_utbot, r_exit_lr_upper, r_exit_lr_lower]
+    # Exits also kill the squareoff so 15:15 can't fire against a flat
+    # position. Re-entry re-activates squareoff via entry.activates_roles.
+    exits_kill_roles = all_exits + [r_squareoff]
+
+    base_action = {
+        "symbol": underlying,
+        "instrument_token": instrument_key,
+        "quantity": qty,
+        "order_type": "MARKET",
+        "product": product,
+    }
+
+    return [
+        RuleSpec(
+            name=f"{underlying} {strike}{option_type} UT Bot Bullish Flip — BUY",
+            trigger_type="indicator",
+            trigger_config=_utbot_trig("crosses_above"),
+            action_type="place_order",
+            action_config={**base_action, "transaction_type": "BUY"},
+            role=r_entry,
+            max_fires=cycles,
+            activates_roles=all_exits + [r_squareoff],
+            kills_roles=[r_entry],
+        ),
+        RuleSpec(
+            name=f"{underlying} {strike}{option_type} UT Bot Bearish Flip — SELL",
+            trigger_type="indicator",
+            trigger_config=_utbot_trig("crosses_below"),
+            action_type="place_order",
+            action_config={**base_action, "transaction_type": "SELL"},
+            role=r_exit_utbot,
+            max_fires=cycles,
+            enabled=False,
+            activates_roles=[r_entry],
+            kills_roles=exits_kill_roles,
+        ),
+        RuleSpec(
+            name=f"{underlying} {strike}{option_type} LR Upper Band Exit — SELL",
+            trigger_type="indicator",
+            trigger_config=_lr_trig("crosses_above", 1.0),
+            action_type="place_order",
+            action_config={**base_action, "transaction_type": "SELL"},
+            role=r_exit_lr_upper,
+            max_fires=cycles,
+            enabled=False,
+            activates_roles=[r_entry],
+            kills_roles=exits_kill_roles,
+        ),
+        RuleSpec(
+            name=f"{underlying} {strike}{option_type} LR Lower Band SL — SELL",
+            trigger_type="indicator",
+            trigger_config=_lr_trig("crosses_below", 0.0),
+            action_type="place_order",
+            action_config={**base_action, "transaction_type": "SELL"},
+            role=r_exit_lr_lower,
+            max_fires=cycles,
+            enabled=False,
+            activates_roles=[r_entry],
+            kills_roles=exits_kill_roles,
+        ),
+        RuleSpec(
+            name=f"{underlying} {strike}{option_type} Scalp Square-Off @ {squareoff_time}",
+            trigger_type="time",
+            trigger_config={
+                "at": squareoff_time,
+                "on_days": ["mon", "tue", "wed", "thu", "fri"],
+                "market_only": True,
+            },
+            action_type="place_order",
+            action_config={**base_action, "transaction_type": "SELL"},
+            role=r_squareoff,
+            enabled=False,
+            kills_roles=[r_entry] + all_exits,
+        ),
+    ]
+
+
+def _validate_scalp_options_common(p: dict[str, Any]) -> None:
+    """Shared validation for scalp-options templates (single + ladder)."""
+    if int(p["cycles"]) < 1:
+        raise ValueError("cycles must be >= 1")
+    if int(p["cooldown_seconds"]) < 0:
+        raise ValueError("cooldown_seconds must be >= 0")
+    if int(p["lr_period"]) < 3:
+        raise ValueError("lr_period must be >= 3")
+    if float(p["lr_stdev"]) <= 0:
+        raise ValueError("lr_stdev must be > 0")
+
+
 class UTBotScalpOptionsTemplate(StrategyTemplate):
     name = "utbot-scalp-options"
     category = "fno"
@@ -471,29 +639,9 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
 
         if option_type not in ("CE", "PE"):
             raise ValueError(f"option_type must be CE or PE, got {option_type}")
+        _validate_scalp_options_common(p)
 
-        period = int(p["period"])
-        sensitivity = float(p["sensitivity"])
-        tf = p["timeframe"]
-        product = p["product"]
-        squareoff = p["squareoff_time"]
-        cycles = int(p["cycles"])
-        cooldown = int(p["cooldown_seconds"])
-        lr_period = int(p["lr_period"])
-        lr_stdev = float(p["lr_stdev"])
-
-        if cycles < 1:
-            raise ValueError("cycles must be >= 1")
-        if cooldown < 0:
-            raise ValueError("cooldown_seconds must be >= 0")
-        if lr_period < 3:
-            raise ValueError("lr_period must be >= 3")
-        if lr_stdev <= 0:
-            raise ValueError("lr_stdev must be > 0")
-
-        inst = resolve_option_instrument(underlying, expiry, strike, option_type)
-        instrument_key = inst["instrument_key"]
-        lot_size = inst["lot_size"]
+        lot_size = resolve_option_instrument(underlying, expiry, strike, option_type)["lot_size"]
         qty = lots * lot_size
 
         plan = StrategyPlan(
@@ -501,159 +649,140 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
             symbol=underlying,
             summary=(
                 f"UT Bot Scalp {option_type} {underlying} {strike} ({expiry}): "
-                f"cycling BUY/SELL {lots}L ({qty} qty), up to {cycles} cycles, "
-                f"LR({lr_period},{lr_stdev}σ) exits, {cooldown}s cooldown"
+                f"cycling BUY/SELL {lots}L ({qty} qty), up to {int(p['cycles'])} cycles, "
+                f"LR({int(p['lr_period'])},{float(p['lr_stdev'])}σ) exits, "
+                f"{int(p['cooldown_seconds'])}s cooldown"
             ),
             params=p,
         )
 
-        # All rules run on the option's own premium ticks (not the
-        # underlying). daemon subscribes to instrument_key, builds a candle
-        # buffer from premium prices, and computes both UT Bot and LR on
-        # those candles. Signal quality is best for ATM / near-ATM contracts
-        # where delta ≈ 0.5 — deep OTM premiums are noisier and more theta-
-        # driven, so the signals will be weaker.
+        plan.rules = _build_scalp_options_rules(
+            underlying=underlying,
+            expiry=expiry,
+            strike=strike,
+            option_type=option_type,
+            lots=lots,
+            period=int(p["period"]),
+            sensitivity=float(p["sensitivity"]),
+            timeframe=p["timeframe"],
+            product=p["product"],
+            cycles=int(p["cycles"]),
+            cooldown=int(p["cooldown_seconds"]),
+            lr_period=int(p["lr_period"]),
+            lr_stdev=float(p["lr_stdev"]),
+            squareoff_time=p["squareoff_time"],
+            role_suffix="",
+        )
+        return plan
 
-        def _utbot_trig(condition: str) -> dict:
-            cfg = _utbot_trigger_config(tf, condition, period, sensitivity)
-            if cooldown > 0:
-                cfg["cooldown_seconds"] = cooldown
-            return cfg
 
-        def _lr_trig(condition: str, threshold: float) -> dict:
-            cfg = {
-                "indicator": "linear_regression",
-                "timeframe": tf,
-                "condition": condition,
-                "value": threshold,
-                "params": {
-                    "period": lr_period,
-                    "stdev": lr_stdev,
-                    "output": "pctb",
-                },
-            }
-            if cooldown > 0:
-                cfg["cooldown_seconds"] = cooldown
-            return cfg
+class UTBotScalpOptionsLadderTemplate(StrategyTemplate):
+    name = "utbot-scalp-options-ladder"
+    category = "fno"
+    description = (
+        "Strike-ladder of utbot-scalp-options instances. Deploys N parallel "
+        "cycling scalpers centered on a specified strike, spaced by the "
+        "underlying's strike interval. As the underlying drifts during the "
+        "day, whichever strike is closest to ATM will generate the cleanest "
+        "UT Bot / LR signals; off-ATM strikes naturally go quiet (flat "
+        "premium = no flips). Each strike has an independent entry/exit "
+        "chain, its own cycles budget, its own cooldown, and its own "
+        "squareoff. Capital scales linearly with ladder_size, so size the "
+        "ladder to your margin tolerance on high-vol days. Use an odd "
+        "ladder_size so center_strike is one of the deployed strikes."
+    )
+    required_params = ["underlying", "expiry", "option_type", "lots", "center_strike"]
+    optional_params = {
+        "ladder_size": 3,
+        "strike_interval": None,  # auto-detect from underlying
+        "period": 10,
+        "sensitivity": 1.0,
+        "timeframe": "5m",
+        "product": "I",
+        "squareoff_time": "15:15",
+        "cycles": 20,
+        "cooldown_seconds": 60,
+        "lr_period": 20,
+        "lr_stdev": 2.0,
+    }
 
-        all_exits = ["exit_utbot", "exit_lr_upper", "exit_lr_lower"]
-        # Exits also kill the squareoff so 15:15 can't fire against a flat
-        # position. Re-entry re-activates squareoff via entry.activates_roles.
-        exits_kill_roles = all_exits + ["squareoff"]
+    def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
+        p = self.validate_params(params)
+        underlying = p["underlying"].upper()
+        expiry = p["expiry"]
+        option_type = p["option_type"].upper()
+        lots = int(p["lots"])
+        center_strike = float(p["center_strike"])
+        ladder_size = int(p["ladder_size"])
 
-        plan.rules = [
-            # Entry: bullish UT Bot flip on option premium → BUY the option.
-            # Activates all three exit rules plus squareoff. Self-disables
-            # on fire so it can only re-fire after an exit re-arms it.
-            RuleSpec(
-                name=f"{underlying} {strike}{option_type} UT Bot Bullish Flip — BUY",
-                trigger_type="indicator",
-                trigger_config=_utbot_trig("crosses_above"),
-                action_type="place_order",
-                action_config={
-                    "symbol": underlying,
-                    "instrument_token": instrument_key,
-                    "transaction_type": "BUY",
-                    "quantity": qty,
-                    "order_type": "MARKET",
-                    "product": product,
-                },
-                role="entry",
-                max_fires=cycles,
-                activates_roles=all_exits + ["squareoff"],
-                kills_roles=["entry"],
-            ),
-            # Exit 1: bearish UT Bot flip. Classic trend-reversal exit,
-            # fires when UT Bot itself says the trend flipped.
-            RuleSpec(
-                name=f"{underlying} {strike}{option_type} UT Bot Bearish Flip — SELL",
-                trigger_type="indicator",
-                trigger_config=_utbot_trig("crosses_below"),
-                action_type="place_order",
-                action_config={
-                    "symbol": underlying,
-                    "instrument_token": instrument_key,
-                    "transaction_type": "SELL",
-                    "quantity": qty,
-                    "order_type": "MARKET",
-                    "product": product,
-                },
-                role="exit_utbot",
-                max_fires=cycles,
-                enabled=False,
-                activates_roles=["entry"],
-                kills_roles=exits_kill_roles,
-            ),
-            # Exit 2: LR channel upper-band touch. pctb crosses above 1.0
-            # means the premium has extended above the fair-trend line by
-            # more than lr_stdev standard deviations — a statistical
-            # profit-take signal. Often fires before the UT Bot flip,
-            # locking in more of the move.
-            RuleSpec(
-                name=f"{underlying} {strike}{option_type} LR Upper Band Exit — SELL",
-                trigger_type="indicator",
-                trigger_config=_lr_trig("crosses_above", 1.0),
-                action_type="place_order",
-                action_config={
-                    "symbol": underlying,
-                    "instrument_token": instrument_key,
-                    "transaction_type": "SELL",
-                    "quantity": qty,
-                    "order_type": "MARKET",
-                    "product": product,
-                },
-                role="exit_lr_upper",
-                max_fires=cycles,
-                enabled=False,
-                activates_roles=["entry"],
-                kills_roles=exits_kill_roles,
-            ),
-            # Exit 3: LR channel lower-band break. pctb crosses below 0.0
-            # means the premium has broken below the fitted trend's lower
-            # band — the position is in trouble. Acts as a dynamic SL
-            # that re-bases every tick with the rolling LR window (unlike
-            # a fixed percentage SL which goes stale across cycles).
-            RuleSpec(
-                name=f"{underlying} {strike}{option_type} LR Lower Band SL — SELL",
-                trigger_type="indicator",
-                trigger_config=_lr_trig("crosses_below", 0.0),
-                action_type="place_order",
-                action_config={
-                    "symbol": underlying,
-                    "instrument_token": instrument_key,
-                    "transaction_type": "SELL",
-                    "quantity": qty,
-                    "order_type": "MARKET",
-                    "product": product,
-                },
-                role="exit_lr_lower",
-                max_fires=cycles,
-                enabled=False,
-                activates_roles=["entry"],
-                kills_roles=exits_kill_roles,
-            ),
-            # Safety net at 15:15. Activated by the first entry fire so it
-            # only arms when we actually have (or had) a position today.
-            RuleSpec(
-                name=f"{underlying} {strike}{option_type} Scalp Square-Off @ {squareoff}",
-                trigger_type="time",
-                trigger_config={
-                    "at": squareoff,
-                    "on_days": ["mon", "tue", "wed", "thu", "fri"],
-                    "market_only": True,
-                },
-                action_type="place_order",
-                action_config={
-                    "symbol": underlying,
-                    "instrument_token": instrument_key,
-                    "transaction_type": "SELL",
-                    "quantity": qty,
-                    "order_type": "MARKET",
-                    "product": product,
-                },
-                role="squareoff",
-                enabled=False,
-                kills_roles=["entry"] + all_exits,
-            ),
+        if option_type not in ("CE", "PE"):
+            raise ValueError(f"option_type must be CE or PE, got {option_type}")
+        if ladder_size < 1:
+            raise ValueError("ladder_size must be >= 1")
+        if ladder_size > 9:
+            raise ValueError("ladder_size must be <= 9 (capital safety guard)")
+        if ladder_size % 2 == 0:
+            raise ValueError(
+                "ladder_size must be odd so center_strike is one of the "
+                "deployed strikes. Use 1, 3, 5, 7, or 9."
+            )
+
+        strike_interval = p["strike_interval"]
+        if strike_interval is None:
+            strike_interval = get_strike_interval(underlying)
+        else:
+            strike_interval = float(strike_interval)
+        if strike_interval <= 0:
+            raise ValueError("strike_interval must be > 0")
+
+        _validate_scalp_options_common(p)
+
+        # Generate strikes symmetric around the center. Odd ladder_size
+        # guarantees center_strike is one of them and all strikes sit on
+        # the underlying's standard interval grid.
+        half = ladder_size // 2
+        strikes = [
+            center_strike + (i - half) * strike_interval
+            for i in range(ladder_size)
         ]
+
+        plan = StrategyPlan(
+            template_name=self.name,
+            symbol=underlying,
+            summary=(
+                f"UT Bot Scalp {option_type} ladder on {underlying} {expiry}: "
+                f"{ladder_size} strikes around {center_strike} "
+                f"(±{strike_interval} steps), {lots}L each, "
+                f"up to {int(p['cycles'])} cycles per strike, "
+                f"LR({int(p['lr_period'])},{float(p['lr_stdev'])}σ) exits"
+            ),
+            params=p,
+        )
+
+        all_rules: list[RuleSpec] = []
+        for strike in strikes:
+            # Suffix keeps each strike's activate/kill chain isolated.
+            # int() cast is safe here because all strikes sit on the
+            # underlying's integer-multiple interval grid.
+            suffix = f"_s{int(strike)}"
+            rules = _build_scalp_options_rules(
+                underlying=underlying,
+                expiry=expiry,
+                strike=strike,
+                option_type=option_type,
+                lots=lots,
+                period=int(p["period"]),
+                sensitivity=float(p["sensitivity"]),
+                timeframe=p["timeframe"],
+                product=p["product"],
+                cycles=int(p["cycles"]),
+                cooldown=int(p["cooldown_seconds"]),
+                lr_period=int(p["lr_period"]),
+                lr_stdev=float(p["lr_stdev"]),
+                squareoff_time=p["squareoff_time"],
+                role_suffix=suffix,
+            )
+            all_rules.extend(rules)
+
+        plan.rules = all_rules
         return plan

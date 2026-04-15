@@ -140,6 +140,8 @@ def cmd_deploy(args):
     if args.entry_price is not None:
         params["entry_price"] = args.entry_price
     # F&O-specific params
+    if hasattr(args, "underlying") and args.underlying is not None:
+        params["underlying"] = args.underlying
     if hasattr(args, "expiry") and args.expiry is not None:
         params["expiry"] = args.expiry
     if hasattr(args, "lots") and args.lots is not None:
@@ -162,6 +164,12 @@ def cmd_deploy(args):
         params["put_sell_strike"] = args.put_sell_strike
     if hasattr(args, "put_buy_strike") and args.put_buy_strike is not None:
         params["put_buy_strike"] = args.put_buy_strike
+    if hasattr(args, "center_strike") and args.center_strike is not None:
+        params["center_strike"] = args.center_strike
+    if hasattr(args, "ladder_size") and args.ladder_size is not None:
+        params["ladder_size"] = args.ladder_size
+    if hasattr(args, "strike_interval") and args.strike_interval is not None:
+        params["strike_interval"] = args.strike_interval
     if hasattr(args, "direction") and args.direction is not None:
         params["direction"] = args.direction
     if hasattr(args, "entry_time") and args.entry_time is not None:
@@ -637,6 +645,9 @@ Examples:
     p_deploy.add_argument("--call-buy-strike", type=float, help="F&O: call buy strike (iron condor)")
     p_deploy.add_argument("--put-sell-strike", type=float, help="F&O: put sell strike (iron condor)")
     p_deploy.add_argument("--put-buy-strike", type=float, help="F&O: put buy strike (iron condor)")
+    p_deploy.add_argument("--center-strike", type=float, help="F&O: center strike for ladder (utbot-scalp-options-ladder)")
+    p_deploy.add_argument("--ladder-size", type=int, help="F&O: odd number of adjacent strikes for ladder (default 3)")
+    p_deploy.add_argument("--strike-interval", type=float, help="F&O: override strike-grid interval for ladder (default auto from underlying)")
     p_deploy.add_argument("--direction", help="Direction: long/short/both (renko) or buy/sell (F&O)")
     p_deploy.add_argument("--entry-time", type=str, help="F&O: entry time HH:MM")
 

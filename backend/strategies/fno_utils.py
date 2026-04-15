@@ -28,6 +28,22 @@ LOT_SIZES: dict[str, int] = {
     "SENSEX": 10,
 }
 
+# Default strike intervals on NSE options chains. Used by ladder-style
+# strategies to generate adjacent strikes around a center ATM. Override
+# via explicit param if NSE changes them (they occasionally do).
+DEFAULT_STRIKE_INTERVALS: dict[str, float] = {
+    "NIFTY": 50.0,
+    "BANKNIFTY": 100.0,
+    "FINNIFTY": 50.0,
+    "MIDCPNIFTY": 25.0,
+    "SENSEX": 100.0,
+}
+
+
+def get_strike_interval(underlying: str) -> float:
+    """Return the default strike interval for an underlying."""
+    return DEFAULT_STRIKE_INTERVALS.get(underlying.upper(), 50.0)
+
 
 def _resolve_symbol(symbol: str) -> str:
     """Resolve a short symbol to the name used in the options cache.

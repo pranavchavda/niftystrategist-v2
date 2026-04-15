@@ -125,6 +125,7 @@ def _register_all() -> None:
         UTBotPairTemplate,
         UTBotScalpTemplate,
         UTBotScalpOptionsTemplate,
+        UTBotScalpOptionsLadderTemplate,
     )
 
     for cls in (
@@ -137,6 +138,7 @@ def _register_all() -> None:
         RenkoTemplate,
         UTBotLongTemplate, UTBotShortTemplate, UTBotPairTemplate,
         UTBotScalpTemplate, UTBotScalpOptionsTemplate,
+        UTBotScalpOptionsLadderTemplate,
     ):
         register(cls())
 
