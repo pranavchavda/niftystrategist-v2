@@ -152,6 +152,9 @@ function DeployDialog({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [result, setResult] = useState<{ group_id: string; count: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expiries, setExpiries] = useState<string[]>([]);
+  const [strikes, setStrikes] = useState<number[]>([]);
+  const [chainLoading, setChainLoading] = useState(false);
 
   // Reset state when template changes
   useEffect(() => {
@@ -167,10 +170,60 @@ function DeployDialog({
       setPreviewRules(null);
       setResult(null);
       setError(null);
+      setExpiries([]);
+      setStrikes([]);
     }
   }, [template]);
 
   const isFnO = template?.category === 'fno' || template?.category === 'options';
+
+  // Load expiries when underlying changes (F&O templates only)
+  useEffect(() => {
+    if (!isFnO || !params.underlying) {
+      setExpiries([]);
+      return;
+    }
+    let cancelled = false;
+    setChainLoading(true);
+    fetch(`/api/strategies/expiries?underlying=${encodeURIComponent(params.underlying)}`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        setExpiries(Array.isArray(data.expiries) ? data.expiries : []);
+      })
+      .catch(() => !cancelled && setExpiries([]))
+      .finally(() => !cancelled && setChainLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [isFnO, params.underlying, authToken]);
+
+  // Load strikes when underlying + expiry (+ option_type) changes
+  useEffect(() => {
+    if (!isFnO || !params.underlying || !params.expiry) {
+      setStrikes([]);
+      return;
+    }
+    let cancelled = false;
+    const url = new URL('/api/strategies/strikes', window.location.origin);
+    url.searchParams.set('underlying', params.underlying);
+    url.searchParams.set('expiry', params.expiry);
+    if (params.option_type) url.searchParams.set('option_type', params.option_type);
+    fetch(url.toString().replace(window.location.origin, ''), {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        setStrikes(Array.isArray(data.strikes) ? data.strikes : []);
+      })
+      .catch(() => !cancelled && setStrikes([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [isFnO, params.underlying, params.expiry, params.option_type, authToken]);
 
   const updateParam = (key: string, value: any) => {
     setParams(prev => ({ ...prev, [key]: value }));
@@ -305,17 +358,62 @@ function DeployDialog({
     }
 
     if (paramName === 'expiry') {
+      const disabled = !params.underlying || expiries.length === 0;
       return (
         <div key={paramName}>
           <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
             Expiry Date
             {isRequired && <span className="text-red-400 ml-1">*</span>}
           </label>
-          <Input
-            type="date"
+          <select
+            className={selectClassName}
             value={value}
+            disabled={disabled}
             onChange={e => updateParam(paramName, e.target.value)}
-          />
+          >
+            <option value="">
+              {!params.underlying
+                ? 'Select underlying first'
+                : chainLoading
+                ? 'Loading…'
+                : expiries.length === 0
+                ? 'No expiries found'
+                : 'Select expiry'}
+            </option>
+            {expiries.map(exp => (
+              <option key={exp} value={exp}>{exp}</option>
+            ))}
+          </select>
+        </div>
+      );
+    }
+
+    if (isFnO && (paramName === 'strike' || paramName === 'call_strike' || paramName === 'put_strike' || paramName === 'buy_strike' || paramName === 'sell_strike' || paramName === 'call_sell_strike' || paramName === 'call_buy_strike' || paramName === 'put_sell_strike' || paramName === 'put_buy_strike')) {
+      const disabled = !params.expiry || strikes.length === 0;
+      return (
+        <div key={paramName}>
+          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {paramName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+            {isRequired && <span className="text-red-400 ml-1">*</span>}
+            {PARAM_TOOLTIPS[paramName] && <InfoTip text={PARAM_TOOLTIPS[paramName]} />}
+          </label>
+          <select
+            className={selectClassName}
+            value={value}
+            disabled={disabled}
+            onChange={e => updateParam(paramName, parseFloat(e.target.value) || '')}
+          >
+            <option value="">
+              {!params.expiry
+                ? 'Select expiry first'
+                : strikes.length === 0
+                ? 'No strikes found'
+                : 'Select strike'}
+            </option>
+            {strikes.map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
         </div>
       );
     }

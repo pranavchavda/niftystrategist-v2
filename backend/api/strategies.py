@@ -11,6 +11,7 @@ from auth import User, get_current_user
 from database.session import get_db_context
 from services.instruments_cache import get_instrument_key
 from strategies.templates import list_templates, get_template
+from strategies.fno_utils import list_expiries, list_strikes
 from monitor.crud import create_rule, update_rule, list_rules, list_rules_by_group, delete_rules_by_group
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,39 @@ def _serialize_rule(rule) -> dict:
 async def api_list_templates():
     """List all available strategy templates (public, no auth)."""
     return {"templates": list_templates()}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/strategies/expiries — list F&O expiries for an underlying
+# ---------------------------------------------------------------------------
+@router.get("/expiries")
+async def api_list_expiries(underlying: str):
+    """Return sorted YYYY-MM-DD expiry dates available for an F&O underlying."""
+    try:
+        return {"underlying": underlying.upper(), "expiries": list_expiries(underlying)}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/strategies/strikes — list strikes for underlying+expiry
+# ---------------------------------------------------------------------------
+@router.get("/strikes")
+async def api_list_strikes(
+    underlying: str,
+    expiry: str,
+    option_type: Optional[str] = None,
+):
+    """Return sorted strike prices for an underlying + expiry (+ optional CE/PE)."""
+    try:
+        return {
+            "underlying": underlying.upper(),
+            "expiry": expiry,
+            "option_type": option_type.upper() if option_type else None,
+            "strikes": list_strikes(underlying, expiry, option_type),
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

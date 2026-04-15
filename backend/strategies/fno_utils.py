@@ -99,6 +99,51 @@ def _load_cache() -> dict[str, dict]:
     return _options_cache
 
 
+def list_expiries(underlying: str) -> list[str]:
+    """Return sorted unique expiry dates (YYYY-MM-DD) available for an underlying."""
+    cache = _load_cache()
+    resolved = _resolve_symbol(underlying.upper())
+    expiries = {
+        data.get("expiry")
+        for data in cache.values()
+        if data.get("name") == resolved and data.get("expiry")
+    }
+    return sorted(expiries)
+
+
+def list_strikes(
+    underlying: str,
+    expiry: str,
+    option_type: str | None = None,
+) -> list[float]:
+    """Return sorted unique strikes for an underlying + expiry (+ optional CE/PE)."""
+    cache = _load_cache()
+    resolved = _resolve_symbol(underlying.upper())
+
+    expiry_normalized = expiry
+    if "-" in expiry:
+        try:
+            dt = datetime.strptime(expiry, "%Y-%m-%d")
+            expiry_normalized = dt.strftime("%d%b%y").upper()
+        except ValueError:
+            pass
+
+    opt_type = option_type.upper() if option_type else None
+    strikes: set[float] = set()
+    for data in cache.values():
+        if data.get("name") != resolved:
+            continue
+        if opt_type and data.get("option_type") != opt_type:
+            continue
+        cache_expiry = data.get("expiry", "") or ""
+        if expiry not in cache_expiry and expiry_normalized not in cache_expiry:
+            continue
+        strike_val = data.get("strike")
+        if strike_val:
+            strikes.add(float(strike_val))
+    return sorted(strikes)
+
+
 def resolve_option_instrument(
     underlying: str,
     expiry: str,
