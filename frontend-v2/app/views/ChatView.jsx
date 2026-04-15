@@ -228,8 +228,17 @@ function ChatView({ authToken, onConversationChange }) {
             if (msg.tool_calls && msg.tool_calls.length > 0) {
               msg.tool_calls.forEach((tc, idx) => {
                 if (tc.name === 'render_ui' && tc.args) {
-                  // Extract components and title from tool call args
-                  const components = tc.args.components || [];
+                  // Extract components and title from tool call args.
+                  // Old tool_calls may have a stringified/object shape — only
+                  // restore when components is actually an array.
+                  let components = tc.args.components;
+                  if (typeof components === 'string') {
+                    try { components = JSON.parse(components); } catch { components = null; }
+                  }
+                  if (!Array.isArray(components)) {
+                    console.warn(`[A2UI] Skipping restore for msg ${msg.id}: components is ${typeof components}`);
+                    return;
+                  }
                   const title = tc.args.title;
                   if (components.length > 0) {
                     const surfaceId = `restored_${msg.id}_${idx}`;

@@ -280,7 +280,12 @@ function A2UIRendererInner({ surface, onInteraction, threadId }) {
 
   // Find root components (those not referenced as children of others)
   const rootComponents = useMemo(() => {
-    if (!surface.components) return [];
+    if (!Array.isArray(surface.components)) {
+      if (surface.components != null) {
+        console.warn('[A2UI] surface.components is not an array:', typeof surface.components);
+      }
+      return [];
+    }
 
     // For simplified format, just render all top-level components
     // For spec format with adjacency list, find roots
@@ -295,7 +300,7 @@ function A2UIRendererInner({ surface, onInteraction, threadId }) {
             if (typeof c === 'string') childIds.add(c);
           });
         }
-        if (normalized.children.explicitList) {
+        if (Array.isArray(normalized.children.explicitList)) {
           normalized.children.explicitList.forEach(id => childIds.add(id));
         }
       }
