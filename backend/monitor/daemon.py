@@ -370,6 +370,24 @@ class MonitorDaemon:
                 )
                 await self._evaluate_and_execute(rule, ctx)
 
+            # Consume indicator edges: after all rules on this tick have
+            # evaluated, advance prev_indicator_values to match the current
+            # indicator_values. Without this, crosses_above/below keeps
+            # returning True on every tick between candle closes, because
+            # _recompute_indicators only refreshes prev at the next close.
+            #
+            # Effect: crosses_* fires once on the first tick after a candle
+            # close (when the indicator genuinely advances), then is silent
+            # until the next close. This prevents the "meaningless exit"
+            # replay bug — a cycling template that re-enables a disabled
+            # entry mid-bar would otherwise see the same stale edge and
+            # re-enter immediately, making the exit that just fired a no-op.
+            # Observed live on utbot-scalp-options 2026-04-15: entry fired
+            # at 05:07:00, LR-exit fired, entry re-enabled, and re-fired
+            # 13s later on the exact same 5m UT Bot flip edge.
+            for key, val in session_obj.indicator_values.items():
+                session_obj.prev_indicator_values[key] = val
+
     # ── Portfolio event routing ───────────────────────────────────────
 
     async def _on_portfolio_event(self, user_id: int, event: dict) -> None:

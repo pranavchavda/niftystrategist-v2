@@ -60,6 +60,15 @@ class TestUTBotScalpTemplate:
         assert "entry" in by_role["entry"].kills_roles
         assert "exit_utbot" in by_role["exit_utbot"].kills_roles
 
+    def test_exit_kills_squareoff_so_15_15_cant_fire_flat(self):
+        """Origin: 2026-04-15 live test of utbot-scalp-options. Exit fired
+        at 11:58 closing the position; at 15:15 the squareoff time-trigger
+        fired anyway, opening a naked short. Exit must kill squareoff;
+        re-entry re-activates it via entry.activates_roles."""
+        plan = self._plan()
+        by_role = {r.role: r for r in plan.rules}
+        assert "squareoff" in by_role["exit_utbot"].kills_roles
+
     def test_squareoff_kills_both_sides(self):
         """After 15:15 squareoff, neither entry nor exit should be able to
         re-fire — day is done."""

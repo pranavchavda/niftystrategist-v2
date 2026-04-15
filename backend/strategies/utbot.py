@@ -349,9 +349,11 @@ class UTBotScalpTemplate(StrategyTemplate):
         if lr_enabled:
             exit_roles += ["exit_lr_upper", "exit_lr_lower"]
 
-        # Every exit mutually kills every other exit so only one fires per
-        # cycle, then re-arms entry for the next cycle.
-        all_exits_for_kill = list(exit_roles)
+        # Every exit mutually kills every other exit AND the squareoff, so
+        # only one fires per cycle and the squareoff can't fire at 15:15
+        # against a flat position. Re-entry re-activates squareoff via
+        # entry.activates_roles.
+        exits_kill_roles = list(exit_roles) + ["squareoff"]
 
         order_config = {
             "symbol": symbol,
@@ -382,7 +384,7 @@ class UTBotScalpTemplate(StrategyTemplate):
                 max_fires=cycles,
                 enabled=False,
                 activates_roles=["entry"],
-                kills_roles=all_exits_for_kill,
+                kills_roles=exits_kill_roles,
             ),
         ]
 
@@ -398,7 +400,7 @@ class UTBotScalpTemplate(StrategyTemplate):
                     max_fires=cycles,
                     enabled=False,
                     activates_roles=["entry"],
-                    kills_roles=all_exits_for_kill,
+                    kills_roles=exits_kill_roles,
                 ),
                 RuleSpec(
                     name=f"{symbol} UT Bot Scalp LR Lower Band SL — SELL",
@@ -410,7 +412,7 @@ class UTBotScalpTemplate(StrategyTemplate):
                     max_fires=cycles,
                     enabled=False,
                     activates_roles=["entry"],
-                    kills_roles=all_exits_for_kill,
+                    kills_roles=exits_kill_roles,
                 ),
             ])
 
@@ -535,6 +537,9 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
             return cfg
 
         all_exits = ["exit_utbot", "exit_lr_upper", "exit_lr_lower"]
+        # Exits also kill the squareoff so 15:15 can't fire against a flat
+        # position. Re-entry re-activates squareoff via entry.activates_roles.
+        exits_kill_roles = all_exits + ["squareoff"]
 
         plan.rules = [
             # Entry: bullish UT Bot flip on option premium → BUY the option.
@@ -577,7 +582,7 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
                 max_fires=cycles,
                 enabled=False,
                 activates_roles=["entry"],
-                kills_roles=all_exits,
+                kills_roles=exits_kill_roles,
             ),
             # Exit 2: LR channel upper-band touch. pctb crosses above 1.0
             # means the premium has extended above the fair-trend line by
@@ -601,7 +606,7 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
                 max_fires=cycles,
                 enabled=False,
                 activates_roles=["entry"],
-                kills_roles=all_exits,
+                kills_roles=exits_kill_roles,
             ),
             # Exit 3: LR channel lower-band break. pctb crosses below 0.0
             # means the premium has broken below the fitted trend's lower
@@ -625,7 +630,7 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
                 max_fires=cycles,
                 enabled=False,
                 activates_roles=["entry"],
-                kills_roles=all_exits,
+                kills_roles=exits_kill_roles,
             ),
             # Safety net at 15:15. Activated by the first entry fire so it
             # only arms when we actually have (or had) a position today.

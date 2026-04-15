@@ -306,6 +306,59 @@ async def test_on_tick_skips_non_matching_instrument():
     mock_exec.assert_not_awaited()
 
 
+# ── Test: _on_tick consumes indicator edges ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_on_tick_consumes_indicator_edges():
+    """After a tick, prev_indicator_values should be advanced to match
+    indicator_values so crosses_above/below fire only once per candle
+    close, not on every subsequent tick within the same bar.
+
+    Origin: 2026-04-15 live test. utbot-scalp-options on NIFTY 24200CE.
+    Entry fired at 05:07:00 on a UT Bot 5m bullish-flip edge. LR Lower
+    exit fired a few ticks later, re-enabling the entry rule. 13 seconds
+    after the exit, the entry re-fired — but no new 5m candle had
+    closed, so UT Bot's (prev, curr) pair was still the SAME flip edge.
+    Entry saw stale data and re-entered on a "ghost" signal, making the
+    LR exit meaningless.
+
+    Fix: advance prev_indicator_values at end of each tick so the edge
+    is visible only on the first tick after each candle close.
+    """
+    from monitor.daemon import MonitorDaemon
+
+    daemon = MonitorDaemon()
+
+    rule = _make_rule(
+        rule_id=1,
+        user_id=999,
+        trigger_type="indicator",
+        instrument_token="NSE_EQ|A",
+        trigger_config={
+            "indicator": "utbot",
+            "timeframe": "5m",
+            "condition": "crosses_above",
+            "value": 0,
+            "params": {"period": 10, "sensitivity": 1.0, "output": "trend"},
+        },
+    )
+
+    session_obj = _make_user_session(999, rules=[rule])
+    # Freshly-computed edge: UT Bot just flipped from -1 to +1 at candle close
+    session_obj.indicator_values = {"utbot_5m": 1.0}
+    session_obj.prev_indicator_values = {"utbot_5m": -1.0}
+
+    daemon._user_manager = MagicMock()
+    daemon._user_manager.get_session.return_value = session_obj
+
+    with patch.object(daemon, "_evaluate_and_execute", new_callable=AsyncMock):
+        await daemon._on_tick(999, "NSE_EQ|A", {"ltp": 150.0})
+
+    # After the tick, prev should equal current so the edge is consumed
+    assert session_obj.prev_indicator_values == {"utbot_5m": 1.0}
+
+
 # ── Test: _on_portfolio_event evaluates order_status rules ───────────
 
 

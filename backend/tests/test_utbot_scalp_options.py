@@ -70,14 +70,28 @@ class TestStructure:
                 f"{role} must re-activate entry to continue cycling"
             )
 
-    def test_every_exit_kills_all_exits(self):
+    def test_every_exit_kills_all_exits_and_squareoff(self):
         """First exit to fire wins — the other two get disabled so the
-        daemon doesn't double-close a single position."""
+        daemon doesn't double-close a single position. Squareoff is also
+        killed so 15:15 can't fire against a flat position. Re-entry
+        re-activates squareoff via entry.activates_roles.
+
+        Origin: 2026-04-15 live test. NIFTY 24500CE exit fired at 11:58,
+        closed the position. At 15:15 the squareoff time-trigger fired
+        anyway, opening a naked short that had to be manually covered
+        at 15:20."""
         plan = _scalp_options_plan()
-        expected_kills = {"exit_utbot", "exit_lr_upper", "exit_lr_lower"}
+        expected_kills = {"exit_utbot", "exit_lr_upper", "exit_lr_lower", "squareoff"}
         for role in ("exit_utbot", "exit_lr_upper", "exit_lr_lower"):
             exit_rule = next(r for r in plan.rules if r.role == role)
             assert set(exit_rule.kills_roles) == expected_kills
+
+    def test_re_entry_re_activates_squareoff(self):
+        """After an exit kills the squareoff, a re-entry must re-activate
+        it so the 15:15 safety net is back in place for the new cycle."""
+        plan = _scalp_options_plan()
+        entry = next(r for r in plan.rules if r.role == "entry")
+        assert "squareoff" in entry.activates_roles
 
 
 # ── Trigger configs ──────────────────────────────────────────────────
