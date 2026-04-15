@@ -1,5 +1,6 @@
 """Backtest API — run strategy backtests against historical data."""
 
+import asyncio
 import logging
 from collections import defaultdict
 from typing import Optional
@@ -255,31 +256,30 @@ async def api_run_backtest(
     params.setdefault("trail_percent", 1.5)
     params.setdefault("side", "both")
 
-    # Split by day and run
+    # Split by day and run — offloaded to a worker thread so the sync
+    # backtest loop doesn't block the event loop (single-worker uvicorn).
     day_groups = _split_by_day(candles)
-    all_trades = []
-
-    for day_key, day_candles in day_groups.items():
-        if len(day_candles) < 2:
-            continue
-
-        rules = _build_rules_for_day(
-            template, body.symbol, day_candles, params, body.template,
-        )
-        if not rules:
-            continue
-
-        # For ORB: skip the first candle (it IS the range)
-        sim_candles = day_candles[1:] if body.template == "orb" else day_candles
-
-        result = run_backtest_for_day(
-            sim_candles, rules, body.symbol, body.template,
-            params.get("capital", 100_000),
-        )
-        all_trades.extend(result.trades)
-
-    # Compute metrics
     capital = params.get("capital", 100_000)
+
+    def _run_all_days() -> list:
+        trades: list = []
+        for day_key, day_candles in day_groups.items():
+            if len(day_candles) < 2:
+                continue
+            rules = _build_rules_for_day(
+                template, body.symbol, day_candles, params, body.template,
+            )
+            if not rules:
+                continue
+            sim_candles = day_candles[1:] if body.template == "orb" else day_candles
+            result = run_backtest_for_day(
+                sim_candles, rules, body.symbol, body.template, capital,
+            )
+            trades.extend(result.trades)
+        return trades
+
+    all_trades = await asyncio.to_thread(_run_all_days)
+
     metrics = compute_metrics(all_trades, capital)
 
     # Build equity curve for charting
@@ -413,9 +413,11 @@ async def api_run_fno_backtest(
     # Set SL prices for short straddle/strangle (based on first candle premium)
     _set_fno_sl_prices(plan.rules, leg_candles, params)
 
-    # Run the F&O backtest engine
+    # Run the F&O backtest engine — offload to worker thread so the
+    # sync engine loop doesn't block the event loop.
     capital = float(params.get("capital", 100_000))
-    result = run_fno_backtest(
+    result = await asyncio.to_thread(
+        run_fno_backtest,
         leg_candles=leg_candles,
         rules=plan.rules,
         strategy_name=body.template,
