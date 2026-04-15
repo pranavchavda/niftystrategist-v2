@@ -141,6 +141,7 @@ const selectClassName = "w-full rounded-lg bg-white dark:bg-zinc-900/50 border b
 const STRING_PARAMS = new Set([
   'underlying', 'expiry', 'product', 'side', 'direction',
   'squareoff_time', 'entry_time', 'symbol', 'rsi_timeframe', 'timeframe',
+  'option_type',
 ]);
 
 // Jargon tooltips for strategy params and terms
@@ -521,6 +522,25 @@ export default function BacktestPage() {
                     <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-3">Strategy Parameters</h3>
                     {currentTemplate.required_params.filter(p => p !== 'symbol').map(p => {
                       const isString = STRING_PARAMS.has(p);
+                      if (p === 'option_type') {
+                        return (
+                          <div key={p} className="mb-3">
+                            <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                              Option Type
+                              <span className="text-red-400 ml-1">*</span>
+                            </label>
+                            <select
+                              className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                              value={params[p] ?? ''}
+                              onChange={e => updateParam(p, e.target.value)}
+                            >
+                              <option value="">Select</option>
+                              <option value="CE">Call (CE)</option>
+                              <option value="PE">Put (PE)</option>
+                            </select>
+                          </div>
+                        );
+                      }
                       return (
                         <div key={p} className="mb-3">
                           <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
@@ -540,6 +560,24 @@ export default function BacktestPage() {
                     {currentTemplate.optional_params && Object.keys(currentTemplate.optional_params).map(p => {
                       const defaultVal = currentTemplate.optional_params[p];
                       const isString = STRING_PARAMS.has(p) || (typeof defaultVal === 'string' && defaultVal !== '');
+                      if (p === 'option_type') {
+                        return (
+                          <div key={p} className="mb-3">
+                            <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                              Option Type
+                            </label>
+                            <select
+                              className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                              value={params[p] ?? ''}
+                              onChange={e => updateParam(p, e.target.value)}
+                            >
+                              <option value="">Select</option>
+                              <option value="CE">Call (CE)</option>
+                              <option value="PE">Put (PE)</option>
+                            </select>
+                          </div>
+                        );
+                      }
                       return (
                         <div key={p} className="mb-3">
                           <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">

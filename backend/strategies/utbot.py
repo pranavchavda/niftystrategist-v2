@@ -631,14 +631,14 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
         p = self.validate_params(params)
-        underlying = p["underlying"].upper()
+        underlying = str(p["underlying"]).upper()
         expiry = p["expiry"]
         strike = float(p["strike"])
-        option_type = p["option_type"].upper()
+        option_type = str(p["option_type"]).upper()
         lots = int(p["lots"])
 
         if option_type not in ("CE", "PE"):
-            raise ValueError(f"option_type must be CE or PE, got {option_type}")
+            raise ValueError(f"option_type must be CE or PE, got {option_type!r}")
         _validate_scalp_options_common(p)
 
         lot_size = resolve_option_instrument(underlying, expiry, strike, option_type)["lot_size"]
@@ -708,15 +708,15 @@ class UTBotScalpOptionsLadderTemplate(StrategyTemplate):
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
         p = self.validate_params(params)
-        underlying = p["underlying"].upper()
+        underlying = str(p["underlying"]).upper()
         expiry = p["expiry"]
-        option_type = p["option_type"].upper()
+        option_type = str(p["option_type"]).upper()
         lots = int(p["lots"])
         center_strike = float(p["center_strike"])
         ladder_size = int(p["ladder_size"])
 
         if option_type not in ("CE", "PE"):
-            raise ValueError(f"option_type must be CE or PE, got {option_type}")
+            raise ValueError(f"option_type must be CE or PE, got {option_type!r}")
         if ladder_size < 1:
             raise ValueError("ladder_size must be >= 1")
         if ladder_size > 9:

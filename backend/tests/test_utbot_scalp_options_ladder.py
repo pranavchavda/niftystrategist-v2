@@ -255,6 +255,14 @@ class TestValidation:
         with pytest.raises(ValueError, match="option_type must be CE or PE"):
             _ladder_plan(option_type="XX")
 
+    def test_option_type_as_int_raises_clear_error(self):
+        """Origin: 2026-04-15 backtest form submitted option_type=1 (int)
+        from a numeric input field. Template was crashing with an opaque
+        AttributeError on .upper() instead of returning a clear param
+        validation error. Must convert to string and raise ValueError."""
+        with pytest.raises(ValueError, match="option_type must be CE or PE"):
+            _ladder_plan(option_type=1)
+
     def test_cycles_must_be_positive(self):
         with pytest.raises(ValueError, match="cycles must be >= 1"):
             _ladder_plan(cycles=0)

@@ -180,6 +180,13 @@ class TestFnoResolution:
         with pytest.raises(ValueError, match="option_type must be CE or PE"):
             _scalp_options_plan(option_type="XX")
 
+    def test_option_type_as_int_raises_clear_error(self):
+        """The backtest form renders option_type as a numeric input in
+        some flows; a non-string value used to crash with AttributeError
+        on .upper(). Must surface a clear ValueError instead."""
+        with pytest.raises(ValueError, match="option_type must be CE or PE"):
+            _scalp_options_plan(option_type=1)
+
 
 # ── Parameter validation ─────────────────────────────────────────────
 
