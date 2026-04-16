@@ -56,6 +56,9 @@ export default [
     // Mandates (recurring awakenings + trading mandate)
     route('mandates', './routes/mandates.tsx'),
 
+    // Scalp Sessions (stateful options scalping)
+    route('scalp-sessions', './routes/scalp-sessions.tsx'),
+
     // Chat History
     route('history', './routes/history.tsx'),
 

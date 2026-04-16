@@ -1108,3 +1108,169 @@ async def test_orb_entry_rules_evaluated_before_sl_rules():
 
     # Long Entry (id=200) should be evaluated BEFORE Short SL (id=100)
     assert eval_order == [200, 100], f"Entry rules must eval first, got: {eval_order}"
+
+
+# ── Test: activate chain resets fire_count ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_activate_chain_resets_fire_count():
+    """When a rule's activate chain re-enables exit rules, fire_count is reset to 0.
+
+    Without this, a target rule with max_fires=1 would be permanently exhausted
+    after the first cycle, even when re-enabled by entry.  This was the root
+    cause of the EMA-stoch 10×-fire bug on 2026-04-16.
+    """
+    from monitor.daemon import MonitorDaemon
+
+    TOKEN = "NSE_EQ|INE002A01018"
+
+    entry = MonitorRule(
+        id=1, user_id=999, name="Entry",
+        trigger_type="price", trigger_config={"condition": "gte", "price": 100.0, "reference": "ltp"},
+        action_type="place_order", action_config={
+            "symbol": "X", "transaction_type": "BUY", "quantity": 1,
+            "order_type": "MARKET", "product": "I",
+            "also_enable_rules": [2, 3],
+        },
+        instrument_token=TOKEN, max_fires=5,
+    )
+    target = MonitorRule(
+        id=2, user_id=999, name="Target",
+        trigger_type="price", trigger_config={"condition": "gte", "price": 115.0, "reference": "ltp"},
+        action_type="place_order", action_config={
+            "symbol": "X", "transaction_type": "SELL", "quantity": 1,
+            "order_type": "MARKET", "product": "I",
+            "also_cancel_rules": [3],
+        },
+        instrument_token=TOKEN, max_fires=1,
+        enabled=False,  # exit-gated
+    )
+    sl = MonitorRule(
+        id=3, user_id=999, name="SL",
+        trigger_type="price", trigger_config={"condition": "lte", "price": 90.0, "reference": "ltp"},
+        action_type="place_order", action_config={
+            "symbol": "X", "transaction_type": "SELL", "quantity": 1,
+            "order_type": "MARKET", "product": "I",
+            "also_cancel_rules": [2],
+        },
+        instrument_token=TOKEN, max_fires=1,
+        enabled=False,  # exit-gated
+    )
+
+    # Simulate: target already fired once in a previous cycle
+    target.fire_count = 1
+    target.enabled = False
+
+    all_rules = [entry, target, sl]
+    session_obj = _make_user_session(999, rules=all_rules)
+    session_obj.prev_prices = {TOKEN: 90.0}
+
+    daemon = MonitorDaemon()
+    daemon._user_manager = MagicMock()
+    daemon._user_manager.get_session.return_value = session_obj
+
+    with patch("monitor.daemon.get_db_context") as mock_ctx, \
+         patch("monitor.daemon.crud") as mock_crud:
+
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        daemon._action_executor = AsyncMock()
+        daemon._action_executor.execute = AsyncMock()
+
+        # Entry fires → should re-enable target+SL and reset fire_count
+        await daemon._on_tick(999, TOKEN, {"ltp": 105.0})
+        await asyncio.sleep(0)
+
+    # Target's fire_count should be reset to 0 by activate chain
+    assert target.fire_count == 0, f"Expected 0, got {target.fire_count}"
+    assert target.enabled is True
+    assert target.should_evaluate is True
+
+    # SL also reset
+    assert sl.fire_count == 0
+    assert sl.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_exit_gating_prevents_multi_fire():
+    """Exit-gated target rule (enabled=False, max_fires=1) can't fire until entry enables it.
+
+    After entry fires and enables target, target fires once then is exhausted.
+    The next tick should NOT fire target again — should_evaluate returns False.
+    """
+    from monitor.daemon import MonitorDaemon
+
+    TOKEN = "NSE_EQ|INE002A01018"
+
+    # Entry uses crosses_above to simulate edge-triggered behavior —
+    # it fires once on tick 1 (prev < 100, curr >= 100), then stays quiet.
+    entry = MonitorRule(
+        id=1, user_id=999, name="Entry",
+        trigger_type="price", trigger_config={"condition": "crosses_above", "price": 100.0, "reference": "ltp"},
+        action_type="place_order", action_config={
+            "symbol": "X", "transaction_type": "BUY", "quantity": 1,
+            "order_type": "MARKET", "product": "I",
+            "also_enable_rules": [2],
+        },
+        instrument_token=TOKEN, max_fires=5,
+    )
+    target = MonitorRule(
+        id=2, user_id=999, name="Target +15pts",
+        trigger_type="price", trigger_config={"condition": "gte", "price": 115.0, "reference": "ltp"},
+        action_type="place_order", action_config={
+            "symbol": "X", "transaction_type": "SELL", "quantity": 1,
+            "order_type": "MARKET", "product": "I",
+        },
+        instrument_token=TOKEN, max_fires=1,
+        enabled=False,  # exit-gated
+    )
+
+    all_rules = [entry, target]
+    session_obj = _make_user_session(999, rules=all_rules)
+    session_obj.prev_prices = {TOKEN: 90.0}  # prev < 100, so crosses_above fires on first tick
+
+    daemon = MonitorDaemon()
+    daemon._user_manager = MagicMock()
+    daemon._user_manager.get_session.return_value = session_obj
+
+    fired_rule_ids = []
+
+    async def mock_execute(rule, result, snapshot, session, chain_affected=None):
+        fired_rule_ids.append(rule.id)
+
+    with patch("monitor.daemon.get_db_context") as mock_ctx:
+        mock_session = AsyncMock()
+        mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+        daemon._action_executor.execute = mock_execute
+
+        # Tick 1: entry fires at 105 (crosses_above 100), enables target
+        await daemon._on_tick(999, TOKEN, {"ltp": 105.0})
+        await asyncio.sleep(0)
+        session_obj.prev_prices[TOKEN] = 105.0  # simulate user_manager update
+
+        assert target.enabled is True, "Entry should enable target"
+        assert fired_rule_ids == [1], "Only entry should fire"
+
+        # Tick 2: price jumps to 120 — target fires (120 >= 115)
+        # Entry does NOT fire again (prev=105 already above 100, no crossing)
+        await daemon._on_tick(999, TOKEN, {"ltp": 120.0})
+        await asyncio.sleep(0)
+        session_obj.prev_prices[TOKEN] = 120.0
+
+        target_fires = [rid for rid in fired_rule_ids if rid == 2]
+        assert len(target_fires) == 1, f"Target should fire exactly once, got {len(target_fires)}"
+        assert target.fire_count == 1
+        assert target.enabled is False, "max_fires=1 reached, auto-disabled"
+
+        fired_rule_ids.clear()
+
+        # Tick 3: price still at 121 — target must NOT fire again
+        await daemon._on_tick(999, TOKEN, {"ltp": 121.0})
+        await asyncio.sleep(0)
+
+        target_fires_tick3 = [rid for rid in fired_rule_ids if rid == 2]
+        assert len(target_fires_tick3) == 0, "Target should NOT fire again (exhausted)"

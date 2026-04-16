@@ -1,0 +1,84 @@
+"""Pydantic models for scalp session manager."""
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel
+
+
+class ScalpState(str, Enum):
+    IDLE = "IDLE"
+    HOLDING_CE = "HOLDING_CE"
+    HOLDING_PE = "HOLDING_PE"
+
+
+# Map underlying short names to Upstox index instrument tokens.
+# Same mapping as services/upstox_client.py:1557.
+UNDERLYING_INSTRUMENT_MAP: dict[str, str] = {
+    "NIFTY": "NSE_INDEX|Nifty 50",
+    "NIFTY50": "NSE_INDEX|Nifty 50",
+    "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    "NIFTYBANK": "NSE_INDEX|Nifty Bank",
+    "FINNIFTY": "NSE_INDEX|Nifty Fin Service",
+    "MIDCPNIFTY": "NSE_INDEX|NIFTY MID SELECT",
+}
+
+
+class ScalpSessionConfig(BaseModel):
+    """Immutable config set at creation time."""
+    id: int = 0
+    user_id: int = 0
+    name: str = ""
+    enabled: bool = True
+
+    underlying: str = "NIFTY"
+    underlying_instrument_token: str = ""
+    expiry: str = ""
+    lots: int = 1
+    product: str = "I"
+
+    indicator_timeframe: str = "1m"
+    utbot_period: int = 10
+    utbot_sensitivity: float = 1.0
+
+    sl_points: float | None = None
+    target_points: float | None = None
+    trail_percent: float | None = None
+    squareoff_time: str = "15:15"
+
+    max_trades: int = 20
+    cooldown_seconds: int = 60
+
+
+class ScalpSessionRuntime(BaseModel):
+    """Mutable runtime state, updated by daemon."""
+    state: ScalpState = ScalpState.IDLE
+    current_option_type: str | None = None
+    current_strike: float | None = None
+    current_instrument_token: str | None = None
+    current_tradingsymbol: str | None = None
+    entry_price: float | None = None
+    entry_time: datetime | None = None
+    highest_premium: float | None = None
+    trade_count: int = 0
+    last_exit_time: datetime | None = None
+
+
+class ScalpSession(BaseModel):
+    """Complete in-memory session: config + runtime state."""
+    config: ScalpSessionConfig
+    runtime: ScalpSessionRuntime = ScalpSessionRuntime()
+
+    @property
+    def is_holding(self) -> bool:
+        return self.runtime.state != ScalpState.IDLE
+
+    @property
+    def user_id(self) -> int:
+        return self.config.user_id
+
+    @property
+    def id(self) -> int:
+        return self.config.id

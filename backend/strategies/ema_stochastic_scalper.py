@@ -112,9 +112,9 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 action_config=action_base_ce,
                 max_fires=max_fires,
                 role="ce_entry",
-                activates_roles=["ce_target", "ce_sl"],
+                activates_roles=["ce_target", "ce_sl", "ce_squareoff"],
             ),
-            # CE Target
+            # CE Target — starts disabled, entry enables via activates_roles
             RuleSpec(
                 name=f"{underlying} Scalp CE Target +{target_pts}pts",
                 trigger_type="price",
@@ -128,12 +128,12 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 },
                 action_type="place_order",
                 action_config=exit_ce,
-                max_fires=max_fires,
+                max_fires=1,
                 role="ce_target",
                 kills_roles=["ce_sl"],
-                enabled=True,
+                enabled=False,
             ),
-            # CE Stop Loss
+            # CE Stop Loss — starts disabled, entry enables via activates_roles
             RuleSpec(
                 name=f"{underlying} Scalp CE SL -{sl_pts}pts",
                 trigger_type="price",
@@ -147,10 +147,10 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 },
                 action_type="place_order",
                 action_config=exit_ce,
-                max_fires=max_fires,
+                max_fires=1,
                 role="ce_sl",
                 kills_roles=["ce_target"],
-                enabled=True,
+                enabled=False,
             ),
 
             # ── SHORT LEG (PE) ───────────────────────────────────────
@@ -169,9 +169,9 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 action_config=action_base_pe,
                 max_fires=max_fires,
                 role="pe_entry",
-                activates_roles=["pe_target", "pe_sl"],
+                activates_roles=["pe_target", "pe_sl", "pe_squareoff"],
             ),
-            # PE Target
+            # PE Target — starts disabled, entry enables via activates_roles
             RuleSpec(
                 name=f"{underlying} Scalp PE Target +{target_pts}pts",
                 trigger_type="price",
@@ -185,12 +185,12 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 },
                 action_type="place_order",
                 action_config=exit_pe,
-                max_fires=max_fires,
+                max_fires=1,
                 role="pe_target",
                 kills_roles=["pe_sl"],
-                enabled=True,
+                enabled=False,
             ),
-            # PE Stop Loss
+            # PE Stop Loss — starts disabled, entry enables via activates_roles
             RuleSpec(
                 name=f"{underlying} Scalp PE SL -{sl_pts}pts",
                 trigger_type="price",
@@ -204,14 +204,14 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 },
                 action_type="place_order",
                 action_config=exit_pe,
-                max_fires=max_fires,
+                max_fires=1,
                 role="pe_sl",
                 kills_roles=["pe_target"],
-                enabled=True,
+                enabled=False,
             ),
 
             # ── SHARED ──────────────────────────────────────────────
-            # Auto square-off for CE
+            # Auto square-off for CE — starts disabled, entry enables
             RuleSpec(
                 name=f"{underlying} Scalp CE Square-Off @ {squareoff}",
                 trigger_type="time",
@@ -224,8 +224,9 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 action_config=exit_ce,
                 role="ce_squareoff",
                 kills_roles=["ce_entry", "ce_target", "ce_sl"],
+                enabled=False,
             ),
-            # Auto square-off for PE
+            # Auto square-off for PE — starts disabled, entry enables
             RuleSpec(
                 name=f"{underlying} Scalp PE Square-Off @ {squareoff}",
                 trigger_type="time",
@@ -238,6 +239,7 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
                 action_config=exit_pe,
                 role="pe_squareoff",
                 kills_roles=["pe_entry", "pe_target", "pe_sl"],
+                enabled=False,
             ),
         ]
 

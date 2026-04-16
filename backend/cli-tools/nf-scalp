@@ -1,0 +1,563 @@
+#!/usr/bin/env python3
+"""Manage scalp sessions (stateful options scalping via UT Bot signals).
+
+Create, list, enable/disable, and delete scalp sessions.
+Sessions are evaluated by the trade monitor daemon against live index data.
+"""
+
+import argparse
+import asyncio
+import sys
+import os
+from datetime import datetime, timedelta
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import print_error, print_json, print_success, run_async  # noqa: E402
+
+
+def _get_user_id() -> int:
+    """Get user ID from environment."""
+    return int(os.environ.get("NF_USER_ID", "999"))
+
+
+def _fmt_ist(dt: datetime | None) -> str | None:
+    """Format a naive UTC datetime as an IST string for display."""
+    if dt is None:
+        return None
+    ist = dt + timedelta(hours=5, minutes=30)
+    return f"{ist.strftime('%Y-%m-%d %H:%M')} IST"
+
+
+def _session_to_dict(row) -> dict:
+    """Convert a DB session row to a JSON-serializable dict."""
+    return {
+        "id": row.id,
+        "name": row.name,
+        "enabled": row.enabled,
+        "underlying": row.underlying,
+        "underlying_instrument_token": row.underlying_instrument_token,
+        "expiry": row.expiry,
+        "lots": row.lots,
+        "product": row.product,
+        "indicator_timeframe": row.indicator_timeframe,
+        "utbot_period": row.utbot_period,
+        "utbot_sensitivity": row.utbot_sensitivity,
+        "sl_points": row.sl_points,
+        "target_points": row.target_points,
+        "trail_percent": row.trail_percent,
+        "squareoff_time": row.squareoff_time,
+        "max_trades": row.max_trades,
+        "cooldown_seconds": row.cooldown_seconds,
+        "state": row.state,
+        "current_option_type": row.current_option_type,
+        "current_strike": row.current_strike,
+        "current_instrument_token": row.current_instrument_token,
+        "current_tradingsymbol": row.current_tradingsymbol,
+        "entry_price": row.entry_price,
+        "entry_time": _fmt_ist(row.entry_time) if row.entry_time else None,
+        "highest_premium": row.highest_premium,
+        "trade_count": row.trade_count or 0,
+        "last_exit_time": _fmt_ist(row.last_exit_time) if row.last_exit_time else None,
+        "created_at": _fmt_ist(row.created_at) if row.created_at else None,
+        "updated_at": _fmt_ist(row.updated_at) if row.updated_at else None,
+    }
+
+
+def _log_to_dict(log) -> dict:
+    """Convert a DB log row to a JSON-serializable dict."""
+    return {
+        "id": log.id,
+        "session_id": log.session_id,
+        "event_type": log.event_type,
+        "option_type": log.option_type,
+        "strike": log.strike,
+        "instrument_token": log.instrument_token,
+        "entry_price": log.entry_price,
+        "exit_price": log.exit_price,
+        "quantity": log.quantity,
+        "pnl_points": log.pnl_points,
+        "pnl_amount": log.pnl_amount,
+        "order_id": log.order_id,
+        "underlying_price": log.underlying_price,
+        "trigger_snapshot": log.trigger_snapshot,
+        "created_at": _fmt_ist(log.created_at) if log.created_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Subcommand handlers
+# ---------------------------------------------------------------------------
+
+
+def cmd_create(args):
+    """Create a new scalp session."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+    from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP
+    from strategies.fno_utils import list_expiries
+
+    user_id = _get_user_id()
+
+    # Validate underlying
+    underlying = args.underlying.upper()
+    instrument_token = UNDERLYING_INSTRUMENT_MAP.get(underlying)
+    if not instrument_token:
+        valid = ", ".join(sorted(set(UNDERLYING_INSTRUMENT_MAP.keys())))
+        print_error(f"Unknown underlying: {underlying}. Valid: {valid}")
+
+    # Validate expiry
+    try:
+        expiries = list_expiries(underlying)
+    except FileNotFoundError as e:
+        print_error(str(e))
+
+    if args.expiry not in expiries:
+        # Show nearest 5 valid expiries to help the user
+        hint = ", ".join(expiries[:5])
+        if len(expiries) > 5:
+            hint += ", ..."
+        print_error(
+            f"Expiry {args.expiry} not found for {underlying}. "
+            f"Valid expiries: {hint}"
+        )
+
+    # Build optional kwargs
+    kwargs = {
+        "lots": args.lots,
+        "product": "I",
+        "indicator_timeframe": args.timeframe,
+        "utbot_period": args.period,
+        "utbot_sensitivity": args.sensitivity,
+        "squareoff_time": args.squareoff,
+        "max_trades": args.max_trades,
+        "cooldown_seconds": args.cooldown,
+    }
+    if args.sl_points is not None:
+        kwargs["sl_points"] = args.sl_points
+    if args.target_points is not None:
+        kwargs["target_points"] = args.target_points
+    if args.trail_percent is not None:
+        kwargs["trail_percent"] = args.trail_percent
+
+    async def _create():
+        async with get_db_context() as session:
+            row = await scalp_crud.create_session(
+                db=session,
+                user_id=user_id,
+                name=args.name,
+                underlying=underlying,
+                underlying_instrument_token=instrument_token,
+                expiry=args.expiry,
+                **kwargs,
+            )
+            return row
+
+    row = run_async(_create())
+
+    if args.json:
+        print_json({"created": _session_to_dict(row)})
+    else:
+        print_success(f"Scalp session #{row.id} created: {row.name}")
+        print(f"  Underlying:   {underlying} ({instrument_token})")
+        print(f"  Expiry:       {args.expiry}")
+        print(f"  Lots:         {args.lots}")
+        print(f"  UT Bot:       period={args.period}, sensitivity={args.sensitivity}, timeframe={args.timeframe}")
+        if args.sl_points is not None:
+            print(f"  SL:           {args.sl_points} pts")
+        if args.target_points is not None:
+            print(f"  Target:       {args.target_points} pts")
+        if args.trail_percent is not None:
+            print(f"  Trail:        {args.trail_percent}%")
+        print(f"  Squareoff:    {args.squareoff} IST")
+        print(f"  Max trades:   {args.max_trades}")
+        print(f"  Cooldown:     {args.cooldown}s")
+
+
+def cmd_list(args):
+    """List scalp sessions."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+
+    user_id = _get_user_id()
+
+    async def _list():
+        async with get_db_context() as session:
+            return await scalp_crud.list_sessions(session, user_id, enabled_only=args.active)
+
+    rows = run_async(_list())
+
+    if args.json:
+        print_json({"sessions": [_session_to_dict(r) for r in rows]})
+        return
+
+    if not rows:
+        print("No scalp sessions found.")
+        return
+
+    label = "Active Sessions" if args.active else "All Sessions"
+    print(f"{label}\n")
+    print(f"{'ID':>4}  {'Status':<8}  {'Name':<25}  {'Underlying':<12}  {'Expiry':<12}  {'State':<12}  {'Trades':>7}")
+    print("-" * 90)
+
+    for r in rows:
+        status = "ON" if r.enabled else "OFF"
+        name = r.name[:23] + ".." if len(r.name) > 25 else r.name
+        trades = f"{r.trade_count or 0}" + (f"/{r.max_trades}" if r.max_trades else "")
+        state = r.state or "IDLE"
+        print(f"{r.id:>4}  {status:<8}  {name:<25}  {r.underlying:<12}  {r.expiry:<12}  {state:<12}  {trades:>7}")
+
+
+def cmd_status(args):
+    """Show detail for one scalp session."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+
+    async def _status():
+        async with get_db_context() as session:
+            row = await scalp_crud.get_session(session, args.session_id)
+            if not row:
+                return None, None, None
+            logs = await scalp_crud.get_session_logs(session, args.session_id, limit=10)
+            pnl = await scalp_crud.get_session_pnl_summary(session, args.session_id)
+            return row, logs, pnl
+
+    row, logs, pnl = run_async(_status())
+
+    if not row:
+        print_error(f"Session #{args.session_id} not found")
+
+    if args.json:
+        print_json({
+            "session": _session_to_dict(row),
+            "pnl_summary": pnl,
+            "recent_logs": [_log_to_dict(l) for l in logs],
+        })
+        return
+
+    # Config section
+    print(f"Scalp Session #{row.id}: {row.name}")
+    print(f"  Status:       {'ENABLED' if row.enabled else 'DISABLED'}")
+    print(f"  Underlying:   {row.underlying} ({row.underlying_instrument_token})")
+    print(f"  Expiry:       {row.expiry}")
+    print(f"  Lots:         {row.lots}")
+    print(f"  UT Bot:       period={row.utbot_period}, sensitivity={row.utbot_sensitivity}, timeframe={row.indicator_timeframe}")
+    if row.sl_points is not None:
+        print(f"  SL:           {row.sl_points} pts")
+    if row.target_points is not None:
+        print(f"  Target:       {row.target_points} pts")
+    if row.trail_percent is not None:
+        print(f"  Trail:        {row.trail_percent}%")
+    print(f"  Squareoff:    {row.squareoff_time} IST")
+    print(f"  Max trades:   {row.max_trades}")
+    print(f"  Cooldown:     {row.cooldown_seconds}s")
+    print(f"  Created:      {_fmt_ist(row.created_at)}")
+
+    # Runtime state section
+    print(f"\n  State:        {row.state or 'IDLE'}")
+    if row.current_option_type:
+        print(f"  Holding:      {row.current_option_type} @ strike {row.current_strike}")
+        print(f"  Tradingsymbol: {row.current_tradingsymbol}")
+        print(f"  Entry price:  {row.entry_price}")
+        print(f"  Entry time:   {_fmt_ist(row.entry_time)}")
+        if row.highest_premium is not None:
+            print(f"  High premium: {row.highest_premium}")
+    print(f"  Trade count:  {row.trade_count or 0}")
+    if row.last_exit_time:
+        print(f"  Last exit:    {_fmt_ist(row.last_exit_time)}")
+
+    # P&L summary
+    if pnl and pnl.get("total_exits", 0) > 0:
+        total_pnl = pnl["total_pnl"]
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        win_rate = (pnl["wins"] / pnl["total_exits"] * 100) if pnl["total_exits"] > 0 else 0
+        print(f"\n  P&L Summary:")
+        print(f"    Total exits: {pnl['total_exits']}")
+        print(f"    Wins/Losses: {pnl['wins']}/{pnl['losses']}")
+        print(f"    Win rate:    {win_rate:.0f}%")
+        print(f"    Total P&L:   {pnl_sign}{total_pnl:.2f}")
+
+    # Recent logs
+    if logs:
+        print(f"\n  Recent Events (last {len(logs)}):")
+        print(f"  {'Time':<20}  {'Event':<18}  {'Type':<4}  {'Strike':>8}  {'P&L':>10}")
+        print(f"  {'-' * 68}")
+        for l in logs:
+            time_str = _fmt_ist(l.created_at) or "?"
+            ot = l.option_type or ""
+            strike_str = f"{l.strike:.0f}" if l.strike else ""
+            pnl_str = ""
+            if l.pnl_amount is not None:
+                sign = "+" if l.pnl_amount >= 0 else ""
+                pnl_str = f"{sign}{l.pnl_amount:.2f}"
+            print(f"  {time_str:<20}  {l.event_type:<18}  {ot:<4}  {strike_str:>8}  {pnl_str:>10}")
+
+
+def cmd_enable(args):
+    """Enable a scalp session."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+
+    async def _enable():
+        async with get_db_context() as session:
+            return await scalp_crud.update_session(session, args.session_id, enabled=True)
+
+    row = run_async(_enable())
+    if not row:
+        print_error(f"Session #{args.session_id} not found")
+
+    if args.json:
+        print_json({"enabled": _session_to_dict(row)})
+    else:
+        print_success(f"Session #{row.id} enabled: {row.name}")
+
+
+def cmd_disable(args):
+    """Disable a scalp session."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+
+    async def _disable():
+        async with get_db_context() as session:
+            return await scalp_crud.update_session(session, args.session_id, enabled=False)
+
+    row = run_async(_disable())
+    if not row:
+        print_error(f"Session #{args.session_id} not found")
+
+    if args.json:
+        print_json({"disabled": _session_to_dict(row)})
+    else:
+        print_success(f"Session #{row.id} disabled: {row.name}")
+
+
+def cmd_delete(args):
+    """Delete a scalp session."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+
+    async def _delete():
+        async with get_db_context() as session:
+            return await scalp_crud.delete_session(session, args.session_id)
+
+    deleted = run_async(_delete())
+    if not deleted:
+        print_error(f"Session #{args.session_id} not found")
+
+    if args.json:
+        print_json({"deleted": args.session_id})
+    else:
+        print_success(f"Session #{args.session_id} deleted")
+
+
+def cmd_manual_exit(args):
+    """Force session to IDLE and disable it (daemon picks up on next poll)."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+
+    async def _exit():
+        async with get_db_context() as session:
+            return await scalp_crud.update_session(
+                session, args.session_id,
+                state="IDLE",
+                enabled=False,
+                current_option_type=None,
+                current_strike=None,
+                current_instrument_token=None,
+                current_tradingsymbol=None,
+                entry_price=None,
+                entry_time=None,
+                highest_premium=None,
+            )
+
+    row = run_async(_exit())
+    if not row:
+        print_error(f"Session #{args.session_id} not found")
+
+    if args.json:
+        print_json({"manual_exit": _session_to_dict(row)})
+    else:
+        print_success(f"Session #{row.id} set to IDLE and disabled: {row.name}")
+        print("  The daemon will not re-enter. Re-enable manually when ready.")
+
+
+def cmd_logs(args):
+    """Show event log for a scalp session."""
+    from database.session import get_db_context
+    from monitor import scalp_crud
+
+    async def _logs():
+        async with get_db_context() as session:
+            if args.session_id:
+                return await scalp_crud.get_session_logs(session, args.session_id, limit=args.limit)
+            else:
+                user_id = _get_user_id()
+                return await scalp_crud.get_user_logs(session, user_id, limit=args.limit)
+
+    logs = run_async(_logs())
+
+    if args.json:
+        print_json({"logs": [_log_to_dict(l) for l in logs]})
+        return
+
+    if not logs:
+        print("No scalp session logs found.")
+        return
+
+    header = f"Logs for Session #{args.session_id}" if args.session_id else "All Scalp Logs"
+    print(f"{header}\n")
+    print(f"{'ID':>5}  {'Sess':>5}  {'Event':<18}  {'Type':<4}  {'Strike':>8}  {'Entry':>8}  {'Exit':>8}  {'P&L':>10}  {'Time':<20}")
+    print("-" * 110)
+
+    for l in logs:
+        time_str = _fmt_ist(l.created_at) or "?"
+        ot = l.option_type or ""
+        strike_str = f"{l.strike:.0f}" if l.strike else ""
+        entry_str = f"{l.entry_price:.2f}" if l.entry_price else ""
+        exit_str = f"{l.exit_price:.2f}" if l.exit_price else ""
+        pnl_str = ""
+        if l.pnl_amount is not None:
+            sign = "+" if l.pnl_amount >= 0 else ""
+            pnl_str = f"{sign}{l.pnl_amount:.2f}"
+        print(f"{l.id:>5}  {l.session_id:>5}  {l.event_type:<18}  {ot:<4}  {strike_str:>8}  {entry_str:>8}  {exit_str:>8}  {pnl_str:>10}  {time_str:<20}")
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-scalp",
+        description="Manage scalp sessions (stateful options scalping via UT Bot signals)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Create a session
+  nf-scalp create --name "NIFTY morning scalp" --underlying NIFTY \\
+    --expiry 2026-04-17 --lots 1 --sl-points 20 --target-points 30 \\
+    --trail-percent 15 --timeframe 1m --period 10 --sensitivity 1.0 --json
+
+  # List sessions
+  nf-scalp list --active --json
+
+  # Show session detail + P&L + recent logs
+  nf-scalp status 1 --json
+
+  # Enable / disable
+  nf-scalp enable 1
+  nf-scalp disable 1
+
+  # Force exit and disable (daemon stops managing it)
+  nf-scalp manual-exit 1
+
+  # View logs
+  nf-scalp logs --session 1 --limit 30 --json
+  nf-scalp logs --limit 50         # all sessions for this user
+
+  # Delete
+  nf-scalp delete 1
+""",
+    )
+
+    sub = parser.add_subparsers(dest="command", help="Command")
+
+    # ---- create ----
+    p_create = sub.add_parser("create", help="Create a new scalp session")
+    p_create.add_argument("--name", required=True, help="Human-readable session name")
+    p_create.add_argument("--underlying", required=True,
+                          help="Index underlying (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)")
+    p_create.add_argument("--expiry", required=True,
+                          help="Option expiry date (YYYY-MM-DD)")
+    p_create.add_argument("--lots", type=int, default=1,
+                          help="Number of lots per trade (default: 1)")
+    p_create.add_argument("--sl-points", type=float, default=None,
+                          help="Stop-loss in premium points")
+    p_create.add_argument("--target-points", type=float, default=None,
+                          help="Target in premium points")
+    p_create.add_argument("--trail-percent", type=float, default=None,
+                          help="Trailing stop percentage on premium")
+    p_create.add_argument("--timeframe", default="1m",
+                          choices=["1m", "5m", "15m", "30m", "1h"],
+                          help="UT Bot candle timeframe (default: 1m)")
+    p_create.add_argument("--period", type=int, default=10,
+                          help="UT Bot ATR period (default: 10)")
+    p_create.add_argument("--sensitivity", type=float, default=1.0,
+                          help="UT Bot sensitivity / key value (default: 1.0)")
+    p_create.add_argument("--squareoff", default="15:15",
+                          help="Auto squareoff time in HH:MM IST (default: 15:15)")
+    p_create.add_argument("--max-trades", type=int, default=20,
+                          help="Max trades per session day (default: 20)")
+    p_create.add_argument("--cooldown", type=int, default=60,
+                          help="Cooldown seconds between trades (default: 60)")
+    p_create.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- list ----
+    p_list = sub.add_parser("list", help="List scalp sessions")
+    p_list.add_argument("--active", action="store_true",
+                        help="Show only enabled sessions")
+    p_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- status ----
+    p_status = sub.add_parser("status", help="Show detail for a session")
+    p_status.add_argument("session_id", type=int, help="Session ID")
+    p_status.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- enable ----
+    p_enable = sub.add_parser("enable", help="Enable a session")
+    p_enable.add_argument("session_id", type=int, help="Session ID to enable")
+    p_enable.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- disable ----
+    p_disable = sub.add_parser("disable", help="Disable a session")
+    p_disable.add_argument("session_id", type=int, help="Session ID to disable")
+    p_disable.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- delete ----
+    p_delete = sub.add_parser("delete", help="Delete a session")
+    p_delete.add_argument("session_id", type=int, help="Session ID to delete")
+    p_delete.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- manual-exit ----
+    p_exit = sub.add_parser("manual-exit",
+                            help="Force session to IDLE and disable")
+    p_exit.add_argument("session_id", type=int, help="Session ID")
+    p_exit.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ---- logs ----
+    p_logs = sub.add_parser("logs", help="Show event log for a session")
+    p_logs.add_argument("--session", type=int, dest="session_id", default=None,
+                        help="Filter by session ID (omit for all user sessions)")
+    p_logs.add_argument("--limit", type=int, default=20,
+                        help="Max entries (default: 20)")
+    p_logs.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "create":
+        cmd_create(args)
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "status":
+        cmd_status(args)
+    elif args.command == "enable":
+        cmd_enable(args)
+    elif args.command == "disable":
+        cmd_disable(args)
+    elif args.command == "delete":
+        cmd_delete(args)
+    elif args.command == "manual-exit":
+        cmd_manual_exit(args)
+    elif args.command == "logs":
+        cmd_logs(args)
+
+
+if __name__ == "__main__":
+    main()

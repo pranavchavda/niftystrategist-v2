@@ -29,6 +29,7 @@ import {
   Layers,
   FlaskConical,
   ScrollText,
+  Flame,
 } from "lucide-react";
 import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
 import { hasPermission, PERMISSIONS } from "../utils/permissions";
@@ -469,7 +470,7 @@ export default function Sidebar({
                 </DropdownMenu>
               </Dropdown>
             ) : (
-              <div className="flex items-center gap-1 pt-1">
+              <div className="flex flex-wrap items-center gap-1 pt-1">
                 {hasPermission(user, PERMISSIONS.DASHBOARD_ACCESS) && (
                   <NavLink
                     to="/dashboard"
@@ -543,6 +544,18 @@ export default function Sidebar({
                   }
                 >
                   <ScrollText className="w-4 h-4" />
+                </NavLink>
+                <NavLink
+                  to="/scalp-sessions"
+                  title="Scalp Sessions"
+                  className={({ isActive }) =>
+                    `p-2 rounded-lg transition-colors ${isActive
+                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`
+                  }
+                >
+                  <Flame className="w-4 h-4" />
                 </NavLink>
                 {hasPermission(user, PERMISSIONS.GOOGLE_WORKSPACE_ACCESS) && (
                   <NavLink
@@ -838,6 +851,10 @@ export default function Sidebar({
                 <DropdownItem href="/mandates">
                   <ScrollText data-slot="icon" />
                   <DropdownLabel>Mandates</DropdownLabel>
+                </DropdownItem>
+                <DropdownItem href="/scalp-sessions">
+                  <Flame data-slot="icon" />
+                  <DropdownLabel>Scalp Sessions</DropdownLabel>
                 </DropdownItem>
                 <DropdownDivider />
                 <DropdownItem href="/help">

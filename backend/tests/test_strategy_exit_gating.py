@@ -22,13 +22,18 @@ from strategies.templates import get_template, RuleSpec
 FAKE_FNO_INST = {"instrument_key": "NSE_FO|FAKE", "lot_size": 25}
 
 
+def _is_entry_role(role: str) -> bool:
+    """Check if a role is an entry role (e.g. 'entry', 'entry_long', 'ce_entry')."""
+    return role.startswith("entry") or role.endswith("_entry")
+
+
 def _exit_roles(rules: list[RuleSpec]) -> list[RuleSpec]:
-    """Return all non-entry rules. Entry = role starts with 'entry'."""
-    return [r for r in rules if not r.role.startswith("entry")]
+    """Return all non-entry rules."""
+    return [r for r in rules if not _is_entry_role(r.role)]
 
 
 def _entry_rules(rules: list[RuleSpec]) -> list[RuleSpec]:
-    return [r for r in rules if r.role.startswith("entry")]
+    return [r for r in rules if _is_entry_role(r.role)]
 
 
 def _assert_exits_start_disabled(rules: list[RuleSpec], template_name: str):
@@ -301,3 +306,58 @@ class TestIronCondorGating:
         _assert_every_exit_is_activated(plan.rules, "iron-condor")
         roles = [r.role for r in plan.rules]
         assert len(roles) == len(set(roles)), f"iron-condor has duplicate roles: {roles}"
+
+
+FAKE_FNO_INST_FULL = {
+    "instrument_key": "NSE_FO|FAKE",
+    "lot_size": 25,
+    "tradingsymbol": "BANKNIFTY26APR48000CE",
+}
+
+
+class TestEMAStochScalperGating:
+    """EMA-Stochastic Scalper — bilateral cycling template.
+
+    Regression: on 2026-04-16, exit rules (target/SL) had max_fires=5 and
+    started enabled.  gte level-trigger + max_fires=5 = 5 SELL orders per
+    side per tick burst.  Fix: exit rules start disabled, max_fires=1,
+    entry re-enables and resets fire_count via activate chain.
+    """
+
+    def setup_method(self):
+        with patch(
+            "strategies.ema_stochastic_scalper.resolve_option_instrument",
+            return_value=FAKE_FNO_INST_FULL,
+        ), patch(
+            "strategies.ema_stochastic_scalper.get_lot_size",
+            return_value=25,
+        ):
+            self.plan = get_template("ema-stochastic-scalper").plan(
+                "BANKNIFTY",
+                {
+                    "underlying": "BANKNIFTY",
+                    "expiry": "2026-04-30",
+                    "atm_strike": 48000,
+                },
+            )
+
+    def test_exit_rules_start_disabled(self):
+        _assert_exits_start_disabled(self.plan.rules, "ema-stochastic-scalper")
+
+    def test_every_exit_is_activated(self):
+        _assert_every_exit_is_activated(self.plan.rules, "ema-stochastic-scalper")
+
+    def test_target_sl_max_fires_is_one(self):
+        for r in self.plan.rules:
+            if "Target" in r.name or "SL" in r.name:
+                assert r.max_fires == 1, (
+                    f"ema-stoch exit rule {r.role!r} must have max_fires=1 "
+                    f"to prevent multi-fire on level triggers (got {r.max_fires})"
+                )
+
+    def test_entry_max_fires_controls_cycles(self):
+        for r in self.plan.rules:
+            if r.role.startswith("ce_entry") or r.role.startswith("pe_entry"):
+                assert r.max_fires == 5, (
+                    f"entry {r.role!r} should have max_fires=5 for cycling"
+                )

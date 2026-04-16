@@ -738,6 +738,98 @@ class MonitorLog(Base):
 
 
 # ==============================================================================
+# Scalp Session Models
+# ==============================================================================
+
+
+class ScalpSessionDB(Base):
+    """Stateful options scalping session managed by the daemon."""
+    __tablename__ = "scalp_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(200), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+
+    # Underlying config
+    underlying = Column(String(20), nullable=False)
+    underlying_instrument_token = Column(String(50), nullable=False)
+    expiry = Column(String(20), nullable=False)
+    lots = Column(Integer, default=1, nullable=False)
+    product = Column(String(2), default="I", nullable=False)
+
+    # UT Bot params
+    indicator_timeframe = Column(String(5), default="1m", nullable=False)
+    utbot_period = Column(Integer, default=10, nullable=False)
+    utbot_sensitivity = Column(Float, default=1.0, nullable=False)
+
+    # Exit params
+    sl_points = Column(Float, nullable=True)
+    target_points = Column(Float, nullable=True)
+    trail_percent = Column(Float, nullable=True)
+    squareoff_time = Column(String(5), default="15:15", nullable=False)
+
+    # Runtime state
+    state = Column(String(15), default="IDLE", nullable=False)
+    current_option_type = Column(String(2), nullable=True)
+    current_strike = Column(Float, nullable=True)
+    current_instrument_token = Column(String(50), nullable=True)
+    current_tradingsymbol = Column(String(50), nullable=True)
+    entry_price = Column(Float, nullable=True)
+    entry_time = Column(DateTime, nullable=True)
+    highest_premium = Column(Float, nullable=True)
+    trade_count = Column(Integer, default=0, nullable=False)
+    max_trades = Column(Integer, default=20, nullable=True)
+    cooldown_seconds = Column(Integer, default=60, nullable=False)
+    last_exit_time = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User")
+
+    __table_args__ = (
+        Index('idx_scalp_sessions_user_enabled', 'user_id', 'enabled'),
+        Index('idx_scalp_sessions_state', 'state'),
+    )
+
+
+class ScalpSessionLogDB(Base):
+    """Event log for scalp session entries, exits, signals, and errors."""
+    __tablename__ = "scalp_session_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(Integer, ForeignKey("scalp_sessions.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    event_type = Column(String(30), nullable=False)
+
+    option_type = Column(String(2), nullable=True)
+    strike = Column(Float, nullable=True)
+    instrument_token = Column(String(50), nullable=True)
+    entry_price = Column(Float, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    quantity = Column(Integer, nullable=True)
+
+    pnl_points = Column(Float, nullable=True)
+    pnl_amount = Column(Float, nullable=True)
+
+    order_id = Column(String(100), nullable=True)
+    underlying_price = Column(Float, nullable=True)
+    trigger_snapshot = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    session = relationship("ScalpSessionDB")
+
+    __table_args__ = (
+        Index('idx_scalp_session_logs_session', 'session_id', 'created_at'),
+        Index('idx_scalp_session_logs_user', 'user_id', 'created_at'),
+    )
+
+
+# ==============================================================================
 # Workflow Automation Models
 # ==============================================================================
 

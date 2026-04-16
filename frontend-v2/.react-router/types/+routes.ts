@@ -73,6 +73,9 @@ type Pages = {
   "/mandates": {
     params: {};
   };
+  "/scalp-sessions": {
+    params: {};
+  };
   "/history": {
     params: {};
   };
@@ -96,7 +99,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/reset-password" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/mandates" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/reset-password" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/mandates" | "/scalp-sessions" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -124,7 +127,7 @@ type RouteFiles = {
   };
   "./routes/_auth.tsx": {
     id: "routes/_auth";
-    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/mandates" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/mandates" | "/scalp-sessions" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/chat.$threadId.tsx": {
     id: "routes/chat.$threadId";
@@ -177,6 +180,10 @@ type RouteFiles = {
   "./routes/mandates.tsx": {
     id: "routes/mandates";
     page: "/mandates";
+  };
+  "./routes/scalp-sessions.tsx": {
+    id: "routes/scalp-sessions";
+    page: "/scalp-sessions";
   };
   "./routes/history.tsx": {
     id: "routes/history";

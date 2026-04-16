@@ -20,6 +20,7 @@ from monitor import crud
 from monitor.action_executor import ActionExecutor
 from monitor.models import MonitorRule
 from monitor.rule_evaluator import EvalContext, RuleResult, evaluate_rule
+from monitor.scalp_session import ScalpSessionManager
 from monitor.user_manager import UserManager
 from services.upstox_client import UpstoxClient
 
@@ -69,6 +70,13 @@ class MonitorDaemon:
             paper_mode=paper_mode,
         )
 
+        self._scalp_manager = ScalpSessionManager(
+            get_client=self._get_client,
+            get_order_node_url=self._get_order_node_url,
+            paper_mode=paper_mode,
+        )
+        self._scalp_manager._user_manager = self._user_manager
+
         self._rules_by_user: dict[int, list[MonitorRule]] = {}
         self._access_tokens: dict[int, str] = {}
         self._order_node_urls: dict[int, str] = {}
@@ -87,14 +95,18 @@ class MonitorDaemon:
         self._running = True
         logger.info("Monitor daemon starting (paper=%s)", self._paper_mode)
 
-        # Initial rule load
+        # Initial rule load + scalp session load
         await self._poll_rules()
+        await self._scalp_manager.load_sessions()
+        await self._scalp_manager.reconcile_on_startup()
 
-        # Main loop: poll rules + check time triggers periodically
+        # Main loop: poll rules + scalp sessions + check time triggers
         while self._running:
             await asyncio.sleep(self._poll_interval)
             await self._poll_rules()
+            await self._scalp_manager.load_sessions()
             await self._check_time_rules()
+            await self._scalp_manager.check_time_squareoff()
 
     async def stop(self) -> None:
         """Graceful shutdown — stops all user sessions."""
@@ -310,12 +322,51 @@ class MonitorDaemon:
 
         self._rules_by_user = rules_by_user
 
+        # Subscribe scalp session instruments (underlying + held options).
+        # These are separate from rule-based instruments and must be merged
+        # into each user's subscription set.
+        for uid in new_users | (old_users & new_users):
+            scalp_instruments = self._scalp_manager.get_subscribed_instruments(uid)
+            if scalp_instruments:
+                session_obj = self._user_manager.get_session(uid)
+                if session_obj:
+                    to_sub = scalp_instruments - session_obj.subscribed_instruments
+                    if to_sub:
+                        try:
+                            await session_obj.market_stream.subscribe(list(to_sub))
+                            session_obj.subscribed_instruments |= to_sub
+                            logger.info(
+                                "Subscribed %d scalp instruments for user %d: %s",
+                                len(to_sub), uid, to_sub,
+                            )
+                        except Exception as e:
+                            logger.error("Scalp subscription failed for user %d: %s", uid, e)
+
+        # Also ensure scalp-only users (no rules but have sessions) get started
+        for uid in self._scalp_manager._sessions:
+            if uid not in new_users:
+                token = self._access_tokens.get(uid)
+                if not token:
+                    # Try loading token for this scalp-only user
+                    token = await self._load_access_token(uid)
+                    if token:
+                        self._access_tokens[uid] = token
+                if token and not self._user_manager.get_session(uid):
+                    await self._user_manager.start_user(uid, token, [])
+                    scalp_instruments = self._scalp_manager.get_subscribed_instruments(uid)
+                    if scalp_instruments:
+                        session_obj = self._user_manager.get_session(uid)
+                        if session_obj:
+                            await session_obj.market_stream.subscribe(list(scalp_instruments))
+                            session_obj.subscribed_instruments |= scalp_instruments
+
         # Periodic summary — helps confirm daemon is alive and processing
         total_rules = sum(len(r) for r in rules_by_user.values())
+        total_sessions = sum(len(s) for s in self._scalp_manager._sessions.values())
         active_users = [uid for uid in rules_by_user if uid in self._access_tokens]
         logger.info(
-            "Poll cycle: %d active rules for %d users %s",
-            total_rules, len(active_users), active_users,
+            "Poll cycle: %d active rules, %d scalp sessions for %d users %s",
+            total_rules, total_sessions, len(active_users), active_users,
         )
 
     # ── Tick routing ──────────────────────────────────────────────────
@@ -387,6 +438,10 @@ class MonitorDaemon:
             # 13s later on the exact same 5m UT Bot flip edge.
             for key, val in session_obj.indicator_values.items():
                 session_obj.prev_indicator_values[key] = val
+
+            # Route to scalp session manager (no-op if instrument doesn't
+            # match any session — single dict lookup overhead).
+            await self._scalp_manager.on_tick(user_id, instrument_token, market_data)
 
     # ── Portfolio event routing ───────────────────────────────────────
 
@@ -506,10 +561,24 @@ class MonitorDaemon:
                 for r in session_obj.rules:
                     if r.id in result.rules_to_enable:
                         r.enabled = True
+                        # Reset fire_count so max_fires-gated rules can fire
+                        # again in the next cycle.  Without this, a target
+                        # rule with max_fires=1 would be permanently exhausted
+                        # after the first cycle even when re-enabled by entry.
+                        r.fire_count = 0
                 logger.info(
-                    "Rule %d activate chain: enabled %d rules in-memory: %s",
+                    "Rule %d activate chain: enabled %d rules in-memory (fire_count reset): %s",
                     rule.id, len(result.rules_to_enable), result.rules_to_enable,
                 )
+
+        # Persist kill/activate chain state changes to DB in background.
+        # Without this, _poll_rules() would reload stale fire_count/enabled
+        # values from DB, undoing the in-memory resets above.
+        chain_affected: list[MonitorRule] = []
+        if session_obj:
+            affected_ids = set(result.rules_to_cancel) | set(result.rules_to_enable)
+            if affected_ids:
+                chain_affected = [r for r in session_obj.rules if r.id in affected_ids]
 
         # ── Phase 2: Fire-and-forget order + DB writes (background) ──
 
@@ -519,11 +588,15 @@ class MonitorDaemon:
         }
 
         asyncio.create_task(
-            self._execute_and_record(rule, result, trigger_snapshot)
+            self._execute_and_record(rule, result, trigger_snapshot, chain_affected)
         )
 
     async def _execute_and_record(
-        self, rule: MonitorRule, result, trigger_snapshot: dict
+        self,
+        rule: MonitorRule,
+        result,
+        trigger_snapshot: dict,
+        chain_affected: list[MonitorRule] | None = None,
     ) -> None:
         """Background task: place order + persist fire to DB.
 
@@ -535,6 +608,22 @@ class MonitorDaemon:
                 await self._action_executor.execute(
                     rule, result, trigger_snapshot, db_session
                 )
+                # Persist kill/activate chain state (enabled, fire_count)
+                # so DB stays in sync with in-memory daemon state.
+                if chain_affected:
+                    for r in chain_affected:
+                        try:
+                            await crud.sync_rule_fire_state(
+                                session=db_session,
+                                rule_id=r.id,
+                                fire_count=r.fire_count,
+                                enabled=r.enabled,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "Failed to sync chain rule %d state: %s",
+                                r.id, e,
+                            )
         except Exception as e:
             logger.error(
                 "Background execute_and_record failed for rule %d: %s",
