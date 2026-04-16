@@ -1545,6 +1545,16 @@ NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on
 
 **NEVER run `nf-monitor start` or `nf-monitor stop`** — the monitor daemon is managed by systemd. Starting it via execute_bash creates a conflicting instance that crashes the production daemon.
 
+**Stateful Scalp Sessions (position-aware options scalping):**
+- `python cli-tools/nf-scalp list [--active] [--json]` — View scalp sessions (state: IDLE / HOLDING_CE / HOLDING_PE)
+- `python cli-tools/nf-scalp status SESSION_ID [--json]` — Detailed view: current position, entry price, P&L summary, recent log
+- `python cli-tools/nf-scalp logs [--session N] [--limit 20] [--json]` — Event log (entries, exits, signals, errors)
+- `python cli-tools/nf-scalp create --name "..." --underlying NIFTY --expiry YYYY-MM-DD --lots 1 [--sl-points 25] [--target-points 40] [--trail-percent 15] [--max-trades 3] [--json]` — Create new session
+- `python cli-tools/nf-scalp enable|disable|delete SESSION_ID [--json]` — Toggle / remove
+- `python cli-tools/nf-scalp manual-exit SESSION_ID [--json]` — Force exit (sets state IDLE + disables; does NOT close broker position)
+
+Sessions enforce mutual exclusion (can't hold CE + PE simultaneously) and resolve ATM strike at entry time. Daemon manages them automatically. Use `nf-scalp list` and `nf-scalp logs` for observability during awakenings.
+
 **Strategy Templates (algo trading):**
 - `python cli-tools/nf-strategy list --json` — List available strategy templates (orb, breakout, mean-reversion, vwap-bounce, scalp)
 - `python cli-tools/nf-strategy deploy TEMPLATE --symbol SYM --capital AMOUNT [options] --json` — Deploy a strategy (creates multiple linked monitor rules)
