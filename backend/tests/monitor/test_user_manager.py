@@ -492,7 +492,7 @@ class TestMarketTickHandling:
 
         # Indicator should have been recomputed because a new candle started
         mock_compute.assert_called()
-        assert session.indicator_values.get("rsi_1m") == 42.5
+        assert session.indicator_values.get("rsi_1m_NSE_EQ|A") == 42.5
 
     @pytest.mark.asyncio
     @patch("monitor.user_manager.MarketDataStream")

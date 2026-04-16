@@ -272,8 +272,8 @@ def evaluate_indicator_trigger(
 
     Args:
         rule: MonitorRule with trigger_type="indicator".
-        indicator_values: Dict keyed by ``{indicator}_{timeframe}``,
-                          e.g. ``{"rsi_5m": 28.5, "macd_15m": -0.3}``.
+        indicator_values: Dict keyed by ``{indicator}_{timeframe}_{instrument_token}``,
+                          e.g. ``{"rsi_5m_NSE_EQ|INE002A01018": 28.5}``.
         prev_indicator_values: Previous tick's indicator values.
                                Required for ``crosses_above`` / ``crosses_below``.
 
@@ -282,7 +282,11 @@ def evaluate_indicator_trigger(
     """
     cfg = IndicatorTrigger(**rule.trigger_config)
 
-    key = f"{cfg.indicator}_{cfg.timeframe}"
+    # Key includes the rule's instrument_token so multiple instruments
+    # using the same indicator+timeframe don't collide. Without this,
+    # a 6-instrument ladder all using utbot_5m would constantly overwrite
+    # each other's computed values (bug discovered 2026-04-16).
+    key = f"{cfg.indicator}_{cfg.timeframe}_{rule.instrument_token}"
     current = indicator_values.get(key)
     if current is None:
         return False

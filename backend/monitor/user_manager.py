@@ -356,8 +356,9 @@ class UserManager:
 
         indicator = meta["indicator"]
         timeframe = meta["timeframe"]
+        instrument_token = meta["instrument_token"]
         params = meta.get("params", {})
-        ind_key = f"{indicator}_{timeframe}"
+        ind_key = f"{indicator}_{timeframe}_{instrument_token}"
 
         candles = buf.get_completed_candles()
         if not candles:

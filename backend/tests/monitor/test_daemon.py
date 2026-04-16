@@ -346,8 +346,10 @@ async def test_on_tick_consumes_indicator_edges():
 
     session_obj = _make_user_session(999, rules=[rule])
     # Freshly-computed edge: UT Bot just flipped from -1 to +1 at candle close
-    session_obj.indicator_values = {"utbot_5m": 1.0}
-    session_obj.prev_indicator_values = {"utbot_5m": -1.0}
+    # Key includes instrument_token so multi-instrument ladders don't collide
+    ind_key = "utbot_5m_NSE_EQ|A"
+    session_obj.indicator_values = {ind_key: 1.0}
+    session_obj.prev_indicator_values = {ind_key: -1.0}
 
     daemon._user_manager = MagicMock()
     daemon._user_manager.get_session.return_value = session_obj
@@ -356,7 +358,7 @@ async def test_on_tick_consumes_indicator_edges():
         await daemon._on_tick(999, "NSE_EQ|A", {"ltp": 150.0})
 
     # After the tick, prev should equal current so the edge is consumed
-    assert session_obj.prev_indicator_values == {"utbot_5m": 1.0}
+    assert session_obj.prev_indicator_values == {ind_key: 1.0}
 
 
 # ── Test: _on_portfolio_event evaluates order_status rules ───────────

@@ -36,19 +36,19 @@ class TestIndicatorTriggerLte:
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "5m", "lte", 30.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_5m": 25.0}) is True
+        assert evaluate_indicator_trigger(rule, {"rsi_5m_NSE_EQ|TEST": 25.0}) is True
 
     def test_fires_at_threshold(self):
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "5m", "lte", 30.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_5m": 30.0}) is True
+        assert evaluate_indicator_trigger(rule, {"rsi_5m_NSE_EQ|TEST": 30.0}) is True
 
     def test_does_not_fire_above(self):
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "5m", "lte", 30.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_5m": 45.0}) is False
+        assert evaluate_indicator_trigger(rule, {"rsi_5m_NSE_EQ|TEST": 45.0}) is False
 
 
 # ── gte ──────────────────────────────────────────────────────────────
@@ -59,19 +59,19 @@ class TestIndicatorTriggerGte:
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "5m", "gte", 70.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_5m": 75.0}) is True
+        assert evaluate_indicator_trigger(rule, {"rsi_5m_NSE_EQ|TEST": 75.0}) is True
 
     def test_fires_at_threshold(self):
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "5m", "gte", 70.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_5m": 70.0}) is True
+        assert evaluate_indicator_trigger(rule, {"rsi_5m_NSE_EQ|TEST": 70.0}) is True
 
     def test_does_not_fire_below(self):
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "5m", "gte", 70.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_5m": 55.0}) is False
+        assert evaluate_indicator_trigger(rule, {"rsi_5m_NSE_EQ|TEST": 55.0}) is False
 
 
 # ── crosses_above / crosses_below ───────────────────────────────────
@@ -83,7 +83,7 @@ class TestIndicatorTriggerCrosses:
 
         rule = _make_indicator_rule("macd", "5m", "crosses_above", 0.0)
         assert evaluate_indicator_trigger(
-            rule, {"macd_5m": 0.5}, prev_indicator_values={"macd_5m": -0.3}
+            rule, {"macd_5m_NSE_EQ|TEST": 0.5}, prev_indicator_values={"macd_5m_NSE_EQ|TEST": -0.3}
         ) is True
 
     def test_crosses_above_not_crossed(self):
@@ -91,21 +91,21 @@ class TestIndicatorTriggerCrosses:
 
         rule = _make_indicator_rule("macd", "5m", "crosses_above", 0.0)
         assert evaluate_indicator_trigger(
-            rule, {"macd_5m": 0.5}, prev_indicator_values={"macd_5m": 0.2}
+            rule, {"macd_5m_NSE_EQ|TEST": 0.5}, prev_indicator_values={"macd_5m_NSE_EQ|TEST": 0.2}
         ) is False
 
     def test_crosses_above_no_prev(self):
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("macd", "5m", "crosses_above", 0.0)
-        assert evaluate_indicator_trigger(rule, {"macd_5m": 0.5}) is False
+        assert evaluate_indicator_trigger(rule, {"macd_5m_NSE_EQ|TEST": 0.5}) is False
 
     def test_crosses_below(self):
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "15m", "crosses_below", 30.0)
         assert evaluate_indicator_trigger(
-            rule, {"rsi_15m": 28.0}, prev_indicator_values={"rsi_15m": 32.0}
+            rule, {"rsi_15m_NSE_EQ|TEST": 28.0}, prev_indicator_values={"rsi_15m_NSE_EQ|TEST": 32.0}
         ) is True
 
     def test_crosses_below_not_crossed(self):
@@ -113,14 +113,14 @@ class TestIndicatorTriggerCrosses:
 
         rule = _make_indicator_rule("rsi", "15m", "crosses_below", 30.0)
         assert evaluate_indicator_trigger(
-            rule, {"rsi_15m": 28.0}, prev_indicator_values={"rsi_15m": 25.0}
+            rule, {"rsi_15m_NSE_EQ|TEST": 28.0}, prev_indicator_values={"rsi_15m_NSE_EQ|TEST": 25.0}
         ) is False
 
     def test_crosses_below_no_prev(self):
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "15m", "crosses_below", 30.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_15m": 28.0}) is False
+        assert evaluate_indicator_trigger(rule, {"rsi_15m_NSE_EQ|TEST": 28.0}) is False
 
 
 # ── Missing / None values ───────────────────────────────────────────
@@ -137,7 +137,7 @@ class TestIndicatorMissingValue:
         from monitor.rule_evaluator import evaluate_indicator_trigger
 
         rule = _make_indicator_rule("rsi", "5m", "lte", 30.0)
-        assert evaluate_indicator_trigger(rule, {"rsi_5m": None}) is False
+        assert evaluate_indicator_trigger(rule, {"rsi_5m_NSE_EQ|TEST": None}) is False
 
 
 # ── Integration with evaluate_rule ──────────────────────────────────
@@ -148,7 +148,7 @@ class TestIndicatorViaEvaluateRule:
         from monitor.rule_evaluator import EvalContext, evaluate_rule
 
         rule = _make_indicator_rule("rsi", "5m", "lte", 30.0)
-        ctx = EvalContext(indicator_values={"rsi_5m": 25.0})
+        ctx = EvalContext(indicator_values={"rsi_5m_NSE_EQ|TEST": 25.0})
         result = evaluate_rule(rule, ctx)
         assert result.fired is True
 
@@ -156,7 +156,7 @@ class TestIndicatorViaEvaluateRule:
         from monitor.rule_evaluator import EvalContext, evaluate_rule
 
         rule = _make_indicator_rule("rsi", "5m", "lte", 30.0)
-        ctx = EvalContext(indicator_values={"rsi_5m": 45.0})
+        ctx = EvalContext(indicator_values={"rsi_5m_NSE_EQ|TEST": 45.0})
         result = evaluate_rule(rule, ctx)
         assert result.fired is False
 
@@ -165,8 +165,8 @@ class TestIndicatorViaEvaluateRule:
 
         rule = _make_indicator_rule("macd", "5m", "crosses_above", 0.0)
         ctx = EvalContext(
-            indicator_values={"macd_5m": 0.5},
-            prev_indicator_values={"macd_5m": -0.3},
+            indicator_values={"macd_5m_NSE_EQ|TEST": 0.5},
+            prev_indicator_values={"macd_5m_NSE_EQ|TEST": -0.3},
         )
         result = evaluate_rule(rule, ctx)
         assert result.fired is True
@@ -176,8 +176,8 @@ class TestIndicatorViaEvaluateRule:
 
         rule = _make_indicator_rule("rsi", "15m", "crosses_below", 30.0)
         ctx = EvalContext(
-            indicator_values={"rsi_15m": 28.0},
-            prev_indicator_values={"rsi_15m": 32.0},
+            indicator_values={"rsi_15m_NSE_EQ|TEST": 28.0},
+            prev_indicator_values={"rsi_15m_NSE_EQ|TEST": 32.0},
         )
         result = evaluate_rule(rule, ctx)
         assert result.fired is True
@@ -227,7 +227,7 @@ class TestIndicatorInCompound:
         )
         ctx = EvalContext(
             market_data={"ltp": 95.0},
-            indicator_values={"rsi_5m": 25.0},
+            indicator_values={"rsi_5m_NSE_EQ|TEST": 25.0},
         )
         result = evaluate_rule(rule, ctx)
         assert result.fired is True
@@ -273,7 +273,7 @@ class TestIndicatorInCompound:
         # Price condition met, but RSI too high (not met)
         ctx = EvalContext(
             market_data={"ltp": 95.0},
-            indicator_values={"rsi_5m": 55.0},
+            indicator_values={"rsi_5m_NSE_EQ|TEST": 55.0},
         )
         result = evaluate_rule(rule, ctx)
         assert result.fired is False
@@ -319,7 +319,7 @@ class TestIndicatorInCompound:
         # Price NOT met, but RSI IS met => OR => fires
         ctx = EvalContext(
             market_data={"ltp": 150.0},
-            indicator_values={"rsi_5m": 25.0},
+            indicator_values={"rsi_5m_NSE_EQ|TEST": 25.0},
         )
         result = evaluate_rule(rule, ctx)
         assert result.fired is True
