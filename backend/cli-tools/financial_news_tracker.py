@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-Financial News Tracker - A tool to fetch and analyze financial news using Perplexity's Sonar API.
-This tool provides real-time financial market insights, news summaries, and market analysis.
+Financial News Tracker - A tool to fetch and analyze financial news using Perplexity's APIs.
+
+Supports two API backends:
+  • Agent API  (POST /v1/agent) — frontier third-party models with web_search tool
+  • Sonar API  (POST /chat/completions) — Perplexity-native sonar models
+
+See https://docs.perplexity.ai/docs/getting-started/overview for full docs.
 """
 
 import argparse
@@ -25,7 +30,6 @@ load_dotenv(os.path.join(_backend_dir, ".env"))
 # Common NSE symbols that need disambiguation (global name conflicts)
 NSE_SYMBOL_MAP = {
     "MAZDOCK": "Mazagon Dock Shipbuilders",
-    "TATAMOTORS": "Tata Motors",
     "TATAMOTORS": "Tata Motors",
     "RELIANCE": "Reliance Industries",
     "TCS": "Tata Consultancy Services",
@@ -136,13 +140,46 @@ class FinancialNewsResult(BaseModel):
     recommendations: List[str] = Field(description="Investment recommendations or insights")
 
 
+# ---------------------------------------------------------------------------
+# API backend helpers
+# ---------------------------------------------------------------------------
+
+# Sonar-native model identifiers (use Sonar API at /chat/completions)
+SONAR_MODELS = {"sonar", "sonar-pro", "sonar-reasoning", "sonar-reasoning-pro", "sonar-deep-research"}
+
+# Agent API presets (shorthand names that resolve to a model + system prompt)
+AGENT_PRESETS = {"fast-search", "pro-search", "deep-research"}
+
+# Default frontier model for the Agent API (highest accuracy third-party model)
+DEFAULT_AGENT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+
+# Default Sonar model (highest accuracy Perplexity-native model)
+DEFAULT_SONAR_MODEL = "sonar-pro"
+
+
+def _is_sonar_model(model: str) -> bool:
+    """Return True if *model* should be routed through the Sonar chat/completions API."""
+    return model in SONAR_MODELS
+
+
+def _is_agent_preset(model: str) -> bool:
+    """Return True if *model* is actually an Agent API preset name."""
+    return model in AGENT_PRESETS
+
+
 class FinancialNewsTracker:
-    """A class to interact with Perplexity Sonar API for financial news tracking."""
+    """A class to interact with Perplexity APIs for financial news tracking.
 
-    API_URL = "https://api.perplexity.ai/chat/completions"
-    DEFAULT_MODEL = "sonar-pro"
+    Automatically selects the right backend:
+      • Agent API  (/v1/agent)         — for third-party models & presets
+      • Sonar API  (/chat/completions) — for Perplexity-native sonar models
+    """
 
-    # Models that support structured outputs
+    AGENT_API_URL = "https://api.perplexity.ai/v1/agent"
+    SONAR_API_URL = "https://api.perplexity.ai/v1/sonar"
+    DEFAULT_MODEL = DEFAULT_AGENT_MODEL
+
+    # Models that support structured outputs (Sonar API only)
     STRUCTURED_OUTPUT_MODELS = ["sonar", "sonar-pro", "sonar-reasoning", "sonar-reasoning-pro"]
 
     def __init__(self, api_key: Optional[str] = None):
@@ -179,6 +216,10 @@ class FinancialNewsTracker:
 
         return ""
 
+    # --------------------------------------------------------------------- #
+    # Public entry point                                                      #
+    # --------------------------------------------------------------------- #
+
     def get_financial_news(
         self,
         query: str,
@@ -189,11 +230,16 @@ class FinancialNewsTracker:
         """
         Fetch financial news based on the query.
 
+        Routes to the Agent API or Sonar API depending on the model chosen.
+
         Args:
             query: The financial topic or query (e.g., "tech stocks", "S&P 500", "cryptocurrency")
             time_range: Time range for news (e.g., "24h", "1w", "1m")
-            model: The Perplexity model to use
-            use_structured_output: Whether to use structured output API
+            model: The model to use.  Accepts:
+                   - Agent API third-party models (e.g. "anthropic/claude-opus-4-6")
+                   - Agent API presets            (e.g. "pro-search")
+                   - Sonar models                 (e.g. "sonar-reasoning-pro")
+            use_structured_output: Whether to use structured output (Sonar API only)
 
         Returns:
             The parsed response containing financial news and analysis.
@@ -201,10 +247,159 @@ class FinancialNewsTracker:
         if not query or not query.strip():
             return {"error": "Query is empty. Please provide a financial topic to search."}
 
-        # Transform NSE symbols for better API results
-        transformed_query = _transform_nse_query(query)
+        if _is_sonar_model(model):
+            return self._fetch_via_sonar(query, time_range, model, use_structured_output)
+        else:
+            return self._fetch_via_agent(query, time_range, model)
 
+    # --------------------------------------------------------------------- #
+    # Agent API backend  (POST /v1/agent)                                     #
+    # --------------------------------------------------------------------- #
+
+    def _fetch_via_agent(
+        self,
+        query: str,
+        time_range: str,
+        model: str,
+    ) -> Dict[str, Any]:
+        """Use the Agent API with web_search tool for highest accuracy."""
+
+        transformed_query = _transform_nse_query(query)
         today_str = datetime.now().strftime("%Y-%m-%d")
+        time_context = self._get_time_context(time_range)
+        cutoff_date = self._date_cutoff(time_range)
+
+        date_constraint = ""
+        if cutoff_date:
+            date_constraint = f"\n- HARD DATE CUTOFF: Only use sources published on or after {cutoff_date}. Discard anything older."
+
+        instructions = f"""You are a professional financial analyst with expertise in market research and news analysis.
+Your task is to provide comprehensive financial news updates and market analysis.
+Focus on accuracy, relevance, and actionable insights.
+
+CRITICAL FRESHNESS RULES:
+- Today is {today_str}. Only cite sources from within the requested time window ({time_context}).{date_constraint}
+- State the publication date of every news item you cite (YYYY-MM-DD).
+- If you cannot confirm a source's date, mark it "date not confirmed" and de-prioritize it.
+- Never present year-old or generic analysis as "recent". Reject stale material.
+
+You have access to a web_search tool. Use it proactively to find the freshest financial data.
+Use 2-4 focused search queries to cover different angles (price action, fundamentals, news, analyst views).
+Append "today" or "this week" or "{today_str}" to your search queries to bias toward recent results.
+Keep queries brief: 2-5 words each. NEVER ask permission to search — just search."""
+
+        user_input = f"""Provide a comprehensive financial news update and analysis for: {transformed_query}
+
+Time period: {time_context} (as of {today_str})
+
+Please include:
+1. Recent relevant news items with their potential market impact (include each item's publication date)
+2. Overall market sentiment and analysis
+3. Key market drivers and risks
+4. Sectors or companies most affected
+5. Investment insights or recommendations
+
+Focus on the most significant and recent developments. Exclude anything outside the time window."""
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        data: Dict[str, Any] = {
+            "input": user_input,
+            "instructions": instructions,
+            "tools": [{"type": "web_search"}],
+        }
+
+        # If it's a preset name, use that; otherwise specify the model
+        if _is_agent_preset(model):
+            data["preset"] = model
+        else:
+            data["model"] = model
+
+        try:
+            response = requests.post(self.AGENT_API_URL, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+
+            return self._parse_agent_response(result)
+
+        except requests.exceptions.RequestException as e:
+            return {"error": f"Agent API request failed: {str(e)}"}
+        except Exception as e:
+            return {"error": f"Unexpected error: {str(e)}"}
+
+    def _parse_agent_response(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse the Agent API response structure.
+
+        Agent API responses have an ``output`` array containing items of different
+        types: ``search_results``, ``fetch_url_results``, and ``message``.
+        """
+        parsed: Dict[str, Any] = {}
+
+        if result.get("status") == "failed":
+            error = result.get("error", {})
+            return {"error": f"Agent API error: {error.get('message', 'Unknown error')}"}
+
+        output_items = result.get("output", [])
+        search_sources: List[Dict[str, Any]] = []
+        content_text = ""
+
+        for item in output_items:
+            item_type = item.get("type", "")
+
+            if item_type == "search_results":
+                # Collect search result metadata (titles, urls, dates)
+                for sr in item.get("results", []):
+                    search_sources.append({
+                        "title": sr.get("title", ""),
+                        "url": sr.get("url", ""),
+                        "date": sr.get("date", ""),
+                        "snippet": sr.get("snippet", ""),
+                    })
+
+            elif item_type == "message":
+                # Extract the assistant's text content
+                for content_block in item.get("content", []):
+                    if content_block.get("type") == "output_text":
+                        content_text += content_block.get("text", "")
+
+        parsed["raw_response"] = content_text
+
+        # Attach search sources as citations
+        if search_sources:
+            parsed["citations"] = [s["url"] for s in search_sources if s.get("url")]
+            parsed["search_results"] = search_sources
+
+        # Include usage/cost info if available
+        usage = result.get("usage")
+        if usage:
+            parsed["usage"] = usage
+
+        # Include model that was actually used
+        if result.get("model"):
+            parsed["model_used"] = result["model"]
+
+        return parsed
+
+    # --------------------------------------------------------------------- #
+    # Sonar API backend  (POST /chat/completions)                             #
+    # --------------------------------------------------------------------- #
+
+    def _fetch_via_sonar(
+        self,
+        query: str,
+        time_range: str,
+        model: str,
+        use_structured_output: bool,
+    ) -> Dict[str, Any]:
+        """Use the Sonar chat/completions API (Perplexity-native models)."""
+
+        transformed_query = _transform_nse_query(query)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        time_context = self._get_time_context(time_range)
+
         system_prompt = f"""You are a professional financial analyst with expertise in market research and news analysis.
         Your task is to provide comprehensive financial news updates and market analysis.
         Focus on accuracy, relevance, and actionable insights.
@@ -214,8 +409,6 @@ class FinancialNewsTracker:
         - State the publication date of every news item you cite (YYYY-MM-DD).
         - If you cannot confirm a source's date, mark it "date not confirmed" and de-prioritize it.
         - Never present year-old or generic analysis as "recent". Reject stale material."""
-
-        time_context = self._get_time_context(time_range)
 
         user_prompt = f"""Provide a comprehensive financial news update and analysis for: {transformed_query}
 
@@ -236,7 +429,7 @@ Focus on the most significant and recent developments. Exclude anything outside 
             "Authorization": f"Bearer {self.api_key}"
         }
 
-        data = {
+        data: Dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -248,6 +441,11 @@ Focus on the most significant and recent developments. Exclude anything outside 
         if recency:
             data["search_recency_filter"] = recency
 
+        # Hard date cutoff — limits search index to recent publications
+        cutoff = self._date_cutoff(time_range)
+        if cutoff:
+            data["search_after_date_filter"] = cutoff
+
         can_use_structured_output = model in self.STRUCTURED_OUTPUT_MODELS and use_structured_output
         if can_use_structured_output:
             data["response_format"] = {
@@ -256,7 +454,7 @@ Focus on the most significant and recent developments. Exclude anything outside 
             }
 
         try:
-            response = requests.post(self.API_URL, headers=headers, json=data)
+            response = requests.post(self.SONAR_API_URL, headers=headers, json=data)
             response.raise_for_status()
             result = response.json()
 
@@ -264,19 +462,36 @@ Focus on the most significant and recent developments. Exclude anything outside 
 
             if "choices" in result and result["choices"] and "message" in result["choices"][0]:
                 content = result["choices"][0]["message"]["content"]
+                
+                # Extract reasoning if available (e.g. from sonar-reasoning-pro models)
+                reasoning = None
+                if "<think>" in content and "</think>" in content:
+                    parts = content.split("</think>", 1)
+                    reasoning = parts[0].replace("<think>", "").strip()
+                    content = parts[1].strip()
 
                 if can_use_structured_output:
                     try:
-                        parsed = json.loads(content)
+                        clean_content = content
+                        if clean_content.startswith("```json"):
+                            clean_content = clean_content.split("```json")[-1].rsplit("```", 1)[0].strip()
+                        elif clean_content.startswith("```"):
+                            clean_content = clean_content.split("```")[-1].rsplit("```", 1)[0].strip()
+
+                        parsed = json.loads(clean_content)
                         if citations and "citations" not in parsed:
                             parsed["citations"] = citations
+                        if reasoning:
+                            parsed["reasoning"] = reasoning
                         return parsed
                     except json.JSONDecodeError as e:
-                        return {"error": f"Failed to parse structured output: {str(e)}", "raw_response": content, "citations": citations}
+                        return {"error": f"Failed to parse structured output: {str(e)}", "raw_response": content, "citations": citations, "reasoning": reasoning}
                 else:
                     parsed = self._parse_response(content)
                     if citations and "citations" not in parsed:
                         parsed["citations"] = citations
+                    if reasoning:
+                        parsed["reasoning"] = reasoning
                     return parsed
 
             return {"error": "Unexpected API response format", "raw_response": result}
@@ -286,15 +501,41 @@ Focus on the most significant and recent developments. Exclude anything outside 
         except Exception as e:
             return {"error": f"Unexpected error: {str(e)}"}
 
+    # --------------------------------------------------------------------- #
+    # Shared helpers                                                          #
+    # --------------------------------------------------------------------- #
+
     def _recency_filter_for(self, time_range: str) -> Optional[str]:
         """Map CLI time_range to Perplexity search_recency_filter enum."""
         return {
+            "1h": "hour",
             "24h": "day",
             "1w": "week",
             "1m": "month",
             "3m": "month",
             "1y": "year",
         }.get(time_range)
+
+    def _date_cutoff(self, time_range: str) -> Optional[str]:
+        """Return a hard date cutoff string in MM/DD/YYYY format for the given time_range.
+
+        This is used with Perplexity's ``search_after_date_filter`` parameter to
+        restrict the search index to only recent publications.
+        """
+        now = datetime.now()
+        delta_map = {
+            "1h": timedelta(hours=1),
+            "24h": timedelta(days=1),
+            "1w": timedelta(weeks=1),
+            "1m": timedelta(days=30),
+            "3m": timedelta(days=90),
+            "1y": timedelta(days=365),
+        }
+        delta = delta_map.get(time_range)
+        if delta is None:
+            return None
+        cutoff = now - delta
+        return cutoff.strftime("%-m/%-d/%Y")
 
     def _get_time_context(self, time_range: str) -> str:
         """
@@ -308,7 +549,9 @@ Focus on the most significant and recent developments. Exclude anything outside 
         """
         now = datetime.now()
 
-        if time_range == "24h":
+        if time_range == "1h":
+            return "Last hour"
+        elif time_range == "24h":
             return "Last 24 hours"
         elif time_range == "1w":
             return "Last 7 days"
@@ -365,9 +608,16 @@ def display_results(results: Dict[str, Any], format_json: bool = False):
         print(json.dumps(results, indent=2))
         return
 
+    if "model_used" in results:
+        print(f"\n🤖 Model: {results['model_used']}")
+
     if "query_topic" in results:
         print(f"\n📊 FINANCIAL NEWS REPORT: {results['query_topic']}")
         print(f"📅 Period: {results.get('time_period', 'Recent')}")
+
+        if "reasoning" in results:
+            print(f"\n🧠 REASONING:")
+            print(f"{results['reasoning']}\n")
 
         if "summary" in results:
             print(f"\n📝 EXECUTIVE SUMMARY:")
@@ -421,16 +671,50 @@ def display_results(results: Dict[str, Any], format_json: bool = False):
         print("\n📊 FINANCIAL NEWS ANALYSIS:")
         print(results["raw_response"])
 
+    # Show citations (URLs from either API)
     if "citations" in results and results["citations"]:
         print("\n📚 Sources:")
         for citation in results["citations"]:
             print(f"  • {citation}")
 
+    # Show search result metadata if available (Agent API)
+    if "search_results" in results and results["search_results"]:
+        # Sort by date descending (newest first) and limit to 10
+        sr_list = list(results["search_results"])
+        sr_list.sort(key=lambda s: s.get("date", "0000-00-00"), reverse=True)
+        sr_list = sr_list[:10]
+
+        print(f"\n🔍 Search Results Referenced ({len(sr_list)} most recent):")
+        for i, sr in enumerate(sr_list, 1):
+            title = sr.get("title", "Untitled")
+            url = sr.get("url", "")
+            date = sr.get("date", "unknown date")
+            print(f"  {i}. [{date}] {title}")
+            if url:
+                print(f"     {url}")
+
+    # Show usage/cost if available
+    if "usage" in results:
+        usage = results["usage"]
+        cost = usage.get("cost", {})
+        total_cost = cost.get("total_cost")
+        if total_cost is not None:
+            print(f"\n💰 API Cost: ${total_cost:.5f}")
+
 
 def main():
     """Main entry point for the financial news tracker CLI."""
+    model_help = (
+        f"Model to use. Accepts:\n"
+        f"  Agent API models: anthropic/claude-opus-4-6, openai/gpt-5.4, google/gemini-3.1-pro-preview, etc.\n"
+        f"  Agent API presets: pro-search, fast-search, deep-research\n"
+        f"  Sonar models:     sonar, sonar-pro, sonar-reasoning-pro\n"
+        f"  (default: {FinancialNewsTracker.DEFAULT_MODEL})"
+    )
+
     parser = argparse.ArgumentParser(
-        description="Financial News Tracker - Fetch and analyze financial news using Perplexity Sonar API"
+        description="Financial News Tracker - Fetch and analyze financial news using Perplexity APIs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     parser.add_argument(
@@ -444,7 +728,7 @@ def main():
         "--time-range",
         type=str,
         default="24h",
-        choices=["24h", "1w", "1m", "3m", "1y"],
+        choices=["1h", "24h", "1w", "1m", "3m", "1y"],
         help="Time range for news (default: 24h)"
     )
 
@@ -453,7 +737,7 @@ def main():
         "--model",
         type=str,
         default=FinancialNewsTracker.DEFAULT_MODEL,
-        help=f"Perplexity model to use (default: {FinancialNewsTracker.DEFAULT_MODEL})"
+        help=model_help,
     )
 
     parser.add_argument(
@@ -473,7 +757,7 @@ def main():
     parser.add_argument(
         "--structured-output",
         action="store_true",
-        help="Enable structured output format (requires Tier 3+ API access)"
+        help="Enable structured output format (Sonar models only, requires Tier 3+ API access)"
     )
 
     args = parser.parse_args()
@@ -481,7 +765,8 @@ def main():
     try:
         tracker = FinancialNewsTracker(api_key=args.api_key)
 
-        print(f"Fetching financial news for '{args.query}'...", file=sys.stderr)
+        backend = "Agent API" if not _is_sonar_model(args.model) else "Sonar API"
+        print(f"Fetching financial news for '{args.query}' via {backend} [{args.model}]...", file=sys.stderr)
 
         results = tracker.get_financial_news(
             query=args.query,
