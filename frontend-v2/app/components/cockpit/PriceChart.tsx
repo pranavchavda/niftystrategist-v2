@@ -71,6 +71,27 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
 
     const container = chartContainerRef.current;
 
+    // Intraday timeframes use unix-second timestamps; daily/weekly use YYYY-MM-DD
+    // strings. Render everything in IST (Asia/Kolkata) regardless of browser tz.
+    const intraday = activeTimeframe === '1D' || activeTimeframe === '5D';
+    const fmtIstTime = (t: Time): string => {
+      if (typeof t === 'number') {
+        return new Date(t * 1000).toLocaleTimeString('en-IN', {
+          hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata',
+        });
+      }
+      return String(t);
+    };
+    const fmtIstDateTime = (t: Time): string => {
+      if (typeof t === 'number') {
+        return new Date(t * 1000).toLocaleString('en-IN', {
+          day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+          hour12: false, timeZone: 'Asia/Kolkata',
+        }) + ' IST';
+      }
+      return String(t);
+    };
+
     const chart = createChart(container, {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
@@ -103,7 +124,11 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
       },
       timeScale: {
         borderColor: isDark ? 'rgba(63, 63, 70, 0.5)' : 'rgba(228, 228, 231, 0.7)',
-        timeVisible: activeTimeframe === '1D' || activeTimeframe === '5D',
+        timeVisible: intraday,
+        tickMarkFormatter: intraday ? (t: Time) => fmtIstTime(t) : undefined,
+      },
+      localization: {
+        timeFormatter: intraday ? fmtIstDateTime : undefined,
       },
       handleScroll: { vertTouchDrag: false },
     });

@@ -402,7 +402,7 @@ export default function ScalpSessionsRoute() {
                                     )}
                                   </span>
                                   <span className="ml-auto text-zinc-400">
-                                    {log.created_at && new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                    {log.created_at && new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Kolkata' })} IST
                                   </span>
                                 </div>
                               ))}
@@ -449,7 +449,7 @@ export default function ScalpSessionsRoute() {
                   </span>
                 )}
                 <span className="ml-auto text-zinc-400">
-                  {log.created_at && new Date(log.created_at).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short' })}
+                  {log.created_at && new Date(log.created_at).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' })} IST
                 </span>
               </div>
             ))}

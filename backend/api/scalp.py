@@ -1,7 +1,7 @@
 """Scalp session management API — CRUD for stateful options scalping sessions."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -60,6 +60,17 @@ class UpdateSessionRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _iso_utc(dt: datetime | None) -> str | None:
+    """ISO-format a naive UTC datetime with an explicit +00:00 suffix so that
+    browsers parse it as UTC instead of local time. All DB datetimes here are
+    naive TIMESTAMP-without-time-zone storing UTC instants (see CLAUDE.md)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 def _serialize_session(row) -> dict:
     return {
         "id": row.id,
@@ -87,12 +98,12 @@ def _serialize_session(row) -> dict:
         "current_instrument_token": row.current_instrument_token,
         "current_tradingsymbol": row.current_tradingsymbol,
         "entry_price": row.entry_price,
-        "entry_time": row.entry_time.isoformat() if row.entry_time else None,
+        "entry_time": _iso_utc(row.entry_time),
         "highest_premium": row.highest_premium,
         "trade_count": row.trade_count or 0,
-        "last_exit_time": row.last_exit_time.isoformat() if row.last_exit_time else None,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "last_exit_time": _iso_utc(row.last_exit_time),
+        "created_at": _iso_utc(row.created_at),
+        "updated_at": _iso_utc(row.updated_at),
     }
 
 
@@ -109,7 +120,7 @@ def _serialize_log(log) -> dict:
         "pnl_amount": log.pnl_amount,
         "order_id": log.order_id,
         "underlying_price": log.underlying_price,
-        "created_at": log.created_at.isoformat() if log.created_at else None,
+        "created_at": _iso_utc(log.created_at),
     }
 
 
