@@ -58,6 +58,8 @@ interface SessionLog {
   order_id: string | null;
   underlying_price: number | null;
   created_at: string | null;
+  session_id?: number;
+  session_name?: string;
 }
 
 interface PnlSummary {
@@ -128,6 +130,23 @@ export default function ScalpSessionsRoute() {
   }, [authToken]);
 
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
+
+  const fetchAllLogs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/scalp/logs?limit=200', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!res.ok) throw new Error('Failed to fetch logs');
+      const data = await res.json();
+      setAllLogs(data.logs || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load logs');
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    if (activeTab === 'logs') fetchAllLogs();
+  }, [activeTab, fetchAllLogs]);
 
   // Fetch expiries when underlying changes
   useEffect(() => {
@@ -398,7 +417,45 @@ export default function ScalpSessionsRoute() {
             ))}
           </div>
         )
-      ) : null}
+      ) : (
+        allLogs.length === 0 ? (
+          <div className="bg-zinc-100 dark:bg-zinc-800/50 rounded-xl border border-zinc-300 dark:border-zinc-700/50 p-12 text-center">
+            <Clock className="w-8 h-8 text-zinc-400 mx-auto mb-3" />
+            <h3 className="text-lg font-semibold text-zinc-700 dark:text-zinc-300 mb-2">No logs yet</h3>
+            <p className="text-sm text-zinc-500">Logs appear as sessions fire entries, exits, and errors.</p>
+          </div>
+        ) : (
+          <div className="bg-zinc-100 dark:bg-zinc-800/50 rounded-xl border border-zinc-300 dark:border-zinc-700/50 divide-y divide-zinc-200 dark:divide-zinc-700/50">
+            {allLogs.map(log => (
+              <div key={log.id} className="p-3 flex items-center gap-3 flex-wrap text-xs">
+                {eventBadge(log.event_type)}
+                <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                  {log.session_name || `Session ${log.session_id ?? ''}`}
+                </span>
+                {log.option_type && log.strike != null && (
+                  <span className="text-zinc-600 dark:text-zinc-400">
+                    {log.option_type} {log.strike}
+                  </span>
+                )}
+                {log.entry_price != null && (
+                  <span className="text-zinc-500">entry={log.entry_price}</span>
+                )}
+                {log.exit_price != null && (
+                  <span className="text-zinc-500">exit={log.exit_price}</span>
+                )}
+                {log.pnl_amount != null && (
+                  <span className={log.pnl_amount >= 0 ? 'text-green-600' : 'text-red-600'}>
+                    P&amp;L: {log.pnl_amount >= 0 ? '+' : ''}{log.pnl_amount.toFixed(2)}
+                  </span>
+                )}
+                <span className="ml-auto text-zinc-400">
+                  {log.created_at && new Date(log.created_at).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short' })}
+                </span>
+              </div>
+            ))}
+          </div>
+        )
+      )}
 
       {/* Create Dialog */}
       <Dialog open={showCreate} onClose={() => setShowCreate(false)}>

@@ -290,6 +290,28 @@ async def api_get_session_logs(
 
 
 # ---------------------------------------------------------------------------
+# GET /logs — event logs across all the user's sessions
+# ---------------------------------------------------------------------------
+@router.get("/logs")
+async def api_get_user_logs(
+    limit: int = Query(default=100, ge=1, le=500, description="Max log entries"),
+    user: User = Depends(get_current_user),
+):
+    """Get event logs across all of the current user's scalp sessions."""
+    async with get_db_context() as session:
+        rows = await scalp_crud.list_sessions(session, user.id, enabled_only=False)
+        name_map = {r.id: r.name for r in rows}
+        logs = await scalp_crud.get_user_logs(session, user.id, limit=limit)
+        out = []
+        for l in logs:
+            item = _serialize_log(l)
+            item["session_id"] = l.session_id
+            item["session_name"] = name_map.get(l.session_id, f"Session {l.session_id}")
+            out.append(item)
+        return {"logs": out}
+
+
+# ---------------------------------------------------------------------------
 # GET /sessions/{session_id}/pnl — P&L summary
 # ---------------------------------------------------------------------------
 @router.get("/sessions/{session_id}/pnl")
