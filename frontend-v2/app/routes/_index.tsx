@@ -18,6 +18,7 @@ import {
   ChatBubbleLeftRightIcon,
   LightBulbIcon,
   ShieldCheckIcon,
+  FireIcon,
 } from '@heroicons/react/24/outline';
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
@@ -48,6 +49,14 @@ const sections = [
       'IFTTT-style rules engine for automated trade triggers.',
     icon: BellAlertIcon,
     href: '/monitor',
+    permission: 'chat.access',
+  },
+  {
+    title: 'Scalp Sessions',
+    description:
+      'Stateful options scalping sessions with UT Bot signals.',
+    icon: FireIcon,
+    href: '/scalp-sessions',
     permission: 'chat.access',
   },
   {
