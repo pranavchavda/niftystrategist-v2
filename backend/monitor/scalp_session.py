@@ -55,12 +55,24 @@ class ScalpSessionManager:
     # ── Lifecycle ────────────────────────────────────────────────────
 
     async def load_sessions(self) -> None:
-        """Load enabled sessions from DB into memory. Called each poll cycle."""
+        """Load enabled sessions from DB into memory. Called each poll cycle.
+
+        Preserves in-memory runtime state across reloads: DB provides config
+        (possibly edited by user) but transient runtime fields like entry_price
+        and highest_premium live in memory and are only persisted at state
+        transitions. Wholesale replacement would reset them every 30s.
+        """
         from database.session import get_db_context
         from monitor.scalp_crud import get_enabled_sessions, db_to_session
 
         async with get_db_context() as db:
             rows = await get_enabled_sessions(db)
+
+        # Index existing sessions by id so we can preserve their runtime.
+        existing: dict[int, ScalpSession] = {}
+        for sessions in self._sessions.values():
+            for s in sessions:
+                existing[s.id] = s
 
         new_sessions: dict[int, list[ScalpSession]] = {}
         new_underlying_map: dict[str, list[int]] = {}
@@ -68,6 +80,10 @@ class ScalpSessionManager:
 
         for row in rows:
             session = db_to_session(row)
+            prior = existing.get(row.id)
+            if prior is not None:
+                # Keep live runtime; config may have been edited via UI/API.
+                session.runtime = prior.runtime
             uid = session.user_id
             new_sessions.setdefault(uid, []).append(session)
 
@@ -185,11 +201,14 @@ class ScalpSessionManager:
             elif bearish_flip:
                 await self._try_enter(session, "PE", ltp)
         elif rt.state == ScalpState.HOLDING_CE and bearish_flip:
-            # UT Bot reversal while holding CE → exit
-            await self._exit_position(session, "exit_reversal", ltp)
+            # UT Bot reversal while holding CE → exit.
+            # Use last-seen premium LTP, NOT underlying `ltp` (unit mismatch
+            # would corrupt P&L — e.g. 24205 underlying vs 159 premium entry
+            # reported ₹15L phantom profit on 2026-04-17).
+            await self._exit_position(session, "exit_reversal", rt.last_premium_ltp)
         elif rt.state == ScalpState.HOLDING_PE and bullish_flip:
-            # UT Bot reversal while holding PE → exit
-            await self._exit_position(session, "exit_reversal", ltp)
+            # UT Bot reversal while holding PE → exit.
+            await self._exit_position(session, "exit_reversal", rt.last_premium_ltp)
 
     async def _process_premium_tick(
         self, session: ScalpSession, ltp: float
@@ -197,6 +216,10 @@ class ScalpSessionManager:
         """Check SL/target/trail on the held option premium."""
         rt = session.runtime
         cfg = session.config
+
+        # Track last premium LTP so reversal exits (driven by underlying ticks)
+        # can report/compute P&L in premium space.
+        rt.last_premium_ltp = ltp
 
         # Set entry_price on first premium tick if not yet set
         if rt.entry_price is None:
@@ -454,6 +477,7 @@ class ScalpSessionManager:
         rt.entry_price = None
         rt.entry_time = None
         rt.highest_premium = None
+        rt.last_premium_ltp = None
         rt.trade_count += 1
         rt.last_exit_time = datetime.utcnow()
 

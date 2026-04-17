@@ -62,6 +62,7 @@ class ScalpSessionRuntime(BaseModel):
     entry_price: float | None = None
     entry_time: datetime | None = None
     highest_premium: float | None = None
+    last_premium_ltp: float | None = None
     trade_count: int = 0
     last_exit_time: datetime | None = None
 
