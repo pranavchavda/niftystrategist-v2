@@ -229,6 +229,14 @@ class ScalpSessionManager:
                 "Session %d: entry_price set from first premium tick: %.2f",
                 session.id, ltp,
             )
+            # Patch the entry log row so historical P&L analysis has the pair.
+            try:
+                from database.session import get_db_context
+                from monitor.scalp_crud import backfill_entry_price
+                async with get_db_context() as db:
+                    await backfill_entry_price(db, session.id, ltp)
+            except Exception as e:
+                logger.error("Session %d: entry_price backfill failed: %s", session.id, e)
             return
 
         # Track highest premium for trailing stop
@@ -277,7 +285,9 @@ class ScalpSessionManager:
                         "Session %d: time squareoff at %s IST",
                         session.id, session.config.squareoff_time,
                     )
-                    await self._exit_position(session, "exit_squareoff")
+                    await self._exit_position(
+                        session, "exit_squareoff", session.runtime.last_premium_ltp
+                    )
 
     # ── Entry ────────────────────────────────────────────────────────
 
@@ -296,6 +306,23 @@ class ScalpSessionManager:
         if cfg.max_trades and rt.trade_count >= cfg.max_trades:
             logger.info("Session %d: max_trades reached (%d)", session.id, cfg.max_trades)
             return
+
+        # Past squareoff_time guard — prevents the wasteful
+        # enter→immediate-squareoff cycle observed 2026-04-17 15:15-15:32
+        # where 4 back-to-back entries each got squared off the next poll.
+        from zoneinfo import ZoneInfo
+        ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        try:
+            hour, minute = (int(p) for p in cfg.squareoff_time.split(":"))
+            squareoff_dt = ist_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if ist_now >= squareoff_dt:
+                logger.info(
+                    "Session %d: past squareoff time (%s IST) — skip entry",
+                    session.id, cfg.squareoff_time,
+                )
+                return
+        except Exception:
+            pass
 
         # Cooldown guard
         if rt.last_exit_time:
@@ -334,6 +361,30 @@ class ScalpSessionManager:
             tradingsymbol = inst_info.get("tradingsymbol", "")
             lot_size = get_lot_size(cfg.underlying)
             quantity = cfg.lots * lot_size
+
+            # Cross-session mutex on instrument — prevents two sessions on the
+            # same user from holding the same option contract. Observed on
+            # 2026-04-17: sessions 3 and 5 both held 24300 CE; premium_map only
+            # routes ticks to one, stranding the other with entry_price=NULL.
+            pkey = f"{cfg.user_id}:{instrument_key}"
+            existing_sid = self._premium_map.get(pkey)
+            if existing_sid and existing_sid != session.id:
+                other = self.get_session_by_id(existing_sid)
+                if other and other.is_holding:
+                    logger.warning(
+                        "Session %d: skip entry — session %d already holds %s",
+                        session.id, existing_sid, instrument_key,
+                    )
+                    await self._log_event(
+                        session, "order_failed", option_type=option_type,
+                        strike=atm_strike, instrument_token=instrument_key,
+                        underlying_price=underlying_price,
+                        trigger_snapshot={
+                            "reason": "instrument_held_by_session",
+                            "other_session_id": existing_sid,
+                        },
+                    )
+                    return
 
             logger.info(
                 "Session %d: ENTRY %s — ATM strike=%.0f inst=%s qty=%d (underlying=%.2f)",

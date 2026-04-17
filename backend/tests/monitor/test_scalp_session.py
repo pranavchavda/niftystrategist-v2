@@ -35,7 +35,7 @@ def _make_session(
         sl_points=30.0,
         target_points=50.0,
         trail_percent=10.0,
-        squareoff_time="15:15",
+        squareoff_time="23:59",
         max_trades=20,
         cooldown_seconds=60,
     )
@@ -154,6 +154,20 @@ class TestEntryGuards:
         with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
             await mgr._try_enter(session, "CE", 24350.0)
             mock_enter.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_past_squareoff_time_blocks_entry(self):
+        """New entries after squareoff_time waste brokerage (enter→immediate squareoff)."""
+        from zoneinfo import ZoneInfo
+        mgr = _make_manager()
+        session = _make_session()
+        ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        past = ist_now.replace(second=0, microsecond=0) - timedelta(minutes=5)
+        session.config.squareoff_time = f"{past.hour:02d}:{past.minute:02d}"
+
+        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+            await mgr._try_enter(session, "CE", 24350.0)
+            mock_enter.assert_not_called()
 
 
 # ── Premium exit conditions ──────────────────────────────────────────
@@ -293,6 +307,32 @@ class TestEntryPosition:
             assert call_kwargs.kwargs.get("transaction_type") == "BUY" or call_kwargs[1].get("transaction_type") == "BUY"
 
     @pytest.mark.asyncio
+    async def test_cross_session_instrument_mutex(self):
+        """Another session already holding the same instrument blocks entry."""
+        mgr = _make_manager()
+        holder = _make_session(
+            session_id=1,
+            state=ScalpState.HOLDING_CE,
+            current_instrument_token="NSE_FO|43885",
+        )
+        new_session = _make_session(session_id=2)
+        mgr._sessions = {999: [holder, new_session]}
+        mgr._premium_map = {"999:NSE_FO|43885": holder.id}
+
+        fake_inst = {"instrument_key": "NSE_FO|43885", "tradingsymbol": "NIFTY26APR24350CE"}
+        with patch("strategies.fno_utils.resolve_option_instrument", return_value=fake_inst), \
+             patch("strategies.fno_utils.list_strikes", return_value=[24350]), \
+             patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._enter_position(new_session, "CE", 24340.0)
+
+            assert new_session.runtime.state == ScalpState.IDLE
+            mock_order.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_entry_failure_stays_idle(self):
         mgr = _make_manager()
         session = _make_session()
@@ -346,6 +386,27 @@ class TestExitPosition:
             log_call = mgr._log_event.call_args
             assert log_call.kwargs.get("pnl_points") == -30.0  # 170 - 200
             assert log_call.kwargs.get("pnl_amount") == -750.0  # -30 * 25
+
+    @pytest.mark.asyncio
+    async def test_squareoff_uses_last_premium_ltp(self):
+        """Time-based squareoff must pass premium LTP so P&L isn't null."""
+        from zoneinfo import ZoneInfo
+        mgr = _make_manager()
+        ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        past = ist_now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+            last_premium_ltp=185.0,
+        )
+        session.config.squareoff_time = f"{past.hour:02d}:{past.minute:02d}"
+        mgr._sessions = {999: [session]}
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+            await mgr.check_time_squareoff()
+            mock_exit.assert_called_once_with(session, "exit_squareoff", 185.0)
 
     @pytest.mark.asyncio
     async def test_exit_failure_stays_holding(self):

@@ -198,6 +198,34 @@ async def log_event(
     return row
 
 
+async def backfill_entry_price(
+    db: AsyncSession,
+    session_id: int,
+    entry_price: float,
+) -> int | None:
+    """Set entry_price on the most recent entry_* log row for this session
+    that still has a NULL entry_price. Returns the log id updated, or None.
+
+    Entries log BEFORE the fill arrives, so entry_price is not yet known.
+    The first premium tick establishes it and we patch the log row so P&L
+    analysis later can pair entry with exit cleanly.
+    """
+    result = await db.execute(
+        select(ScalpSessionLogDB)
+        .where(ScalpSessionLogDB.session_id == session_id)
+        .where(ScalpSessionLogDB.event_type.in_(["entry_ce", "entry_pe"]))
+        .where(ScalpSessionLogDB.entry_price.is_(None))
+        .order_by(ScalpSessionLogDB.created_at.desc())
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    row.entry_price = entry_price
+    await db.commit()
+    return row.id
+
+
 async def get_session_logs(
     db: AsyncSession,
     session_id: int,
