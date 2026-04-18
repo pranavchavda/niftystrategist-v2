@@ -274,8 +274,8 @@ class FinancialNewsTracker:
             date_constraint = f"\n- HARD DATE CUTOFF: Only use sources published on or after {cutoff_date}. Discard anything older."
 
         instructions = f"""You are a professional financial analyst with expertise in market research and news analysis.
-Your task is to provide comprehensive financial news updates and market analysis.
-Focus on accuracy, relevance, and actionable insights.
+Your task is to provide comprehensive, factual financial news updates and market context.
+Focus on accuracy, relevance, and factual grounding. Do NOT provide investment recommendations, trade advice, or allocation suggestions — report what is happening, not what the reader should do.
 
 CRITICAL FRESHNESS RULES:
 - Today is {today_str}. Only cite sources from within the requested time window ({time_context}).{date_constraint}
@@ -288,7 +288,7 @@ Use 2-4 focused search queries to cover different angles (price action, fundamen
 Append "today" or "this week" or "{today_str}" to your search queries to bias toward recent results.
 Keep queries brief: 2-5 words each. NEVER ask permission to search — just search."""
 
-        user_input = f"""Provide a comprehensive financial news update and analysis for: {transformed_query}
+        user_input = f"""Provide a comprehensive financial news update and market context for: {transformed_query}
 
 Time period: {time_context} (as of {today_str})
 
@@ -297,9 +297,8 @@ Please include:
 2. Overall market sentiment and analysis
 3. Key market drivers and risks
 4. Sectors or companies most affected
-5. Investment insights or recommendations
 
-Focus on the most significant and recent developments. Exclude anything outside the time window."""
+Focus on the most significant and recent developments. Exclude anything outside the time window. Do NOT include investment recommendations, trade advice, buy/sell calls, or allocation suggestions — this briefing is factual context only."""
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -401,8 +400,8 @@ Focus on the most significant and recent developments. Exclude anything outside 
         time_context = self._get_time_context(time_range)
 
         system_prompt = f"""You are a professional financial analyst with expertise in market research and news analysis.
-        Your task is to provide comprehensive financial news updates and market analysis.
-        Focus on accuracy, relevance, and actionable insights.
+        Your task is to provide comprehensive, factual financial news updates and market context.
+        Focus on accuracy, relevance, and factual grounding. Do NOT provide investment recommendations, trade advice, or allocation suggestions — report what is happening, not what the reader should do.
 
         CRITICAL FRESHNESS RULES:
         - Today is {today_str}. Only cite sources from within the requested time window.
@@ -410,7 +409,7 @@ Focus on the most significant and recent developments. Exclude anything outside 
         - If you cannot confirm a source's date, mark it "date not confirmed" and de-prioritize it.
         - Never present year-old or generic analysis as "recent". Reject stale material."""
 
-        user_prompt = f"""Provide a comprehensive financial news update and analysis for: {transformed_query}
+        user_prompt = f"""Provide a comprehensive financial news update and market context for: {transformed_query}
 
 Time period: {time_context} (as of {today_str})
 
@@ -419,9 +418,8 @@ Please include:
 2. Overall market sentiment and analysis
 3. Key market drivers and risks
 4. Sectors or companies most affected
-5. Investment insights or recommendations
 
-Focus on the most significant and recent developments. Exclude anything outside the time window."""
+Focus on the most significant and recent developments. Exclude anything outside the time window. Do NOT include investment recommendations, trade advice, buy/sell calls, or allocation suggestions — this briefing is factual context only."""
 
         headers = {
             "accept": "application/json",

@@ -667,17 +667,15 @@ def _sonar_query(
 
 
 def fetch_news_context(
-    top_symbols: list[str],
     nifty_pct: float,
     verbose: bool = False,
 ) -> dict | None:
-    """Query Perplexity Sonar for market overview + per-stock news.
+    """Query Perplexity Sonar for a market-overview briefing (macro/mood).
 
-    Uses the financial_news_tracker prompt pattern for structured,
-    high-quality analysis per stock.
+    Per-candidate news is handled by ``fetch_upstox_news_for_candidates``
+    (free, batched) — Perplexity here is macro context only.
 
-    Returns dict with keys: market_overview, stock_reports[]
-    or None if API unavailable.
+    Returns dict with key ``market_overview``, or None if API unavailable.
     """
     api_key = _get_perplexity_key()
     if not api_key:
@@ -686,13 +684,14 @@ def fetch_news_context(
         return None
 
     if verbose:
-        print("Phase 3: Fetching market news context...", file=sys.stderr)
+        print("Phase 3: Fetching market overview context...", file=sys.stderr)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     system_prompt = (
         "You are a professional financial analyst with expertise in Indian stock markets. "
-        "Your task is to provide comprehensive financial news updates and market analysis. "
-        "Focus on accuracy, relevance, and actionable insights. "
+        "Your task is to provide comprehensive, factual financial news updates and market context. "
+        "Focus on accuracy, relevance, and factual grounding. Do NOT provide investment recommendations, "
+        "trade advice, or allocation suggestions — report what is happening, not what the reader should do. "
         f"Today is {today_str}. "
         "CRITICAL: Only cite sources published within the last 24 hours. "
         "State the publication date of every news item you reference (YYYY-MM-DD). "
@@ -700,7 +699,6 @@ def fetch_news_context(
         "and de-prioritize it. Never pad with year-old or generic material."
     )
 
-    # Query 1: Market overview
     market_dir = "up" if nifty_pct > 0 else "down" if nifty_pct < 0 else "flat"
     market_prompt = f"""Provide a comprehensive market update for Indian stock markets (NSE/BSE) today ({today_str}).
 Nifty 50 is currently {market_dir} {abs(nifty_pct):.1f}%.
@@ -712,41 +710,74 @@ Please include:
 4. Sector themes driving today's action
 5. Global cues (US markets, Asia, crude oil, dollar/rupee)
 
-Focus only on developments from the last 24 hours. Exclude anything older."""
+Focus only on developments from the last 24 hours. Exclude anything older. Do NOT include investment recommendations, trade advice, buy/sell calls, or allocation suggestions — this briefing is factual context only."""
 
-    if verbose:
-        print("  Fetching market overview...", file=sys.stderr)
     market_result = _sonar_query(api_key, system_prompt, market_prompt)
 
-    # Query 2+: Per-stock analysis for top 3 candidates
-    stock_reports = []
-    symbols_to_query = top_symbols[:3]
-    for sym in symbols_to_query:
+    if verbose:
+        print("  Market overview fetched.", file=sys.stderr)
+
+    return {"market_overview": market_result}
+
+
+def fetch_upstox_news_for_candidates(
+    symbols: list[str],
+    verbose: bool = False,
+) -> dict[str, list[dict]]:
+    """Batched Upstox News API lookup for candidate symbols.
+
+    Single HTTP call (API caps at 30 keys). Free, ~0.15s latency.
+    Returns ``{symbol: [article, ...]}`` with an empty list for symbols
+    that have no coverage. Returns ``{}`` on any failure (silent).
+    """
+    if not symbols:
+        return {}
+
+    token = os.environ.get("NF_ACCESS_TOKEN") or os.environ.get("UPSTOX_ACCESS_TOKEN")
+    if not token:
         if verbose:
-            print(f"  Fetching news for {sym}...", file=sys.stderr)
+            print("  Skipping Upstox news: no NF_ACCESS_TOKEN", file=sys.stderr)
+        return {}
 
-        stock_prompt = f"""Provide a comprehensive financial news update and analysis for NSE:{sym} today ({today_str}).
+    sym_to_key: dict[str, str] = {}
+    for sym in symbols[:30]:
+        isin = UpstoxClient.SYMBOL_TO_ISIN.get(sym)
+        key = f"NSE_EQ|{isin}" if isin else get_instrument_key(sym)
+        if key:
+            sym_to_key[sym] = key
 
-Please include:
-1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW) — include publication date for each item
-2. Overall market sentiment and analysis for this stock
-3. Key drivers: any catalysts, order wins, earnings, sector tailwinds
-4. Risks or concerns
-5. Key price levels, valuation context, and institutional activity
+    if not sym_to_key:
+        return {}
 
-Focus only on developments from the last 24 hours. Exclude anything older. If no fresh news exists, say so explicitly rather than citing older material."""
+    try:
+        response = requests.get(
+            "https://api.upstox.com/v2/news",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "category": "instrument_keys",
+                "instrument_keys": ",".join(sym_to_key.values()),
+                "page_size": 5,
+            },
+            timeout=5,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", {})
+    except Exception as e:
+        if verbose:
+            print(f"  Upstox news fetch failed: {e}", file=sys.stderr)
+        return {}
 
-        result = _sonar_query(api_key, system_prompt, stock_prompt)
-        if result:
-            stock_reports.append({"symbol": sym, **result})
+    key_to_sym = {v: k for k, v in sym_to_key.items()}
+    result: dict[str, list[dict]] = {sym: [] for sym in sym_to_key}
+    for ikey, articles in data.items():
+        sym = key_to_sym.get(ikey)
+        if sym:
+            result[sym] = articles
 
     if verbose:
-        print(f"  News context fetched ({1 + len(stock_reports)} queries).", file=sys.stderr)
-
-    return {
-        "market_overview": market_result,
-        "stock_reports": stock_reports,
-    }
+        covered = sum(1 for v in result.values() if v)
+        print(f"  Upstox news: {covered}/{len(sym_to_key)} candidates covered", file=sys.stderr)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -771,20 +802,10 @@ def format_json_output(
         "candidates": [],
     }
 
-    if news:
-        if news.get("market_overview"):
-            output["market_news"] = news["market_overview"].get("content", "")
-            if news["market_overview"].get("citations"):
-                output["market_news_citations"] = news["market_overview"]["citations"]
-        if news.get("stock_reports"):
-            output["stock_news"] = [
-                {
-                    "symbol": sr["symbol"],
-                    "analysis": sr.get("content", ""),
-                    "citations": sr.get("citations", []),
-                }
-                for sr in news["stock_reports"]
-            ]
+    if news and news.get("market_overview"):
+        output["market_news"] = news["market_overview"].get("content", "")
+        if news["market_overview"].get("citations"):
+            output["market_news_citations"] = news["market_overview"]["citations"]
 
     for r in results:
         q = r["quote"]
@@ -805,6 +826,8 @@ def format_json_output(
         }
         if r.get("opening_range"):
             candidate["opening_range"] = r["opening_range"]
+        if r.get("news"):
+            candidate["news"] = r["news"]
         output["candidates"].append(candidate)
 
     print_json(output)
@@ -886,9 +909,21 @@ def format_human_output(
     print()
     print(f"  * = basic volume expansion (RVOL-T unavailable)")
 
-    # News context
+    # Per-candidate news (Upstox, free + batched)
+    candidates_with_news = [r for r in results if r.get("news")]
+    if candidates_with_news:
+        print()
+        print(f"  {'-' * 65}")
+        print(f"  Candidate News (Upstox)")
+        print(f"  {'-' * 65}")
+        for r in candidates_with_news:
+            print(f"  {r['symbol']}:")
+            for article in r["news"][:3]:
+                heading = article.get("heading", "")[:110]
+                print(f"    • {heading}")
+
+    # Market overview (Perplexity, --news flag)
     if news:
-        # Market overview
         overview = news.get("market_overview")
         if overview and overview.get("content"):
             print()
@@ -902,21 +937,6 @@ def format_human_output(
                 print(f"  Sources:")
                 for i, cite in enumerate(overview["citations"][:5], 1):
                     print(f"    [{i}] {cite}")
-
-        # Per-stock reports
-        for sr in news.get("stock_reports", []):
-            if sr.get("content"):
-                print()
-                print(f"  {'-' * 65}")
-                print(f"  {sr['symbol']} — News & Analysis")
-                print(f"  {'-' * 65}")
-                for line in sr["content"].strip().split("\n"):
-                    print(f"  {line}")
-                if sr.get("citations"):
-                    print()
-                    print(f"  Sources:")
-                    for i, cite in enumerate(sr["citations"][:5], 1):
-                        print(f"    [{i}] {cite}")
 
     print()
     print(f"  Scan completed in {elapsed:.1f}s")
@@ -1181,7 +1201,7 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", action="store_true", help="Show scan progress to stderr")
     parser.add_argument("--debug", metavar="SYMBOL", help="Debug mode: show all indicators for one stock")
-    parser.add_argument("--news", action="store_true", help="Include market news context via Perplexity Sonar API")
+    parser.add_argument("--news", action="store_true", help="Include Perplexity market-overview briefing (macro/mood). Per-candidate news from Upstox is always included.")
 
     # Auto-deploy options
     parser.add_argument("--auto-deploy", metavar="TEMPLATE",
@@ -1215,12 +1235,20 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     except Exception as e:
         print_error(f"Scan failed: {e}")
 
-    # Phase 3: News context (runs after scan, doesn't slow down the core scan)
+    # Phase 3a: Upstox per-candidate news (always on — free, ~0.15s, batched)
+    top_symbols = [r["symbol"] for r in results[:10]]
+    upstox_news = fetch_upstox_news_for_candidates(
+        top_symbols, verbose=args.verbose or bool(args.debug)
+    )
+    for r in results:
+        if r["symbol"] in upstox_news:
+            r["news"] = upstox_news[r["symbol"]]
+
+    # Phase 3b: Perplexity market overview (only with --news)
     news = None
     if args.news:
-        top_symbols = [r["symbol"] for r in results[:5]]
         news = fetch_news_context(
-            top_symbols, nifty_pct, verbose=args.verbose or bool(args.debug)
+            nifty_pct, verbose=args.verbose or bool(args.debug)
         )
 
     if args.json:

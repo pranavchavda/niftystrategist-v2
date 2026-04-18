@@ -270,9 +270,12 @@ async def execute_awakening(
         logger.warning("Awakening %d: market status check failed (non-fatal): %s", schedule.id, e)
 
     # Get or create daily thread
+    # include_mood_briefing runs a one-shot Perplexity call on thread creation
+    # (first awakening of the day only). No-op on get-existing.
     mandate = user.trading_mandate if hasattr(user, 'trading_mandate') else None
     thread_id = await get_or_create_daily_thread(
-        session, user_id, user.email, mandate=mandate
+        session, user_id, user.email, mandate=mandate,
+        include_mood_briefing=True,
     )
 
     # Create workflow run for audit trail

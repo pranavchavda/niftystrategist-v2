@@ -6,9 +6,12 @@ This gives users ONE place to check "what happened today" and lets each
 awakening see previous awakenings' results in the thread history.
 """
 
+import asyncio
 import logging
+import sys
 import uuid
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -35,11 +38,51 @@ def _format_thread_title(d: date) -> str:
     return f"Trading Day — {d.strftime('%b %d, %Y')}"
 
 
+async def _fetch_mood_briefing() -> Optional[str]:
+    """Run financial_news_tracker.py to fetch a 24h market-mood briefing.
+
+    Returns the captured stdout (markdown/text) or None on any failure.
+    Bounded to 60s to prevent a runaway Perplexity call from blocking
+    the scheduler. Failures are logged but never propagate.
+    """
+    backend_dir = Path(__file__).resolve().parent.parent
+    cli_path = backend_dir / "cli-tools" / "financial_news_tracker.py"
+    if not cli_path.exists():
+        logger.warning("mood briefing: %s not found", cli_path)
+        return None
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(cli_path), "-t", "24h", "Nifty 500",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(backend_dir),
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            logger.warning("mood briefing timed out after 60s")
+            proc.kill()
+            await proc.wait()
+            return None
+
+        if proc.returncode != 0:
+            logger.warning("mood briefing exit %d: %s", proc.returncode, stderr.decode()[:500])
+            return None
+
+        text = stdout.decode().strip()
+        return text or None
+    except Exception as e:
+        logger.warning("mood briefing subprocess error: %s", e)
+        return None
+
+
 async def get_or_create_daily_thread(
     session: AsyncSession,
     user_id: int,
     user_email: str,
     mandate: Optional[dict] = None,
+    include_mood_briefing: bool = False,
 ) -> str:
     """Get today's daily trading thread, or create it if it doesn't exist.
 
@@ -48,6 +91,10 @@ async def get_or_create_daily_thread(
         user_id: User ID (integer)
         user_email: User email (used as conversation.user_id, which is a string)
         mandate: Optional trading mandate dict to include in the first message
+        include_mood_briefing: If True and the thread is being created now,
+            fetch a Perplexity-backed 24h market briefing and append it as
+            a second system message. Only runs on fresh creation, never on
+            get-existing. Failures are logged and ignored (non-fatal).
 
     Returns:
         thread_id (conversation.id)
@@ -132,6 +179,28 @@ async def get_or_create_daily_thread(
     await session.commit()
 
     logger.info("Created daily thread %s for user %d (%s)", thread_id, user_id, title)
+
+    if include_mood_briefing:
+        briefing = await _fetch_mood_briefing()
+        if briefing:
+            mood_now = utc_now()
+            mood_msg = Message(
+                conversation_id=thread_id,
+                message_id=f"daily_mood_{uuid.uuid4().hex}",
+                role="system",
+                content=(
+                    "## Market Mood Briefing — last 24h\n\n"
+                    "_Factual context from Perplexity web search. "
+                    "No trade recommendations — interpret in light of your mandate._\n\n"
+                    f"{briefing}"
+                ),
+                timestamp=mood_now,
+                extra_metadata={"daily_thread_mood": True, "trading_date": today_str},
+            )
+            session.add(mood_msg)
+            await session.commit()
+            logger.info("Added mood briefing to daily thread %s (%d chars)", thread_id, len(briefing))
+
     return thread_id
 
 
