@@ -13,10 +13,12 @@ import WatchlistPanel from './cockpit/WatchlistPanel';
 import PriceChart from './cockpit/PriceChart';
 import PositionsTable from './cockpit/PositionsTable';
 import DailyScorecard from './cockpit/DailyScorecard';
+import ScorecardCalendar from './cockpit/ScorecardCalendar';
 import CockpitChat from './cockpit/CockpitChat';
 import { useCockpitData } from '../hooks/useCockpitData';
 import { useChartData } from '../hooks/useChartData';
 import { useChartOverlays } from '../hooks/useChartOverlays';
+import { useScorecards } from '../hooks/useScorecards';
 
 const Dashboard = ({ authToken }) => {
   // Left panel collapse state
@@ -49,6 +51,7 @@ const Dashboard = ({ authToken }) => {
 
   // Live data hooks
   const cockpitData = useCockpitData(authToken, autoRefresh);
+  const scorecardsData = useScorecards(authToken, 30);
   // Map timeframe labels to days + interval for the chart hook
   const TIMEFRAME_CONFIG = {
     '1D': { days: 1, interval: '1minute' },
@@ -282,6 +285,14 @@ const Dashboard = ({ authToken }) => {
 
           {/* Daily Scorecard (pinned to bottom) */}
           {cockpitData.scorecard && <div className="flex-shrink-0"><DailyScorecard scorecard={cockpitData.scorecard} /></div>}
+
+          {/* Calendar scorecard (past 30d, T+1 realized) */}
+          <div className="flex-shrink-0">
+            <ScorecardCalendar
+              scorecards={scorecardsData.data?.scorecards ?? []}
+              isLoading={scorecardsData.isLoading}
+            />
+          </div>
         </div>
 
       </div>

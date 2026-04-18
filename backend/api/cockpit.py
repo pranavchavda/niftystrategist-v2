@@ -2,7 +2,8 @@
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone, date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -560,6 +561,114 @@ async def cockpit_scorecard(user: User = Depends(get_current_user)):
         raise
     except Exception as e:
         logger.error(f"Error computing scorecard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# GET /scorecards — calendar view (historical realized P&L, T+1)
+# ---------------------------------------------------------------------------
+def _parse_upstox_date(s: str | None) -> date | None:
+    """Parse Upstox date strings (observed: dd-mm-yyyy, yyyy-mm-dd)."""
+    if not s:
+        return None
+    s = s.strip()
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+@router.get("/scorecards")
+async def cockpit_scorecards(
+    days: int = Query(30, ge=1, le=365),
+    user: User = Depends(get_current_user),
+):
+    """Return per-day realized-P&L scorecards for the past N days.
+
+    Data comes from Upstox trade-wise P&L report (T+1, closed positions only).
+    Today's stats come from /scorecard (live intraday) — not included here.
+    """
+    try:
+        today = date.today()
+        end = today - timedelta(days=1)  # T+1 — don't include today
+        start = today - timedelta(days=days)
+
+        async def _fetch(client: UpstoxClient):
+            return await client.get_pnl_report_range(start, end)
+
+        rows = await _with_401_retry(user, _fetch)
+
+        by_day: dict[date, dict] = defaultdict(lambda: {
+            "trades": 0, "wins": 0, "losses": 0,
+            "gross_profit": 0.0, "gross_loss": 0.0,
+            "biggest_win": 0.0, "biggest_loss": 0.0,
+            "buy_value": 0.0, "sell_value": 0.0,
+        })
+
+        for r in rows:
+            sell_d = _parse_upstox_date(r.get("sell_date"))
+            buy_d = _parse_upstox_date(r.get("buy_date"))
+            # Intraday only: buy and sell on the same day
+            if not sell_d or not buy_d or buy_d != sell_d:
+                continue
+            if sell_d < start or sell_d > end:
+                continue
+            buy_amt = float(r.get("buy_amount") or 0)
+            sell_amt = float(r.get("sell_amount") or 0)
+            pnl = sell_amt - buy_amt
+            bucket = by_day[sell_d]
+            bucket["trades"] += 1
+            bucket["buy_value"] += buy_amt
+            bucket["sell_value"] += sell_amt
+            if pnl > 0:
+                bucket["wins"] += 1
+                bucket["gross_profit"] += pnl
+                bucket["biggest_win"] = max(bucket["biggest_win"], pnl)
+            elif pnl < 0:
+                bucket["losses"] += 1
+                bucket["gross_loss"] += abs(pnl)
+                bucket["biggest_loss"] = max(bucket["biggest_loss"], abs(pnl))
+
+        result = []
+        cur = end
+        while cur >= start:
+            b = by_day.get(cur)
+            if b:
+                decided = b["wins"] + b["losses"]
+                pf = (b["gross_profit"] / b["gross_loss"]) if b["gross_loss"] > 0 else 0
+                result.append({
+                    "date": cur.isoformat(),
+                    "trades": b["trades"],
+                    "wins": b["wins"],
+                    "losses": b["losses"],
+                    "winRate": round(b["wins"] / decided * 100, 1) if decided else 0,
+                    "netPnl": round(b["gross_profit"] - b["gross_loss"], 2),
+                    "grossProfit": round(b["gross_profit"], 2),
+                    "grossLoss": round(b["gross_loss"], 2),
+                    "biggestWin": round(b["biggest_win"], 2),
+                    "biggestLoss": round(b["biggest_loss"], 2),
+                    "profitFactor": round(pf, 2),
+                    "totalBuyValue": round(b["buy_value"], 2),
+                    "totalSellValue": round(b["sell_value"], 2),
+                })
+            else:
+                result.append({
+                    "date": cur.isoformat(),
+                    "trades": 0, "wins": 0, "losses": 0, "winRate": 0,
+                    "netPnl": 0, "grossProfit": 0, "grossLoss": 0,
+                    "biggestWin": 0, "biggestLoss": 0, "profitFactor": 0,
+                    "totalBuyValue": 0, "totalSellValue": 0,
+                })
+            cur -= timedelta(days=1)
+
+        return {"days": days, "start": start.isoformat(), "end": end.isoformat(), "scorecards": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing scorecards: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

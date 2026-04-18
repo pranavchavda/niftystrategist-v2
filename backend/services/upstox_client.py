@@ -3,7 +3,7 @@
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Literal
 
@@ -1405,6 +1405,133 @@ class UpstoxClient:
             raise ValueError(f"Failed to fetch trade charges: {e.status} - {e.reason}. {e.body}")
         except Exception as e:
             raise ValueError(f"Failed to fetch trade charges: {e}")
+
+    # ── Trade-wise P&L Report (realized, T+1) ───────────────────────
+
+    @staticmethod
+    def _fy_for_date(d: date) -> str:
+        """Indian FY ('YYMM' e.g. 2627 for FY 2026-27). April 1 → March 31."""
+        start = d.year if d.month >= 4 else d.year - 1
+        return f"{str(start)[-2:]}{str(start + 1)[-2:]}"
+
+    @staticmethod
+    def _fy_bounds(fy: str) -> tuple[date, date]:
+        """Return (april_1, march_31) dates for an FY string like '2627'."""
+        start_yy = int(fy[:2])
+        start_year = 2000 + start_yy
+        return date(start_year, 4, 1), date(start_year + 1, 3, 31)
+
+    async def get_pnl_report_paginated(self, segment: str, financial_year: str,
+                                        from_date: date, to_date: date,
+                                        page_size: int | None = None) -> list[dict]:
+        """Fetch ALL realized P&L trades for a (segment, FY, date-range).
+
+        Calls the metadata endpoint to get total trade count + page size,
+        then paginates through the data endpoint until all rows collected.
+        Dates are YYYY-MM-DD (converted to dd-mm-yyyy for Upstox).
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        from_s = from_date.strftime("%d-%m-%Y")
+        to_s = to_date.strftime("%d-%m-%Y")
+
+        api_client = upstox_client.ApiClient(self._configuration)
+        pnl_api = upstox_client.TradeProfitAndLossApi(api_client)
+
+        try:
+            meta_resp = pnl_api.get_trade_wise_profit_and_loss_meta_data(
+                segment=segment,
+                financial_year=financial_year,
+                api_version="v2",
+                from_date=from_s,
+                to_date=to_s,
+            )
+            meta = meta_resp.data if meta_resp.data else None
+            trades_count = getattr(meta, "trades_count", 0) if meta else 0
+            sdk_page_size = getattr(meta, "page_size_limit", 0) if meta else 0
+        except ApiException as e:
+            raise ValueError(f"Failed to fetch P&L metadata ({segment} {financial_year}): {e.status} - {e.reason}. {e.body}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch P&L metadata ({segment} {financial_year}): {e}")
+
+        if not trades_count:
+            return []
+
+        per_page = page_size or sdk_page_size or 1000
+        pages = (trades_count + per_page - 1) // per_page
+        rows: list[dict] = []
+
+        for page in range(1, pages + 1):
+            try:
+                resp = pnl_api.get_trade_wise_profit_and_loss_data(
+                    segment=segment,
+                    financial_year=financial_year,
+                    page_number=page,
+                    page_size=per_page,
+                    api_version="v2",
+                    from_date=from_s,
+                    to_date=to_s,
+                )
+            except ApiException as e:
+                raise ValueError(f"Failed to fetch P&L data ({segment} pg {page}): {e.status} - {e.reason}. {e.body}")
+            except Exception as e:
+                raise ValueError(f"Failed to fetch P&L data ({segment} pg {page}): {e}")
+
+            items = resp.data if resp.data else []
+            if not isinstance(items, list):
+                items = [items]
+            for t in items:
+                if isinstance(t, dict):
+                    rows.append({**t, "segment": segment})
+                else:
+                    rows.append({
+                        "quantity": getattr(t, "quantity", 0),
+                        "isin": getattr(t, "isin", None),
+                        "scrip_name": getattr(t, "scrip_name", None),
+                        "trade_type": getattr(t, "trade_type", None),
+                        "buy_date": getattr(t, "buy_date", None),
+                        "sell_date": getattr(t, "sell_date", None),
+                        "buy_average": getattr(t, "buy_average", 0) or 0,
+                        "sell_average": getattr(t, "sell_average", 0) or 0,
+                        "buy_amount": getattr(t, "buy_amount", 0) or 0,
+                        "sell_amount": getattr(t, "sell_amount", 0) or 0,
+                        "segment": segment,
+                    })
+        return rows
+
+    async def get_pnl_report_range(self, from_date: date, to_date: date,
+                                    segments: list[str] | None = None) -> list[dict]:
+        """Fetch realized P&L across segments and FY boundaries.
+
+        Splits the date range at March 31 / April 1 if it crosses FYs.
+        Returns combined rows from all (segment, FY) calls.
+        """
+        segments = segments or ["EQ", "FO"]
+
+        # Split on FY boundary
+        from_fy = self._fy_for_date(from_date)
+        to_fy = self._fy_for_date(to_date)
+        spans: list[tuple[str, date, date]] = []
+        if from_fy == to_fy:
+            spans.append((from_fy, from_date, to_date))
+        else:
+            from_fy_end = self._fy_bounds(from_fy)[1]
+            to_fy_start = self._fy_bounds(to_fy)[0]
+            spans.append((from_fy, from_date, from_fy_end))
+            spans.append((to_fy, to_fy_start, to_date))
+
+        all_rows: list[dict] = []
+        for fy, a, b in spans:
+            for seg in segments:
+                try:
+                    rows = await self.get_pnl_report_paginated(seg, fy, a, b)
+                    all_rows.extend(rows)
+                except ValueError as e:
+                    # Segment may be inactive for user — skip silently, log once
+                    logger.warning(f"P&L fetch skipped for {seg} {fy}: {e}")
+        return all_rows
 
     # ── Brokerage Estimate ──────────────────────────────────────────
 
