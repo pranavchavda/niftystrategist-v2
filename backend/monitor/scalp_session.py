@@ -845,12 +845,17 @@ class ScalpSessionManager:
                     client = await self._get_client(session.user_id)
                     positions = await client.get_positions()
 
-                    # Check if the held option instrument appears in positions
+                    # Check if the held instrument appears in positions.
+                    # Upstox returns NEGATIVE qty for intraday shorts (per the
+                    # 2026-03-06 MAZDOCK incident note) — so qty>0 would miss
+                    # a valid HOLDING_SHORT equity position. Direction we
+                    # already know from session state; reconcile only needs
+                    # to confirm a position is still there.
                     found = False
                     for pos in positions:
                         inst_key = getattr(pos, "instrument_token", None)
                         qty = getattr(pos, "quantity", 0)
-                        if inst_key == session.runtime.current_instrument_token and qty > 0:
+                        if inst_key == session.runtime.current_instrument_token and qty != 0:
                             found = True
                             break
 
