@@ -43,9 +43,13 @@ class ScalpSessionManager:
         # Per-session candle buffers: "{session_id}" → CandleBuffer
         self._candle_buffers: dict[str, CandleBuffer] = {}
 
-        # Per-session UT Bot values for edge detection
-        self._utbot_values: dict[str, float | None] = {}      # session_id → current
-        self._prev_utbot_values: dict[str, float | None] = {}  # session_id → previous
+        # Per-session primary-indicator values for edge detection.
+        # Contract: the primary indicator must return a signed scalar whose
+        # sign flip marks a trend change (utbot/supertrend ±1, ema_crossover
+        # ema_fast − ema_slow, macd histogram, etc.). Name kept generic so
+        # new indicators plug in via config without schema churn.
+        self._primary_values: dict[str, float | None] = {}
+        self._prev_primary_values: dict[str, float | None] = {}
 
         # Lookup: underlying_instrument_token → list of session_ids for that user
         self._underlying_map: dict[str, list[int]] = {}  # instrument_token → [session.id, ...]
@@ -253,7 +257,7 @@ class ScalpSessionManager:
     async def _process_underlying_tick(
         self, session: ScalpSession, ltp: float
     ) -> None:
-        """Feed underlying tick to candle buffer, evaluate UT Bot on close."""
+        """Feed underlying tick to candle buffer, evaluate primary on close."""
         buf_key = str(session.id)
         buf = self._candle_buffers.get(buf_key)
         if not buf:
@@ -266,41 +270,79 @@ class ScalpSessionManager:
         if new_count <= prev_count:
             return  # No new candle closed
 
-        # Recompute UT Bot
+        # Recompute primary indicator
         candles = buf.get_completed_candles()
-        params = {
-            "sensitivity": session.config.utbot_sensitivity,
-            "period": session.config.utbot_period,
-        }
-        utbot_val = compute_indicator("utbot", candles, params)
+        cfg = session.config
+        primary_params = cfg.primary_params or {}
+        primary_val = compute_indicator(cfg.primary_indicator, candles, primary_params)
 
-        prev_val = self._utbot_values.get(buf_key)
-        self._prev_utbot_values[buf_key] = prev_val
-        self._utbot_values[buf_key] = utbot_val
+        prev_val = self._primary_values.get(buf_key)
+        self._prev_primary_values[buf_key] = prev_val
+        self._primary_values[buf_key] = primary_val
 
-        if utbot_val is None or prev_val is None:
+        if primary_val is None or prev_val is None:
             return
 
-        # Detect direction flip
-        bullish_flip = prev_val <= 0 and utbot_val > 0
-        bearish_flip = prev_val >= 0 and utbot_val < 0
+        # Detect direction flip. Contract: signed scalar, sign change = flip.
+        bullish_flip = prev_val <= 0 and primary_val > 0
+        bearish_flip = prev_val >= 0 and primary_val < 0
 
         rt = session.runtime
 
         if rt.state == ScalpState.IDLE:
-            if bullish_flip:
+            if bullish_flip and self._confirm_agrees(session, candles, 1):
                 await self._try_enter(session, "CE", ltp)
-            elif bearish_flip:
+            elif bearish_flip and self._confirm_agrees(session, candles, -1):
                 await self._try_enter(session, "PE", ltp)
         elif rt.state == ScalpState.HOLDING_CE and bearish_flip:
-            # UT Bot reversal while holding CE → exit.
+            # Primary reversal while holding CE → exit. Confirm gate
+            # intentionally does NOT apply to exits: holding into a bad
+            # position waiting for the confirm indicator to agree is worse
+            # than a false-alarm exit.
             # Use last-seen premium LTP, NOT underlying `ltp` (unit mismatch
             # would corrupt P&L — e.g. 24205 underlying vs 159 premium entry
             # reported ₹15L phantom profit on 2026-04-17).
             await self._exit_position(session, "exit_reversal", rt.last_premium_ltp)
         elif rt.state == ScalpState.HOLDING_PE and bullish_flip:
-            # UT Bot reversal while holding PE → exit.
             await self._exit_position(session, "exit_reversal", rt.last_premium_ltp)
+
+    def _confirm_agrees(
+        self,
+        session: ScalpSession,
+        candles: list[dict],
+        direction: int,
+    ) -> bool:
+        """Check the confirm indicator agrees with the primary flip direction.
+
+        Returns True when no confirm indicator is configured (gate is a no-op).
+        Also returns False (blocks entry) when the confirm indicator is
+        configured but not yet ready (None) — better to skip a signal than
+        to take an unconfirmed one."""
+        cfg = session.config
+        if not cfg.confirm_indicator:
+            return True
+        confirm_val = compute_indicator(
+            cfg.confirm_indicator, candles, cfg.confirm_params or {}
+        )
+        if confirm_val is None:
+            logger.info(
+                "Session %d: confirm %s not ready — skip entry",
+                session.id, cfg.confirm_indicator,
+            )
+            return False
+        if direction > 0 and confirm_val <= 0:
+            logger.info(
+                "Session %d: primary bullish but confirm %s=%.4f disagrees",
+                session.id, cfg.confirm_indicator, confirm_val,
+            )
+            return False
+        if direction < 0 and confirm_val >= 0:
+            logger.info(
+                "Session %d: primary bearish but confirm %s=%.4f disagrees",
+                session.id, cfg.confirm_indicator, confirm_val,
+            )
+            return False
+        return True
 
     async def _process_premium_tick(
         self, session: ScalpSession, ltp: float

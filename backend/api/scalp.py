@@ -38,6 +38,10 @@ class CreateSessionRequest(BaseModel):
     squareoff_time: str = "15:15"
     max_trades: int = 20
     cooldown_seconds: int = 60
+    primary_indicator: Optional[str] = None
+    primary_params: Optional[dict] = None
+    confirm_indicator: Optional[str] = None
+    confirm_params: Optional[dict] = None
 
 
 class UpdateSessionRequest(BaseModel):
@@ -58,6 +62,10 @@ class UpdateSessionRequest(BaseModel):
     max_trades: Optional[int] = None
     cooldown_seconds: Optional[int] = None
     enabled: Optional[bool] = None
+    primary_indicator: Optional[str] = None
+    primary_params: Optional[dict] = None
+    confirm_indicator: Optional[str] = None
+    confirm_params: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +97,10 @@ def _serialize_session(row) -> dict:
         "indicator_timeframe": row.indicator_timeframe,
         "utbot_period": row.utbot_period,
         "utbot_sensitivity": row.utbot_sensitivity,
+        "primary_indicator": row.primary_indicator or "utbot",
+        "primary_params": row.primary_params,
+        "confirm_indicator": row.confirm_indicator,
+        "confirm_params": row.confirm_params,
         "sl_points": row.sl_points,
         "target_points": row.target_points,
         "trail_percent": row.trail_percent,
@@ -175,6 +187,18 @@ async def api_create_session(
             indicator_timeframe=body.indicator_timeframe,
             utbot_period=body.utbot_period,
             utbot_sensitivity=body.utbot_sensitivity,
+            primary_indicator=body.primary_indicator or "utbot",
+            primary_params=(
+                body.primary_params
+                if body.primary_params
+                else (
+                    {"period": body.utbot_period, "sensitivity": body.utbot_sensitivity}
+                    if (body.primary_indicator or "utbot") == "utbot"
+                    else None
+                )
+            ),
+            confirm_indicator=body.confirm_indicator,
+            confirm_params=body.confirm_params,
             sl_points=body.sl_points,
             target_points=body.target_points,
             trail_percent=body.trail_percent,
@@ -277,6 +301,15 @@ async def api_update_session(
             updates["max_trades"] = body.max_trades
         if body.cooldown_seconds is not None:
             updates["cooldown_seconds"] = body.cooldown_seconds
+        if body.primary_indicator is not None:
+            updates["primary_indicator"] = body.primary_indicator
+        if body.primary_params is not None:
+            updates["primary_params"] = body.primary_params
+        if body.confirm_indicator is not None:
+            # Empty string clears the confirm filter; null does too.
+            updates["confirm_indicator"] = body.confirm_indicator or None
+        if body.confirm_params is not None:
+            updates["confirm_params"] = body.confirm_params
 
         if not updates:
             return _serialize_session(row)

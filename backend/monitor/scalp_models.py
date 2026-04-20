@@ -43,6 +43,16 @@ class ScalpSessionConfig(BaseModel):
     utbot_period: int = 10
     utbot_sensitivity: float = 1.0
 
+    # Parametrized primary signal. utbot remains the default; other
+    # supported indicators return a signed scalar so the same flip-detection
+    # contract (prev<=0 → curr>0 = bullish) applies across the board.
+    primary_indicator: str = "utbot"
+    primary_params: dict[str, Any] | None = None
+    # Optional confirm filter. On a primary flip, the confirm indicator's
+    # current sign must agree before entry fires.
+    confirm_indicator: str | None = None
+    confirm_params: dict[str, Any] | None = None
+
     sl_points: float | None = None
     target_points: float | None = None
     trail_percent: float | None = None

@@ -45,6 +45,10 @@ def _session_to_dict(row) -> dict:
         "indicator_timeframe": row.indicator_timeframe,
         "utbot_period": row.utbot_period,
         "utbot_sensitivity": row.utbot_sensitivity,
+        "primary_indicator": row.primary_indicator or "utbot",
+        "primary_params": row.primary_params,
+        "confirm_indicator": row.confirm_indicator,
+        "confirm_params": row.confirm_params,
         "sl_points": row.sl_points,
         "target_points": row.target_points,
         "trail_percent": row.trail_percent,
@@ -126,6 +130,27 @@ def cmd_create(args):
             f"Valid expiries: {hint}"
         )
 
+    # Parse JSON param blobs if provided
+    import json
+    primary_params = None
+    if getattr(args, "primary_params", None):
+        try:
+            primary_params = json.loads(args.primary_params)
+        except json.JSONDecodeError as e:
+            print_error(f"--primary-params must be JSON: {e}")
+    confirm_params = None
+    if getattr(args, "confirm_params", None):
+        try:
+            confirm_params = json.loads(args.confirm_params)
+        except json.JSONDecodeError as e:
+            print_error(f"--confirm-params must be JSON: {e}")
+
+    primary_indicator = getattr(args, "primary", None) or "utbot"
+    # Default utbot params come from legacy --period / --sensitivity flags
+    # so `nf-scalp create --period 8 --sensitivity 2.0` still works.
+    if primary_indicator == "utbot" and primary_params is None:
+        primary_params = {"period": args.period, "sensitivity": args.sensitivity}
+
     # Build optional kwargs
     kwargs = {
         "lots": args.lots,
@@ -133,6 +158,10 @@ def cmd_create(args):
         "indicator_timeframe": args.timeframe,
         "utbot_period": args.period,
         "utbot_sensitivity": args.sensitivity,
+        "primary_indicator": primary_indicator,
+        "primary_params": primary_params,
+        "confirm_indicator": getattr(args, "confirm", None),
+        "confirm_params": confirm_params,
         "squareoff_time": args.squareoff,
         "max_trades": args.max_trades,
         "cooldown_seconds": args.cooldown,
@@ -170,7 +199,9 @@ def cmd_create(args):
         print(f"  Underlying:   {underlying} ({instrument_token})")
         print(f"  Expiry:       {args.expiry}")
         print(f"  Lots:         {args.lots}")
-        print(f"  UT Bot:       period={args.period}, sensitivity={args.sensitivity}, timeframe={args.timeframe}")
+        print(f"  Primary:      {primary_indicator} {primary_params} (tf={args.timeframe})")
+        if kwargs.get("confirm_indicator"):
+            print(f"  Confirm:      {kwargs['confirm_indicator']} {confirm_params or {}}")
         if args.sl_points is not None:
             print(f"  SL:           {args.sl_points} pts")
         if args.target_points is not None:
@@ -253,7 +284,11 @@ def cmd_status(args):
     print(f"  Underlying:   {row.underlying} ({row.underlying_instrument_token})")
     print(f"  Expiry:       {row.expiry}")
     print(f"  Lots:         {row.lots}")
-    print(f"  UT Bot:       period={row.utbot_period}, sensitivity={row.utbot_sensitivity}, timeframe={row.indicator_timeframe}")
+    primary = row.primary_indicator or "utbot"
+    pparams = row.primary_params or {"period": row.utbot_period, "sensitivity": row.utbot_sensitivity}
+    print(f"  Primary:      {primary} {pparams} (tf={row.indicator_timeframe})")
+    if row.confirm_indicator:
+        print(f"  Confirm:      {row.confirm_indicator} {row.confirm_params or {}}")
     if row.sl_points is not None:
         print(f"  SL:           {row.sl_points} pts")
     if row.target_points is not None:
@@ -505,6 +540,17 @@ Examples:
                           help="UT Bot ATR period (default: 10)")
     p_create.add_argument("--sensitivity", type=float, default=1.0,
                           help="UT Bot sensitivity / key value (default: 1.0)")
+    p_create.add_argument("--primary", default="utbot",
+                          help="Primary signal indicator (default: utbot). "
+                               "Other supported: ema_crossover, macd, supertrend.")
+    p_create.add_argument("--primary-params", default=None,
+                          help='JSON params for the primary indicator, '
+                               'e.g. --primary-params \'{"fast":9,"slow":21}\'')
+    p_create.add_argument("--confirm", default=None,
+                          help="Optional confirm indicator that must agree "
+                               "with the primary flip before entry fires.")
+    p_create.add_argument("--confirm-params", default=None,
+                          help="JSON params for the confirm indicator.")
     p_create.add_argument("--squareoff", default="15:15",
                           help="Auto squareoff time in HH:MM IST (default: 15:15)")
     p_create.add_argument("--max-trades", type=int, default=20,

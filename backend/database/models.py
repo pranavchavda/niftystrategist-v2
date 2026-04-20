@@ -759,10 +759,15 @@ class ScalpSessionDB(Base):
     lots = Column(Integer, default=1, nullable=False)
     product = Column(String(2), default="I", nullable=False)
 
-    # UT Bot params
+    # Indicator params. Back-compat: utbot_period/utbot_sensitivity stay
+    # around but are superseded by primary_params when set.
     indicator_timeframe = Column(String(5), default="1m", nullable=False)
     utbot_period = Column(Integer, default=10, nullable=False)
     utbot_sensitivity = Column(Float, default=1.0, nullable=False)
+    primary_indicator = Column(String(30), default="utbot", nullable=False)
+    primary_params = Column(JSON, nullable=True)
+    confirm_indicator = Column(String(30), nullable=True)
+    confirm_params = Column(JSON, nullable=True)
 
     # Exit params
     sl_points = Column(Float, nullable=True)
