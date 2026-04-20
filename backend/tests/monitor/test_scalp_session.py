@@ -211,6 +211,7 @@ class TestPremiumExits:
             state=ScalpState.HOLDING_CE,
             entry_price=200.0,
             highest_premium=280.0,
+            trail_armed=True,
             current_instrument_token="NSE_FO|43885",
         )
         session.config.trail_percent = 10.0
@@ -251,28 +252,146 @@ class TestPremiumExits:
         with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
             await mgr._process_premium_tick(session, 195.0)
             assert session.runtime.entry_price == 195.0
-            assert session.runtime.highest_premium == 195.0
+            # Trail starts disarmed; highest_premium stays None until arm fires.
+            assert session.runtime.highest_premium is None
+            assert session.runtime.trail_armed is False
             mock_exit.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_highest_premium_tracks_up(self):
+    async def test_highest_premium_tracks_up_when_armed(self):
         mgr = _make_manager()
         session = _make_session(
             state=ScalpState.HOLDING_CE,
             entry_price=200.0,
             highest_premium=210.0,
+            trail_armed=True,
             current_instrument_token="NSE_FO|43885",
         )
-        # Disable exits so we can test tracking
         session.config.sl_points = None
         session.config.target_points = None
-        session.config.trail_percent = None
+        session.config.trail_percent = 50.0  # 50% trail → level = highest * 0.5, far below
 
         await mgr._process_premium_tick(session, 220.0)
         assert session.runtime.highest_premium == 220.0
 
         await mgr._process_premium_tick(session, 215.0)
         assert session.runtime.highest_premium == 220.0  # Doesn't decrease
+
+
+# ── Armed trailing stop ─────────────────────────────────────────────
+
+
+class TestArmedTrail:
+    @pytest.mark.asyncio
+    async def test_trail_does_not_fire_before_arm_threshold(self):
+        """Trail is configured with arm=+20pts. Price rises +10 then dips — no exit."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+        )
+        session.config.sl_points = None
+        session.config.target_points = None
+        session.config.trail_points = 5.0
+        session.config.trail_arm_points = 20.0
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+            # Rise to +10 (below +20 arm threshold), then pull back.
+            await mgr._process_premium_tick(session, 210.0)
+            await mgr._process_premium_tick(session, 205.0)
+            assert session.runtime.trail_armed is False
+            assert session.runtime.highest_premium is None
+            mock_exit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_trail_arms_then_fires_on_pullback(self):
+        """Once armed at +20pts, a trail_points=5 stop should fire on a 5pt pullback."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+        )
+        session.config.sl_points = None
+        session.config.target_points = None
+        session.config.trail_points = 5.0
+        session.config.trail_arm_points = 20.0
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+            # Arm at +20.
+            await mgr._process_premium_tick(session, 220.0)
+            assert session.runtime.trail_armed is True
+            assert session.runtime.highest_premium == 220.0
+            mock_exit.assert_not_called()
+
+            # Push higher.
+            await mgr._process_premium_tick(session, 225.0)
+            assert session.runtime.highest_premium == 225.0
+            mock_exit.assert_not_called()
+
+            # Pull back 5 pts from high (trail level = 225 - 5 = 220).
+            await mgr._process_premium_tick(session, 219.0)
+            mock_exit.assert_called_once_with(session, "exit_trail", 219.0)
+
+    @pytest.mark.asyncio
+    async def test_trail_points_takes_precedence_over_percent(self):
+        """If both trail_points and trail_percent are set, use trail_points."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=100.0,
+            highest_premium=110.0,
+            trail_armed=True,
+            current_instrument_token="NSE_FO|43885",
+        )
+        session.config.sl_points = None
+        session.config.target_points = None
+        session.config.trail_points = 2.0      # absolute: level = 110 - 2 = 108
+        session.config.trail_percent = 20.0    # percent: level = 110 * 0.8 = 88
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+            # 107 < 108 (points trail) but >> 88 (percent trail). Exits → points wins.
+            await mgr._process_premium_tick(session, 107.0)
+            mock_exit.assert_called_once_with(session, "exit_trail", 107.0)
+
+    @pytest.mark.asyncio
+    async def test_arm_points_none_arms_immediately(self):
+        """Back-compat: no arm_points → arm on first uptick past entry."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=100.0,
+            current_instrument_token="NSE_FO|43885",
+        )
+        session.config.sl_points = None
+        session.config.target_points = None
+        session.config.trail_points = 3.0
+        session.config.trail_arm_points = None
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+            await mgr._process_premium_tick(session, 101.0)
+            assert session.runtime.trail_armed is True
+            assert session.runtime.highest_premium == 101.0
+
+    @pytest.mark.asyncio
+    async def test_sl_still_fires_before_trail_arms(self):
+        """Hard SL must fire even while trail is disarmed."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+        )
+        session.config.sl_points = 10.0
+        session.config.target_points = None
+        session.config.trail_points = 3.0
+        session.config.trail_arm_points = 20.0  # high arm threshold
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+            await mgr._process_premium_tick(session, 189.0)  # below 190 SL
+            mock_exit.assert_called_once_with(session, "exit_sl", 189.0)
+            assert session.runtime.trail_armed is False
 
 
 # ── Entry position flow ──────────────────────────────────────────────

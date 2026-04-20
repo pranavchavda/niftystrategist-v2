@@ -33,6 +33,8 @@ class CreateSessionRequest(BaseModel):
     sl_points: Optional[float] = None
     target_points: Optional[float] = None
     trail_percent: Optional[float] = None
+    trail_points: Optional[float] = None
+    trail_arm_points: Optional[float] = None
     squareoff_time: str = "15:15"
     max_trades: int = 20
     cooldown_seconds: int = 60
@@ -50,6 +52,8 @@ class UpdateSessionRequest(BaseModel):
     sl_points: Optional[float] = None
     target_points: Optional[float] = None
     trail_percent: Optional[float] = None
+    trail_points: Optional[float] = None
+    trail_arm_points: Optional[float] = None
     squareoff_time: Optional[str] = None
     max_trades: Optional[int] = None
     cooldown_seconds: Optional[int] = None
@@ -88,6 +92,8 @@ def _serialize_session(row) -> dict:
         "sl_points": row.sl_points,
         "target_points": row.target_points,
         "trail_percent": row.trail_percent,
+        "trail_points": row.trail_points,
+        "trail_arm_points": row.trail_arm_points,
         "squareoff_time": row.squareoff_time,
         "max_trades": row.max_trades,
         "cooldown_seconds": row.cooldown_seconds,
@@ -171,6 +177,8 @@ async def api_create_session(
             sl_points=body.sl_points,
             target_points=body.target_points,
             trail_percent=body.trail_percent,
+            trail_points=body.trail_points,
+            trail_arm_points=body.trail_arm_points,
             squareoff_time=body.squareoff_time,
             max_trades=body.max_trades,
             cooldown_seconds=body.cooldown_seconds,
@@ -245,6 +253,10 @@ async def api_update_session(
             updates["target_points"] = body.target_points
         if body.trail_percent is not None:
             updates["trail_percent"] = body.trail_percent
+        if body.trail_points is not None:
+            updates["trail_points"] = body.trail_points
+        if body.trail_arm_points is not None:
+            updates["trail_arm_points"] = body.trail_arm_points
         if body.squareoff_time is not None:
             updates["squareoff_time"] = body.squareoff_time
         if body.max_trades is not None:

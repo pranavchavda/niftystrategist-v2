@@ -34,6 +34,8 @@ def db_to_session(row: ScalpSessionDB) -> ScalpSession:
         sl_points=row.sl_points,
         target_points=row.target_points,
         trail_percent=row.trail_percent,
+        trail_points=row.trail_points,
+        trail_arm_points=row.trail_arm_points,
         squareoff_time=row.squareoff_time,
         max_trades=row.max_trades,
         cooldown_seconds=row.cooldown_seconds,

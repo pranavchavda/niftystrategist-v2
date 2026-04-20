@@ -221,10 +221,12 @@ class ScalpSessionManager:
         # can report/compute P&L in premium space.
         rt.last_premium_ltp = ltp
 
-        # Set entry_price on first premium tick if not yet set
+        # Set entry_price on first premium tick if not yet set.
+        # Highest_premium and trail_armed remain at initial values so the
+        # trail can arm on the next qualifying tick, not from a random
+        # first-tick anchor.
         if rt.entry_price is None:
             rt.entry_price = ltp
-            rt.highest_premium = ltp
             logger.info(
                 "Session %d: entry_price set from first premium tick: %.2f",
                 session.id, ltp,
@@ -239,28 +241,48 @@ class ScalpSessionManager:
                 logger.error("Session %d: entry_price backfill failed: %s", session.id, e)
             return
 
-        # Track highest premium for trailing stop
-        if rt.highest_premium is None or ltp > rt.highest_premium:
-            rt.highest_premium = ltp
-
-        # Check SL
+        # Check SL first — armed trail must not override SL.
         if cfg.sl_points is not None:
             sl_level = rt.entry_price - cfg.sl_points
             if ltp <= sl_level:
                 await self._exit_position(session, "exit_sl", ltp)
                 return
 
-        # Check target
+        # Check target.
         if cfg.target_points is not None:
             target_level = rt.entry_price + cfg.target_points
             if ltp >= target_level:
                 await self._exit_position(session, "exit_target", ltp)
                 return
 
-        # Check trailing stop
-        if cfg.trail_percent is not None and rt.highest_premium is not None:
-            trail_level = rt.highest_premium * (1 - cfg.trail_percent / 100)
-            if ltp <= trail_level:
+        # Trail arming. trail_arm_points=None means arm immediately at
+        # any uptick past entry (pre-027 behavior). trail_arm_points=N
+        # waits until the position is +N points in profit.
+        trail_configured = cfg.trail_points is not None or cfg.trail_percent is not None
+        if trail_configured and not rt.trail_armed:
+            arm_threshold = cfg.trail_arm_points or 0
+            if ltp >= rt.entry_price + arm_threshold:
+                rt.trail_armed = True
+                rt.highest_premium = ltp
+                logger.info(
+                    "Session %d: trail armed @ %.2f (entry=%.2f, +%.2f pts)",
+                    session.id, ltp, rt.entry_price, ltp - rt.entry_price,
+                )
+
+        # Track highest only after arming.
+        if rt.trail_armed:
+            if rt.highest_premium is None or ltp > rt.highest_premium:
+                rt.highest_premium = ltp
+
+        # Trail check — only fires when armed.
+        if rt.trail_armed and rt.highest_premium is not None:
+            trail_level: float | None = None
+            if cfg.trail_points is not None:
+                # Absolute points trail — preferred when both are set.
+                trail_level = rt.highest_premium - cfg.trail_points
+            elif cfg.trail_percent is not None:
+                trail_level = rt.highest_premium * (1 - cfg.trail_percent / 100)
+            if trail_level is not None and ltp <= trail_level:
                 await self._exit_position(session, "exit_trail", ltp)
                 return
 
@@ -419,6 +441,7 @@ class ScalpSessionManager:
             rt.entry_price = None  # Set on first premium tick
             rt.entry_time = datetime.utcnow()
             rt.highest_premium = None
+            rt.trail_armed = False
 
             # Update premium map so ticks get routed
             pkey = f"{cfg.user_id}:{instrument_key}"
@@ -528,6 +551,7 @@ class ScalpSessionManager:
         rt.entry_price = None
         rt.entry_time = None
         rt.highest_premium = None
+        rt.trail_armed = False
         rt.last_premium_ltp = None
         rt.trade_count += 1
         rt.last_exit_time = datetime.utcnow()
@@ -572,6 +596,7 @@ class ScalpSessionManager:
                         session.runtime.entry_price = None
                         session.runtime.entry_time = None
                         session.runtime.highest_premium = None
+                        session.runtime.trail_armed = False
                         await self._persist_state(session)
                     else:
                         logger.info("Session %d: reconciled — position confirmed", session.id)

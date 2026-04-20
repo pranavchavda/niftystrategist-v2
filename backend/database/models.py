@@ -768,6 +768,8 @@ class ScalpSessionDB(Base):
     sl_points = Column(Float, nullable=True)
     target_points = Column(Float, nullable=True)
     trail_percent = Column(Float, nullable=True)
+    trail_points = Column(Float, nullable=True)
+    trail_arm_points = Column(Float, nullable=True)
     squareoff_time = Column(String(5), default="15:15", nullable=False)
 
     # Runtime state

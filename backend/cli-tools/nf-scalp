@@ -48,6 +48,8 @@ def _session_to_dict(row) -> dict:
         "sl_points": row.sl_points,
         "target_points": row.target_points,
         "trail_percent": row.trail_percent,
+        "trail_points": row.trail_points,
+        "trail_arm_points": row.trail_arm_points,
         "squareoff_time": row.squareoff_time,
         "max_trades": row.max_trades,
         "cooldown_seconds": row.cooldown_seconds,
@@ -141,6 +143,10 @@ def cmd_create(args):
         kwargs["target_points"] = args.target_points
     if args.trail_percent is not None:
         kwargs["trail_percent"] = args.trail_percent
+    if args.trail_points is not None:
+        kwargs["trail_points"] = args.trail_points
+    if args.trail_arm_points is not None:
+        kwargs["trail_arm_points"] = args.trail_arm_points
 
     async def _create():
         async with get_db_context() as session:
@@ -169,8 +175,12 @@ def cmd_create(args):
             print(f"  SL:           {args.sl_points} pts")
         if args.target_points is not None:
             print(f"  Target:       {args.target_points} pts")
-        if args.trail_percent is not None:
+        if args.trail_points is not None:
+            print(f"  Trail:        {args.trail_points} pts")
+        elif args.trail_percent is not None:
             print(f"  Trail:        {args.trail_percent}%")
+        if args.trail_arm_points is not None:
+            print(f"  Trail arms:   +{args.trail_arm_points} pts profit")
         print(f"  Squareoff:    {args.squareoff} IST")
         print(f"  Max trades:   {args.max_trades}")
         print(f"  Cooldown:     {args.cooldown}s")
@@ -248,8 +258,12 @@ def cmd_status(args):
         print(f"  SL:           {row.sl_points} pts")
     if row.target_points is not None:
         print(f"  Target:       {row.target_points} pts")
-    if row.trail_percent is not None:
+    if row.trail_points is not None:
+        print(f"  Trail:        {row.trail_points} pts")
+    elif row.trail_percent is not None:
         print(f"  Trail:        {row.trail_percent}%")
+    if row.trail_arm_points is not None:
+        print(f"  Trail arms:   +{row.trail_arm_points} pts profit")
     print(f"  Squareoff:    {row.squareoff_time} IST")
     print(f"  Max trades:   {row.max_trades}")
     print(f"  Cooldown:     {row.cooldown_seconds}s")
@@ -479,7 +493,11 @@ Examples:
     p_create.add_argument("--target-points", type=float, default=None,
                           help="Target in premium points")
     p_create.add_argument("--trail-percent", type=float, default=None,
-                          help="Trailing stop percentage on premium")
+                          help="Trailing stop percentage on premium (legacy; prefer --trail-points)")
+    p_create.add_argument("--trail-points", type=float, default=None,
+                          help="Trailing stop in absolute premium points (preferred over --trail-percent)")
+    p_create.add_argument("--trail-arm-points", type=float, default=None,
+                          help="Points of profit required before the trail activates (default: arm immediately)")
     p_create.add_argument("--timeframe", default="1m",
                           choices=["1m", "5m", "15m", "30m", "1h"],
                           help="UT Bot candle timeframe (default: 1m)")

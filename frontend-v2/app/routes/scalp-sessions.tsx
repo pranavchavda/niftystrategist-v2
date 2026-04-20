@@ -31,6 +31,8 @@ interface ScalpSession {
   sl_points: number | null;
   target_points: number | null;
   trail_percent: number | null;
+  trail_points: number | null;
+  trail_arm_points: number | null;
   squareoff_time: string;
   state: string;
   current_option_type: string | null;
@@ -96,6 +98,8 @@ export default function ScalpSessionsRoute() {
     sl_points: '',
     target_points: '',
     trail_percent: '',
+    trail_points: '',
+    trail_arm_points: '',
     squareoff_time: '15:15',
     max_trades: 20,
     cooldown_seconds: 60,
@@ -177,6 +181,8 @@ export default function ScalpSessionsRoute() {
       body.sl_points = body.sl_points ? Number(body.sl_points) : null;
       body.target_points = body.target_points ? Number(body.target_points) : null;
       body.trail_percent = body.trail_percent ? Number(body.trail_percent) : null;
+      body.trail_points = body.trail_points ? Number(body.trail_points) : null;
+      body.trail_arm_points = body.trail_arm_points ? Number(body.trail_arm_points) : null;
       const res = await fetch('/api/scalp/sessions', { method: 'POST', headers, body: JSON.stringify(body) });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -266,7 +272,7 @@ export default function ScalpSessionsRoute() {
               <p className="text-sm text-zinc-500">Stateful options scalping with mutual exclusion</p>
             </div>
           </div>
-          <Button onClick={() => { setFormData({ name: '', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, sl_points: '', target_points: '', trail_percent: '', squareoff_time: '15:15', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
+          <Button onClick={() => { setFormData({ name: '', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
             <Plus className="w-4 h-4" /> New Session
           </Button>
         </div>
@@ -330,7 +336,11 @@ export default function ScalpSessionsRoute() {
                       <span>UT Bot {s.indicator_timeframe} p={s.utbot_period} s={s.utbot_sensitivity}</span>
                       {s.sl_points && <span>SL: {s.sl_points}pts</span>}
                       {s.target_points && <span>TP: {s.target_points}pts</span>}
-                      {s.trail_percent && <span>Trail: {s.trail_percent}%</span>}
+                      {s.trail_points ? (
+                        <span>Trail: {s.trail_points}pts{s.trail_arm_points ? ` arm +${s.trail_arm_points}` : ''}</span>
+                      ) : s.trail_percent ? (
+                        <span>Trail: {s.trail_percent}%{s.trail_arm_points ? ` arm +${s.trail_arm_points}` : ''}</span>
+                      ) : null}
                       <span>Trades: {s.trade_count}/{s.max_trades}</span>
                     </div>
                     {s.state !== 'IDLE' && s.current_strike && (
@@ -509,7 +519,7 @@ export default function ScalpSessionsRoute() {
                 <Input type="number" step="0.1" value={formData.utbot_sensitivity} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, utbot_sensitivity: Number(e.target.value) }))} />
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">SL Points</label>
                 <Input type="number" value={formData.sl_points} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, sl_points: e.target.value }))} placeholder="optional" />
@@ -518,9 +528,19 @@ export default function ScalpSessionsRoute() {
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Target Points</label>
                 <Input type="number" value={formData.target_points} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, target_points: e.target.value }))} placeholder="optional" />
               </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Trail Points</label>
+                <Input type="number" step="0.5" value={formData.trail_points} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, trail_points: e.target.value }))} placeholder="optional, preferred" />
+              </div>
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Trail %</label>
-                <Input type="number" step="0.5" value={formData.trail_percent} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, trail_percent: e.target.value }))} placeholder="optional" />
+                <Input type="number" step="0.5" value={formData.trail_percent} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, trail_percent: e.target.value }))} placeholder="fallback" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Arm at +Points</label>
+                <Input type="number" step="0.5" value={formData.trail_arm_points} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, trail_arm_points: e.target.value }))} placeholder="0 = immediate" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">

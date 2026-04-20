@@ -46,6 +46,8 @@ class ScalpSessionConfig(BaseModel):
     sl_points: float | None = None
     target_points: float | None = None
     trail_percent: float | None = None
+    trail_points: float | None = None
+    trail_arm_points: float | None = None
     squareoff_time: str = "15:15"
 
     max_trades: int = 20
@@ -62,6 +64,7 @@ class ScalpSessionRuntime(BaseModel):
     entry_price: float | None = None
     entry_time: datetime | None = None
     highest_premium: float | None = None
+    trail_armed: bool = False
     last_premium_ltp: float | None = None
     trade_count: int = 0
     last_exit_time: datetime | None = None
