@@ -374,6 +374,91 @@ export default function Help() {
               </div>
             </Section>
 
+            {/* Signal Sessions */}
+            <Section
+              id="signal-sessions"
+              title="Signal Sessions"
+              icon={BoltIcon}
+              expanded={expandedSection === 'signal-sessions'}
+              onToggle={() => toggleSection('signal-sessions')}
+            >
+              <div className="space-y-4 text-zinc-700 dark:text-zinc-300">
+                <p className="text-sm">
+                  Signal Sessions are stateful, indicator-driven trading agents. Unlike Trade Monitor rules
+                  (which are stateless and fire on a single condition), a session is position-aware — it
+                  knows whether it's flat or holding, enforces mutual exclusion, and manages the full
+                  entry-to-exit lifecycle automatically. Open them from the sidebar.
+                </p>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Three modes</h4>
+                  <ul className="text-sm space-y-2 ml-4 list-disc">
+                    <li><strong>Options Scalp:</strong> ATM CE/PE on an index (NIFTY, BANKNIFTY, FINNIFTY,
+                      MIDCPNIFTY). The strike is resolved at entry time from the live spot price, not at
+                      session creation. Intraday only, daily squareoff at 15:15 IST.</li>
+                    <li><strong>Equity Intraday:</strong> Direct LONG or SHORT on any NSE equity with
+                      product=I. Daily squareoff at 15:15 IST. SHORT is permitted (intraday margin).</li>
+                    <li><strong>Equity Swing:</strong> LONG-only delivery (product=D) that holds across
+                      days until a signal reversal, SL, target, or trailing-stop fires. No daily squareoff.
+                      Supports larger timeframes (15m / 1h / 1d). SHORT is not supported (no SLBM).</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Signal pipeline</h4>
+                  <p className="text-sm">
+                    Each session picks a <strong>Primary</strong> indicator that drives entries and reversal
+                    exits, plus an optional <strong>Confirm</strong> filter that must agree before an entry
+                    fires. Available indicators:
+                  </p>
+                  <ul className="text-sm space-y-1 ml-4 list-disc mt-2">
+                    <li><strong>UT Bot</strong> — ATR trailing-stop trend follower (default)</li>
+                    <li><strong>HalfTrend</strong> — ATR channel + pivot hybrid</li>
+                    <li><strong>SSL Hybrid</strong> — SMA-of-highs vs SMA-of-lows channel with optional
+                      EMA baseline gate</li>
+                    <li><strong>EMA Crossover</strong> — classic fast/slow EMA cross</li>
+                    <li><strong>Supertrend</strong> — ATR bands with direction flips</li>
+                    <li><strong>Renko</strong> — candle-based Renko trend (fixed or ATR-sized bricks)</li>
+                    <li><strong>QQE MOD</strong> — smoothed-RSI momentum (best as a confirm filter)</li>
+                    <li><strong>MACD</strong> — histogram-based confirm filter</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Exit controls</h4>
+                  <ul className="text-sm space-y-2 ml-4 list-disc">
+                    <li><strong>Stop Loss (points):</strong> hard exit N points adverse to entry.</li>
+                    <li><strong>Target (points):</strong> take-profit at entry + N points.</li>
+                    <li><strong>Signal reversal:</strong> the primary indicator flipping direction closes
+                      the position even without SL/target.</li>
+                    <li><strong>Armed trailing stop:</strong> trail activates only after the position has
+                      moved +N points in profit (the "Arm at +Points" field), then follows the highest
+                      (or lowest for SHORT) seen premium/price at a fixed distance. Prefer absolute
+                      <em>Trail Points</em> over percentage when working with high-priced options.</li>
+                    <li><strong>Auto squareoff:</strong> intraday modes close at the configured time
+                      (default 15:15 IST). Swing mode ignores this.</li>
+                    <li><strong>Disable-while-holding:</strong> toggling a session off while it's holding
+                      schedules an <em>exit-and-disable</em>. The daemon closes the position on its next
+                      poll and then disables the session. No orphaned broker positions.</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-zinc-900 dark:text-white mb-2">Safety rails</h4>
+                  <ul className="text-sm space-y-2 ml-4 list-disc">
+                    <li><strong>Mutual exclusion:</strong> a session can't hold CE + PE (or LONG + SHORT)
+                      at the same time.</li>
+                    <li><strong>Cooldown:</strong> minimum seconds between exits and the next entry.</li>
+                    <li><strong>Max trades:</strong> daily cap on how many trades a session will take.</li>
+                    <li><strong>Past-squareoff guard:</strong> intraday sessions won't open new positions
+                      after the squareoff time (would get closed immediately anyway).</li>
+                    <li><strong>Crash recovery:</strong> on daemon restart, holding sessions are
+                      reconciled against actual broker positions.</li>
+                  </ul>
+                </div>
+              </div>
+            </Section>
+
             {/* Settings */}
             <Section
               id="settings"

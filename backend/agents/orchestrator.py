@@ -1537,15 +1537,32 @@ NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on
 
 **NEVER run `nf-monitor start` or `nf-monitor stop`** — the monitor daemon is managed by systemd. Starting it via execute_bash creates a conflicting instance that crashes the production daemon.
 
-**Stateful Scalp Sessions (position-aware options scalping):**
-- `python cli-tools/nf-scalp list [--active] [--json]` — View scalp sessions (state: IDLE / HOLDING_CE / HOLDING_PE)
-- `python cli-tools/nf-scalp status SESSION_ID [--json]` — Detailed view: current position, entry price, P&L summary, recent log
-- `python cli-tools/nf-scalp logs [--session N] [--limit 20] [--json]` — Event log (entries, exits, signals, errors)
-- `python cli-tools/nf-scalp create --name "..." --underlying NIFTY --expiry YYYY-MM-DD --lots 1 [--sl-points 25] [--target-points 40] [--trail-percent 15] [--max-trades 3] [--json]` — Create new session
-- `python cli-tools/nf-scalp enable|disable|delete SESSION_ID [--json]` — Toggle / remove
-- `python cli-tools/nf-scalp manual-exit SESSION_ID [--json]` — Force exit (sets state IDLE + disables; does NOT close broker position)
+**Signal Sessions (stateful, position-aware indicator-driven trading, via `nf-scalp`):**
 
-Sessions enforce mutual exclusion (can't hold CE + PE simultaneously) and resolve ATM strike at entry time. Daemon manages them automatically. Use `nf-scalp list` and `nf-scalp logs` for observability during awakenings.
+Three modes share the same engine — pick via `--mode`:
+- `options_scalp` (default) — ATM CE/PE on an index, strike resolved at entry from live spot, intraday only
+- `equity_intraday` — LONG/SHORT equity, product=I, daily squareoff at 15:15
+- `equity_swing` — LONG-only delivery (product=D), holds across days, no daily squareoff, supports 1d timeframe
+
+Observability (safe to run anytime):
+- `python cli-tools/nf-scalp list [--active] [--json]` — state: IDLE / HOLDING_CE / HOLDING_PE / HOLDING_LONG / HOLDING_SHORT
+- `python cli-tools/nf-scalp status SESSION_ID [--json]` — position, entry price, P&L summary, recent events
+- `python cli-tools/nf-scalp logs [--session N] [--limit 20] [--json]` — event log (entry_ce/pe/long/short, exit_sl/target/trail/reversal/squareoff/disabled, order_failed, reconcile)
+
+Create a session (the `--primary`, `--primary-params`, `--confirm` flags are optional; default is UT Bot):
+- Options scalp: `python cli-tools/nf-scalp create --mode options_scalp --name "..." --underlying NIFTY --expiry YYYY-MM-DD --lots 1 [--primary utbot|halftrend|ssl_hybrid|ema_crossover|supertrend|renko] [--primary-params '{"period":10,"sensitivity":1.0}'] [--confirm qqe_mod|macd|...] [--confirm-params '{...}'] [--sl-points 25] [--target-points 40] [--trail-points 15] [--trail-arm-points 10] [--max-trades 3] [--timeframe 1m|5m|...] [--json]`
+- Equity intraday: `python cli-tools/nf-scalp create --mode equity_intraday --name "..." --underlying RELIANCE --quantity 10 [--sl-points 30] [--target-points 50] [--trail-points 10] [--trail-arm-points 15] [--timeframe 5m] [--json]`
+- Equity swing: `python cli-tools/nf-scalp create --mode equity_swing --name "..." --underlying RELIANCE --quantity 5 [--primary halftrend] [--sl-points 100] [--target-points 300] [--timeframe 1d] [--json]`
+
+Manage:
+- `python cli-tools/nf-scalp enable|disable|delete SESSION_ID [--json]` — disable-while-holding automatically places a SELL/cover order before disabling (see `exit_disabled` event)
+- `python cli-tools/nf-scalp manual-exit SESSION_ID [--json]` — same as disable for a HOLDING session; places the broker exit then disables
+
+Trail options: `--trail-points` (absolute, preferred for high-premium instruments) or `--trail-percent` (fallback). `--trail-arm-points N` makes the trail activate only after the position is +N points in profit — avoids chop-outs on tight trails.
+
+Guardrails: mutual exclusion (no CE+PE or LONG+SHORT simultaneously), cooldown between trades, max_trades daily cap, past-squareoff guard (intraday won't open new positions after squareoff time), daemon-reconciled state on startup. Delivery (equity_swing) mode cannot short — bearish signals are skipped silently.
+
+Use during awakenings for observability, not creation — **don't create sessions autonomously without user approval**, since they take positions continuously without further confirmation.
 
 **Strategy Templates (algo trading):**
 - `python cli-tools/nf-strategy list --json` — List available strategy templates (orb, breakout, mean-reversion, vwap-bounce, scalp)
