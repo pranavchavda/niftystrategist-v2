@@ -409,19 +409,56 @@ export default function Help() {
                   <p className="text-sm">
                     Each session picks a <strong>Primary</strong> indicator that drives entries and reversal
                     exits, plus an optional <strong>Confirm</strong> filter that must agree before an entry
-                    fires. Available indicators:
+                    fires. If the confirm disagrees, the entry is skipped — confirm never blocks exits,
+                    so a session can't get stuck in a losing position waiting for two-indicator agreement.
                   </p>
-                  <ul className="text-sm space-y-1 ml-4 list-disc mt-2">
-                    <li><strong>UT Bot</strong> — ATR trailing-stop trend follower (default)</li>
-                    <li><strong>HalfTrend</strong> — ATR channel + pivot hybrid</li>
-                    <li><strong>SSL Hybrid</strong> — SMA-of-highs vs SMA-of-lows channel with optional
-                      EMA baseline gate</li>
-                    <li><strong>EMA Crossover</strong> — classic fast/slow EMA cross</li>
-                    <li><strong>Supertrend</strong> — ATR bands with direction flips</li>
-                    <li><strong>Renko</strong> — candle-based Renko trend (fixed or ATR-sized bricks)</li>
-                    <li><strong>QQE MOD</strong> — smoothed-RSI momentum (best as a confirm filter)</li>
-                    <li><strong>MACD</strong> — histogram-based confirm filter</li>
-                  </ul>
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <p className="text-sm"><strong>UT Bot</strong> <span className="text-zinc-500">(default primary)</span> — An ATR-based trailing stop that flips long/short when price crosses
+                        the stop. Responsive in trending markets, whippy in chop. Tune
+                        <em> sensitivity</em> (higher = wider stop, fewer flips) and <em>period</em> (ATR window).
+                        Works well on 1m-5m index candles.</p>
+                    </div>
+                    <div>
+                      <p className="text-sm"><strong>HalfTrend</strong> — A pivot-based trend indicator that hugs swing highs/lows
+                        through an ATR channel. Gives cleaner flip signals than UT Bot in choppy markets
+                        because it uses structural pivots, not just volatility. Good default on mid-cap equities
+                        and indexes during sideways days.</p>
+                    </div>
+                    <div>
+                      <p className="text-sm"><strong>SSL Hybrid</strong> — Compares an SMA-of-highs line against an SMA-of-lows line to
+                        define a channel; price breaking above/below flips the state. Optional EMA baseline
+                        gate blocks counter-trend signals. Useful when you want an indicator that stays silent
+                        inside consolidations.</p>
+                    </div>
+                    <div>
+                      <p className="text-sm"><strong>EMA Crossover</strong> — Classic fast-EMA crossing slow-EMA (defaults 9/21). Simple,
+                        well-understood, lags in fast markets but reliable for equity intraday trend
+                        following. Pranav's validated favorite for equity-style signals.</p>
+                    </div>
+                    <div>
+                      <p className="text-sm"><strong>Supertrend</strong> — ATR-multiplied bands above and below price; a breach flips
+                        the trend state. Similar to UT Bot but uses price bands instead of a single trailing
+                        stop. Widely used on Indian indices; stable on 5m-15m timeframes.</p>
+                    </div>
+                    <div>
+                      <p className="text-sm"><strong>Renko</strong> — Price moves are converted to fixed-size (or ATR-sized) bricks; a
+                        brick direction flip is the signal. Filters out tick noise completely — great for
+                        "steady but sure" scalping and swing trades. Use ATR-sized bricks on volatile
+                        instruments so brick size adapts to market conditions.</p>
+                    </div>
+                    <div>
+                      <p className="text-sm"><strong>QQE MOD</strong> <span className="text-zinc-500">(best as confirm)</span> — A smoothed-RSI momentum oscillator. Outputs
+                        the distance from the RSI midline (50), so positive = bullish momentum, negative =
+                        bearish. Layered on top of UT Bot or HalfTrend, it filters out early flips before
+                        momentum has actually shifted.</p>
+                    </div>
+                    <div>
+                      <p className="text-sm"><strong>MACD</strong> <span className="text-zinc-500">(confirm)</span> — Standard MACD histogram. Positive histogram = bullish
+                        momentum, negative = bearish. Use as a second-opinion on trend indicator flips —
+                        especially effective on 15m+ timeframes.</p>
+                    </div>
+                  </div>
                 </div>
 
                 <div>

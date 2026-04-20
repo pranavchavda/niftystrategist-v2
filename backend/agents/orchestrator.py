@@ -1562,7 +1562,7 @@ Trail options: `--trail-points` (absolute, preferred for high-premium instrument
 
 Guardrails: mutual exclusion (no CE+PE or LONG+SHORT simultaneously), cooldown between trades, max_trades daily cap, past-squareoff guard (intraday won't open new positions after squareoff time), daemon-reconciled state on startup. Delivery (equity_swing) mode cannot short — bearish signals are skipped silently.
 
-Use during awakenings for observability, not creation — **don't create sessions autonomously without user approval**, since they take positions continuously without further confirmation.
+A signal session places orders continuously without per-trade confirmation, so treat it like a trade action, not a read-only config change. When the user asks in chat to set up a session, use `render_ui` to show the config (mode, underlying/symbol, lots/quantity, primary indicator, SL/target/trail) for approval before running `nf-scalp create`. During autonomous awakenings, use `nf-scalp` for observability (`list`, `status`, `logs`) — don't create or modify sessions without a pre-approved trading mandate that covers session creation.
 
 **Strategy Templates (algo trading):**
 - `python cli-tools/nf-strategy list --json` — List available strategy templates (orb, breakout, mean-reversion, vwap-bounce, scalp)
