@@ -11,6 +11,86 @@ import { Dialog, DialogTitle, DialogBody, DialogActions } from '../components/ca
 import { Badge } from '../components/catalyst/badge';
 import { Input } from '../components/catalyst/input';
 
+// Indicator catalogs and per-indicator default param schemas. Used to render
+// dynamic param inputs as the user picks a primary or confirm indicator.
+const PRIMARY_INDICATORS: { value: string; label: string }[] = [
+  { value: 'utbot', label: 'UT Bot' },
+  { value: 'halftrend', label: 'HalfTrend' },
+  { value: 'ssl_hybrid', label: 'SSL Hybrid' },
+  { value: 'ema_crossover', label: 'EMA Crossover' },
+  { value: 'supertrend', label: 'Supertrend' },
+  { value: 'renko', label: 'Renko' },
+];
+
+const CONFIRM_INDICATORS: { value: string; label: string }[] = [
+  { value: '', label: '— None —' },
+  { value: 'qqe_mod', label: 'QQE MOD' },
+  { value: 'macd', label: 'MACD' },
+  { value: 'halftrend', label: 'HalfTrend' },
+  { value: 'ssl_hybrid', label: 'SSL Hybrid' },
+  { value: 'utbot', label: 'UT Bot' },
+];
+
+const PARAM_DEFAULTS: Record<string, Record<string, number>> = {
+  utbot: { period: 10, sensitivity: 1.0 },
+  halftrend: { amplitude: 2, channel_dev: 2.0, atr_period: 100 },
+  ssl_hybrid: { period: 10 },
+  ema_crossover: { fast: 9, slow: 21 },
+  supertrend: { period: 10, multiplier: 3.0 },
+  renko: { brick_size: 10 },
+  qqe_mod: { rsi_period: 6, smoothing: 5 },
+  macd: {},
+};
+
+const PARAM_LABELS: Record<string, string> = {
+  period: 'Period',
+  sensitivity: 'Sensitivity',
+  amplitude: 'Amplitude',
+  channel_dev: 'Channel Dev',
+  atr_period: 'ATR Period',
+  fast: 'Fast EMA',
+  slow: 'Slow EMA',
+  multiplier: 'Multiplier',
+  brick_size: 'Brick Size',
+  rsi_period: 'RSI Period',
+  smoothing: 'Smoothing',
+  baseline_period: 'Baseline EMA',
+};
+
+function IndicatorParams({
+  indicator, params, onChange,
+}: {
+  indicator: string;
+  params: Record<string, number>;
+  onChange: (next: Record<string, number>) => void;
+}) {
+  const schema = PARAM_DEFAULTS[indicator] || {};
+  const keys = Object.keys(schema);
+  if (keys.length === 0) {
+    return <p className="text-xs text-zinc-500 italic">No parameters.</p>;
+  }
+  return (
+    <div className={`grid gap-3 ${keys.length === 1 ? 'grid-cols-1' : keys.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+      {keys.map(k => (
+        <div key={k}>
+          <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {PARAM_LABELS[k] || k}
+          </label>
+          <Input
+            type="number"
+            step="0.1"
+            value={params[k] ?? schema[k]}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              const v = e.target.value === '' ? schema[k] : Number(e.target.value);
+              onChange({ ...params, [k]: v });
+            }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface AuthContext {
   authToken: string;
   user?: any;
@@ -34,6 +114,10 @@ interface ScalpSession {
   trail_points: number | null;
   trail_arm_points: number | null;
   pending_action: string | null;
+  primary_indicator?: string;
+  primary_params?: Record<string, number> | null;
+  confirm_indicator?: string | null;
+  confirm_params?: Record<string, number> | null;
   squareoff_time: string;
   state: string;
   current_option_type: string | null;
@@ -88,7 +172,7 @@ export default function ScalpSessionsRoute() {
   // Create dialog
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<any>({
     name: '',
     underlying: 'NIFTY',
     expiry: '',
@@ -96,6 +180,10 @@ export default function ScalpSessionsRoute() {
     indicator_timeframe: '1m',
     utbot_period: 10,
     utbot_sensitivity: 1.0,
+    primary_indicator: 'utbot',
+    primary_params: { period: 10, sensitivity: 1.0 },
+    confirm_indicator: '',
+    confirm_params: {},
     sl_points: '',
     target_points: '',
     trail_percent: '',
@@ -184,6 +272,17 @@ export default function ScalpSessionsRoute() {
       body.trail_percent = body.trail_percent ? Number(body.trail_percent) : null;
       body.trail_points = body.trail_points ? Number(body.trail_points) : null;
       body.trail_arm_points = body.trail_arm_points ? Number(body.trail_arm_points) : null;
+      // Confirm indicator: empty string means none — send null, drop params
+      if (!body.confirm_indicator) {
+        body.confirm_indicator = null;
+        body.confirm_params = null;
+      }
+      // Keep utbot_period/utbot_sensitivity in sync when primary is utbot,
+      // so legacy code paths and back-compat fallbacks see consistent values.
+      if (body.primary_indicator === 'utbot' && body.primary_params) {
+        body.utbot_period = body.primary_params.period ?? body.utbot_period;
+        body.utbot_sensitivity = body.primary_params.sensitivity ?? body.utbot_sensitivity;
+      }
       const res = await fetch('/api/scalp/sessions', { method: 'POST', headers, body: JSON.stringify(body) });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -290,7 +389,7 @@ export default function ScalpSessionsRoute() {
               <p className="text-sm text-zinc-500">Stateful options scalping with mutual exclusion</p>
             </div>
           </div>
-          <Button onClick={() => { setFormData({ name: '', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
+          <Button onClick={() => { setFormData({ name: '', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
             <Plus className="w-4 h-4" /> New Session
           </Button>
         </div>
@@ -352,7 +451,10 @@ export default function ScalpSessionsRoute() {
                     <div className="text-xs text-zinc-500 flex items-center gap-3 flex-wrap">
                       <span>{s.underlying} {s.expiry}</span>
                       <span>{s.lots} lot(s)</span>
-                      <span>UT Bot {s.indicator_timeframe} p={s.utbot_period} s={s.utbot_sensitivity}</span>
+                      <span>
+                        {(s as any).primary_indicator || 'utbot'} {s.indicator_timeframe}
+                        {(s as any).confirm_indicator ? ` + ${(s as any).confirm_indicator}` : ''}
+                      </span>
                       {s.sl_points && <span>SL: {s.sl_points}pts</span>}
                       {s.target_points && <span>TP: {s.target_points}pts</span>}
                       {s.trail_points ? (
@@ -528,15 +630,56 @@ export default function ScalpSessionsRoute() {
                 <Input value={formData.squareoff_time} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, squareoff_time: e.target.value }))} />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">UT Bot Period</label>
-                <Input type="number" value={formData.utbot_period} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, utbot_period: Number(e.target.value) }))} />
+            <div className="space-y-3 rounded-lg border border-zinc-200 dark:border-zinc-700 p-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Primary Indicator</label>
+                  <select
+                    value={formData.primary_indicator}
+                    onChange={e => {
+                      const next = e.target.value;
+                      setFormData((p: any) => ({
+                        ...p,
+                        primary_indicator: next,
+                        primary_params: { ...(PARAM_DEFAULTS[next] || {}) },
+                      }));
+                    }}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                    {PRIMARY_INDICATORS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Confirm (optional)</label>
+                  <select
+                    value={formData.confirm_indicator}
+                    onChange={e => {
+                      const next = e.target.value;
+                      setFormData((p: any) => ({
+                        ...p,
+                        confirm_indicator: next,
+                        confirm_params: next ? { ...(PARAM_DEFAULTS[next] || {}) } : {},
+                      }));
+                    }}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                    {CONFIRM_INDICATORS.map(i => <option key={i.value || 'none'} value={i.value}>{i.label}</option>)}
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">UT Bot Sensitivity</label>
-                <Input type="number" step="0.1" value={formData.utbot_sensitivity} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, utbot_sensitivity: Number(e.target.value) }))} />
-              </div>
+              <IndicatorParams
+                indicator={formData.primary_indicator}
+                params={formData.primary_params || {}}
+                onChange={(next) => setFormData((p: any) => ({ ...p, primary_params: next }))}
+              />
+              {formData.confirm_indicator && (
+                <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
+                  <p className="text-xs text-zinc-500 mb-2">Confirm params:</p>
+                  <IndicatorParams
+                    indicator={formData.confirm_indicator}
+                    params={formData.confirm_params || {}}
+                    onChange={(next) => setFormData((p: any) => ({ ...p, confirm_params: next }))}
+                  />
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
