@@ -53,6 +53,10 @@ class ScalpSessionConfig(BaseModel):
     max_trades: int = 20
     cooldown_seconds: int = 60
 
+    # API→daemon signal: "exit_and_disable" or "exit_and_delete" when a user
+    # tries to disable or delete a HOLDING session. Daemon clears after acting.
+    pending_action: str | None = None
+
 
 class ScalpSessionRuntime(BaseModel):
     """Mutable runtime state, updated by daemon."""

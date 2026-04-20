@@ -39,6 +39,7 @@ def db_to_session(row: ScalpSessionDB) -> ScalpSession:
         squareoff_time=row.squareoff_time,
         max_trades=row.max_trades,
         cooldown_seconds=row.cooldown_seconds,
+        pending_action=row.pending_action,
     )
     runtime = ScalpSessionRuntime(
         state=ScalpState(row.state) if row.state else ScalpState.IDLE,
@@ -133,6 +134,27 @@ async def delete_session(db: AsyncSession, session_id: int) -> bool:
     await db.delete(row)
     await db.commit()
     return True
+
+
+async def set_pending_action(
+    db: AsyncSession,
+    session_id: int,
+    action: str,
+) -> None:
+    """Mark a session with an API→daemon signal (exit_and_disable / exit_and_delete)."""
+    row = await get_session(db, session_id)
+    if not row:
+        return
+    row.pending_action = action
+    await db.commit()
+
+
+async def clear_pending_action(db: AsyncSession, session_id: int) -> None:
+    row = await get_session(db, session_id)
+    if not row:
+        return
+    row.pending_action = None
+    await db.commit()
 
 
 async def persist_session_state(
@@ -261,7 +283,10 @@ async def get_session_pnl_summary(
     session_id: int,
 ) -> dict:
     """Aggregate P&L from exit events."""
-    exit_events = ["exit_sl", "exit_target", "exit_trail", "exit_reversal", "exit_squareoff"]
+    exit_events = [
+        "exit_sl", "exit_target", "exit_trail",
+        "exit_reversal", "exit_squareoff", "exit_disabled",
+    ]
     result = await db.execute(
         select(
             func.count(ScalpSessionLogDB.id).label("total_exits"),

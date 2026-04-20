@@ -61,6 +61,14 @@ class ScalpSessionManager:
         (possibly edited by user) but transient runtime fields like entry_price
         and highest_premium live in memory and are only persisted at state
         transitions. Wholesale replacement would reset them every 30s.
+
+        Also handles two HOLDING-dropout cases before finalizing the refresh:
+
+        1. ``pending_action`` set by the API (user clicked disable/delete
+           while holding) — exit the position, then apply the action.
+        2. Defensive: in-memory HOLDING session that disappeared from the
+           enabled list (direct DB edit or legacy code path) — force exit
+           so we don't leak a broker position the daemon stops watching.
         """
         from database.session import get_db_context
         from monitor.scalp_crud import get_enabled_sessions, db_to_session
@@ -77,6 +85,7 @@ class ScalpSessionManager:
         new_sessions: dict[int, list[ScalpSession]] = {}
         new_underlying_map: dict[str, list[int]] = {}
         new_premium_map: dict[str, int] = {}
+        pending_actions: list[tuple[ScalpSession, str]] = []
 
         for row in rows:
             session = db_to_session(row)
@@ -103,6 +112,16 @@ class ScalpSessionManager:
                 minutes = _parse_timeframe(tf)
                 self._candle_buffers[buf_key] = CandleBuffer(minutes)
 
+            if session.config.pending_action:
+                pending_actions.append((session, session.config.pending_action))
+
+        # Defensive: in-memory HOLDING sessions that vanished from DB.
+        new_ids = {row.id for row in rows}
+        dropped_holding: list[ScalpSession] = [
+            s for s in existing.values()
+            if s.is_holding and s.id not in new_ids
+        ]
+
         self._sessions = new_sessions
         self._underlying_map = new_underlying_map
         self._premium_map = new_premium_map
@@ -110,6 +129,79 @@ class ScalpSessionManager:
         total = sum(len(v) for v in new_sessions.values())
         if total:
             logger.info("Loaded %d scalp sessions for %d users", total, len(new_sessions))
+
+        # Handle dropped holdings — exit so we don't leak the broker position.
+        for s in dropped_holding:
+            logger.warning(
+                "Session %d: HOLDING but removed from enabled list — force-exiting",
+                s.id,
+            )
+            await self._exit_position(s, "exit_disabled", s.runtime.last_premium_ltp)
+
+        # Handle API-requested pending actions.
+        for session, action in pending_actions:
+            await self._handle_pending_action(session, action)
+
+    async def _handle_pending_action(
+        self, session: ScalpSession, action: str
+    ) -> None:
+        """Process an API-set pending_action. Exits the position if HOLDING,
+        then applies the requested disable or delete and clears the flag."""
+        from database.session import get_db_context
+        from monitor.scalp_crud import (
+            clear_pending_action,
+            delete_session as crud_delete,
+            update_session as crud_update,
+        )
+
+        if session.is_holding:
+            logger.info(
+                "Session %d: handling pending_action=%s (state=%s) — exiting",
+                session.id, action, session.runtime.state.value,
+            )
+            await self._exit_position(
+                session, "exit_disabled", session.runtime.last_premium_ltp
+            )
+
+        try:
+            async with get_db_context() as db:
+                if action == "exit_and_delete":
+                    await crud_delete(db, session.id)
+                    logger.info("Session %d: deleted after exit_disabled", session.id)
+                else:
+                    # exit_and_disable (and any unknown action defaults to disable)
+                    await crud_update(db, session.id, enabled=False, pending_action=None)
+                    logger.info("Session %d: disabled after exit_disabled", session.id)
+                # Drop the session from in-memory maps so it stops receiving ticks.
+                self._drop_session_from_memory(session)
+        except Exception as e:
+            logger.error(
+                "Session %d: failed to finalize pending_action=%s: %s",
+                session.id, action, e, exc_info=True,
+            )
+            # Best-effort flag clear so we don't loop on the same action.
+            try:
+                async with get_db_context() as db:
+                    await clear_pending_action(db, session.id)
+            except Exception:
+                pass
+
+    def _drop_session_from_memory(self, session: ScalpSession) -> None:
+        """Remove a session from in-memory maps after it's disabled/deleted."""
+        uid = session.user_id
+        sessions = self._sessions.get(uid, [])
+        self._sessions[uid] = [s for s in sessions if s.id != session.id]
+        if not self._sessions[uid]:
+            self._sessions.pop(uid, None)
+        # Prune index maps for this session.
+        ukey = f"{uid}:{session.config.underlying_instrument_token}"
+        if ukey in self._underlying_map:
+            self._underlying_map[ukey] = [
+                sid for sid in self._underlying_map[ukey] if sid != session.id
+            ]
+            if not self._underlying_map[ukey]:
+                self._underlying_map.pop(ukey, None)
+        # Option instrument map was already cleaned in _exit_position if we held.
 
     def get_subscribed_instruments(self, user_id: int) -> set[str]:
         """Return instruments this manager needs subscribed for a user."""

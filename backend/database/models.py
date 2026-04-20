@@ -772,6 +772,10 @@ class ScalpSessionDB(Base):
     trail_arm_points = Column(Float, nullable=True)
     squareoff_time = Column(String(5), default="15:15", nullable=False)
 
+    # API-to-daemon signal. Set by web process to request an exit+disable
+    # or exit+delete of a HOLDING session; daemon clears after handling.
+    pending_action = Column(String(20), nullable=True)
+
     # Runtime state
     state = Column(String(15), default="IDLE", nullable=False)
     current_option_type = Column(String(2), nullable=True)

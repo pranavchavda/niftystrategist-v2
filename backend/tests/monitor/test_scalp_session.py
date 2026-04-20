@@ -615,3 +615,105 @@ class TestSubscriptions:
         assert "NSE_INDEX|Nifty 50" in instruments
         assert "NSE_FO|43885" in instruments
         assert len(instruments) == 2
+
+
+# ── Pending action handling (API→daemon disable/delete) ─────────────
+
+
+class TestPendingAction:
+    @pytest.mark.asyncio
+    async def test_exit_and_disable_on_holding_session(self):
+        """API set pending_action=exit_and_disable on a HOLDING session.
+        Daemon should exit, then disable the row."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+        )
+        mgr._sessions = {999: [session]}
+        mgr._underlying_map = {"999:NSE_INDEX|Nifty 50": [1]}
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit, \
+             patch('monitor.scalp_crud.update_session', new_callable=AsyncMock) as mock_update, \
+             patch('monitor.scalp_crud.delete_session', new_callable=AsyncMock) as mock_delete, \
+             patch('monitor.scalp_crud.clear_pending_action', new_callable=AsyncMock), \
+             patch('database.session.get_db_context') as mock_ctx:
+            mock_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            await mgr._handle_pending_action(session, "exit_and_disable")
+
+            mock_exit.assert_called_once()
+            assert mock_exit.call_args.args[1] == "exit_disabled"
+            mock_update.assert_called_once()
+            # kwargs contain enabled=False, pending_action=None
+            kwargs = mock_update.call_args.kwargs
+            assert kwargs.get("enabled") is False
+            assert kwargs.get("pending_action") is None
+            mock_delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_exit_and_delete_on_holding_session(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_PE,
+            entry_price=150.0,
+            current_instrument_token="NSE_FO|43886",
+        )
+        mgr._sessions = {999: [session]}
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit, \
+             patch('monitor.scalp_crud.update_session', new_callable=AsyncMock) as mock_update, \
+             patch('monitor.scalp_crud.delete_session', new_callable=AsyncMock) as mock_delete, \
+             patch('database.session.get_db_context') as mock_ctx:
+            mock_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            await mgr._handle_pending_action(session, "exit_and_delete")
+
+            mock_exit.assert_called_once()
+            mock_delete.assert_called_once()
+            mock_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_action_on_idle_skips_exit(self):
+        """IDLE session with pending_action just gets disabled, no SELL order."""
+        mgr = _make_manager()
+        session = _make_session(state=ScalpState.IDLE)
+        mgr._sessions = {999: [session]}
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit, \
+             patch('monitor.scalp_crud.update_session', new_callable=AsyncMock), \
+             patch('monitor.scalp_crud.delete_session', new_callable=AsyncMock), \
+             patch('database.session.get_db_context') as mock_ctx:
+            mock_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            await mgr._handle_pending_action(session, "exit_and_disable")
+            mock_exit.assert_not_called()
+
+    def test_drop_session_from_memory_prunes_maps(self):
+        mgr = _make_manager()
+        session = _make_session(session_id=1, user_id=999)
+        other = _make_session(session_id=2, user_id=999)
+        mgr._sessions = {999: [session, other]}
+        mgr._underlying_map = {"999:NSE_INDEX|Nifty 50": [1, 2]}
+
+        mgr._drop_session_from_memory(session)
+
+        assert 999 in mgr._sessions
+        assert len(mgr._sessions[999]) == 1
+        assert mgr._sessions[999][0].id == 2
+        assert mgr._underlying_map["999:NSE_INDEX|Nifty 50"] == [2]
+
+    def test_drop_last_session_removes_user_key(self):
+        mgr = _make_manager()
+        session = _make_session(session_id=1, user_id=999)
+        mgr._sessions = {999: [session]}
+        mgr._underlying_map = {"999:NSE_INDEX|Nifty 50": [1]}
+
+        mgr._drop_session_from_memory(session)
+
+        assert 999 not in mgr._sessions
+        assert "999:NSE_INDEX|Nifty 50" not in mgr._underlying_map

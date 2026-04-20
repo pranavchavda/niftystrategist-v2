@@ -33,6 +33,7 @@ interface ScalpSession {
   trail_percent: number | null;
   trail_points: number | null;
   trail_arm_points: number | null;
+  pending_action: string | null;
   squareoff_time: string;
   state: string;
   current_option_type: string | null;
@@ -200,10 +201,17 @@ export default function ScalpSessionsRoute() {
 
   const toggleEnabled = async (id: number, enabled: boolean) => {
     try {
-      await fetch(`/api/scalp/sessions/${id}`, {
+      const res = await fetch(`/api/scalp/sessions/${id}`, {
         method: 'PATCH', headers, body: JSON.stringify({ enabled: !enabled }),
       });
-      showAction(enabled ? 'Session disabled' : 'Session enabled');
+      const data = await res.json().catch(() => ({}));
+      if (!enabled) {
+        showAction('Session enabled');
+      } else if (data.pending_action === 'exit_and_disable') {
+        showAction('Exit scheduled — daemon will square off, then disable');
+      } else {
+        showAction('Session disabled');
+      }
       await fetchSessions();
     } catch { setError('Failed to toggle'); }
   };
@@ -211,17 +219,27 @@ export default function ScalpSessionsRoute() {
   const deleteSession = async (id: number) => {
     if (!confirm('Delete this session?')) return;
     try {
-      await fetch(`/api/scalp/sessions/${id}`, { method: 'DELETE', headers });
-      showAction('Session deleted');
-      if (expandedId === id) setExpandedId(null);
+      const res = await fetch(`/api/scalp/sessions/${id}`, { method: 'DELETE', headers });
+      const data = await res.json().catch(() => ({}));
+      if (data.status === 'exit_pending') {
+        showAction('Delete scheduled — daemon will square off first');
+      } else {
+        showAction('Session deleted');
+        if (expandedId === id) setExpandedId(null);
+      }
       await fetchSessions();
     } catch { setError('Failed to delete'); }
   };
 
   const manualExit = async (id: number) => {
     try {
-      await fetch(`/api/scalp/sessions/${id}/manual-exit`, { method: 'POST', headers });
-      showAction('Manual exit triggered');
+      const res = await fetch(`/api/scalp/sessions/${id}/manual-exit`, { method: 'POST', headers });
+      const data = await res.json().catch(() => ({}));
+      if (data.pending_action === 'exit_and_disable') {
+        showAction('Exit scheduled — daemon will square off, then disable');
+      } else {
+        showAction('Session disabled (was IDLE)');
+      }
       await fetchSessions();
     } catch { setError('Failed to exit'); }
   };
@@ -328,6 +346,7 @@ export default function ScalpSessionsRoute() {
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-medium text-zinc-900 dark:text-zinc-100">{s.name}</span>
                       {stateBadge(s.state, s.current_option_type)}
+                      {s.pending_action && <Badge color="amber">exit pending</Badge>}
                       {!s.enabled && <Badge color="zinc">disabled</Badge>}
                     </div>
                     <div className="text-xs text-zinc-500 flex items-center gap-3 flex-wrap">

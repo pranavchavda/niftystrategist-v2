@@ -94,6 +94,7 @@ def _serialize_session(row) -> dict:
         "trail_percent": row.trail_percent,
         "trail_points": row.trail_points,
         "trail_arm_points": row.trail_arm_points,
+        "pending_action": row.pending_action,
         "squareoff_time": row.squareoff_time,
         "max_trades": row.max_trades,
         "cooldown_seconds": row.cooldown_seconds,
@@ -225,7 +226,20 @@ async def api_update_session(
         if body.name is not None:
             updates["name"] = body.name
         if body.enabled is not None:
-            updates["enabled"] = body.enabled
+            if body.enabled is False and row.state != ScalpState.IDLE.value:
+                # HOLDING session — daemon must exit before disable takes effect.
+                # Keep enabled=true so daemon still sees it; flag the exit.
+                await scalp_crud.set_pending_action(
+                    session, session_id, "exit_and_disable",
+                )
+                await session.refresh(row)
+                logger.info(
+                    "Session %d: disable requested while HOLDING (%s) — "
+                    "scheduled exit_and_disable",
+                    session_id, row.state,
+                )
+            else:
+                updates["enabled"] = body.enabled
         if body.underlying is not None:
             upper = body.underlying.upper()
             if upper not in UNDERLYING_INSTRUMENT_MAP:
@@ -279,13 +293,28 @@ async def api_delete_session(
     session_id: int,
     user: User = Depends(get_current_user),
 ):
-    """Delete a scalp session. Only the session owner can delete it."""
+    """Delete a scalp session. Only the session owner can delete it.
+
+    If the session is HOLDING a position, the delete is deferred: the
+    daemon will exit first, then remove the row on the next poll cycle.
+    """
     async with get_db_context() as session:
         row = await scalp_crud.get_session(session, session_id)
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
         if row.user_id != user.id:
             raise HTTPException(status_code=403, detail="Not your session")
+
+        if row.state != ScalpState.IDLE.value:
+            await scalp_crud.set_pending_action(
+                session, session_id, "exit_and_delete",
+            )
+            logger.info(
+                "Session %d: delete requested while HOLDING (%s) — "
+                "scheduled exit_and_delete",
+                session_id, row.state,
+            )
+            return {"deleted": session_id, "status": "exit_pending"}
 
         await scalp_crud.delete_session(session, session_id)
         return {"deleted": session_id}
@@ -362,11 +391,8 @@ async def api_manual_exit(
     session_id: int,
     user: User = Depends(get_current_user),
 ):
-    """Force-exit a scalp session by setting enabled=False and state=IDLE.
-
-    The daemon will pick up the state change on its next poll.
-    For the actual broker-side exit, use nf-options sell.
-    """
+    """Force-exit a scalp session. If HOLDING, the daemon places a real SELL
+    on its next poll (exit_and_disable). If already IDLE, just disables."""
     async with get_db_context() as session:
         row = await scalp_crud.get_session(session, session_id)
         if not row:
@@ -374,11 +400,14 @@ async def api_manual_exit(
         if row.user_id != user.id:
             raise HTTPException(status_code=403, detail="Not your session")
 
-        updated = await scalp_crud.update_session(
-            session,
-            session_id,
-            enabled=False,
-            state=ScalpState.IDLE.value,
-        )
-        logger.info("Manual exit for session %d (user %d)", session_id, user.id)
-        return _serialize_session(updated)
+        if row.state != ScalpState.IDLE.value:
+            await scalp_crud.set_pending_action(
+                session, session_id, "exit_and_disable",
+            )
+            await session.refresh(row)
+            logger.info("Manual exit (HOLDING) for session %d — scheduled", session_id)
+        else:
+            await scalp_crud.update_session(session, session_id, enabled=False)
+            await session.refresh(row)
+            logger.info("Manual exit (IDLE) for session %d — disabled directly", session_id)
+        return _serialize_session(row)
