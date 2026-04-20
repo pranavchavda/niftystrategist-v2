@@ -42,11 +42,14 @@ router = APIRouter()
 
 # Map the frontend's timeframe tokens to (upstox_interval, days_to_fetch).
 # The chart page uses these short codes; Upstox only supports minute/day granularity.
+# Windows are generous so a long weekend or holiday doesn't wipe out
+# the response. Upstox historical 1-minute retention is ~1 month; 5 days
+# still comfortably covers Fri→Mon across any weekend.
 TIMEFRAME_MAP: dict[str, tuple[str, int]] = {
-    "1m": ("1minute", 2),
-    "5m": ("5minute", 10),
-    "15m": ("15minute", 30),
-    "30m": ("30minute", 60),
+    "1m": ("1minute", 5),
+    "5m": ("5minute", 15),
+    "15m": ("15minute", 45),
+    "30m": ("30minute", 90),
     "1D": ("day", 180),
     "1W": ("day", 365 * 2),
     "1M": ("day", 365 * 5),

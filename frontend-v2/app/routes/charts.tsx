@@ -444,7 +444,7 @@ function ChartsView({ authToken }: { authToken: string }) {
 
   const [symbol, setSymbol] = useState<string>(() => {
     const fromQuery = searchParams.get('symbol');
-    return fromQuery && fromQuery.trim() ? fromQuery.trim().toUpperCase() : 'RELIANCE';
+    return fromQuery && fromQuery.trim() ? fromQuery.trim().toUpperCase() : 'NIFTY 50';
   });
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -487,7 +487,14 @@ function ChartsView({ authToken }: { authToken: string }) {
           `/api/charts/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}`,
           { headers: { Authorization: `Bearer ${authToken}` } },
         );
-        if (!res.ok) throw new Error(`${res.status}`);
+        if (!res.ok) {
+          let msg = `${res.status}`;
+          try {
+            const body = await res.json();
+            if (body?.detail) msg = `${res.status} — ${body.detail}`;
+          } catch { /* ignore */ }
+          throw new Error(msg);
+        }
         const data = await res.json();
         if (!cancelled) setCandles(data.candles || []);
       } catch (e: any) {
