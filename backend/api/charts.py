@@ -32,9 +32,6 @@ from services.instruments_cache import (
 # Reuse cockpit's per-user Upstox client resolver so token handling
 # (decrypt + expiry + TOTP refresh + 401 retry) stays in one place.
 from api import cockpit as cockpit_api
-from api.upstox_oauth import get_user_upstox_token
-from monitor.streams.market_data import MarketDataStream
-from monitor.streams.connection import AuthenticationError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -183,18 +180,22 @@ async def charts_stream(
     request: Request,
     symbol: str,
     timeframe: str = Query(default="1D"),
+    interval_ms: int = Query(default=2000, ge=500, le=15000),
     user: User = Depends(get_current_user),
 ):
-    """SSE stream of live ticks for a single instrument.
+    """SSE stream of the latest trade price for a single instrument.
 
-    Sends one event per tick (coalesced to ~4/s) with shape:
+    Backed by polling Upstox's REST market-quote endpoint rather than the
+    WebSocket market-data feed. The feed is limited to ~1 concurrent WS per
+    user access token, and the monitor/scalp daemon already owns that WS,
+    so a second WS from this web process gets 403. Polling avoids the
+    contention at the cost of coarser tick cadence (1–3s).
+
+    Emits events of shape:
         data: {"ltp": 2545.50, "ltt": 1713515432000}
 
-    Where `ltt` is Upstox's last-trade-time in milliseconds. The frontend uses
-    it to decide which candle bucket to update. On client disconnect the
-    underlying Upstox WebSocket is torn down.
+    On client disconnect the polling loop exits.
     """
-    # Resolve instrument key — equities first, then indices.
     sym = symbol.upper()
     instrument_key = get_instrument_key(sym)
     if not instrument_key:
@@ -202,88 +203,57 @@ async def charts_stream(
     if not instrument_key:
         raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
 
-    access_token = await get_user_upstox_token(user.id)
-    if not access_token:
-        raise HTTPException(
-            status_code=401,
-            detail="No valid Upstox token. Connect your account in Settings.",
-        )
-
-    # Bounded queue — drop oldest on overflow so a slow client can't back us up.
-    tick_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
-    auth_failed = asyncio.Event()
-
-    async def on_tick(data: dict):
-        entry = data.get(instrument_key)
-        if not entry:
-            return
-        ltp = entry.get("ltp")
-        if ltp is None:
-            return
-        payload = {"ltp": float(ltp), "ltt": entry.get("ltt") or int(time.time() * 1000)}
-        try:
-            tick_queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            # Drop oldest, keep latest.
-            try:
-                tick_queue.get_nowait()
-                tick_queue.put_nowait(payload)
-            except Exception:
-                pass
-
-    async def on_auth_failure():
-        auth_failed.set()
-
-    stream = MarketDataStream(
-        access_token=access_token,
-        on_message=on_tick,
-        mode="ltpc",
-        on_auth_failure=on_auth_failure,
-    )
+    # Resolve once — reuse the same per-user client on every poll iteration.
+    client = await cockpit_api._get_client_for_user(user)
 
     async def sse_generator():
-        started = False
         try:
-            await stream.start()
-            # Wait briefly for the WS to come up before subscribing.
-            for _ in range(20):
-                if stream.connected:
-                    break
-                await asyncio.sleep(0.1)
-            await stream.subscribe([instrument_key])
-            started = True
-
             yield f"event: ready\ndata: {json.dumps({'symbol': sym, 'instrument_key': instrument_key, 'timeframe': timeframe})}\n\n".encode()
 
-            latest_tick: Optional[dict] = None
-            emit_interval = 0.25  # 4 Hz max
+            last_ltp: Optional[float] = None
             last_heartbeat = time.monotonic()
-            next_emit = time.monotonic() + emit_interval
+            interval_s = interval_ms / 1000.0
+            consecutive_errors = 0
 
             while True:
                 if await request.is_disconnected():
                     break
-                if auth_failed.is_set():
-                    yield b'event: error\ndata: {"error": "auth_failed"}\n\n'
-                    break
 
-                timeout = max(0.01, next_emit - time.monotonic())
+                tick_emitted = False
                 try:
-                    tick = await asyncio.wait_for(tick_queue.get(), timeout=timeout)
-                    latest_tick = tick
-                except asyncio.TimeoutError:
-                    pass
+                    quote = await client.get_quote(symbol)
+                    ltp = quote.get("ltp") if isinstance(quote, dict) else None
+                    if ltp is not None:
+                        ltp_f = float(ltp)
+                        # Only emit on change or after 15s of no emission (heartbeat).
+                        now = time.monotonic()
+                        if ltp_f != last_ltp or (now - last_heartbeat) > 15.0:
+                            payload = {"ltp": ltp_f, "ltt": int(time.time() * 1000)}
+                            yield f"data: {json.dumps(payload)}\n\n".encode()
+                            last_ltp = ltp_f
+                            last_heartbeat = now
+                            tick_emitted = True
+                    consecutive_errors = 0
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.warning(f"charts.stream({symbol}) quote error #{consecutive_errors}: {e}")
+                    if consecutive_errors >= 5:
+                        yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode()
+                        break
 
-                now = time.monotonic()
-                if now >= next_emit:
-                    if latest_tick is not None:
-                        yield f"data: {json.dumps(latest_tick)}\n\n".encode()
-                        latest_tick = None
-                        last_heartbeat = now
-                    elif now - last_heartbeat > 15.0:
-                        yield b": ping\n\n"
-                        last_heartbeat = now
-                    next_emit = now + emit_interval
+                # SSE keep-alive comment if nothing emitted in >15s.
+                if not tick_emitted and (time.monotonic() - last_heartbeat) > 15.0:
+                    yield b": ping\n\n"
+                    last_heartbeat = time.monotonic()
+
+                # Sleep in small slices so disconnect is noticed quickly.
+                slept = 0.0
+                while slept < interval_s:
+                    if await request.is_disconnected():
+                        return
+                    step = min(0.25, interval_s - slept)
+                    await asyncio.sleep(step)
+                    slept += step
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -292,12 +262,6 @@ async def charts_stream(
                 yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode()
             except Exception:
                 pass
-        finally:
-            if started:
-                try:
-                    await stream.stop()
-                except Exception:
-                    pass
 
     return StreamingResponse(
         sse_generator(),
