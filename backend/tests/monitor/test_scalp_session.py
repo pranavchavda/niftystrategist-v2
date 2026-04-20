@@ -762,10 +762,11 @@ class TestPrimaryConfirmIndicators:
         from monitor.scalp_crud import db_to_session
         class FakeRow:
             id, user_id, name, enabled = 1, 999, "x", True
+            session_mode = "options_scalp"
             underlying = "NIFTY"
             underlying_instrument_token = "NSE_INDEX|Nifty 50"
             expiry = "2026-04-30"
-            lots, product = 1, "I"
+            lots, quantity, product = 1, None, "I"
             indicator_timeframe = "1m"
             utbot_period, utbot_sensitivity = 7, 1.5
             primary_indicator = "utbot"
@@ -897,3 +898,211 @@ class TestPrimaryConfirmIndicators:
         mock_exit.assert_called_once_with(session, "exit_reversal", 180.0)
         # Primary was called once; confirm must not have been called at all.
         assert mock_c.call_count == 1
+
+
+# ── Equity sessions (intraday + swing) ──────────────────────────────
+
+
+def _make_equity_session(
+    session_id: int = 100,
+    user_id: int = 999,
+    mode: str = "equity_intraday",
+    state: ScalpState = ScalpState.IDLE,
+    quantity: int = 10,
+    **runtime_overrides,
+) -> ScalpSession:
+    config = ScalpSessionConfig(
+        id=session_id,
+        user_id=user_id,
+        name=f"equity-{session_id}",
+        session_mode=mode,
+        underlying="RELIANCE",
+        underlying_instrument_token="NSE_EQ|INE002A01018",
+        expiry="",
+        lots=1,
+        quantity=quantity,
+        product="D" if mode == "equity_swing" else "I",
+        indicator_timeframe="5m",
+        utbot_period=10,
+        utbot_sensitivity=1.0,
+        squareoff_time="15:15",
+        max_trades=10,
+        cooldown_seconds=60,
+    )
+    runtime = ScalpSessionRuntime(state=state, **runtime_overrides)
+    return ScalpSession(config=config, runtime=runtime)
+
+
+class TestEquityModeRouting:
+    def test_bullish_direction_options(self):
+        assert ScalpSessionManager._bullish_direction("options_scalp") == "CE"
+
+    def test_bullish_direction_equity(self):
+        assert ScalpSessionManager._bullish_direction("equity_intraday") == "LONG"
+        assert ScalpSessionManager._bullish_direction("equity_swing") == "LONG"
+
+    def test_bearish_direction_options(self):
+        assert ScalpSessionManager._bearish_direction("options_scalp") == "PE"
+
+    def test_bearish_direction_intraday_supports_short(self):
+        assert ScalpSessionManager._bearish_direction("equity_intraday") == "SHORT"
+
+    def test_bearish_direction_swing_blocks_short(self):
+        """Delivery doesn't permit shorting (no SLBM here) → no entry direction."""
+        assert ScalpSessionManager._bearish_direction("equity_swing") is None
+
+
+class TestEquityEntry:
+    @pytest.mark.asyncio
+    async def test_equity_long_entry_places_buy(self):
+        mgr = _make_manager()
+        session = _make_equity_session(mode="equity_intraday")
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": True, "order_id": "ORD-EQ-1"}) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._enter_equity(session, "LONG", 2500.0)
+
+        assert session.runtime.state == ScalpState.HOLDING_LONG
+        assert session.runtime.current_instrument_token == "NSE_EQ|INE002A01018"
+        assert session.runtime.entry_price == 2500.0  # Set at entry, not deferred
+        kwargs = mock_order.call_args.kwargs
+        assert kwargs["transaction_type"] == "BUY"
+        assert kwargs["quantity"] == 10
+        assert kwargs["product"] == "I"
+
+    @pytest.mark.asyncio
+    async def test_equity_short_entry_places_sell(self):
+        mgr = _make_manager()
+        session = _make_equity_session(mode="equity_intraday")
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": True, "order_id": "ORD-EQ-2"}) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._enter_equity(session, "SHORT", 2500.0)
+
+        assert session.runtime.state == ScalpState.HOLDING_SHORT
+        assert mock_order.call_args.kwargs["transaction_type"] == "SELL"
+
+    @pytest.mark.asyncio
+    async def test_equity_swing_uses_delivery_product(self):
+        mgr = _make_manager()
+        session = _make_equity_session(mode="equity_swing")
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": True, "order_id": "ORD-D"}) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._enter_equity(session, "LONG", 2500.0)
+
+        assert mock_order.call_args.kwargs["product"] == "D"
+
+    @pytest.mark.asyncio
+    async def test_equity_entry_requires_quantity(self):
+        mgr = _make_manager()
+        session = _make_equity_session(mode="equity_intraday", quantity=0)
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock):
+            await mgr._enter_equity(session, "LONG", 2500.0)
+
+        assert session.runtime.state == ScalpState.IDLE
+        mock_order.assert_not_called()
+
+
+class TestEquityExit:
+    @pytest.mark.asyncio
+    async def test_equity_long_exit_sells_and_pnl_positive(self):
+        mgr = _make_manager()
+        session = _make_equity_session(
+            mode="equity_intraday",
+            state=ScalpState.HOLDING_LONG,
+            entry_price=2500.0,
+            current_instrument_token="NSE_EQ|INE002A01018",
+            current_tradingsymbol="RELIANCE",
+        )
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": True, "order_id": "EXIT-1"}) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock) as mock_log, \
+             patch.object(mgr, '_unsubscribe_instrument', new_callable=AsyncMock) as mock_unsub, \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+            await mgr._exit_position(session, "exit_target", 2530.0)
+
+        assert mock_order.call_args.kwargs["transaction_type"] == "SELL"
+        # Equity LONG: P&L = (exit - entry) * qty = +30 * 10 = +300
+        assert mock_log.call_args.kwargs["pnl_amount"] == 300.0
+        # Equity must NOT unsubscribe — the underlying drives the signal too.
+        mock_unsub.assert_not_called()
+        assert session.runtime.state == ScalpState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_equity_short_exit_buys_and_pnl_inverted(self):
+        mgr = _make_manager()
+        session = _make_equity_session(
+            mode="equity_intraday",
+            state=ScalpState.HOLDING_SHORT,
+            entry_price=2500.0,
+            current_instrument_token="NSE_EQ|INE002A01018",
+            current_tradingsymbol="RELIANCE",
+        )
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": True, "order_id": "EXIT-2"}) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock) as mock_log, \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+            # Short profitable when price falls: entry 2500, exit 2470
+            await mgr._exit_position(session, "exit_target", 2470.0)
+
+        assert mock_order.call_args.kwargs["transaction_type"] == "BUY"
+        # SHORT P&L: (entry - exit) * qty = +30 * 10 = +300
+        assert mock_log.call_args.kwargs["pnl_amount"] == 300.0
+
+
+class TestSwingExemptions:
+    @pytest.mark.asyncio
+    async def test_swing_skips_time_squareoff(self):
+        """Swing mode holds across days — no daily squareoff."""
+        from zoneinfo import ZoneInfo
+        mgr = _make_manager()
+        ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        past_time = (ist_now - timedelta(minutes=5))
+        session = _make_equity_session(
+            mode="equity_swing",
+            state=ScalpState.HOLDING_LONG,
+            entry_price=2500.0,
+            current_instrument_token="NSE_EQ|INE002A01018",
+        )
+        session.config.squareoff_time = f"{past_time.hour:02d}:{past_time.minute:02d}"
+        mgr._sessions = {999: [session]}
+
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+            await mgr.check_time_squareoff()
+            mock_exit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_swing_allows_entry_after_squareoff_time(self):
+        """Swing mode can enter even after the daily squareoff window."""
+        from zoneinfo import ZoneInfo
+        mgr = _make_manager()
+        ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        past_time = (ist_now - timedelta(minutes=5))
+        session = _make_equity_session(mode="equity_swing")
+        session.config.squareoff_time = f"{past_time.hour:02d}:{past_time.minute:02d}"
+
+        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+            await mgr._try_enter(session, "LONG", 2500.0)
+            mock_enter.assert_called_once()
+
+
+def test_parse_timeframe_supports_daily():
+    """Swing mode uses '1d' — _parse_timeframe must handle it."""
+    from monitor.scalp_session import _parse_timeframe
+    assert _parse_timeframe("1d") == 24 * 60
+    assert _parse_timeframe("1h") == 60
+    assert _parse_timeframe("5m") == 5

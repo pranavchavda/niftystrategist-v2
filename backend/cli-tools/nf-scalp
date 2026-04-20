@@ -37,10 +37,12 @@ def _session_to_dict(row) -> dict:
         "id": row.id,
         "name": row.name,
         "enabled": row.enabled,
+        "session_mode": row.session_mode or "options_scalp",
         "underlying": row.underlying,
         "underlying_instrument_token": row.underlying_instrument_token,
         "expiry": row.expiry,
         "lots": row.lots,
+        "quantity": row.quantity,
         "product": row.product,
         "indicator_timeframe": row.indicator_timeframe,
         "utbot_period": row.utbot_period,
@@ -102,33 +104,47 @@ def cmd_create(args):
     """Create a new scalp session."""
     from database.session import get_db_context
     from monitor import scalp_crud
-    from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP
-    from strategies.fno_utils import list_expiries
+    from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP, SessionMode
+    from services.instruments_cache import get_instrument_key as get_eq_key
 
     user_id = _get_user_id()
 
-    # Validate underlying
+    mode = getattr(args, "mode", None) or "options_scalp"
+    valid_modes = {m.value for m in SessionMode}
+    if mode not in valid_modes:
+        print_error(f"Invalid --mode '{mode}'. Valid: {', '.join(sorted(valid_modes))}")
+
     underlying = args.underlying.upper()
-    instrument_token = UNDERLYING_INSTRUMENT_MAP.get(underlying)
-    if not instrument_token:
-        valid = ", ".join(sorted(set(UNDERLYING_INSTRUMENT_MAP.keys())))
-        print_error(f"Unknown underlying: {underlying}. Valid: {valid}")
+    if mode == SessionMode.OPTIONS_SCALP.value:
+        from strategies.fno_utils import list_expiries
+        instrument_token = UNDERLYING_INSTRUMENT_MAP.get(underlying)
+        if not instrument_token:
+            valid = ", ".join(sorted(set(UNDERLYING_INSTRUMENT_MAP.keys())))
+            print_error(f"Unknown underlying: {underlying}. Valid: {valid}")
 
-    # Validate expiry
-    try:
-        expiries = list_expiries(underlying)
-    except FileNotFoundError as e:
-        print_error(str(e))
+        try:
+            expiries = list_expiries(underlying)
+        except FileNotFoundError as e:
+            print_error(str(e))
 
-    if args.expiry not in expiries:
-        # Show nearest 5 valid expiries to help the user
-        hint = ", ".join(expiries[:5])
-        if len(expiries) > 5:
-            hint += ", ..."
-        print_error(
-            f"Expiry {args.expiry} not found for {underlying}. "
-            f"Valid expiries: {hint}"
-        )
+        if args.expiry not in expiries:
+            hint = ", ".join(expiries[:5])
+            if len(expiries) > 5:
+                hint += ", ..."
+            print_error(
+                f"Expiry {args.expiry} not found for {underlying}. "
+                f"Valid expiries: {hint}"
+            )
+    else:
+        # Equity modes — resolve symbol via instruments cache.
+        instrument_token = get_eq_key(underlying)
+        if not instrument_token:
+            print_error(
+                f"Equity symbol '{underlying}' not found in instruments cache. "
+                "Run `nf-quote symbols` to refresh."
+            )
+        if not getattr(args, "quantity", None) or args.quantity <= 0:
+            print_error("--quantity (>0) is required for equity modes")
 
     # Parse JSON param blobs if provided
     import json
@@ -153,8 +169,10 @@ def cmd_create(args):
 
     # Build optional kwargs
     kwargs = {
+        "session_mode": mode,
         "lots": args.lots,
-        "product": "I",
+        "quantity": getattr(args, "quantity", None),
+        "product": "D" if mode == SessionMode.EQUITY_SWING.value else "I",
         "indicator_timeframe": args.timeframe,
         "utbot_period": args.period,
         "utbot_sensitivity": args.sensitivity,
@@ -517,12 +535,18 @@ Examples:
     # ---- create ----
     p_create = sub.add_parser("create", help="Create a new scalp session")
     p_create.add_argument("--name", required=True, help="Human-readable session name")
+    p_create.add_argument("--mode", default="options_scalp",
+                          choices=["options_scalp", "equity_intraday", "equity_swing"],
+                          help="Session mode (default: options_scalp)")
     p_create.add_argument("--underlying", required=True,
-                          help="Index underlying (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)")
-    p_create.add_argument("--expiry", required=True,
-                          help="Option expiry date (YYYY-MM-DD)")
+                          help="For options_scalp: index name (NIFTY, BANKNIFTY, ...). "
+                               "For equity modes: equity symbol (RELIANCE, INFY, ...).")
+    p_create.add_argument("--expiry", default="",
+                          help="Option expiry YYYY-MM-DD (required for options_scalp)")
     p_create.add_argument("--lots", type=int, default=1,
-                          help="Number of lots per trade (default: 1)")
+                          help="Lots per trade for options modes (default: 1)")
+    p_create.add_argument("--quantity", type=int, default=None,
+                          help="Share count for equity modes (required for equity)")
     p_create.add_argument("--sl-points", type=float, default=None,
                           help="Stop-loss in premium points")
     p_create.add_argument("--target-points", type=float, default=None,

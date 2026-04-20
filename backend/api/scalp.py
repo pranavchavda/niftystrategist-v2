@@ -10,7 +10,8 @@ from pydantic import BaseModel
 from auth import User, get_current_user
 from database.session import get_db_context
 from monitor import scalp_crud
-from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP, ScalpState
+from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP, ScalpState, SessionMode
+from services.instruments_cache import get_instrument_key
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,11 @@ router = APIRouter()
 
 class CreateSessionRequest(BaseModel):
     name: str
+    session_mode: str = "options_scalp"
     underlying: str
-    expiry: str
-    lots: int = 1
+    expiry: str = ""              # Required for options modes
+    lots: int = 1                 # Used by options modes
+    quantity: Optional[int] = None  # Used by equity modes
     product: str = "I"
     indicator_timeframe: str = "1m"
     utbot_period: int = 10
@@ -46,9 +49,11 @@ class CreateSessionRequest(BaseModel):
 
 class UpdateSessionRequest(BaseModel):
     name: Optional[str] = None
+    session_mode: Optional[str] = None
     underlying: Optional[str] = None
     expiry: Optional[str] = None
     lots: Optional[int] = None
+    quantity: Optional[int] = None
     product: Optional[str] = None
     indicator_timeframe: Optional[str] = None
     utbot_period: Optional[int] = None
@@ -89,10 +94,12 @@ def _serialize_session(row) -> dict:
         "user_id": row.user_id,
         "name": row.name,
         "enabled": row.enabled,
+        "session_mode": row.session_mode or "options_scalp",
         "underlying": row.underlying,
         "underlying_instrument_token": row.underlying_instrument_token,
         "expiry": row.expiry,
         "lots": row.lots,
+        "quantity": row.quantity,
         "product": row.product,
         "indicator_timeframe": row.indicator_timeframe,
         "utbot_period": row.utbot_period,
@@ -165,24 +172,57 @@ async def api_create_session(
     body: CreateSessionRequest,
     user: User = Depends(get_current_user),
 ):
-    """Create a new scalp session for the current user."""
-    underlying_upper = body.underlying.upper()
-    if underlying_upper not in UNDERLYING_INSTRUMENT_MAP:
+    """Create a new scalp session for the current user.
+
+    Resolves underlying_instrument_token differently per mode:
+    - options_scalp: looks up the index token in UNDERLYING_INSTRUMENT_MAP
+    - equity_intraday/equity_swing: resolves the equity symbol via the
+      instruments cache (NSE_EQ|...).
+    """
+    valid_modes = {m.value for m in SessionMode}
+    if body.session_mode not in valid_modes:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown underlying '{body.underlying}'. Valid: {', '.join(sorted(set(UNDERLYING_INSTRUMENT_MAP.values()), key=str))}",
+            detail=f"Unknown session_mode '{body.session_mode}'. Valid: {', '.join(sorted(valid_modes))}",
         )
-    underlying_instrument_token = UNDERLYING_INSTRUMENT_MAP[underlying_upper]
+
+    underlying_upper = body.underlying.upper()
+    if body.session_mode == SessionMode.OPTIONS_SCALP.value:
+        if underlying_upper not in UNDERLYING_INSTRUMENT_MAP:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown underlying '{body.underlying}' for options_scalp. "
+                       f"Valid: {', '.join(sorted(UNDERLYING_INSTRUMENT_MAP.keys()))}",
+            )
+        underlying_instrument_token = UNDERLYING_INSTRUMENT_MAP[underlying_upper]
+        if not body.expiry:
+            raise HTTPException(status_code=400, detail="expiry is required for options_scalp")
+    else:
+        # Equity modes: resolve the symbol via instruments cache.
+        instrument_key = get_instrument_key(underlying_upper)
+        if not instrument_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Equity symbol '{body.underlying}' not found in instruments cache",
+            )
+        underlying_instrument_token = instrument_key
+        if not body.quantity or body.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="quantity (>0) is required for equity modes",
+            )
 
     async with get_db_context() as session:
         row = await scalp_crud.create_session(
             db=session,
             user_id=user.id,
             name=body.name,
+            session_mode=body.session_mode,
             underlying=underlying_upper,
             underlying_instrument_token=underlying_instrument_token,
             expiry=body.expiry,
             lots=body.lots,
+            quantity=body.quantity,
             product=body.product,
             indicator_timeframe=body.indicator_timeframe,
             utbot_period=body.utbot_period,
@@ -277,6 +317,10 @@ async def api_update_session(
             updates["expiry"] = body.expiry
         if body.lots is not None:
             updates["lots"] = body.lots
+        if body.quantity is not None:
+            updates["quantity"] = body.quantity
+        if body.session_mode is not None:
+            updates["session_mode"] = body.session_mode
         if body.product is not None:
             updates["product"] = body.product
         if body.indicator_timeframe is not None:

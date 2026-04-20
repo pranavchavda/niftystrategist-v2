@@ -19,7 +19,12 @@ from monitor.scalp_models import (
     ScalpSessionConfig,
     ScalpSessionRuntime,
     ScalpState,
+    SessionMode,
 )
+
+
+def _is_equity(mode: str) -> bool:
+    return mode in (SessionMode.EQUITY_INTRADAY.value, SessionMode.EQUITY_SWING.value)
 
 logger = logging.getLogger(__name__)
 
@@ -288,23 +293,49 @@ class ScalpSessionManager:
         bearish_flip = prev_val >= 0 and primary_val < 0
 
         rt = session.runtime
+        mode = session.config.session_mode
 
         if rt.state == ScalpState.IDLE:
             if bullish_flip and self._confirm_agrees(session, candles, 1):
-                await self._try_enter(session, "CE", ltp)
+                direction = self._bullish_direction(mode)
+                if direction:
+                    await self._try_enter(session, direction, ltp)
             elif bearish_flip and self._confirm_agrees(session, candles, -1):
-                await self._try_enter(session, "PE", ltp)
-        elif rt.state == ScalpState.HOLDING_CE and bearish_flip:
-            # Primary reversal while holding CE → exit. Confirm gate
-            # intentionally does NOT apply to exits: holding into a bad
-            # position waiting for the confirm indicator to agree is worse
-            # than a false-alarm exit.
-            # Use last-seen premium LTP, NOT underlying `ltp` (unit mismatch
-            # would corrupt P&L — e.g. 24205 underlying vs 159 premium entry
-            # reported ₹15L phantom profit on 2026-04-17).
-            await self._exit_position(session, "exit_reversal", rt.last_premium_ltp)
-        elif rt.state == ScalpState.HOLDING_PE and bullish_flip:
-            await self._exit_position(session, "exit_reversal", rt.last_premium_ltp)
+                direction = self._bearish_direction(mode)
+                if direction:
+                    await self._try_enter(session, direction, ltp)
+            return
+
+        # Reversal exits — confirm gate intentionally does NOT apply, since
+        # holding into adverse moves waiting for two-indicator agreement is
+        # worse than an occasional false-alarm exit.
+        bullish_state = rt.state in (ScalpState.HOLDING_CE, ScalpState.HOLDING_LONG)
+        bearish_state = rt.state in (ScalpState.HOLDING_PE, ScalpState.HOLDING_SHORT)
+
+        if (bullish_state and bearish_flip) or (bearish_state and bullish_flip):
+            # Options use last-seen premium LTP for P&L (unit mismatch
+            # against underlying would corrupt P&L — e.g. 24205 underlying
+            # vs 159 premium entry showed ₹15L phantom profit 2026-04-17).
+            # Equity has no premium leg — use the underlying tick directly.
+            exit_price = ltp if _is_equity(mode) else rt.last_premium_ltp
+            await self._exit_position(session, "exit_reversal", exit_price)
+
+    @staticmethod
+    def _bullish_direction(mode: str) -> str | None:
+        if mode == SessionMode.OPTIONS_SCALP.value:
+            return "CE"
+        if _is_equity(mode):
+            return "LONG"
+        return None
+
+    @staticmethod
+    def _bearish_direction(mode: str) -> str | None:
+        if mode == SessionMode.OPTIONS_SCALP.value:
+            return "PE"
+        if mode == SessionMode.EQUITY_INTRADAY.value:
+            return "SHORT"
+        # equity_swing: no shorting (SLBM not supported in delivery).
+        return None
 
     def _confirm_agrees(
         self,
@@ -434,6 +465,9 @@ class ScalpSessionManager:
             for session in sessions:
                 if not session.is_holding:
                     continue
+                # Swing mode holds across days — no daily squareoff.
+                if session.config.session_mode == SessionMode.EQUITY_SWING.value:
+                    continue
                 hour, minute = (int(p) for p in session.config.squareoff_time.split(":"))
                 squareoff_time = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
                 if now_ist >= squareoff_time:
@@ -466,19 +500,22 @@ class ScalpSessionManager:
         # Past squareoff_time guard — prevents the wasteful
         # enter→immediate-squareoff cycle observed 2026-04-17 15:15-15:32
         # where 4 back-to-back entries each got squared off the next poll.
-        from zoneinfo import ZoneInfo
-        ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
-        try:
-            hour, minute = (int(p) for p in cfg.squareoff_time.split(":"))
-            squareoff_dt = ist_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if ist_now >= squareoff_dt:
-                logger.info(
-                    "Session %d: past squareoff time (%s IST) — skip entry",
-                    session.id, cfg.squareoff_time,
-                )
-                return
-        except Exception:
-            pass
+        # Swing mode is exempt: it doesn't square off daily, so an entry
+        # late in the day is intentional (next-day signal).
+        if cfg.session_mode != SessionMode.EQUITY_SWING.value:
+            from zoneinfo import ZoneInfo
+            ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+            try:
+                hour, minute = (int(p) for p in cfg.squareoff_time.split(":"))
+                squareoff_dt = ist_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if ist_now >= squareoff_dt:
+                    logger.info(
+                        "Session %d: past squareoff time (%s IST) — skip entry",
+                        session.id, cfg.squareoff_time,
+                    )
+                    return
+            except Exception:
+                pass
 
         # Cooldown guard
         if rt.last_exit_time:
@@ -495,7 +532,17 @@ class ScalpSessionManager:
     async def _enter_position(
         self, session: ScalpSession, direction: str, underlying_price: float
     ) -> None:
-        """IDLE → HOLDING_CE or HOLDING_PE."""
+        """IDLE → HOLDING_*. Routes to mode-specific entry path."""
+        cfg = session.config
+        if _is_equity(cfg.session_mode):
+            await self._enter_equity(session, direction, underlying_price)
+        else:
+            await self._enter_options(session, direction, underlying_price)
+
+    async def _enter_options(
+        self, session: ScalpSession, direction: str, underlying_price: float
+    ) -> None:
+        """Resolve ATM, place option BUY, transition to HOLDING_CE/PE."""
         from strategies.fno_utils import resolve_option_instrument, list_strikes, get_lot_size
 
         cfg = session.config
@@ -503,7 +550,6 @@ class ScalpSessionManager:
         option_type = direction  # "CE" or "PE"
 
         try:
-            # Resolve ATM strike
             strikes = list_strikes(cfg.underlying, cfg.expiry, option_type)
             if not strikes:
                 logger.error("Session %d: no strikes for %s %s %s", session.id, cfg.underlying, cfg.expiry, option_type)
@@ -547,7 +593,6 @@ class ScalpSessionManager:
                 session.id, option_type, atm_strike, instrument_key, quantity, underlying_price,
             )
 
-            # Place order
             order_result = await self._place_order(
                 user_id=cfg.user_id,
                 instrument_token=instrument_key,
@@ -566,7 +611,6 @@ class ScalpSessionManager:
                 )
                 return
 
-            # Transition state
             rt.state = ScalpState.HOLDING_CE if direction == "CE" else ScalpState.HOLDING_PE
             rt.current_option_type = option_type
             rt.current_strike = atm_strike
@@ -577,14 +621,10 @@ class ScalpSessionManager:
             rt.highest_premium = None
             rt.trail_armed = False
 
-            # Update premium map so ticks get routed
             pkey = f"{cfg.user_id}:{instrument_key}"
             self._premium_map[pkey] = session.id
-
-            # Subscribe to option premium
             await self._subscribe_instrument(cfg.user_id, instrument_key)
 
-            # Log and persist
             await self._log_event(
                 session, f"entry_{option_type.lower()}", option_type=option_type,
                 strike=atm_strike, instrument_token=instrument_key, quantity=quantity,
@@ -600,6 +640,91 @@ class ScalpSessionManager:
                 trigger_snapshot={"error": str(e)},
             )
 
+    async def _enter_equity(
+        self, session: ScalpSession, direction: str, underlying_price: float
+    ) -> None:
+        """Place an equity BUY/SELL on the underlying instrument and transition
+        to HOLDING_LONG / HOLDING_SHORT. No strike resolution."""
+        cfg = session.config
+        rt = session.runtime
+
+        if not cfg.quantity or cfg.quantity <= 0:
+            logger.error("Session %d: equity entry requires quantity > 0 (got %s)",
+                         session.id, cfg.quantity)
+            await self._log_event(
+                session, "order_failed", underlying_price=underlying_price,
+                trigger_snapshot={"error": "quantity_missing_or_zero"},
+            )
+            return
+
+        instrument_key = cfg.underlying_instrument_token
+        symbol = cfg.underlying  # equity symbol (e.g. "RELIANCE")
+        quantity = int(cfg.quantity)
+        # Equity LONG places a BUY; SHORT places a SELL (intraday short).
+        txn = "BUY" if direction == "LONG" else "SELL"
+        # Equity swing must use product=D (delivery); intraday uses I.
+        product = "D" if cfg.session_mode == SessionMode.EQUITY_SWING.value else cfg.product
+
+        try:
+            logger.info(
+                "Session %d: ENTRY equity %s — %s qty=%d @ %.2f (mode=%s)",
+                session.id, direction, symbol, quantity, underlying_price, cfg.session_mode,
+            )
+
+            order_result = await self._place_order(
+                user_id=cfg.user_id,
+                instrument_token=instrument_key,
+                symbol=symbol,
+                transaction_type=txn,
+                quantity=quantity,
+                product=product,
+            )
+
+            if not order_result.get("success"):
+                logger.error("Session %d: equity entry failed: %s", session.id, order_result)
+                await self._log_event(
+                    session, "order_failed", instrument_token=instrument_key,
+                    underlying_price=underlying_price,
+                    trigger_snapshot={"order_result": order_result, "direction": direction},
+                )
+                return
+
+            rt.state = ScalpState.HOLDING_LONG if direction == "LONG" else ScalpState.HOLDING_SHORT
+            rt.current_option_type = direction  # "LONG" / "SHORT" — reused field for surface display
+            rt.current_strike = None
+            rt.current_instrument_token = instrument_key
+            rt.current_tradingsymbol = symbol
+            # Equity has no separate premium leg — anchor entry at the
+            # current underlying tick (best-effort approximation of fill).
+            rt.entry_price = underlying_price
+            rt.last_premium_ltp = underlying_price
+            rt.entry_time = datetime.utcnow()
+            rt.highest_premium = None
+            rt.trail_armed = False
+
+            # Map the instrument to this session so SL/target/trail ticks fire.
+            # For equity the instrument is the underlying — same key in both
+            # _underlying_map and _premium_map is fine.
+            pkey = f"{cfg.user_id}:{instrument_key}"
+            self._premium_map[pkey] = session.id
+
+            await self._log_event(
+                session, f"entry_{direction.lower()}",
+                option_type=direction,
+                instrument_token=instrument_key, quantity=quantity,
+                entry_price=underlying_price,
+                underlying_price=underlying_price,
+                order_id=order_result.get("order_id"),
+            )
+            await self._persist_state(session)
+
+        except Exception as e:
+            logger.error("Session %d: equity entry failed: %s", session.id, e, exc_info=True)
+            await self._log_event(
+                session, "error", underlying_price=underlying_price,
+                trigger_snapshot={"error": str(e)},
+            )
+
     # ── Exit ─────────────────────────────────────────────────────────
 
     async def _exit_position(
@@ -608,31 +733,44 @@ class ScalpSessionManager:
         reason: str,
         exit_price: float | None = None,
     ) -> None:
-        """HOLDING_CE/HOLDING_PE → IDLE."""
+        """HOLDING_* → IDLE. Mode-aware order side, quantity, and P&L sign."""
         rt = session.runtime
         cfg = session.config
 
         if not session.is_holding:
             return
 
-        from strategies.fno_utils import get_lot_size
-        lot_size = get_lot_size(cfg.underlying)
-        quantity = cfg.lots * lot_size
+        is_equity = _is_equity(cfg.session_mode)
+        is_short = rt.state == ScalpState.HOLDING_SHORT
+
+        if is_equity:
+            quantity = int(cfg.quantity or 0)
+            # SHORT closes by BUY; LONG closes by SELL.
+            txn = "BUY" if is_short else "SELL"
+            product = "D" if cfg.session_mode == SessionMode.EQUITY_SWING.value else cfg.product
+            symbol = cfg.underlying
+        else:
+            from strategies.fno_utils import get_lot_size
+            lot_size = get_lot_size(cfg.underlying)
+            quantity = cfg.lots * lot_size
+            txn = "SELL"  # Always long the option contract.
+            product = cfg.product
+            symbol = rt.current_tradingsymbol or ""
 
         logger.info(
-            "Session %d: EXIT %s — reason=%s exit_price=%s entry_price=%s",
+            "Session %d: EXIT %s — reason=%s exit_price=%s entry_price=%s txn=%s",
             session.id, rt.current_option_type, reason,
-            exit_price, rt.entry_price,
+            exit_price, rt.entry_price, txn,
         )
 
         try:
             order_result = await self._place_order(
                 user_id=cfg.user_id,
                 instrument_token=rt.current_instrument_token,
-                symbol=rt.current_tradingsymbol or "",
-                transaction_type="SELL",
+                symbol=symbol,
+                transaction_type=txn,
                 quantity=quantity,
-                product=cfg.product,
+                product=product,
             )
 
             if not order_result.get("success"):
@@ -649,18 +787,21 @@ class ScalpSessionManager:
             await self._log_event(session, "error", trigger_snapshot={"error": str(e)})
             return
 
-        # Calculate P&L
+        # Calculate P&L. SHORT inverts: profit when exit < entry.
         pnl_points = None
         pnl_amount = None
         if rt.entry_price is not None and exit_price is not None:
-            pnl_points = exit_price - rt.entry_price
+            raw = exit_price - rt.entry_price
+            pnl_points = -raw if is_short else raw
             pnl_amount = pnl_points * quantity
 
-        # Unsubscribe from option premium
+        # Unsubscribe — only safe for option premium instruments. The equity
+        # underlying is also the signal source, so leave it subscribed.
         if rt.current_instrument_token:
             pkey = f"{cfg.user_id}:{rt.current_instrument_token}"
             self._premium_map.pop(pkey, None)
-            await self._unsubscribe_instrument(cfg.user_id, rt.current_instrument_token)
+            if not is_equity:
+                await self._unsubscribe_instrument(cfg.user_id, rt.current_instrument_token)
 
         # Log exit
         await self._log_event(
@@ -896,10 +1037,12 @@ class ScalpSessionManager:
 
 
 def _parse_timeframe(tf: str) -> int:
-    """Parse timeframe string like '1m', '5m', '15m' to minutes."""
+    """Parse timeframe string like '1m', '5m', '1h', '1d' to minutes."""
     tf = tf.strip().lower()
     if tf.endswith("m"):
         return int(tf[:-1])
     if tf.endswith("h"):
         return int(tf[:-1]) * 60
+    if tf.endswith("d"):
+        return int(tf[:-1]) * 24 * 60
     return int(tf)

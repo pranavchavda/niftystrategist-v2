@@ -10,8 +10,18 @@ from pydantic import BaseModel
 
 class ScalpState(str, Enum):
     IDLE = "IDLE"
+    # Options scalp states
     HOLDING_CE = "HOLDING_CE"
     HOLDING_PE = "HOLDING_PE"
+    # Equity states (intraday & swing)
+    HOLDING_LONG = "HOLDING_LONG"
+    HOLDING_SHORT = "HOLDING_SHORT"
+
+
+class SessionMode(str, Enum):
+    OPTIONS_SCALP = "options_scalp"
+    EQUITY_INTRADAY = "equity_intraday"
+    EQUITY_SWING = "equity_swing"
 
 
 # Map underlying short names to Upstox index instrument tokens.
@@ -33,10 +43,13 @@ class ScalpSessionConfig(BaseModel):
     name: str = ""
     enabled: bool = True
 
+    session_mode: str = SessionMode.OPTIONS_SCALP.value
+
     underlying: str = "NIFTY"
     underlying_instrument_token: str = ""
-    expiry: str = ""
-    lots: int = 1
+    expiry: str = ""           # Unused in equity modes
+    lots: int = 1              # Used by options modes
+    quantity: int | None = None  # Used by equity modes
     product: str = "I"
 
     indicator_timeframe: str = "1m"

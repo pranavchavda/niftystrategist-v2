@@ -752,11 +752,16 @@ class ScalpSessionDB(Base):
     name = Column(String(200), nullable=False)
     enabled = Column(Boolean, default=True, nullable=False)
 
-    # Underlying config
+    # Mode: options_scalp | equity_intraday | equity_swing
+    session_mode = Column(String(20), default="options_scalp", nullable=False)
+
+    # Underlying config. For equity modes, underlying = symbol and
+    # underlying_instrument_token = equity instrument key (NSE_EQ|...).
     underlying = Column(String(20), nullable=False)
     underlying_instrument_token = Column(String(50), nullable=False)
-    expiry = Column(String(20), nullable=False)
+    expiry = Column(String(20), nullable=False)  # "" for equity modes
     lots = Column(Integer, default=1, nullable=False)
+    quantity = Column(Integer, nullable=True)  # Equity share count
     product = Column(String(2), default="I", nullable=False)
 
     # Indicator params. Back-compat: utbot_period/utbot_sensitivity stay
