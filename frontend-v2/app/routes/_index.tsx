@@ -19,6 +19,7 @@ import {
   LightBulbIcon,
   ShieldCheckIcon,
   FireIcon,
+  PresentationChartLineIcon,
 } from '@heroicons/react/24/outline';
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
@@ -33,6 +34,14 @@ const sections = [
       'Portfolio overview, positions, and P&L tracking.',
     icon: ChartBarIcon,
     href: '/dashboard',
+    permission: 'dashboard.access',
+  },
+  {
+    title: 'Charts',
+    description:
+      'Live candlestick charts with indicators, multiple timeframes, and streaming ticks.',
+    icon: PresentationChartLineIcon,
+    href: '/charts',
     permission: 'dashboard.access',
   },
   {

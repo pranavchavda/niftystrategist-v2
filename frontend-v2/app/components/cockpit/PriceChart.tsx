@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router';
+import { ExternalLink } from 'lucide-react';
 import { createChart, ColorType, CandlestickSeries, LineSeries, LineStyle, createSeriesMarkers, type IChartApi, type ISeriesApi, type CandlestickData, type Time, type LineData, type SeriesMarker } from 'lightweight-charts';
 
 interface LiveQuote {
@@ -249,6 +251,13 @@ export default function PriceChart({ symbol, data, className = '', activeTimefra
       <div className="flex items-center justify-between px-3 py-2 flex-shrink-0">
         <div className="flex items-baseline gap-3">
           <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-200">{symbol}</h3>
+          <Link
+            to={`/charts?symbol=${encodeURIComponent(symbol)}`}
+            title="Open in full Charts view"
+            className="text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+          </Link>
           {headerPrice > 0 && (
             <>
               <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100 tabular-nums">

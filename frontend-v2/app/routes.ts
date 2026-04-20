@@ -53,6 +53,9 @@ export default [
     // Backtester
     route('backtest', './routes/backtest.tsx'),
 
+    // TradingView-style charts (MVP)
+    route('charts', './routes/charts.tsx'),
+
     // Mandates (recurring awakenings + trading mandate)
     route('mandates', './routes/mandates.tsx'),
 

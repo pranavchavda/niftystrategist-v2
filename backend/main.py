@@ -804,7 +804,7 @@ if logfire_enabled:
     instrument_app(app)
 
 # Import and configure conversation router with database
-from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit, monitor as monitor_api, strategies as strategies_api, backtest as backtest_api, scalp as scalp_api
+from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit, monitor as monitor_api, strategies as strategies_api, backtest as backtest_api, scalp as scalp_api, charts as charts_api
 from routes import admin_docs, uploads, admin, auth_routes, hitl, mcp_servers, scratchpad, voice, notes
 # Set the database manager in the conversations, memories, runs, auth_routes, and cockpit modules
 conversations._db_manager = db_manager
@@ -823,6 +823,8 @@ app.include_router(memories.router)
 app.include_router(dashboard.router, prefix="/api/dashboard")
 # Include cockpit router (live trading dashboard)
 app.include_router(cockpit.router, prefix="/api/cockpit", tags=["cockpit"])
+# Include charts router (TradingView-style chart page)
+app.include_router(charts_api.router, prefix="/api/charts", tags=["charts"])
 # Include admin docs router
 app.include_router(admin_docs.router)
 # Include uploads router

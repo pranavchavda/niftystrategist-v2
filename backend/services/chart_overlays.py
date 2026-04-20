@@ -15,7 +15,20 @@ low/close/volume) and returns a dict shaped for a frontend line/marker layer:
             {"time": <unix|iso>, "type": "buy"|"sell", "text": "UT Bot"},
             ...
         ],
+        "panes": [
+            {
+                "id": "rsi",
+                "title": "RSI(14)",
+                "lines": {"rsi": [{"time", "value"}, ...]},
+                "range": [0, 100],
+                "levels": [30, 70],
+            },
+            ...
+        ],
     }
+
+Lines in `lines` are overlaid on the main price pane. Entries in `panes` are
+rendered in separate stacked panes below the price pane (e.g. RSI, MACD).
 """
 from __future__ import annotations
 
@@ -40,6 +53,206 @@ def _time_key(row: dict) -> Any:
     return row.get("time") or row.get("timestamp")
 
 
+def _line_from_series(df: pd.DataFrame, series: pd.Series) -> list[dict]:
+    """Convert a pandas Series indexed like df to [{time, value}] dropping NaN."""
+    rows = df.to_dict("records")
+    out: list[dict] = []
+    for i, row in enumerate(rows):
+        v = series.iloc[i]
+        if pd.isna(v):
+            continue
+        out.append({"time": _time_key(row), "value": float(v)})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Moving averages (overlays on price pane)
+# ---------------------------------------------------------------------------
+
+def compute_sma_overlay(candles: list[dict], period: int = 20) -> dict:
+    if len(candles) < period:
+        return {"lines": {}, "markers": [], "panes": []}
+    df = _to_df(candles)
+    sma = ta.trend.SMAIndicator(df["close"].astype(float), window=period).sma_indicator()
+    return {
+        "lines": {f"sma_{period}": _line_from_series(df, sma)},
+        "markers": [],
+        "panes": [],
+    }
+
+
+def compute_ema_overlay(candles: list[dict], period: int = 20) -> dict:
+    if len(candles) < period:
+        return {"lines": {}, "markers": [], "panes": []}
+    df = _to_df(candles)
+    ema = ta.trend.EMAIndicator(df["close"].astype(float), window=period).ema_indicator()
+    return {
+        "lines": {f"ema_{period}": _line_from_series(df, ema)},
+        "markers": [],
+        "panes": [],
+    }
+
+
+def compute_bbands_overlay(candles: list[dict], period: int = 20, stddev: float = 2.0) -> dict:
+    if len(candles) < period:
+        return {"lines": {}, "markers": [], "panes": []}
+    df = _to_df(candles)
+    bb = ta.volatility.BollingerBands(df["close"].astype(float), window=period, window_dev=stddev)
+    return {
+        "lines": {
+            "bb_upper": _line_from_series(df, bb.bollinger_hband()),
+            "bb_middle": _line_from_series(df, bb.bollinger_mavg()),
+            "bb_lower": _line_from_series(df, bb.bollinger_lband()),
+        },
+        "markers": [],
+        "panes": [],
+    }
+
+
+def compute_vwap_overlay(candles: list[dict]) -> dict:
+    df = _to_df(candles)
+    if "volume" not in df.columns or df["volume"].sum() == 0:
+        return {"lines": {}, "markers": [], "panes": []}
+    vwap = ta.volume.VolumeWeightedAveragePrice(
+        high=df["high"].astype(float),
+        low=df["low"].astype(float),
+        close=df["close"].astype(float),
+        volume=df["volume"].astype(float),
+        window=14,
+    ).volume_weighted_average_price()
+    return {
+        "lines": {"vwap": _line_from_series(df, vwap)},
+        "markers": [],
+        "panes": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Oscillators (separate panes)
+# ---------------------------------------------------------------------------
+
+def compute_rsi_pane(candles: list[dict], period: int = 14) -> dict:
+    if len(candles) < period + 1:
+        return {"lines": {}, "markers": [], "panes": []}
+    df = _to_df(candles)
+    rsi = ta.momentum.RSIIndicator(df["close"].astype(float), window=period).rsi()
+    return {
+        "lines": {},
+        "markers": [],
+        "panes": [
+            {
+                "id": "rsi",
+                "title": f"RSI({period})",
+                "lines": {"rsi": _line_from_series(df, rsi)},
+                "range": [0, 100],
+                "levels": [30, 70],
+            }
+        ],
+    }
+
+
+def compute_macd_pane(
+    candles: list[dict],
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> dict:
+    if len(candles) < slow + signal:
+        return {"lines": {}, "markers": [], "panes": []}
+    df = _to_df(candles)
+    macd = ta.trend.MACD(
+        df["close"].astype(float),
+        window_slow=slow,
+        window_fast=fast,
+        window_sign=signal,
+    )
+    rows = df.to_dict("records")
+    hist_series = macd.macd_diff()
+    hist_points: list[dict] = []
+    for i, row in enumerate(rows):
+        v = hist_series.iloc[i]
+        if pd.isna(v):
+            continue
+        hist_points.append({"time": _time_key(row), "value": float(v)})
+    return {
+        "lines": {},
+        "markers": [],
+        "panes": [
+            {
+                "id": "macd",
+                "title": f"MACD({fast},{slow},{signal})",
+                "lines": {
+                    "macd": _line_from_series(df, macd.macd()),
+                    "signal": _line_from_series(df, macd.macd_signal()),
+                },
+                "histogram": hist_points,
+                "levels": [0],
+            }
+        ],
+    }
+
+
+def compute_stoch_pane(
+    candles: list[dict],
+    k: int = 14,
+    d: int = 3,
+    smooth: int = 3,
+) -> dict:
+    if len(candles) < k + d:
+        return {"lines": {}, "markers": [], "panes": []}
+    df = _to_df(candles)
+    stoch = ta.momentum.StochasticOscillator(
+        high=df["high"].astype(float),
+        low=df["low"].astype(float),
+        close=df["close"].astype(float),
+        window=k,
+        smooth_window=smooth,
+    )
+    return {
+        "lines": {},
+        "markers": [],
+        "panes": [
+            {
+                "id": "stoch",
+                "title": f"Stoch({k},{d},{smooth})",
+                "lines": {
+                    "k": _line_from_series(df, stoch.stoch()),
+                    "d": _line_from_series(df, stoch.stoch_signal()),
+                },
+                "range": [0, 100],
+                "levels": [20, 80],
+            }
+        ],
+    }
+
+
+def compute_atr_pane(candles: list[dict], period: int = 14) -> dict:
+    if len(candles) < period + 1:
+        return {"lines": {}, "markers": [], "panes": []}
+    df = _to_df(candles)
+    atr = ta.volatility.AverageTrueRange(
+        df["high"].astype(float),
+        df["low"].astype(float),
+        df["close"].astype(float),
+        window=period,
+    ).average_true_range()
+    return {
+        "lines": {},
+        "markers": [],
+        "panes": [
+            {
+                "id": "atr",
+                "title": f"ATR({period})",
+                "lines": {"atr": _line_from_series(df, atr)},
+            }
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# UT Bot (trailing stop overlay + flip markers) — original
+# ---------------------------------------------------------------------------
+
 def compute_utbot_overlay(
     candles: list[dict],
     period: int = 10,
@@ -52,7 +265,7 @@ def compute_utbot_overlay(
       - markers: list of {time, type, text} for flip signals (one per flip)
     """
     if len(candles) < period + 2:
-        return {"lines": {"utbot_stop": []}, "markers": []}
+        return {"lines": {"utbot_stop": []}, "markers": [], "panes": []}
 
     df = _to_df(candles)
     atr = ta.volatility.AverageTrueRange(
@@ -110,11 +323,19 @@ def compute_utbot_overlay(
                 }
             )
 
-    return {"lines": {"utbot_stop": stop_line}, "markers": markers}
+    return {"lines": {"utbot_stop": stop_line}, "markers": markers, "panes": []}
 
 
 OVERLAY_COMPUTERS = {
     "utbot": compute_utbot_overlay,
+    "sma": compute_sma_overlay,
+    "ema": compute_ema_overlay,
+    "bbands": compute_bbands_overlay,
+    "vwap": compute_vwap_overlay,
+    "rsi": compute_rsi_pane,
+    "macd": compute_macd_pane,
+    "stoch": compute_stoch_pane,
+    "atr": compute_atr_pane,
 }
 
 
@@ -125,17 +346,34 @@ def compute_overlays(
 ) -> dict:
     """Run the requested overlay computers and merge their output.
 
-    params is an optional mapping from overlay name to kwargs, e.g.
-    ``{"utbot": {"period": 10, "sensitivity": 2.0}}``.
+    `names` may contain bare indicator names ("sma") or parameterized variants
+    ("sma_50"). For parameterized forms the trailing integer is treated as the
+    primary period. `params` is an optional mapping from overlay name to
+    kwargs, e.g. ``{"utbot": {"period": 10, "sensitivity": 2.0}}``.
     """
     params = params or {}
     lines: dict[str, list] = {}
     markers: list[dict] = []
-    for name in names:
-        fn = OVERLAY_COMPUTERS.get(name)
+    panes: list[dict] = []
+    for raw_name in names:
+        # Support "sma_50" / "ema_21" / "rsi_21" shortcuts.
+        base = raw_name
+        extra_kwargs: dict = {}
+        if "_" in raw_name:
+            head, tail = raw_name.rsplit("_", 1)
+            if tail.isdigit() and head in OVERLAY_COMPUTERS:
+                base = head
+                extra_kwargs["period"] = int(tail)
+        fn = OVERLAY_COMPUTERS.get(base)
         if fn is None:
             continue
-        result = fn(candles, **params.get(name, {}))
+        kwargs = {**extra_kwargs, **params.get(raw_name, {}), **params.get(base, {})}
+        try:
+            result = fn(candles, **kwargs)
+        except TypeError:
+            # Indicator doesn't accept the kwargs we derived — fall back to defaults.
+            result = fn(candles)
         lines.update(result.get("lines", {}))
         markers.extend(result.get("markers", []))
-    return {"lines": lines, "markers": markers}
+        panes.extend(result.get("panes", []))
+    return {"lines": lines, "markers": markers, "panes": panes}
