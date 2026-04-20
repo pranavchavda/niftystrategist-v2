@@ -245,6 +245,160 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
             if band_width < epsilon:
                 return 0.5
             return (last_close - lower) / band_width
+        elif indicator == "halftrend":
+            # HalfTrend: ATR channel + pivot hybrid. Returns ±1.0 representing
+            # the current trend state (bullish / bearish). Params:
+            #   amplitude    (default 2)    — lookback for high/low SMA & extremes
+            #   channel_dev  (default 2.0)  — ATR multiplier for channel width
+            #   atr_period   (default 100)  — ATR window; halved before use
+            amplitude = int(params.get("amplitude", 2))
+            atr_period = int(params.get("atr_period", 100))
+            if len(df) < max(amplitude + 2, atr_period):
+                return None
+            high = df["high"].astype(float).reset_index(drop=True)
+            low = df["low"].astype(float).reset_index(drop=True)
+            close = df["close"].astype(float).reset_index(drop=True)
+            high_ma = high.rolling(amplitude).mean()
+            low_ma = low.rolling(amplitude).mean()
+            high_price = high.rolling(amplitude).max()
+            low_price = low.rolling(amplitude).min()
+            n = len(close)
+            trend = [0] * n        # 0 = up, 1 = down
+            next_trend = [0] * n
+            max_low_price = float(low.iloc[0])
+            min_high_price = float(high.iloc[0])
+            for i in range(1, n):
+                trend[i] = trend[i - 1]
+                next_trend[i] = next_trend[i - 1]
+                if next_trend[i - 1] == 1:
+                    max_low_price = max(
+                        float(low_price.iloc[i]) if not pd.isna(low_price.iloc[i]) else max_low_price,
+                        max_low_price,
+                    )
+                    if (
+                        not pd.isna(high_ma.iloc[i])
+                        and high_ma.iloc[i] < max_low_price
+                        and close.iloc[i] < low.iloc[i - 1]
+                    ):
+                        trend[i] = 1
+                        next_trend[i] = 0
+                        max_low_price = float(low.iloc[i - 1])
+                else:
+                    min_high_price = min(
+                        float(high_price.iloc[i]) if not pd.isna(high_price.iloc[i]) else min_high_price,
+                        min_high_price,
+                    )
+                    if (
+                        not pd.isna(low_ma.iloc[i])
+                        and low_ma.iloc[i] > min_high_price
+                        and close.iloc[i] > high.iloc[i - 1]
+                    ):
+                        trend[i] = 0
+                        next_trend[i] = 1
+                        min_high_price = float(high.iloc[i - 1])
+            last = trend[-1]
+            # +1 = bullish (trend==0), -1 = bearish (trend==1)
+            return 1.0 if last == 0 else -1.0
+        elif indicator == "qqe_mod":
+            # QQE MOD — smoothed RSI momentum. Returns (smoothed_rsi - 50) so
+            # >0 = bullish momentum, <0 = bearish. Intended primarily as a
+            # confirm filter on top of a trend indicator like UT Bot or HalfTrend.
+            # Params:
+            #   rsi_period  (default 6)  — RSI lookback
+            #   smoothing   (default 5)  — EMA smoothing on the raw RSI
+            rsi_period = int(params.get("rsi_period", 6))
+            smoothing = int(params.get("smoothing", 5))
+            needed = rsi_period + smoothing + 2
+            if len(df) < needed:
+                return None
+            rsi = ta.momentum.RSIIndicator(df["close"], window=rsi_period).rsi()
+            rsi_ma = ta.trend.EMAIndicator(rsi, window=smoothing).ema_indicator().iloc[-1]
+            if pd.isna(rsi_ma):
+                return None
+            return float(rsi_ma - 50.0)
+        elif indicator == "ssl_hybrid":
+            # SSL Hybrid: SMA of highs / SMA of lows channel. Returns ±1.0
+            # state depending on whether close broke above the high-SMA
+            # (bullish) or below the low-SMA (bearish); state persists
+            # through the channel. Optional EMA baseline gate filters
+            # trades against the longer-term direction.
+            # Params:
+            #   period           (default 10)   — SSL channel lookback
+            #   baseline_period  (optional)     — EMA period for gate filter
+            period = int(params.get("period", 10))
+            baseline_period = params.get("baseline_period")
+            if len(df) < period + 1:
+                return None
+            high = df["high"].astype(float).reset_index(drop=True)
+            low = df["low"].astype(float).reset_index(drop=True)
+            close = df["close"].astype(float).reset_index(drop=True)
+            ssl_up = high.rolling(period).mean()
+            ssl_down = low.rolling(period).mean()
+            trend = [0] * len(df)
+            for i in range(period, len(df)):
+                if pd.isna(ssl_up.iloc[i]) or pd.isna(ssl_down.iloc[i]):
+                    trend[i] = trend[i - 1]
+                    continue
+                if close.iloc[i] > ssl_up.iloc[i]:
+                    trend[i] = 1
+                elif close.iloc[i] < ssl_down.iloc[i]:
+                    trend[i] = -1
+                else:
+                    trend[i] = trend[i - 1]
+            t = trend[-1]
+            if t == 0:
+                return None
+            if baseline_period:
+                bp = int(baseline_period)
+                if len(df) < bp:
+                    return None
+                baseline = ta.trend.EMAIndicator(close, window=bp).ema_indicator().iloc[-1]
+                if pd.isna(baseline):
+                    return None
+                # Gate: bullish trend blocked if close below baseline; inverse for bearish.
+                if t == 1 and close.iloc[-1] < baseline:
+                    return None
+                if t == -1 and close.iloc[-1] > baseline:
+                    return None
+            return float(t)
+        elif indicator == "renko":
+            # Candle-based Renko trend. Builds fixed- or ATR-sized bricks
+            # from closes and returns ±1.0 for the latest brick's direction.
+            # Params:
+            #   brick_size  (default 10.0) — absolute brick size; ignored
+            #                                when atr_period is set
+            #   atr_period  (optional)     — ATR window; brick_size := ATR
+            atr_period = params.get("atr_period")
+            if atr_period:
+                ap = int(atr_period)
+                if len(df) < ap + 1:
+                    return None
+                atr_val = ta.volatility.AverageTrueRange(
+                    df["high"], df["low"], df["close"], window=ap
+                ).average_true_range().iloc[-1]
+                if pd.isna(atr_val) or atr_val <= 0:
+                    return None
+                brick_size = float(atr_val)
+            else:
+                brick_size = float(params.get("brick_size", 10.0))
+            if brick_size <= 0:
+                return None
+            closes = df["close"].astype(float).tolist()
+            base = closes[0]
+            trend = 0
+            for c in closes[1:]:
+                diff = c - base
+                while diff >= brick_size:
+                    base += brick_size
+                    trend = 1
+                    diff = c - base
+                while diff <= -brick_size:
+                    base -= brick_size
+                    trend = -1
+                    diff = c - base
+            if trend == 0:
+                return None
+            return float(trend)
     except Exception:
         return None
     return None

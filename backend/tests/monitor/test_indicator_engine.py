@@ -116,3 +116,128 @@ class TestUTBot:
             "utbot", candles, {"period": 10, "sensitivity": 1.0, "output": "signal"}
         )
         assert sig in (0.0, 1.0, -1.0)
+
+
+# ── HalfTrend ────────────────────────────────────────────────────────
+
+
+class TestHalfTrend:
+    def test_halftrend_bullish_on_strong_uptrend(self):
+        """HalfTrend bullish confirm requires close > prev_high. _make_candles
+        uses ±2 H/L offset so trend step must exceed that."""
+        from monitor.indicator_engine import compute_indicator
+        prices = [100.0 + i * 3.0 for i in range(150)]
+        candles = _make_candles(prices)
+        val = compute_indicator("halftrend", candles, {"atr_period": 20})
+        assert val == 1.0
+
+    def test_halftrend_bearish_after_flip(self):
+        """HalfTrend needs a bullish confirm first before it can flip bearish
+        (cold-start bias). Strong up → strong down should land on -1."""
+        from monitor.indicator_engine import compute_indicator
+        up = [100.0 + i * 3.0 for i in range(80)]
+        down = [up[-1] - i * 3.0 for i in range(1, 80)]
+        candles = _make_candles(up + down)
+        val = compute_indicator("halftrend", candles, {"atr_period": 20})
+        assert val == -1.0
+
+    def test_halftrend_insufficient_data(self):
+        from monitor.indicator_engine import compute_indicator
+        candles = _make_candles([100.0, 101.0, 102.0])
+        val = compute_indicator("halftrend", candles, {"atr_period": 100})
+        assert val is None
+
+
+# ── QQE MOD ──────────────────────────────────────────────────────────
+
+
+class TestQQEMod:
+    def test_qqe_positive_on_uptrend(self):
+        from monitor.indicator_engine import compute_indicator
+        prices = [100.0 + i * 0.5 for i in range(40)]
+        candles = _make_candles(prices)
+        val = compute_indicator("qqe_mod", candles, {"rsi_period": 6, "smoothing": 5})
+        assert val is not None
+        assert val > 0  # smoothed RSI well above 50 in a steady uptrend
+
+    def test_qqe_negative_on_downtrend(self):
+        from monitor.indicator_engine import compute_indicator
+        prices = [200.0 - i * 0.5 for i in range(40)]
+        candles = _make_candles(prices)
+        val = compute_indicator("qqe_mod", candles, {"rsi_period": 6, "smoothing": 5})
+        assert val is not None
+        assert val < 0
+
+    def test_qqe_insufficient_data(self):
+        from monitor.indicator_engine import compute_indicator
+        candles = _make_candles([100.0, 101.0, 102.0])
+        val = compute_indicator("qqe_mod", candles, {"rsi_period": 6, "smoothing": 5})
+        assert val is None
+
+
+# ── SSL Hybrid ───────────────────────────────────────────────────────
+
+
+class TestSSLHybrid:
+    def test_ssl_bullish_breakout(self):
+        from monitor.indicator_engine import compute_indicator
+        # 20 bars of steady uptrend then a clear breakout — should read +1.
+        prices = [100.0 + i * 0.5 for i in range(30)]
+        candles = _make_candles(prices)
+        val = compute_indicator("ssl_hybrid", candles, {"period": 10})
+        assert val == 1.0
+
+    def test_ssl_bearish_breakdown(self):
+        from monitor.indicator_engine import compute_indicator
+        prices = [200.0 - i * 0.5 for i in range(30)]
+        candles = _make_candles(prices)
+        val = compute_indicator("ssl_hybrid", candles, {"period": 10})
+        assert val == -1.0
+
+    def test_ssl_baseline_gate_passes_when_aligned(self):
+        """Baseline gate passes when trend direction agrees with close vs EMA."""
+        from monitor.indicator_engine import compute_indicator
+        prices = [100.0 + i * 0.5 for i in range(30)]
+        candles = _make_candles(prices)
+        val = compute_indicator(
+            "ssl_hybrid",
+            candles,
+            {"period": 10, "baseline_period": 20},
+        )
+        # Bullish breakout AND close above baseline → gate allows +1.
+        assert val == 1.0
+
+
+# ── Renko (candle-based) ─────────────────────────────────────────────
+
+
+class TestRenko:
+    def test_renko_bullish_on_clear_uptrend(self):
+        from monitor.indicator_engine import compute_indicator
+        prices = [100.0 + i * 2.0 for i in range(20)]
+        candles = _make_candles(prices)
+        val = compute_indicator("renko", candles, {"brick_size": 5.0})
+        assert val == 1.0
+
+    def test_renko_bearish_on_clear_downtrend(self):
+        from monitor.indicator_engine import compute_indicator
+        prices = [200.0 - i * 2.0 for i in range(20)]
+        candles = _make_candles(prices)
+        val = compute_indicator("renko", candles, {"brick_size": 5.0})
+        assert val == -1.0
+
+    def test_renko_none_when_no_brick_formed(self):
+        from monitor.indicator_engine import compute_indicator
+        # Tiny wiggle under brick_size threshold — no brick ever forms.
+        prices = [100.0 + (i % 2) * 0.1 for i in range(20)]
+        candles = _make_candles(prices)
+        val = compute_indicator("renko", candles, {"brick_size": 10.0})
+        assert val is None
+
+    def test_renko_atr_sized(self):
+        from monitor.indicator_engine import compute_indicator
+        prices = [100.0 + i * 1.0 for i in range(30)]
+        candles = _make_candles(prices)
+        val = compute_indicator("renko", candles, {"atr_period": 14})
+        # ATR-sized bricks on a steady uptrend should still be bullish.
+        assert val == 1.0

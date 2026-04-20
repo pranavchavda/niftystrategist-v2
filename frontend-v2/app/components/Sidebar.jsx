@@ -560,7 +560,7 @@ export default function Sidebar({
                 </NavLink>
                 <NavLink
                   to="/scalp-sessions"
-                  title="Scalp Sessions"
+                  title="Signal Sessions"
                   className={({ isActive }) =>
                     `p-2 rounded-lg transition-colors ${isActive
                       ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
@@ -871,7 +871,7 @@ export default function Sidebar({
                 </DropdownItem>
                 <DropdownItem href="/scalp-sessions">
                   <Flame data-slot="icon" />
-                  <DropdownLabel>Scalp Sessions</DropdownLabel>
+                  <DropdownLabel>Signal Sessions</DropdownLabel>
                 </DropdownItem>
                 <DropdownDivider />
                 <DropdownItem href="/help">

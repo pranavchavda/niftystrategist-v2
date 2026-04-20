@@ -10,8 +10,18 @@ from pydantic import BaseModel
 
 class ScalpState(str, Enum):
     IDLE = "IDLE"
+    # Options scalp states
     HOLDING_CE = "HOLDING_CE"
     HOLDING_PE = "HOLDING_PE"
+    # Equity states (intraday & swing)
+    HOLDING_LONG = "HOLDING_LONG"
+    HOLDING_SHORT = "HOLDING_SHORT"
+
+
+class SessionMode(str, Enum):
+    OPTIONS_SCALP = "options_scalp"
+    EQUITY_INTRADAY = "equity_intraday"
+    EQUITY_SWING = "equity_swing"
 
 
 # Map underlying short names to Upstox index instrument tokens.
@@ -33,15 +43,28 @@ class ScalpSessionConfig(BaseModel):
     name: str = ""
     enabled: bool = True
 
+    session_mode: str = SessionMode.OPTIONS_SCALP.value
+
     underlying: str = "NIFTY"
     underlying_instrument_token: str = ""
-    expiry: str = ""
-    lots: int = 1
+    expiry: str = ""           # Unused in equity modes
+    lots: int = 1              # Used by options modes
+    quantity: int | None = None  # Used by equity modes
     product: str = "I"
 
     indicator_timeframe: str = "1m"
     utbot_period: int = 10
     utbot_sensitivity: float = 1.0
+
+    # Parametrized primary signal. utbot remains the default; other
+    # supported indicators return a signed scalar so the same flip-detection
+    # contract (prev<=0 → curr>0 = bullish) applies across the board.
+    primary_indicator: str = "utbot"
+    primary_params: dict[str, Any] | None = None
+    # Optional confirm filter. On a primary flip, the confirm indicator's
+    # current sign must agree before entry fires.
+    confirm_indicator: str | None = None
+    confirm_params: dict[str, Any] | None = None
 
     sl_points: float | None = None
     target_points: float | None = None

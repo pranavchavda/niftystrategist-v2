@@ -37,14 +37,20 @@ def _session_to_dict(row) -> dict:
         "id": row.id,
         "name": row.name,
         "enabled": row.enabled,
+        "session_mode": row.session_mode or "options_scalp",
         "underlying": row.underlying,
         "underlying_instrument_token": row.underlying_instrument_token,
         "expiry": row.expiry,
         "lots": row.lots,
+        "quantity": row.quantity,
         "product": row.product,
         "indicator_timeframe": row.indicator_timeframe,
         "utbot_period": row.utbot_period,
         "utbot_sensitivity": row.utbot_sensitivity,
+        "primary_indicator": row.primary_indicator or "utbot",
+        "primary_params": row.primary_params,
+        "confirm_indicator": row.confirm_indicator,
+        "confirm_params": row.confirm_params,
         "sl_points": row.sl_points,
         "target_points": row.target_points,
         "trail_percent": row.trail_percent,
@@ -98,41 +104,82 @@ def cmd_create(args):
     """Create a new scalp session."""
     from database.session import get_db_context
     from monitor import scalp_crud
-    from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP
-    from strategies.fno_utils import list_expiries
+    from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP, SessionMode
+    from services.instruments_cache import get_instrument_key as get_eq_key
 
     user_id = _get_user_id()
 
-    # Validate underlying
+    mode = getattr(args, "mode", None) or "options_scalp"
+    valid_modes = {m.value for m in SessionMode}
+    if mode not in valid_modes:
+        print_error(f"Invalid --mode '{mode}'. Valid: {', '.join(sorted(valid_modes))}")
+
     underlying = args.underlying.upper()
-    instrument_token = UNDERLYING_INSTRUMENT_MAP.get(underlying)
-    if not instrument_token:
-        valid = ", ".join(sorted(set(UNDERLYING_INSTRUMENT_MAP.keys())))
-        print_error(f"Unknown underlying: {underlying}. Valid: {valid}")
+    if mode == SessionMode.OPTIONS_SCALP.value:
+        from strategies.fno_utils import list_expiries
+        instrument_token = UNDERLYING_INSTRUMENT_MAP.get(underlying)
+        if not instrument_token:
+            valid = ", ".join(sorted(set(UNDERLYING_INSTRUMENT_MAP.keys())))
+            print_error(f"Unknown underlying: {underlying}. Valid: {valid}")
 
-    # Validate expiry
-    try:
-        expiries = list_expiries(underlying)
-    except FileNotFoundError as e:
-        print_error(str(e))
+        try:
+            expiries = list_expiries(underlying)
+        except FileNotFoundError as e:
+            print_error(str(e))
 
-    if args.expiry not in expiries:
-        # Show nearest 5 valid expiries to help the user
-        hint = ", ".join(expiries[:5])
-        if len(expiries) > 5:
-            hint += ", ..."
-        print_error(
-            f"Expiry {args.expiry} not found for {underlying}. "
-            f"Valid expiries: {hint}"
-        )
+        if args.expiry not in expiries:
+            hint = ", ".join(expiries[:5])
+            if len(expiries) > 5:
+                hint += ", ..."
+            print_error(
+                f"Expiry {args.expiry} not found for {underlying}. "
+                f"Valid expiries: {hint}"
+            )
+    else:
+        # Equity modes — resolve symbol via instruments cache.
+        instrument_token = get_eq_key(underlying)
+        if not instrument_token:
+            print_error(
+                f"Equity symbol '{underlying}' not found in instruments cache. "
+                "Run `nf-quote symbols` to refresh."
+            )
+        if not getattr(args, "quantity", None) or args.quantity <= 0:
+            print_error("--quantity (>0) is required for equity modes")
+
+    # Parse JSON param blobs if provided
+    import json
+    primary_params = None
+    if getattr(args, "primary_params", None):
+        try:
+            primary_params = json.loads(args.primary_params)
+        except json.JSONDecodeError as e:
+            print_error(f"--primary-params must be JSON: {e}")
+    confirm_params = None
+    if getattr(args, "confirm_params", None):
+        try:
+            confirm_params = json.loads(args.confirm_params)
+        except json.JSONDecodeError as e:
+            print_error(f"--confirm-params must be JSON: {e}")
+
+    primary_indicator = getattr(args, "primary", None) or "utbot"
+    # Default utbot params come from legacy --period / --sensitivity flags
+    # so `nf-scalp create --period 8 --sensitivity 2.0` still works.
+    if primary_indicator == "utbot" and primary_params is None:
+        primary_params = {"period": args.period, "sensitivity": args.sensitivity}
 
     # Build optional kwargs
     kwargs = {
+        "session_mode": mode,
         "lots": args.lots,
-        "product": "I",
+        "quantity": getattr(args, "quantity", None),
+        "product": "D" if mode == SessionMode.EQUITY_SWING.value else "I",
         "indicator_timeframe": args.timeframe,
         "utbot_period": args.period,
         "utbot_sensitivity": args.sensitivity,
+        "primary_indicator": primary_indicator,
+        "primary_params": primary_params,
+        "confirm_indicator": getattr(args, "confirm", None),
+        "confirm_params": confirm_params,
         "squareoff_time": args.squareoff,
         "max_trades": args.max_trades,
         "cooldown_seconds": args.cooldown,
@@ -170,7 +217,9 @@ def cmd_create(args):
         print(f"  Underlying:   {underlying} ({instrument_token})")
         print(f"  Expiry:       {args.expiry}")
         print(f"  Lots:         {args.lots}")
-        print(f"  UT Bot:       period={args.period}, sensitivity={args.sensitivity}, timeframe={args.timeframe}")
+        print(f"  Primary:      {primary_indicator} {primary_params} (tf={args.timeframe})")
+        if kwargs.get("confirm_indicator"):
+            print(f"  Confirm:      {kwargs['confirm_indicator']} {confirm_params or {}}")
         if args.sl_points is not None:
             print(f"  SL:           {args.sl_points} pts")
         if args.target_points is not None:
@@ -253,7 +302,11 @@ def cmd_status(args):
     print(f"  Underlying:   {row.underlying} ({row.underlying_instrument_token})")
     print(f"  Expiry:       {row.expiry}")
     print(f"  Lots:         {row.lots}")
-    print(f"  UT Bot:       period={row.utbot_period}, sensitivity={row.utbot_sensitivity}, timeframe={row.indicator_timeframe}")
+    primary = row.primary_indicator or "utbot"
+    pparams = row.primary_params or {"period": row.utbot_period, "sensitivity": row.utbot_sensitivity}
+    print(f"  Primary:      {primary} {pparams} (tf={row.indicator_timeframe})")
+    if row.confirm_indicator:
+        print(f"  Confirm:      {row.confirm_indicator} {row.confirm_params or {}}")
     if row.sl_points is not None:
         print(f"  SL:           {row.sl_points} pts")
     if row.target_points is not None:
@@ -482,12 +535,18 @@ Examples:
     # ---- create ----
     p_create = sub.add_parser("create", help="Create a new scalp session")
     p_create.add_argument("--name", required=True, help="Human-readable session name")
+    p_create.add_argument("--mode", default="options_scalp",
+                          choices=["options_scalp", "equity_intraday", "equity_swing"],
+                          help="Session mode (default: options_scalp)")
     p_create.add_argument("--underlying", required=True,
-                          help="Index underlying (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)")
-    p_create.add_argument("--expiry", required=True,
-                          help="Option expiry date (YYYY-MM-DD)")
+                          help="For options_scalp: index name (NIFTY, BANKNIFTY, ...). "
+                               "For equity modes: equity symbol (RELIANCE, INFY, ...).")
+    p_create.add_argument("--expiry", default="",
+                          help="Option expiry YYYY-MM-DD (required for options_scalp)")
     p_create.add_argument("--lots", type=int, default=1,
-                          help="Number of lots per trade (default: 1)")
+                          help="Lots per trade for options modes (default: 1)")
+    p_create.add_argument("--quantity", type=int, default=None,
+                          help="Share count for equity modes (required for equity)")
     p_create.add_argument("--sl-points", type=float, default=None,
                           help="Stop-loss in premium points")
     p_create.add_argument("--target-points", type=float, default=None,
@@ -505,6 +564,17 @@ Examples:
                           help="UT Bot ATR period (default: 10)")
     p_create.add_argument("--sensitivity", type=float, default=1.0,
                           help="UT Bot sensitivity / key value (default: 1.0)")
+    p_create.add_argument("--primary", default="utbot",
+                          help="Primary signal indicator (default: utbot). "
+                               "Other supported: ema_crossover, macd, supertrend.")
+    p_create.add_argument("--primary-params", default=None,
+                          help='JSON params for the primary indicator, '
+                               'e.g. --primary-params \'{"fast":9,"slow":21}\'')
+    p_create.add_argument("--confirm", default=None,
+                          help="Optional confirm indicator that must agree "
+                               "with the primary flip before entry fires.")
+    p_create.add_argument("--confirm-params", default=None,
+                          help="JSON params for the confirm indicator.")
     p_create.add_argument("--squareoff", default="15:15",
                           help="Auto squareoff time in HH:MM IST (default: 15:15)")
     p_create.add_argument("--max-trades", type=int, default=20,

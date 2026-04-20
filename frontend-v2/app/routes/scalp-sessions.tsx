@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext } from 'react-router';
 import { requirePermission } from '../utils/route-permissions';
 import {
@@ -10,6 +10,163 @@ import { Button } from '../components/catalyst/button';
 import { Dialog, DialogTitle, DialogBody, DialogActions } from '../components/catalyst/dialog';
 import { Badge } from '../components/catalyst/badge';
 import { Input } from '../components/catalyst/input';
+
+// Indicator catalogs and per-indicator default param schemas. Used to render
+// dynamic param inputs as the user picks a primary or confirm indicator.
+const PRIMARY_INDICATORS: { value: string; label: string }[] = [
+  { value: 'utbot', label: 'UT Bot' },
+  { value: 'halftrend', label: 'HalfTrend' },
+  { value: 'ssl_hybrid', label: 'SSL Hybrid' },
+  { value: 'ema_crossover', label: 'EMA Crossover' },
+  { value: 'supertrend', label: 'Supertrend' },
+  { value: 'renko', label: 'Renko' },
+];
+
+const CONFIRM_INDICATORS: { value: string; label: string }[] = [
+  { value: '', label: '— None —' },
+  { value: 'qqe_mod', label: 'QQE MOD' },
+  { value: 'macd', label: 'MACD' },
+  { value: 'halftrend', label: 'HalfTrend' },
+  { value: 'ssl_hybrid', label: 'SSL Hybrid' },
+  { value: 'utbot', label: 'UT Bot' },
+];
+
+const PARAM_DEFAULTS: Record<string, Record<string, number>> = {
+  utbot: { period: 10, sensitivity: 1.0 },
+  halftrend: { amplitude: 2, channel_dev: 2.0, atr_period: 100 },
+  ssl_hybrid: { period: 10 },
+  ema_crossover: { fast: 9, slow: 21 },
+  supertrend: { period: 10, multiplier: 3.0 },
+  renko: { brick_size: 10 },
+  qqe_mod: { rsi_period: 6, smoothing: 5 },
+  macd: {},
+};
+
+const PARAM_LABELS: Record<string, string> = {
+  period: 'Period',
+  sensitivity: 'Sensitivity',
+  amplitude: 'Amplitude',
+  channel_dev: 'Channel Dev',
+  atr_period: 'ATR Period',
+  fast: 'Fast EMA',
+  slow: 'Slow EMA',
+  multiplier: 'Multiplier',
+  brick_size: 'Brick Size',
+  rsi_period: 'RSI Period',
+  smoothing: 'Smoothing',
+  baseline_period: 'Baseline EMA',
+};
+
+function IndicatorParams({
+  indicator, params, onChange,
+}: {
+  indicator: string;
+  params: Record<string, number>;
+  onChange: (next: Record<string, number>) => void;
+}) {
+  const schema = PARAM_DEFAULTS[indicator] || {};
+  const keys = Object.keys(schema);
+  if (keys.length === 0) {
+    return <p className="text-xs text-zinc-500 italic">No parameters.</p>;
+  }
+  return (
+    <div className={`grid gap-3 ${keys.length === 1 ? 'grid-cols-1' : keys.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+      {keys.map(k => (
+        <div key={k}>
+          <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {PARAM_LABELS[k] || k}
+          </label>
+          <Input
+            type="number"
+            step="0.1"
+            value={params[k] ?? schema[k]}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              const v = e.target.value === '' ? schema[k] : Number(e.target.value);
+              onChange({ ...params, [k]: v });
+            }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Equity symbol autocomplete used by equity_intraday / equity_swing modes.
+// Reuses /api/monitor/symbols (same backend search the rule builder uses).
+function EquitySymbolPicker({
+  authToken, value, onSelect,
+}: {
+  authToken: string;
+  value: string;
+  onSelect: (symbol: string) => void;
+}) {
+  const [query, setQuery] = useState(value);
+  const [results, setResults] = useState<{ symbol: string; name: string }[]>([]);
+  const [open, setOpen] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setQuery(value); }, [value]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const search = useCallback(async (term: string) => {
+    if (term.length < 1) { setResults([]); return; }
+    try {
+      const res = await fetch(`/api/monitor/symbols?q=${encodeURIComponent(term)}&limit=8`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setResults(data.results || []);
+        setOpen(true);
+      }
+    } catch { /* ignore */ }
+  }, [authToken]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <Input
+        value={query}
+        placeholder="Search equity symbol (e.g. RELIANCE)"
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+          const v = e.target.value;
+          setQuery(v);
+          if (debounceRef.current) clearTimeout(debounceRef.current);
+          debounceRef.current = setTimeout(() => search(v), 250);
+        }}
+        onFocus={() => { if (results.length > 0) setOpen(true); }}
+      />
+      {open && results.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-lg">
+          {results.map(r => (
+            <button
+              key={r.symbol}
+              type="button"
+              className="w-full text-left px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              onClick={() => { setQuery(r.symbol); setOpen(false); onSelect(r.symbol); }}
+            >
+              <div className="font-medium text-zinc-900 dark:text-zinc-100">{r.symbol}</div>
+              <div className="text-xs text-zinc-500">{r.name}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const SESSION_MODES: { value: string; label: string; description: string }[] = [
+  { value: 'options_scalp', label: 'Options Scalp', description: 'ATM CE/PE on index, intraday' },
+  { value: 'equity_intraday', label: 'Equity Intraday', description: 'Equity LONG/SHORT, daily squareoff' },
+  { value: 'equity_swing', label: 'Equity Swing', description: 'Multi-day delivery, LONG only' },
+];
 
 interface AuthContext {
   authToken: string;
@@ -34,6 +191,12 @@ interface ScalpSession {
   trail_points: number | null;
   trail_arm_points: number | null;
   pending_action: string | null;
+  session_mode?: string;
+  quantity?: number | null;
+  primary_indicator?: string;
+  primary_params?: Record<string, number> | null;
+  confirm_indicator?: string | null;
+  confirm_params?: Record<string, number> | null;
   squareoff_time: string;
   state: string;
   current_option_type: string | null;
@@ -88,14 +251,20 @@ export default function ScalpSessionsRoute() {
   // Create dialog
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<any>({
     name: '',
+    session_mode: 'options_scalp',
     underlying: 'NIFTY',
     expiry: '',
     lots: 1,
+    quantity: '',
     indicator_timeframe: '1m',
     utbot_period: 10,
     utbot_sensitivity: 1.0,
+    primary_indicator: 'utbot',
+    primary_params: { period: 10, sensitivity: 1.0 },
+    confirm_indicator: '',
+    confirm_params: {},
     sl_points: '',
     target_points: '',
     trail_percent: '',
@@ -184,6 +353,26 @@ export default function ScalpSessionsRoute() {
       body.trail_percent = body.trail_percent ? Number(body.trail_percent) : null;
       body.trail_points = body.trail_points ? Number(body.trail_points) : null;
       body.trail_arm_points = body.trail_arm_points ? Number(body.trail_arm_points) : null;
+      // Confirm indicator: empty string means none — send null, drop params
+      if (!body.confirm_indicator) {
+        body.confirm_indicator = null;
+        body.confirm_params = null;
+      }
+      // Keep utbot_period/utbot_sensitivity in sync when primary is utbot,
+      // so legacy code paths and back-compat fallbacks see consistent values.
+      if (body.primary_indicator === 'utbot' && body.primary_params) {
+        body.utbot_period = body.primary_params.period ?? body.utbot_period;
+        body.utbot_sensitivity = body.primary_params.sensitivity ?? body.utbot_sensitivity;
+      }
+      // Mode-specific normalization: equity uses quantity, no expiry/lots;
+      // options uses expiry/lots, no quantity.
+      if (body.session_mode === 'equity_intraday' || body.session_mode === 'equity_swing') {
+        body.quantity = body.quantity ? Number(body.quantity) : null;
+        body.expiry = '';
+        delete body.lots;
+      } else {
+        body.quantity = null;
+      }
       const res = await fetch('/api/scalp/sessions', { method: 'POST', headers, body: JSON.stringify(body) });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -286,11 +475,11 @@ export default function ScalpSessionsRoute() {
               <Flame className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h1 className="text-xl sm:text-2xl font-bold text-zinc-900 dark:text-zinc-100">Scalp Sessions</h1>
-              <p className="text-sm text-zinc-500">Stateful options scalping with mutual exclusion</p>
+              <h1 className="text-xl sm:text-2xl font-bold text-zinc-900 dark:text-zinc-100">Signal Sessions</h1>
+              <p className="text-sm text-zinc-500">Stateful indicator-driven trading — options scalp, equity intraday, equity swing</p>
             </div>
           </div>
-          <Button onClick={() => { setFormData({ name: '', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
+          <Button onClick={() => { setFormData({ name: '', session_mode: 'options_scalp', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, quantity: '', indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
             <Plus className="w-4 h-4" /> New Session
           </Button>
         </div>
@@ -346,13 +535,19 @@ export default function ScalpSessionsRoute() {
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-medium text-zinc-900 dark:text-zinc-100">{s.name}</span>
                       {stateBadge(s.state, s.current_option_type)}
+                      {s.session_mode && s.session_mode !== 'options_scalp' && (
+                        <Badge color="indigo">{s.session_mode === 'equity_swing' ? 'swing' : 'intraday'}</Badge>
+                      )}
                       {s.pending_action && <Badge color="amber">exit pending</Badge>}
                       {!s.enabled && <Badge color="zinc">disabled</Badge>}
                     </div>
                     <div className="text-xs text-zinc-500 flex items-center gap-3 flex-wrap">
-                      <span>{s.underlying} {s.expiry}</span>
-                      <span>{s.lots} lot(s)</span>
-                      <span>UT Bot {s.indicator_timeframe} p={s.utbot_period} s={s.utbot_sensitivity}</span>
+                      <span>{s.underlying}{s.expiry ? ` ${s.expiry}` : ''}</span>
+                      <span>{s.session_mode && s.session_mode !== 'options_scalp' ? `${s.quantity ?? 0} sh` : `${s.lots} lot(s)`}</span>
+                      <span>
+                        {(s as any).primary_indicator || 'utbot'} {s.indicator_timeframe}
+                        {(s as any).confirm_indicator ? ` + ${(s as any).confirm_indicator}` : ''}
+                      </span>
                       {s.sl_points && <span>SL: {s.sl_points}pts</span>}
                       {s.target_points && <span>TP: {s.target_points}pts</span>}
                       {s.trail_points ? (
@@ -488,55 +683,148 @@ export default function ScalpSessionsRoute() {
 
       {/* Create Dialog */}
       <Dialog open={showCreate} onClose={() => setShowCreate(false)}>
-        <DialogTitle>Create Scalp Session</DialogTitle>
+        <DialogTitle>Create Signal Session</DialogTitle>
         <DialogBody>
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Name</label>
               <Input value={formData.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, name: e.target.value }))} placeholder="e.g. NIFTY ATM Scalper" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Underlying</label>
-                <select value={formData.underlying} onChange={e => setFormData(p => ({ ...p, underlying: e.target.value, expiry: '' }))}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
-                  {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'].map(u => <option key={u} value={u}>{u}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Expiry</label>
-                <select value={formData.expiry} onChange={e => setFormData(p => ({ ...p, expiry: e.target.value }))}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
-                  {expiries.map(e => <option key={e} value={e}>{e}</option>)}
-                </select>
-              </div>
+            {/* Mode selector */}
+            <div>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Mode</label>
+              <select
+                value={formData.session_mode}
+                onChange={e => {
+                  const next = e.target.value;
+                  setFormData((p: any) => ({
+                    ...p,
+                    session_mode: next,
+                    // Reset underlying/expiry/lots vs symbol/quantity per mode.
+                    underlying: next === 'options_scalp' ? 'NIFTY' : '',
+                    expiry: '',
+                    lots: 1,
+                    quantity: '',
+                    // Swing uses 1d by default; intraday/options 1m.
+                    indicator_timeframe: next === 'equity_swing' ? '1d' : '1m',
+                  }));
+                }}
+                className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                {SESSION_MODES.map(m => (
+                  <option key={m.value} value={m.value}>{m.label} — {m.description}</option>
+                ))}
+              </select>
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Lots</label>
-                <Input type="number" value={formData.lots} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, lots: Number(e.target.value) }))} min={1} />
+            {/* Mode-specific instrument fields */}
+            {formData.session_mode === 'options_scalp' ? (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Underlying</label>
+                  <select value={formData.underlying} onChange={e => setFormData((p: any) => ({ ...p, underlying: e.target.value, expiry: '' }))}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                    {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'].map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Expiry</label>
+                  <select value={formData.expiry} onChange={e => setFormData((p: any) => ({ ...p, expiry: e.target.value }))}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                    {expiries.map(e => <option key={e} value={e}>{e}</option>)}
+                  </select>
+                </div>
               </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Symbol</label>
+                  <EquitySymbolPicker
+                    authToken={authToken}
+                    value={formData.underlying}
+                    onSelect={(sym) => setFormData((p: any) => ({ ...p, underlying: sym }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Quantity</label>
+                  <Input type="number" min={1} value={formData.quantity}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => ({ ...p, quantity: e.target.value }))}
+                    placeholder="shares" />
+                </div>
+              </div>
+            )}
+            <div className={`grid gap-3 ${formData.session_mode === 'options_scalp' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+              {formData.session_mode === 'options_scalp' && (
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Lots</label>
+                  <Input type="number" value={formData.lots} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => ({ ...p, lots: Number(e.target.value) }))} min={1} />
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Timeframe</label>
-                <select value={formData.indicator_timeframe} onChange={e => setFormData(p => ({ ...p, indicator_timeframe: e.target.value }))}
+                <select value={formData.indicator_timeframe} onChange={e => setFormData((p: any) => ({ ...p, indicator_timeframe: e.target.value }))}
                   className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
-                  {['1m', '3m', '5m', '15m'].map(t => <option key={t} value={t}>{t}</option>)}
+                  {(formData.session_mode === 'equity_swing'
+                    ? ['15m', '1h', '1d']
+                    : ['1m', '3m', '5m', '15m']
+                  ).map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Squareoff</label>
-                <Input value={formData.squareoff_time} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, squareoff_time: e.target.value }))} />
-              </div>
+              {formData.session_mode !== 'equity_swing' && (
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Squareoff</label>
+                  <Input value={formData.squareoff_time} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => ({ ...p, squareoff_time: e.target.value }))} />
+                </div>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">UT Bot Period</label>
-                <Input type="number" value={formData.utbot_period} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, utbot_period: Number(e.target.value) }))} />
+            <div className="space-y-3 rounded-lg border border-zinc-200 dark:border-zinc-700 p-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Primary Indicator</label>
+                  <select
+                    value={formData.primary_indicator}
+                    onChange={e => {
+                      const next = e.target.value;
+                      setFormData((p: any) => ({
+                        ...p,
+                        primary_indicator: next,
+                        primary_params: { ...(PARAM_DEFAULTS[next] || {}) },
+                      }));
+                    }}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                    {PRIMARY_INDICATORS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Confirm (optional)</label>
+                  <select
+                    value={formData.confirm_indicator}
+                    onChange={e => {
+                      const next = e.target.value;
+                      setFormData((p: any) => ({
+                        ...p,
+                        confirm_indicator: next,
+                        confirm_params: next ? { ...(PARAM_DEFAULTS[next] || {}) } : {},
+                      }));
+                    }}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                    {CONFIRM_INDICATORS.map(i => <option key={i.value || 'none'} value={i.value}>{i.label}</option>)}
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">UT Bot Sensitivity</label>
-                <Input type="number" step="0.1" value={formData.utbot_sensitivity} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData(p => ({ ...p, utbot_sensitivity: Number(e.target.value) }))} />
-              </div>
+              <IndicatorParams
+                indicator={formData.primary_indicator}
+                params={formData.primary_params || {}}
+                onChange={(next) => setFormData((p: any) => ({ ...p, primary_params: next }))}
+              />
+              {formData.confirm_indicator && (
+                <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
+                  <p className="text-xs text-zinc-500 mb-2">Confirm params:</p>
+                  <IndicatorParams
+                    indicator={formData.confirm_indicator}
+                    params={formData.confirm_params || {}}
+                    onChange={(next) => setFormData((p: any) => ({ ...p, confirm_params: next }))}
+                  />
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

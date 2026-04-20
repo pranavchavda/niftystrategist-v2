@@ -23,14 +23,28 @@ def db_to_session(row: ScalpSessionDB) -> ScalpSession:
         user_id=row.user_id,
         name=row.name,
         enabled=row.enabled,
+        session_mode=row.session_mode or "options_scalp",
         underlying=row.underlying,
         underlying_instrument_token=row.underlying_instrument_token,
         expiry=row.expiry,
         lots=row.lots,
+        quantity=row.quantity,
         product=row.product,
         indicator_timeframe=row.indicator_timeframe,
         utbot_period=row.utbot_period,
         utbot_sensitivity=row.utbot_sensitivity,
+        primary_indicator=row.primary_indicator or "utbot",
+        primary_params=(
+            row.primary_params
+            if row.primary_params
+            else (
+                {"period": row.utbot_period, "sensitivity": row.utbot_sensitivity}
+                if (row.primary_indicator or "utbot") == "utbot"
+                else None
+            )
+        ),
+        confirm_indicator=row.confirm_indicator,
+        confirm_params=row.confirm_params,
         sl_points=row.sl_points,
         target_points=row.target_points,
         trail_percent=row.trail_percent,
