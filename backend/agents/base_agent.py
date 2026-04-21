@@ -192,14 +192,57 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
                 logger.error("OPENROUTER_API_KEY not found in environment or .env file!")
                 raise ValueError("OPENROUTER_API_KEY is required for OpenRouter models")
             logger.info(f"Using OpenRouterProvider with key: {api_key[:8]}...")
-            # Pass a custom AsyncOpenAI client with higher max_retries (default is 2).
-            # Free-tier OpenRouter models have aggressive rate limits — the extra retries
-            # with exponential backoff (~0.5s, 1s, 2s, 4s, 8s) give ~15s for limits to clear.
+            # Resilience layers (each handles a different failure class):
+            #   1. Custom httpx transport (AsyncTenacityTransport) → retries the
+            #      single failing HTTP request on transient errors that the
+            #      OpenAI SDK doesn't catch by itself, including:
+            #        - JSONDecodeError (OpenRouter returns HTML/empty body on
+            #          model failover or upstream provider blip — observed
+            #          2026-04-21 awakening crash after 5min of tool work)
+            #        - httpx.RemoteProtocolError, ConnectError, ReadTimeout
+            #        - HTTP 5xx status codes
+            #      Retries at HTTP layer mean the agent does NOT redo tool calls.
+            #   2. AsyncOpenAI(max_retries=5) → its own retry layer for
+            #      OpenAI-shape errors (rate limits, etc).
             from openai import AsyncOpenAI as AsyncOpenAIClient
+            from pydantic_ai.retries import AsyncTenacityTransport, wait_retry_after
+            from tenacity import (
+                AsyncRetrying,
+                retry_if_exception_type,
+                stop_after_attempt,
+                before_sleep_log,
+            )
+            import httpx
+            from json import JSONDecodeError
+
+            tenacity_transport = AsyncTenacityTransport(
+                config=AsyncRetrying(
+                    retry=retry_if_exception_type((
+                        JSONDecodeError,
+                        httpx.RemoteProtocolError,
+                        httpx.ConnectError,
+                        httpx.ReadTimeout,
+                        httpx.WriteTimeout,
+                        httpx.PoolTimeout,
+                        httpx.HTTPStatusError,  # only raised by validate_response below
+                    )),
+                    wait=wait_retry_after(fallback_strategy=lambda _: 2.0, max_wait=30.0),
+                    stop=stop_after_attempt(4),
+                    before_sleep=before_sleep_log(logger, logging.WARNING),
+                    reraise=True,
+                ),
+                # Treat 429 + 5xx as retryable by raising HTTPStatusError so the
+                # tenacity AsyncRetrying loop catches it. 4xx other than 429 stay
+                # raised and surfaced normally (auth, bad request, etc).
+                validate_response=lambda r: r.raise_for_status() if r.status_code >= 500 or r.status_code == 429 else None,
+            )
+            http_client = httpx.AsyncClient(transport=tenacity_transport, timeout=httpx.Timeout(120.0))
+
             openai_client = AsyncOpenAIClient(
                 base_url='https://openrouter.ai/api/v1',
                 api_key=api_key,
                 max_retries=5,
+                http_client=http_client,
             )
             provider = OpenRouterProvider(openai_client=openai_client)
             model_name = f"openai/{config.model_name}" if "/" not in config.model_name else config.model_name
