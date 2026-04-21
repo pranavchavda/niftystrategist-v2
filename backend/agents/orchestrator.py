@@ -708,7 +708,7 @@ OUTPUT ONLY: "VALID" or "FAKE: <one-line reason>" """
         if not cache_info:
             # Extract script name from command (if it's a Python script)
             python_script_match = re.search(
-                r"python3?\s+(?:bash-tools/)?([a-zA-Z0-9_-]+\.py)", command
+                r"python3?\s+(?:cli-tools/)?([a-zA-Z0-9_-]+\.py)", command
             )
             if python_script_match:
                 script_name = python_script_match.group(1)
@@ -1871,13 +1871,13 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
             """
             Execute a bash command and return the output.
 
-            🚨 MANDATORY: Before executing any bash-tools script, first get its syntax:
+            🚨 MANDATORY: Before executing any cli-tools script, first get its syntax:
             1. Use search_docs() to find documentation, OR
-            2. Run with --help flag: "python bash-tools/script.py --help"
+            2. Run with --help flag: "python cli-tools/script.py --help"
             Only execute once you have the correct syntax in context.
 
             📍 WORKING DIRECTORY: You are already in /backend - do NOT use "cd backend &&".
-            Run scripts directly: "python bash-tools/script.py ..." (not "cd backend && python...")
+            Run scripts directly: "python cli-tools/script.py ..." (not "cd backend && python...")
 
             Args:
                 command: The bash command to execute
@@ -1971,11 +1971,11 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                 help_text = None
                 script_name = None
 
-                # Check if command is running a script from bash-tools/ or cli-tools/
+                # Check if command is running a script from cli-tools/ or cli-tools/
                 import re
 
                 bash_tools_match = re.search(
-                    r"python3?\s+.*?bash-tools/([^\s]+\.py)", command
+                    r"python3?\s+.*?cli-tools/([^\s]+\.py)", command
                 )
                 cli_tools_match = re.search(
                     r"(?:python3?\s+)?(?:\./)?\s*cli-tools/(nf-[^\s]+)", command
@@ -2012,7 +2012,7 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                         # Extract the full path to the script
                         if bash_tools_match:
                             script_path_match = re.search(
-                                r"(.*?bash-tools/[^\s]+\.py)", command
+                                r"(.*?cli-tools/[^\s]+\.py)", command
                             )
                             help_cmd = (
                                 f"python3 {script_path_match.group(1)} --help"
@@ -2081,7 +2081,7 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                     subprocess_env["NF_ORDER_NODE_URL"] = ctx.deps.order_node_url
 
                 # Run the command with asyncio, streaming output
-                # cwd=backend/ so cli-tools/ and bash-tools/ resolve correctly
+                # cwd=backend/ so cli-tools/ and cli-tools/ resolve correctly
                 process = await asyncio.create_subprocess_shell(
                     command,
                     stdout=asyncio.subprocess.PIPE,
@@ -3025,7 +3025,7 @@ Available agents: {allowed_agents}
 
                     full_content = "\n".join(content_parts)
                     script_matches = read_re.findall(
-                        r"bash-tools/([^\s\"']+\.py)", full_content
+                        r"cli-tools/([^\s\"']+\.py)", full_content
                     )
                     for script_name in script_matches:
                         ctx.deps.docs_checked_scripts.add(script_name)
@@ -3061,7 +3061,7 @@ Available agents: {allowed_agents}
                     import re as read_single_re
 
                     script_matches = read_single_re.findall(
-                        r"bash-tools/([^\s\"']+\.py)", content
+                        r"cli-tools/([^\s\"']+\.py)", content
                     )
                     for script_name in script_matches:
                         ctx.deps.docs_checked_scripts.add(script_name)
@@ -3153,7 +3153,7 @@ Available agents: {allowed_agents}
 
                 full_output = "\n".join(output_lines)
                 script_matches = search_re.findall(
-                    r"bash-tools/([^\s\"']+\.py)", full_output
+                    r"cli-tools/([^\s\"']+\.py)", full_output
                 )
                 for script_name in script_matches:
                     ctx.deps.docs_checked_scripts.add(script_name)
@@ -3308,7 +3308,7 @@ Available agents: {allowed_agents}
             Read the contents of a file.
 
             Use this to inspect existing files, especially when creating or modifying
-            temporary tools in the bash-tools/ directory.
+            temporary tools in the cli-tools/ directory.
 
             Args:
                 file_path: Absolute path to the file to read
@@ -3317,7 +3317,7 @@ Available agents: {allowed_agents}
                 File contents as a string
 
             Example:
-                read_file("backend/bash-tools/temp_search_reviews.py")
+                read_file("backend/cli-tools/temp_search_reviews.py")
             """
             try:
                 if not os.path.isabs(file_path):
@@ -3343,7 +3343,7 @@ Available agents: {allowed_agents}
             """
             Write content to a file (overwrites if exists).
 
-            Use this to create new temporary Python tools in bash-tools/ or modify
+            Use this to create new temporary Python tools in cli-tools/ or modify
             existing files. Python scripts are automatically made executable.
 
             Args:
@@ -3432,7 +3432,7 @@ Available agents: {allowed_agents}
 
             Example:
                 edit_file(
-                    "backend/bash-tools/temp_search_reviews.py",
+                    "backend/cli-tools/temp_search_reviews.py",
                     "# TODO: Implement search",
                     "results = client.search_reviews(query)"
                 )
