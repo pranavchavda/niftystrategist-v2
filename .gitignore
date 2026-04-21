@@ -103,3 +103,4 @@ backend/data/
 supabase/.temp/
 backend/gemma-project.txt
 2026-*-this-session-is-being-continued-*
+.claude/
