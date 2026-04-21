@@ -207,7 +207,6 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             from openai import AsyncOpenAI as AsyncOpenAIClient
             from pydantic_ai.retries import AsyncTenacityTransport, wait_retry_after
             from tenacity import (
-                AsyncRetrying,
                 retry_if_exception_type,
                 stop_after_attempt,
                 before_sleep_log,
@@ -215,9 +214,13 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             import httpx
             from json import JSONDecodeError
 
+            # AsyncTenacityTransport.config is a TypedDict (RetryConfig) — a
+            # plain mapping of kwargs that get unpacked into tenacity's
+            # `@retry(**config)` decorator. Passing an AsyncRetrying instance
+            # here breaks at import-time (TypeError on `**config`).
             tenacity_transport = AsyncTenacityTransport(
-                config=AsyncRetrying(
-                    retry=retry_if_exception_type((
+                config={
+                    "retry": retry_if_exception_type((
                         JSONDecodeError,
                         httpx.RemoteProtocolError,
                         httpx.ConnectError,
@@ -226,14 +229,14 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
                         httpx.PoolTimeout,
                         httpx.HTTPStatusError,  # only raised by validate_response below
                     )),
-                    wait=wait_retry_after(fallback_strategy=lambda _: 2.0, max_wait=30.0),
-                    stop=stop_after_attempt(4),
-                    before_sleep=before_sleep_log(logger, logging.WARNING),
-                    reraise=True,
-                ),
+                    "wait": wait_retry_after(fallback_strategy=lambda _: 2.0, max_wait=30.0),
+                    "stop": stop_after_attempt(4),
+                    "before_sleep": before_sleep_log(logger, logging.WARNING),
+                    "reraise": True,
+                },
                 # Treat 429 + 5xx as retryable by raising HTTPStatusError so the
-                # tenacity AsyncRetrying loop catches it. 4xx other than 429 stay
-                # raised and surfaced normally (auth, bad request, etc).
+                # tenacity loop catches it. 4xx other than 429 stay raised and
+                # surfaced normally (auth, bad request, etc).
                 validate_response=lambda r: r.raise_for_status() if r.status_code >= 500 or r.status_code == 429 else None,
             )
             http_client = httpx.AsyncClient(transport=tenacity_transport, timeout=httpx.Timeout(120.0))
