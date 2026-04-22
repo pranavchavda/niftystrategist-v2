@@ -24,11 +24,17 @@ _INTERVAL_MAP: dict[int, str] = {
     30: "30minute",
 }
 
-# How many trading days of history to request per timeframe. Picked to
-# fill ~200 candles (CandleBuffer default max) with headroom for weekends.
+# How many trading days of history to request per timeframe.
+#
+# UpstoxClient.get_historical_data routes days<=1 with unit=minutes to the
+# *intraday* endpoint (today's candles); larger values hit the historical
+# endpoint which stops at the previous trading day's close. Use days=1 for
+# minute intervals so we seed with today's live data — a single trading
+# session gives ~375 1m candles, more than enough for any indicator warmup.
+# Larger timeframes can safely use the historical endpoint.
 _DAYS_MAP: dict[int, int] = {
-    1: 2,
-    5: 5,
+    1: 1,
+    5: 1,
     15: 10,
     30: 20,
 }
