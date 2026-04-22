@@ -63,6 +63,7 @@ class MonitorDaemon:
             on_tick=self._on_tick,
             on_portfolio_event=self._on_portfolio_event,
             on_auth_failure=self._on_stream_auth_failure,
+            get_client=self._get_client,
         )
         self._action_executor = ActionExecutor(
             get_client=self._get_client,

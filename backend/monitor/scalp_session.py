@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Awaitable
 
 from monitor.candle_buffer import CandleBuffer
+from monitor.candle_seeder import seed_candle_buffer
 from monitor.indicator_engine import compute_indicator
 from monitor.scalp_models import (
     ScalpSession,
@@ -114,12 +115,25 @@ class ScalpSessionManager:
                 pkey = f"{uid}:{session.runtime.current_instrument_token}"
                 new_premium_map[pkey] = session.id
 
-            # Create candle buffer if not exists
+            # Create candle buffer if not exists, and seed it from history
+            # so indicators are immediately warm after a daemon restart.
             buf_key = str(session.id)
             if buf_key not in self._candle_buffers:
                 tf = session.config.indicator_timeframe
                 minutes = _parse_timeframe(tf)
-                self._candle_buffers[buf_key] = CandleBuffer(minutes)
+                new_buf = CandleBuffer(minutes)
+                self._candle_buffers[buf_key] = new_buf
+                try:
+                    client = await self._get_client(session.user_id)
+                    await seed_candle_buffer(
+                        new_buf, client,
+                        session.config.underlying_instrument_token,
+                        minutes,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Session %d: buffer seed failed: %s", session.id, e,
+                    )
 
             if session.config.pending_action:
                 pending_actions.append((session, session.config.pending_action))
@@ -285,7 +299,7 @@ class ScalpSessionManager:
         self._prev_primary_values[buf_key] = prev_val
         self._primary_values[buf_key] = primary_val
 
-        logger.info(
+        logger.debug(
             "Scalp session %d (%s): candle close #%d, primary=%s prev=%s state=%s",
             session.id, cfg.primary_indicator, new_count,
             primary_val, prev_val, session.runtime.state.value,

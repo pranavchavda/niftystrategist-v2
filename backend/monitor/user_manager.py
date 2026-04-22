@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Callable, Coroutine
 
 from monitor.candle_buffer import CandleBuffer
+from monitor.candle_seeder import seed_candle_buffer
 from monitor.indicator_engine import compute_indicator
 from monitor.models import MonitorRule
 from monitor.streams.market_data import MarketDataStream
@@ -124,11 +125,13 @@ class UserManager:
         on_tick: Callable[[int, str, dict], Coroutine[Any, Any, None]],
         on_portfolio_event: Callable[[int, dict], Coroutine[Any, Any, None]],
         on_auth_failure: Callable[[int], Coroutine[Any, Any, None]] | None = None,
+        get_client: Callable[[int], Coroutine[Any, Any, Any]] | None = None,
     ):
         self._sessions: dict[int, UserSession] = {}
         self._on_tick = on_tick
         self._on_portfolio_event_cb = on_portfolio_event
         self._on_auth_failure = on_auth_failure
+        self._get_client = get_client
 
     def get_session(self, user_id: int) -> UserSession | None:
         """Get the session for a user, or None if not active."""
@@ -196,7 +199,7 @@ class UserManager:
             session.subscribed_instruments = instruments
 
         # Set up candle buffers for indicator rules
-        self._sync_candle_buffers(session, rules)
+        await self._sync_candle_buffers(session, rules)
 
         logger.info(
             f"[UserManager] Started user {user_id}: "
@@ -267,7 +270,7 @@ class UserManager:
         session.rules = list(rules)
 
         # Sync candle buffers
-        self._sync_candle_buffers(session, rules)
+        await self._sync_candle_buffers(session, rules)
 
         logger.info(
             "[UserManager] Synced user %d: %d rules, %d instruments %s",
@@ -337,22 +340,47 @@ class UserManager:
 
     # ── Internal helpers ─────────────────────────────────────────────
 
-    def _sync_candle_buffers(
+    async def _sync_candle_buffers(
         self, session: UserSession, rules: list[MonitorRule]
     ):
-        """Create/remove candle buffers to match the current indicator rules."""
+        """Create/remove candle buffers to match the current indicator rules.
+
+        Newly created buffers are seeded from Upstox historical OHLCV so
+        indicators are immediately warm — without this, every daemon restart
+        leaves indicator rules silent until enough live ticks accumulate
+        (minutes-to-hours depending on the longest lookback).
+        """
         needed = _extract_indicator_buffer_keys(rules)
         current_keys = set(session.candle_buffers.keys())
         needed_keys = set(needed.keys())
 
-        # Create new buffers
+        # Create new buffers and seed them
+        client = None
+        if self._get_client and (needed_keys - current_keys):
+            try:
+                client = await self._get_client(session.user_id)
+            except Exception as e:
+                logger.warning(
+                    "UserManager: get_client failed for user %d, skipping "
+                    "buffer seeding: %s", session.user_id, e,
+                )
+
         for key in needed_keys - current_keys:
             meta = needed[key]
             tf_str = meta["timeframe"]
             tf_minutes = _TIMEFRAME_MINUTES.get(tf_str, 5)
-            session.candle_buffers[key] = CandleBuffer(
-                timeframe_minutes=tf_minutes
-            )
+            new_buf = CandleBuffer(timeframe_minutes=tf_minutes)
+            session.candle_buffers[key] = new_buf
+            if client is not None:
+                try:
+                    await seed_candle_buffer(
+                        new_buf, client,
+                        meta["instrument_token"], tf_minutes,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "UserManager: buffer seed failed for %s: %s", key, e,
+                    )
 
         # Remove unused buffers
         for key in current_keys - needed_keys:
