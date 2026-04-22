@@ -15,10 +15,19 @@ class CandleBuffer:
         minutes = (ts.hour * 60 + ts.minute) // self.tf_minutes * self.tf_minutes
         return ts.replace(hour=minutes // 60, minute=minutes % 60, second=0, microsecond=0)
 
-    def add_tick(self, price: float, volume: int = 0, timestamp: datetime | None = None):
+    def add_tick(self, price: float, volume: int = 0, timestamp: datetime | None = None) -> bool:
+        """Append a tick. Returns True iff this tick opened a NEW candle
+        (i.e. the previous window's candle is now complete).
+
+        Callers should use the return value to detect candle close instead
+        of comparing len() before/after — a saturated deque (seeded buffer
+        after the first live tick) keeps len() constant and hides new-candle
+        transitions.
+        """
         ts = timestamp or datetime.utcnow()
         window = self._window_start(ts)
-        if self._current_window != window:
+        new_candle = self._current_window != window
+        if new_candle:
             self._current_window = window
             self._candles.append({
                 "timestamp": window, "open": price, "high": price,
@@ -30,6 +39,7 @@ class CandleBuffer:
             candle["low"] = min(candle["low"], price)
             candle["close"] = price
             candle["volume"] += volume
+        return new_candle
 
     def seed(self, historical: list[dict]):
         for c in historical:

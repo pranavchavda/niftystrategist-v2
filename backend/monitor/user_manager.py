@@ -318,14 +318,11 @@ class UserManager:
                 if not buf_key.startswith(f"{instrument_key}_"):
                     continue
 
-                # Track candle count before tick to detect new candle
-                candle_count_before = len(buf.get_candles())
-                buf.add_tick(ltp, volume=volume, timestamp=ts)
-                candle_count_after = len(buf.get_candles())
-
-                # 2. New candle started => previous candle completed
-                candle_completed = candle_count_after > candle_count_before
-                if candle_completed:
+                # add_tick returns True when a new candle opens, which means
+                # the previous window's candle is now complete. Using the
+                # return flag is robust against a saturated deque (where
+                # len() stays constant after seeding).
+                if buf.add_tick(ltp, volume=volume, timestamp=ts):
                     self._recompute_indicators(session, buf_key, buf)
 
             # 3. Forward to external callback (prev_prices still has OLD value)

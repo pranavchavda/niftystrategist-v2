@@ -282,15 +282,13 @@ class ScalpSessionManager:
         if not buf:
             return
 
-        prev_count = len(buf.get_completed_candles())
-        buf.add_tick(ltp, 0, datetime.utcnow())
-        new_count = len(buf.get_completed_candles())
-
-        if new_count <= prev_count:
+        new_candle = buf.add_tick(ltp, 0, datetime.utcnow())
+        if not new_candle:
             return  # No new candle closed
 
         # Recompute primary indicator
         candles = buf.get_completed_candles()
+        new_count = len(candles)
         cfg = session.config
         primary_params = cfg.primary_params or {}
         primary_val = compute_indicator(cfg.primary_indicator, candles, primary_params)
