@@ -656,9 +656,9 @@ export default function ScalpSessionsRoute() {
                 <span className="font-medium text-zinc-700 dark:text-zinc-300">
                   {log.session_name || `Session ${log.session_id ?? ''}`}
                 </span>
-                {log.option_type && log.strike != null && (
+                {log.option_type && (
                   <span className="text-zinc-600 dark:text-zinc-400">
-                    {log.option_type} {log.strike}
+                    {log.option_type}{log.strike != null ? ` ${log.strike}` : ''}
                   </span>
                 )}
                 {log.entry_price != null && (
