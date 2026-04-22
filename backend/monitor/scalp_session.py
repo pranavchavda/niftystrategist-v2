@@ -299,7 +299,7 @@ class ScalpSessionManager:
         self._prev_primary_values[buf_key] = prev_val
         self._primary_values[buf_key] = primary_val
 
-        logger.debug(
+        logger.info(
             "Scalp session %d (%s): candle close #%d, primary=%s prev=%s state=%s",
             session.id, cfg.primary_indicator, new_count,
             primary_val, prev_val, session.runtime.state.value,
