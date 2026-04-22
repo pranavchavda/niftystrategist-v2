@@ -158,9 +158,9 @@ FastAPI (web)                    MonitorDaemon (separate process)
 **Action types:** place_order, cancel_order, cancel_rule.
 **OCO pairs:** Linked stop-loss + target rules where one firing disables the other.
 
-**Daemon deployment (TODO):**
-- Needs its own systemd unit (separate from the FastAPI service)
-- Currently started manually via `nf-monitor start`
+**Daemon deployment:**
+- Runs as its own systemd unit (`niftystrategist-monitor.service`), separate from the FastAPI service
+- CI's "Restart services" step restarts it alongside `niftystrategist` and `niftystrategist-ordernode` — no manual restart needed after a push
 - Token loading: daemon loads Upstox access tokens from the DB (encrypted in `users` table) via `get_user_upstox_token()` on each poll cycle
 - Upstox tokens expire daily (~3:30 AM IST). If TOTP credentials are configured, tokens auto-refresh silently via `upstox-totp` library. Otherwise users must re-authenticate via OAuth each morning. Daemon skips users with expired/missing tokens and no TOTP credentials.
 
