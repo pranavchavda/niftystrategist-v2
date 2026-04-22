@@ -139,12 +139,17 @@ class UserManager:
         user_id: int,
         access_token: str,
         rules: list[MonitorRule],
+        extra_instruments: set[str] | None = None,
     ):
         """Start streaming for a user.
 
         Creates portfolio and market data WebSocket connections, subscribes
         to the instruments needed by the user's rules, and sets up candle
         buffers for indicator-based rules.
+
+        ``extra_instruments`` lets callers pin non-rule-owned instruments
+        (e.g. scalp session underlyings/held options) so they are included
+        in the initial subscription set.
         """
         # Stop existing session if any
         if user_id in self._sessions:
@@ -182,8 +187,10 @@ class UserManager:
         await portfolio_stream.start()
         await market_stream.start()
 
-        # Subscribe to instruments from rules
+        # Subscribe to instruments from rules (plus any scalp-owned extras)
         instruments = extract_instruments_from_rules(rules)
+        if extra_instruments:
+            instruments = instruments | extra_instruments
         if instruments:
             await market_stream.subscribe(list(instruments))
             session.subscribed_instruments = instruments
@@ -210,12 +217,21 @@ class UserManager:
 
         logger.info(f"[UserManager] Stopped user {user_id}")
 
-    async def sync_rules(self, user_id: int, rules: list[MonitorRule]):
+    async def sync_rules(
+        self,
+        user_id: int,
+        rules: list[MonitorRule],
+        extra_instruments: set[str] | None = None,
+    ):
         """Update the rules for a user and adjust subscriptions.
 
         Computes the diff of subscribed instruments — subscribes to new
         ones and unsubscribes from ones no longer needed. Also creates
         or removes CandleBuffers for indicator-based rules.
+
+        ``extra_instruments`` lets callers pin non-rule-owned instruments
+        (e.g. scalp session underlyings/held options) so they are not
+        treated as orphans and unsubscribed on every poll.
         """
         session = self._sessions.get(user_id)
         if session is None:
@@ -226,6 +242,8 @@ class UserManager:
 
         old_instruments = session.subscribed_instruments
         new_instruments = extract_instruments_from_rules(rules)
+        if extra_instruments:
+            new_instruments = new_instruments | extra_instruments
 
         # Subscribe to new instruments
         to_add = new_instruments - old_instruments

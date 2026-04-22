@@ -288,11 +288,17 @@ class MonitorDaemon:
         for uid in old_users - new_users:
             await self._user_manager.stop_user(uid)
 
-        # Start new users (only if we have an access token)
+        # Start new users (only if we have an access token). Scalp-owned
+        # instruments are passed in so sync_rules() on later polls won't
+        # treat them as orphans and unsubscribe them.
         for uid in new_users - old_users:
             token = self._access_tokens.get(uid)
             if token:
-                await self._user_manager.start_user(uid, token, rules_by_user[uid])
+                scalp_instruments = self._scalp_manager.get_subscribed_instruments(uid)
+                await self._user_manager.start_user(
+                    uid, token, rules_by_user[uid],
+                    extra_instruments=scalp_instruments or None,
+                )
 
         # Sync or restart existing users
         for uid in old_users & new_users:
@@ -304,6 +310,7 @@ class MonitorDaemon:
                     "Stopped session for user %d (token expired)", uid
                 )
                 continue
+            scalp_instruments = self._scalp_manager.get_subscribed_instruments(uid)
             session = self._user_manager.get_session(uid)
             if session is None:
                 # Session was destroyed (e.g. by auth failure handler)
@@ -312,37 +319,28 @@ class MonitorDaemon:
                     "Re-creating session for user %d (session lost, token valid)",
                     uid,
                 )
-                await self._user_manager.start_user(uid, token, rules_by_user[uid])
+                await self._user_manager.start_user(
+                    uid, token, rules_by_user[uid],
+                    extra_instruments=scalp_instruments or None,
+                )
             elif session.access_token != token:
                 # Token changed (e.g. TOTP refresh) — restart streams
                 logger.info("Token changed for user %d, restarting streams", uid)
-                await self._user_manager.start_user(uid, token, rules_by_user[uid])
+                await self._user_manager.start_user(
+                    uid, token, rules_by_user[uid],
+                    extra_instruments=scalp_instruments or None,
+                )
             else:
-                await self._user_manager.sync_rules(uid, rules_by_user[uid])
+                await self._user_manager.sync_rules(
+                    uid, rules_by_user[uid],
+                    extra_instruments=scalp_instruments or None,
+                )
 
         self._rules_by_user = rules_by_user
 
-        # Subscribe scalp session instruments (underlying + held options).
-        # These are separate from rule-based instruments and must be merged
-        # into each user's subscription set.
-        for uid in new_users | (old_users & new_users):
-            scalp_instruments = self._scalp_manager.get_subscribed_instruments(uid)
-            if scalp_instruments:
-                session_obj = self._user_manager.get_session(uid)
-                if session_obj:
-                    to_sub = scalp_instruments - session_obj.subscribed_instruments
-                    if to_sub:
-                        try:
-                            await session_obj.market_stream.subscribe(list(to_sub))
-                            session_obj.subscribed_instruments |= to_sub
-                            logger.info(
-                                "Subscribed %d scalp instruments for user %d: %s",
-                                len(to_sub), uid, to_sub,
-                            )
-                        except Exception as e:
-                            logger.error("Scalp subscription failed for user %d: %s", uid, e)
-
-        # Also ensure scalp-only users (no rules but have sessions) get started
+        # Ensure scalp-only users (no rules but have sessions) get started.
+        # Rule-based users already had scalp instruments merged into their
+        # subscription set above via extra_instruments.
         for uid in self._scalp_manager._sessions:
             if uid not in new_users:
                 token = self._access_tokens.get(uid)
@@ -352,13 +350,11 @@ class MonitorDaemon:
                     if token:
                         self._access_tokens[uid] = token
                 if token and not self._user_manager.get_session(uid):
-                    await self._user_manager.start_user(uid, token, [])
                     scalp_instruments = self._scalp_manager.get_subscribed_instruments(uid)
-                    if scalp_instruments:
-                        session_obj = self._user_manager.get_session(uid)
-                        if session_obj:
-                            await session_obj.market_stream.subscribe(list(scalp_instruments))
-                            session_obj.subscribed_instruments |= scalp_instruments
+                    await self._user_manager.start_user(
+                        uid, token, [],
+                        extra_instruments=scalp_instruments or None,
+                    )
 
         # Periodic summary — helps confirm daemon is alive and processing
         total_rules = sum(len(r) for r in rules_by_user.values())
