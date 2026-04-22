@@ -510,6 +510,16 @@ class ScalpSessionManager:
         if rt.state != ScalpState.IDLE:
             return
 
+        # Degraded persistence guard — if the last persist_state failed,
+        # DB and broker state may diverge. Refuse to place new orders until
+        # an external recovery (migration, DB fix) lets persist succeed again.
+        if not rt.persist_healthy:
+            logger.warning(
+                "Session %d: skip entry — persist_healthy=False (DB/broker may diverge)",
+                session.id,
+            )
+            return
+
         # Max trades guard
         if cfg.max_trades and rt.trade_count >= cfg.max_trades:
             logger.info("Session %d: max_trades reached (%d)", session.id, cfg.max_trades)
@@ -643,13 +653,20 @@ class ScalpSessionManager:
             self._premium_map[pkey] = session.id
             await self._subscribe_instrument(cfg.user_id, instrument_key)
 
-            await self._log_event(
+            log_id = await self._log_event(
                 session, f"entry_{option_type.lower()}", option_type=option_type,
                 strike=atm_strike, instrument_token=instrument_key, quantity=quantity,
                 underlying_price=underlying_price,
                 order_id=order_result.get("order_id"),
             )
             await self._persist_state(session)
+
+            order_id = order_result.get("order_id")
+            if log_id and order_id and not self._paper_mode:
+                asyncio.create_task(self._backfill_fill_price(
+                    session.id, cfg.user_id, log_id, order_id,
+                    "entry", is_short=False, quantity=quantity,
+                ))
 
         except Exception as e:
             logger.error("Session %d: entry failed: %s", session.id, e, exc_info=True)
@@ -726,7 +743,7 @@ class ScalpSessionManager:
             pkey = f"{cfg.user_id}:{instrument_key}"
             self._premium_map[pkey] = session.id
 
-            await self._log_event(
+            log_id = await self._log_event(
                 session, f"entry_{direction.lower()}",
                 option_type=direction,
                 instrument_token=instrument_key, quantity=quantity,
@@ -735,6 +752,13 @@ class ScalpSessionManager:
                 order_id=order_result.get("order_id"),
             )
             await self._persist_state(session)
+
+            order_id = order_result.get("order_id")
+            if log_id and order_id and not self._paper_mode:
+                asyncio.create_task(self._backfill_fill_price(
+                    session.id, cfg.user_id, log_id, order_id,
+                    "entry", is_short=(direction == "SHORT"), quantity=quantity,
+                ))
 
         except Exception as e:
             logger.error("Session %d: equity entry failed: %s", session.id, e, exc_info=True)
@@ -757,6 +781,38 @@ class ScalpSessionManager:
 
         if not session.is_holding:
             return
+
+        # Pre-exit broker reconcile: if an awakening, user, or other actor
+        # already closed the position (or DB/broker diverged due to an earlier
+        # persist failure), firing our exit order would unintentionally OPEN
+        # an opposite position. Observed 2026-04-22 on ADANIENSOL session 19.
+        # Skip reconcile for squareoff-time forced exits — those run regardless
+        # because the session is being shut down.
+        if reason not in ("exit_squareoff", "exit_disabled"):
+            exists = await self._broker_position_exists(session)
+            if exists is False:
+                logger.warning(
+                    "Session %d: pre-exit reconcile — broker is flat, skipping %s order",
+                    session.id, reason,
+                )
+                await self._log_event(
+                    session, "reconcile",
+                    option_type=rt.current_option_type,
+                    strike=rt.current_strike,
+                    instrument_token=rt.current_instrument_token,
+                    trigger_snapshot={
+                        "intended_reason": reason,
+                        "expected_state": rt.state.value,
+                        "resolution": "external_close_detected",
+                    },
+                )
+                self._reset_runtime_to_idle(session)
+                rt.trade_count += 1
+                rt.last_exit_time = datetime.utcnow()
+                await self._persist_state(session)
+                return
+            # None = API error; proceed rather than get stuck with an open
+            # position we can't verify. Same safety posture as before.
 
         is_equity = _is_equity(cfg.session_mode)
         is_short = rt.state == ScalpState.HOLDING_SHORT
@@ -822,7 +878,7 @@ class ScalpSessionManager:
                 await self._unsubscribe_instrument(cfg.user_id, rt.current_instrument_token)
 
         # Log exit
-        await self._log_event(
+        log_id = await self._log_event(
             session, reason,
             option_type=rt.current_option_type,
             strike=rt.current_strike,
@@ -834,6 +890,13 @@ class ScalpSessionManager:
             pnl_amount=pnl_amount,
             order_id=order_result.get("order_id"),
         )
+
+        order_id = order_result.get("order_id")
+        if log_id and order_id and not self._paper_mode:
+            asyncio.create_task(self._backfill_fill_price(
+                session.id, cfg.user_id, log_id, order_id,
+                "exit", is_short=is_short, quantity=quantity,
+            ))
 
         # Transition to IDLE
         rt.state = ScalpState.IDLE
@@ -853,6 +916,47 @@ class ScalpSessionManager:
 
     # ── Reconciliation ───────────────────────────────────────────────
 
+    async def _broker_position_exists(self, session: ScalpSession) -> bool | None:
+        """Return True if the broker still holds a non-zero position in the
+        session's tracked instrument, False if flat, None if we could not
+        verify (API error — caller should treat as "don't assume").
+
+        Upstox returns NEGATIVE qty for intraday shorts (per the 2026-03-06
+        MAZDOCK incident). Direction is already known from session state;
+        reconcile only needs to confirm a non-zero position exists.
+        """
+        inst_key = session.runtime.current_instrument_token
+        if inst_key is None:
+            return False
+        try:
+            client = await self._get_client(session.user_id)
+            positions = await client.get_positions()
+        except Exception as e:
+            logger.warning(
+                "Session %d: position fetch failed during reconcile: %s",
+                session.id, e,
+            )
+            return None
+        for pos in positions:
+            if getattr(pos, "instrument_token", None) == inst_key and getattr(pos, "quantity", 0) != 0:
+                return True
+        return False
+
+    def _reset_runtime_to_idle(self, session: ScalpSession) -> None:
+        """Wipe held-position runtime fields. Pure in-memory — caller must
+        persist separately."""
+        rt = session.runtime
+        rt.state = ScalpState.IDLE
+        rt.current_option_type = None
+        rt.current_strike = None
+        rt.current_instrument_token = None
+        rt.current_tradingsymbol = None
+        rt.entry_price = None
+        rt.entry_time = None
+        rt.highest_premium = None
+        rt.trail_armed = False
+        rt.last_premium_ltp = None
+
     async def reconcile_on_startup(self) -> None:
         """Check HOLDING sessions against actual broker positions on daemon start."""
         for sessions in self._sessions.values():
@@ -860,24 +964,8 @@ class ScalpSessionManager:
                 if not session.is_holding:
                     continue
                 try:
-                    client = await self._get_client(session.user_id)
-                    positions = await client.get_positions()
-
-                    # Check if the held instrument appears in positions.
-                    # Upstox returns NEGATIVE qty for intraday shorts (per the
-                    # 2026-03-06 MAZDOCK incident note) — so qty>0 would miss
-                    # a valid HOLDING_SHORT equity position. Direction we
-                    # already know from session state; reconcile only needs
-                    # to confirm a position is still there.
-                    found = False
-                    for pos in positions:
-                        inst_key = getattr(pos, "instrument_token", None)
-                        qty = getattr(pos, "quantity", 0)
-                        if inst_key == session.runtime.current_instrument_token and qty != 0:
-                            found = True
-                            break
-
-                    if not found:
+                    exists = await self._broker_position_exists(session)
+                    if exists is False:
                         logger.warning(
                             "Session %d: HOLDING but position not found — reconciling to IDLE",
                             session.id,
@@ -886,15 +974,7 @@ class ScalpSessionManager:
                             "expected_instrument": session.runtime.current_instrument_token,
                             "expected_state": session.runtime.state.value,
                         })
-                        session.runtime.state = ScalpState.IDLE
-                        session.runtime.current_option_type = None
-                        session.runtime.current_strike = None
-                        session.runtime.current_instrument_token = None
-                        session.runtime.current_tradingsymbol = None
-                        session.runtime.entry_price = None
-                        session.runtime.entry_time = None
-                        session.runtime.highest_premium = None
-                        session.runtime.trail_armed = False
+                        self._reset_runtime_to_idle(session)
                         await self._persist_state(session)
                     else:
                         logger.info("Session %d: reconciled — position confirmed", session.id)
@@ -1036,24 +1116,135 @@ class ScalpSessionManager:
     # ── Persistence helpers ──────────────────────────────────────────
 
     async def _persist_state(self, session: ScalpSession) -> None:
-        """Persist session runtime state to DB (background-safe)."""
+        """Persist session runtime state to DB (background-safe).
+
+        Sets ``runtime.persist_healthy`` based on success. A False flag blocks
+        further entries/exits until a successful persist restores it — DB and
+        broker state diverging silently caused the 2026-04-22 ADANIENSOL
+        double-cover incident (migration 032 not applied, persist_state
+        raised StringDataRightTruncationError, daemon kept trading).
+        """
         try:
             from database.session import get_db_context
             from monitor.scalp_crud import persist_session_state
             async with get_db_context() as db:
                 await persist_session_state(db, session.id, session.runtime)
+            session.runtime.persist_healthy = True
         except Exception as e:
             logger.error("Session %d: persist state failed: %s", session.id, e)
+            session.runtime.persist_healthy = False
 
-    async def _log_event(self, session: ScalpSession, event_type: str, **kwargs) -> None:
-        """Log an event to the session log table."""
+    async def _log_event(self, session: ScalpSession, event_type: str, **kwargs) -> int | None:
+        """Log an event to the session log table. Returns the log id on success."""
         try:
             from database.session import get_db_context
             from monitor.scalp_crud import log_event
             async with get_db_context() as db:
-                await log_event(db, session.id, session.user_id, event_type, **kwargs)
+                row = await log_event(db, session.id, session.user_id, event_type, **kwargs)
+                return row.id
         except Exception as e:
             logger.error("Session %d: log event failed: %s", session.id, e)
+            return None
+
+    async def _backfill_fill_price(
+        self,
+        session_id: int,
+        user_id: int,
+        log_id: int,
+        order_id: str,
+        kind: str,  # "entry" or "exit"
+        is_short: bool,
+        quantity: int,
+    ) -> None:
+        """Fetch the real VWAP fill price from Upstox trades and patch the log.
+
+        Order placement returns before fills settle. We schedule this task to
+        run a few seconds after the order goes in, poll trades, match by
+        order_id, and overwrite the signal-time price with the actual fill.
+
+        For entries: also corrects runtime.entry_price so SL/target/trail
+        evaluate against reality. For exits: also recomputes pnl_amount /
+        pnl_points using the stored entry_price and the real exit price.
+        """
+        from database.session import get_db_context
+        from monitor.scalp_crud import update_log_fill, get_session as crud_get_session
+
+        # Poll with backoff — fills may not be visible immediately.
+        trades: list[dict] = []
+        for delay in (2.0, 3.0, 5.0):
+            await asyncio.sleep(delay)
+            try:
+                client = await self._get_client(user_id)
+                all_trades = await client.get_trades_for_day()
+                matching = [t for t in all_trades if t.get("order_id") == order_id]
+                if matching:
+                    trades = matching
+                    break
+            except Exception as e:
+                logger.warning(
+                    "Session %d: backfill trade fetch failed (log=%d order=%s): %s",
+                    session_id, log_id, order_id, e,
+                )
+
+        if not trades:
+            logger.warning(
+                "Session %d: no fills found for order %s after 10s — keeping signal price",
+                session_id, order_id,
+            )
+            return
+
+        # VWAP across partial fills.
+        total_qty = sum(int(t.get("quantity") or 0) for t in trades)
+        if total_qty <= 0:
+            return
+        vwap = sum(
+            float(t.get("average_price") or 0) * int(t.get("quantity") or 0)
+            for t in trades
+        ) / total_qty
+
+        try:
+            async with get_db_context() as db:
+                if kind == "entry":
+                    await update_log_fill(db, log_id, entry_price=vwap)
+                    logger.info(
+                        "Session %d: backfilled entry fill — log=%d order=%s vwap=%.2f",
+                        session_id, log_id, order_id, vwap,
+                    )
+                else:
+                    row = await crud_get_session(db, session_id)
+                    entry_p = row.entry_price if row else None
+                    pnl_points = None
+                    pnl_amount = None
+                    if entry_p is not None:
+                        raw = vwap - entry_p
+                        pnl_points = -raw if is_short else raw
+                        pnl_amount = pnl_points * quantity
+                    await update_log_fill(
+                        db, log_id,
+                        exit_price=vwap,
+                        pnl_points=pnl_points,
+                        pnl_amount=pnl_amount,
+                    )
+                    logger.info(
+                        "Session %d: backfilled exit fill — log=%d order=%s vwap=%.2f pnl=%.2f",
+                        session_id, log_id, order_id, vwap,
+                        pnl_amount if pnl_amount is not None else 0.0,
+                    )
+        except Exception as e:
+            logger.error(
+                "Session %d: backfill DB update failed (log=%d): %s",
+                session_id, log_id, e,
+            )
+            return
+
+        # Propagate corrected entry_price to in-memory runtime so SL/target/
+        # trail anchor against reality. Only safe for entries — exits already
+        # cleared runtime on the state transition.
+        if kind == "entry":
+            session = self.get_session_by_id(session_id)
+            if session and session.is_holding:
+                session.runtime.entry_price = vwap
+                await self._persist_state(session)
 
 
 # ── Utility ──────────────────────────────────────────────────────────

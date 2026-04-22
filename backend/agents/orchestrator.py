@@ -1153,6 +1153,57 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 )
                 sections.append(live_section)
 
+            # Inject active scalp sessions so orchestrator (and awakenings in
+            # particular) don't try to manage positions already owned by the
+            # daemon's state machine. Root cause of the 2026-04-22 ADANIENSOL
+            # double-cover: the 3 PM awakening saw an orphan short and closed
+            # it, not knowing session 19 intended to hold. Even when the DB
+            # shows the right state, the agent should back off from any
+            # position tied to an enabled scalp session.
+            if ctx.deps.user_id:
+                try:
+                    from database.session import get_db_context
+                    from monitor.scalp_crud import list_sessions as list_scalp_sessions
+                    async with get_db_context() as db:
+                        rows = await list_scalp_sessions(db, ctx.deps.user_id, enabled_only=True)
+                    if rows:
+                        scalp_section = "\n\n## 🔒 ACTIVE SCALP SESSIONS — DO NOT MANUALLY MANAGE\n\n"
+                        scalp_section += (
+                            "The scalp session daemon is actively managing these sessions. "
+                            "Their positions are controlled by the daemon's state machine "
+                            "(UT Bot / HalfTrend signals, SL/target/trail, time squareoff). "
+                            "**Do NOT place orders to cover, square off, or exit these positions.** "
+                            "If you see a seemingly \"orphan\" position that matches a session "
+                            "below, it is not orphan — the daemon holds it intentionally.\n\n"
+                        )
+                        scalp_section += "| Session | Mode | Underlying | State | Holding |\n"
+                        scalp_section += "|---|---|---|---|---|\n"
+                        for r in rows:
+                            state = r.state or "IDLE"
+                            mode = r.session_mode or "options_scalp"
+                            holding = "—"
+                            if r.current_tradingsymbol:
+                                holding = r.current_tradingsymbol
+                            elif r.current_option_type:
+                                holding = r.current_option_type
+                            scalp_section += (
+                                f"| #{r.id} {r.name} | {mode} | {r.underlying} | "
+                                f"{state} | {holding} |\n"
+                            )
+                        scalp_section += (
+                            "\n**If user asks you to act on a scalp-managed instrument:** "
+                            "explain it's under session management, point them to the "
+                            "Signal Sessions UI, and only place orders if they explicitly "
+                            "override.\n"
+                        )
+                        sections.append(scalp_section)
+                except Exception as e:
+                    # Non-fatal — prompt works without this context.
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "scalp-sessions prompt injection failed: %s", e
+                    )
+
             # Inject autonomous awakening context when running without a live user
             if ctx.deps.is_awakening:
                 awakening_section = "\n\n## 🤖 AUTONOMOUS AWAKENING MODE\n\n"

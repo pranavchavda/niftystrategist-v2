@@ -864,7 +864,7 @@ export default function ScalpSessionsRoute() {
         </DialogBody>
         <DialogActions>
           <Button plain onClick={() => setShowCreate(false)}>Cancel</Button>
-          <Button onClick={handleCreate} disabled={creating || !formData.name || !formData.expiry}>
+          <Button onClick={handleCreate} disabled={creating || !formData.name || (formData.session_mode !== 'equity_intraday' && formData.session_mode !== 'equity_swing' && !formData.expiry)}>
             {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create'}
           </Button>
         </DialogActions>

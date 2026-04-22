@@ -95,6 +95,10 @@ class ScalpSessionRuntime(BaseModel):
     last_premium_ltp: float | None = None
     trade_count: int = 0
     last_exit_time: datetime | None = None
+    # False when the last persist_state call failed. Blocks further orders
+    # until a successful persist restores it — prevents the 2026-04-22
+    # scenario where the DB showed IDLE/null while broker held a short.
+    persist_healthy: bool = True
 
 
 class ScalpSession(BaseModel):

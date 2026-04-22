@@ -491,6 +491,7 @@ class TestExitPosition:
              patch.object(mgr, '_place_order', new_callable=AsyncMock, return_value={"success": True, "order_id": "ORD-2"}), \
              patch.object(mgr, '_unsubscribe_instrument', new_callable=AsyncMock), \
              patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
              patch.object(mgr, '_persist_state', new_callable=AsyncMock):
 
             await mgr._exit_position(session, "exit_sl", 170.0)
@@ -540,11 +541,98 @@ class TestExitPosition:
         with patch("strategies.fno_utils.get_lot_size", return_value=25), \
              patch.object(mgr, '_place_order', new_callable=AsyncMock, return_value={"success": False, "error": "rejected"}), \
              patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
              patch.object(mgr, '_persist_state', new_callable=AsyncMock):
 
             await mgr._exit_position(session, "exit_sl", 170.0)
 
             assert session.runtime.state == ScalpState.HOLDING_CE
+
+    @pytest.mark.asyncio
+    async def test_pre_exit_reconcile_skips_order_when_broker_flat(self):
+        """2026-04-22 ADANIENSOL fix: if an external actor already closed
+        the position, exit order would accidentally open opposite."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+
+        with patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=False), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock) as mock_log, \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            mock_order.assert_not_called()
+            assert session.runtime.state == ScalpState.IDLE
+            # Logged as reconcile, not as the original exit reason
+            assert mock_log.call_args.args[1] == "reconcile"
+
+    @pytest.mark.asyncio
+    async def test_pre_exit_reconcile_proceeds_on_api_error(self):
+        """If position check fails (None), proceed with exit rather than
+        get stuck on an open position we can't verify."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+
+        with patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=None), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock, return_value={"success": True, "order_id": "X"}) as mock_order, \
+             patch.object(mgr, '_unsubscribe_instrument', new_callable=AsyncMock), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            mock_order.assert_called_once()
+            assert session.runtime.state == ScalpState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_squareoff_bypasses_reconcile(self):
+        """Squareoff must fire regardless — the session is being shut down."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+
+        broker_check = AsyncMock(return_value=False)
+        with patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_broker_position_exists', broker_check), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock, return_value={"success": True, "order_id": "X"}) as mock_order, \
+             patch.object(mgr, '_unsubscribe_instrument', new_callable=AsyncMock), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_squareoff", 170.0)
+
+            broker_check.assert_not_called()
+            mock_order.assert_called_once()
+
+
+class TestPersistHealthy:
+    @pytest.mark.asyncio
+    async def test_entry_blocked_when_persist_unhealthy(self):
+        """Migration-failed scenario: persist_healthy=False must halt new orders."""
+        from monitor.scalp_session import ScalpSessionManager
+        mgr = _make_manager()
+        session = _make_session(state=ScalpState.IDLE)
+        session.runtime.persist_healthy = False
+
+        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+            await mgr._try_enter(session, "CE", 24350.0)
+            mock_enter.assert_not_called()
 
 
 # ── Tick routing ─────────────────────────────────────────────────────
@@ -1031,6 +1119,7 @@ class TestEquityExit:
                           return_value={"success": True, "order_id": "EXIT-1"}) as mock_order, \
              patch.object(mgr, '_log_event', new_callable=AsyncMock) as mock_log, \
              patch.object(mgr, '_unsubscribe_instrument', new_callable=AsyncMock) as mock_unsub, \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
              patch.object(mgr, '_persist_state', new_callable=AsyncMock):
             await mgr._exit_position(session, "exit_target", 2530.0)
 
@@ -1055,6 +1144,7 @@ class TestEquityExit:
         with patch.object(mgr, '_place_order', new_callable=AsyncMock,
                           return_value={"success": True, "order_id": "EXIT-2"}) as mock_order, \
              patch.object(mgr, '_log_event', new_callable=AsyncMock) as mock_log, \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
              patch.object(mgr, '_persist_state', new_callable=AsyncMock):
             # Short profitable when price falls: entry 2500, exit 2470
             await mgr._exit_position(session, "exit_target", 2470.0)

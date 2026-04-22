@@ -264,6 +264,40 @@ async def backfill_entry_price(
     return row.id
 
 
+async def update_log_fill(
+    db: AsyncSession,
+    log_id: int,
+    *,
+    entry_price: float | None = None,
+    exit_price: float | None = None,
+    pnl_points: float | None = None,
+    pnl_amount: float | None = None,
+) -> bool:
+    """Patch a specific log row with actual fill prices and recomputed P&L.
+
+    Used by the fill-backfill task after an order executes — Upstox fills at
+    the prevailing market, which can diverge significantly from the signal-
+    time LTP (e.g. stale WebSocket snapshot right after daemon start). The
+    log should reflect reality, not the model's estimate.
+    """
+    result = await db.execute(
+        select(ScalpSessionLogDB).where(ScalpSessionLogDB.id == log_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return False
+    if entry_price is not None:
+        row.entry_price = entry_price
+    if exit_price is not None:
+        row.exit_price = exit_price
+    if pnl_points is not None:
+        row.pnl_points = pnl_points
+    if pnl_amount is not None:
+        row.pnl_amount = pnl_amount
+    await db.commit()
+    return True
+
+
 async def get_session_logs(
     db: AsyncSession,
     session_id: int,
