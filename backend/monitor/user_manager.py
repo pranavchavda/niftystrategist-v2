@@ -173,7 +173,11 @@ class UserManager:
         market_stream = MarketDataStream(
             access_token=access_token,
             on_message=lambda tick_data: self._on_market_tick(user_id, tick_data),
-            mode="full_d30",  # Upstox Plus: 30-level depth. Non-plus users: use "full" (5-level)
+            # NSE_INDEX instruments deliver ZERO updates in "full_d30" mode
+            # (verified live 2026-04-23: index sessions silently dead until
+            # downgrade). Indices have no market depth, so the depth-30 feed
+            # excludes them entirely. "full" supports both equity and indices.
+            mode="full",
             on_auth_failure=auth_failure_cb,
         )
 
