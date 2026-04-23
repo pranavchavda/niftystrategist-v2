@@ -1,0 +1,1 @@
+{"nodes": [{"id": "database_session", "label": "Database Session", "file_type": "python", "source_file": "backend/database/session.py", "description": "AsyncSessionLocal, dependency injection, context managers for DB access patterns"}], "edges": [], "hyperedges": []}

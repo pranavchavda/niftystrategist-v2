@@ -1,0 +1,1 @@
+{"nodes": [{"id": "migration_monitor_tables", "label": "Monitor Tables Migration", "file_type": "sql", "source_file": "backend/migrations/014_add_monitor_tables.sql", "description": "monitor_rules and monitor_logs tables with JSONB trigger_config/action_config"}], "edges": [], "hyperedges": []}

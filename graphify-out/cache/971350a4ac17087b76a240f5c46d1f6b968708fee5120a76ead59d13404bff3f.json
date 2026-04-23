@@ -1,0 +1,1 @@
+{"nodes": [{"id": "cli_nf_watchlist", "label": "nf-watchlist Tool", "file_type": "python", "source_file": "backend/cli-tools/nf-watchlist", "description": "Watchlist management with buy/sell targets and live price tracking"}], "edges": [], "hyperedges": []}

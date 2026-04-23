@@ -1,0 +1,1 @@
+{"nodes": [{"id": "cli_nf_analyze", "label": "nf-analyze Tool", "file_type": "python", "source_file": "backend/cli-tools/nf-analyze", "description": "Technical analysis with RSI, MACD, moving averages, trading signals"}], "edges": [], "hyperedges": []}

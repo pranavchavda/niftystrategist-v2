@@ -1,0 +1,1 @@
+{"nodes": [{"id": "monitor_stream_market", "label": "Market Data Stream", "file_type": "python", "source_file": "backend/monitor/streams/market_data.py", "description": "Upstox WebSocket feed: ltp, OHLCV, depth data via protobuf protocol"}], "edges": [], "hyperedges": []}

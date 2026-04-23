@@ -1,0 +1,1 @@
+{"nodes": [{"id": "cli_nf_quote", "label": "nf-quote Tool", "file_type": "python", "source_file": "backend/cli-tools/nf-quote", "description": "Get live stock quotes or historical OHLCV candlestick data, symbol search"}], "edges": [], "hyperedges": []}

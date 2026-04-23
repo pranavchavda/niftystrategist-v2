@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""Scalp-style equity backtest — runs the same state machine as nf-scalp
+sessions against historical candles. Lets you evaluate a scalp config
+before putting capital behind it.
+
+Usage examples:
+
+  # Basic intraday UT Bot scalp on RELIANCE, last 30 days 5-min bars
+  nf-backtest-scalp --symbol RELIANCE --days 30 --interval 5minute \\
+      --primary utbot --period 10 --sensitivity 1.0 \\
+      --sl 2.0 --target 4.0 --quantity 10
+
+  # With trail + confirm indicator
+  nf-backtest-scalp --symbol HDFCBANK --days 14 --interval 5minute \\
+      --primary ema_crossover --primary-params '{"fast":9,"slow":21}' \\
+      --confirm qqe_mod --confirm-params '{"rsi_period":6,"smoothing":5}' \\
+      --trail-arm 3 --trail-points 2 --quantity 20 --json
+
+  # Swing (delivery) mode on daily candles — no squareoff
+  nf-backtest-scalp --symbol INFY --days 180 --interval day \\
+      --mode equity_swing --primary utbot --timeframe 1d \\
+      --sl 15 --target 40 --quantity 5
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import (  # noqa: E402
+    init_client, print_error, print_json, run_async,
+)
+from backtesting.scalp_equity import (  # noqa: E402
+    run_scalp_equity_backtest, ScalpBacktestResult,
+)
+from monitor.scalp_models import ScalpSessionConfig, SessionMode  # noqa: E402
+
+
+_INTERVAL_TO_TIMEFRAME = {
+    "1minute": "1m", "3minute": "3m", "5minute": "5m", "10minute": "10m",
+    "15minute": "15m", "30minute": "30m", "day": "1d",
+}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="nf-backtest-scalp",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--symbol", required=True,
+                   help="Equity symbol (RELIANCE, INFY, ...) or index (NIFTY, BANKNIFTY)")
+    p.add_argument("--days", type=int, default=30,
+                   help="Days of history to fetch (default: 30)")
+    p.add_argument("--interval", default="5minute",
+                   choices=list(_INTERVAL_TO_TIMEFRAME.keys()),
+                   help="Candle interval (default: 5minute)")
+    p.add_argument("--mode", default="equity_intraday",
+                   choices=["equity_intraday", "equity_swing"],
+                   help="Session mode (default: equity_intraday)")
+
+    # Indicator config — mirrors nf-scalp flag names.
+    p.add_argument("--primary", default="utbot",
+                   help="Primary signal indicator (default: utbot)")
+    p.add_argument("--primary-params", default=None,
+                   help='JSON params for primary, e.g. \'{"fast":9,"slow":21}\'')
+    p.add_argument("--confirm", default=None,
+                   help="Optional confirm indicator")
+    p.add_argument("--confirm-params", default=None,
+                   help="JSON params for confirm")
+    p.add_argument("--timeframe", default=None,
+                   help="Override indicator_timeframe (defaults from --interval)")
+
+    # UT Bot convenience flags (same names as nf-scalp)
+    p.add_argument("--period", type=int, default=10,
+                   help="UT Bot ATR period (default: 10, ignored if --primary-params given)")
+    p.add_argument("--sensitivity", type=float, default=1.0,
+                   help="UT Bot sensitivity (default: 1.0)")
+
+    # Exit thresholds
+    p.add_argument("--sl", dest="sl_points", type=float, default=None,
+                   help="Stop-loss in absolute points")
+    p.add_argument("--target", dest="target_points", type=float, default=None,
+                   help="Target in absolute points")
+    p.add_argument("--trail-points", type=float, default=None,
+                   help="Trailing stop in points")
+    p.add_argument("--trail-percent", type=float, default=None,
+                   help="Trailing stop in percent")
+    p.add_argument("--trail-arm", dest="trail_arm_points", type=float, default=None,
+                   help="Points of profit before trail activates")
+    p.add_argument("--squareoff", default="15:15",
+                   help="Intraday squareoff time HH:MM IST (default: 15:15)")
+
+    # Risk + discipline
+    p.add_argument("--quantity", "-q", type=int, required=True,
+                   help="Share quantity per trade")
+    p.add_argument("--max-trades", type=int, default=20,
+                   help="Max round-trips per session day (default: 20)")
+    p.add_argument("--cooldown", type=int, default=60,
+                   help="Seconds between trades after an exit (default: 60)")
+
+    # Backtest-only knobs
+    p.add_argument("--slippage-bps", type=float, default=0.0,
+                   help="Slippage haircut in basis points (default: 0)")
+
+    p.add_argument("--json", action="store_true",
+                   help="Emit full result as JSON instead of human summary")
+    return p
+
+
+def _parse_json_param(flag_value: str | None, flag_name: str) -> dict | None:
+    if flag_value is None:
+        return None
+    try:
+        return json.loads(flag_value)
+    except json.JSONDecodeError as e:
+        print_error(f"Invalid JSON for {flag_name}: {e}")
+        sys.exit(1)
+
+
+def _build_config(args: argparse.Namespace) -> ScalpSessionConfig:
+    primary_params = _parse_json_param(args.primary_params, "--primary-params")
+    if primary_params is None and args.primary == "utbot":
+        primary_params = {"period": args.period, "sensitivity": args.sensitivity}
+
+    confirm_params = _parse_json_param(args.confirm_params, "--confirm-params")
+
+    tf = args.timeframe or _INTERVAL_TO_TIMEFRAME[args.interval]
+
+    return ScalpSessionConfig(
+        name=f"backtest-{args.symbol}",
+        session_mode=args.mode,
+        underlying=args.symbol,
+        indicator_timeframe=tf,
+        primary_indicator=args.primary,
+        primary_params=primary_params,
+        confirm_indicator=args.confirm,
+        confirm_params=confirm_params,
+        sl_points=args.sl_points,
+        target_points=args.target_points,
+        trail_points=args.trail_points,
+        trail_percent=args.trail_percent,
+        trail_arm_points=args.trail_arm_points,
+        squareoff_time=args.squareoff,
+        max_trades=args.max_trades,
+        cooldown_seconds=args.cooldown,
+        quantity=args.quantity,
+    )
+
+
+async def _fetch_candles(symbol: str, interval: str, days: int) -> list[dict]:
+    client = init_client()
+    ohlcv = await client.get_historical_data(symbol, interval=interval, days=days)
+    if not ohlcv:
+        print_error(f"No historical data for {symbol} at {interval}")
+        sys.exit(1)
+    return [
+        {
+            "timestamp": c.timestamp, "open": c.open, "high": c.high,
+            "low": c.low, "close": c.close, "volume": c.volume,
+        }
+        for c in ohlcv
+    ]
+
+
+def _format_summary(r: ScalpBacktestResult) -> str:
+    lines: list[str] = []
+    add = lines.append
+    add("")
+    add(f"  Symbol:        {r.symbol}")
+    add(f"  Mode:          {r.session_mode}")
+    add(f"  Interval:      {r.interval}")
+    add(f"  Days tested:   {r.session_days} ({r.candle_count} candles)")
+    add("")
+    m = r.metrics
+    mn = r.metrics_net
+    add(f"  Trades:        {m['total_trades']}  "
+        f"({m['winners']}W / {m['losers']}L  {m['win_rate']}% win-rate)")
+    add(f"  Gross P&L:     ₹{m['net_pnl']:+,.2f}")
+    add(f"  Net P&L:       ₹{mn['net_pnl']:+,.2f}   "
+        f"(charges ₹{r.charges_total:,.2f}, slippage ₹{r.slippage_total:,.2f})")
+    add(f"  Best / worst:  ₹{m['best_trade']:+,.2f} / ₹{m['worst_trade']:+,.2f}")
+    add(f"  Max DD:        {m['max_drawdown_pct']}%")
+    add(f"  Sharpe:        {m['sharpe_ratio']}")
+    add(f"  Avg hold:      {m['avg_holding_minutes']} min")
+    add(f"  Expectancy:    ₹{m['expectancy']:+,.2f} per trade")
+    add("")
+    add("  Diagnostics:")
+    add(f"    Primary flips:         {r.primary_flips}")
+    add(f"    Confirm blocked:       {r.confirm_blocks}")
+    add(f"    Cooldown blocked:      {r.cooldown_blocks}")
+    add(f"    Max-trades blocked:    {r.max_trades_blocks}")
+    add(f"    Squareoff exits:       {r.squareoff_exits}")
+    ambig = r.intra_bar_ambiguity
+    total_trades = max(m["total_trades"], 1)
+    ambig_pct = 100.0 * ambig / total_trades
+    ambig_note = ""
+    if ambig_pct > 20:
+        ambig_note = "  ⚠️  high — results approximate, consider smaller --interval"
+    add(f"    Intra-bar ambiguity:   {ambig}/{m['total_trades']} "
+        f"({ambig_pct:.1f}%){ambig_note}")
+    add("")
+    add("  Exit reason breakdown:")
+    reasons: dict[str, int] = {}
+    for t in r.trades:
+        reasons[t.exit_reason] = reasons.get(t.exit_reason, 0) + 1
+    for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        add(f"    {reason:20s} {count}")
+    add("")
+    return "\n".join(lines)
+
+
+def _result_to_json(r: ScalpBacktestResult) -> dict:
+    def trade(t):
+        return {
+            "symbol": t.symbol,
+            "side": t.side,
+            "entry_price": t.entry_price,
+            "entry_time": str(t.entry_time),
+            "exit_price": t.exit_price,
+            "exit_time": str(t.exit_time),
+            "quantity": t.quantity,
+            "pnl": t.pnl,
+            "pnl_pct": t.pnl_pct,
+            "exit_reason": t.exit_reason,
+            "holding_minutes": t.holding_minutes,
+            "gross_pnl": getattr(t, "_gross_pnl", t.pnl),
+            "charges": getattr(t, "_charges_total", 0.0),
+        }
+    return {
+        "symbol": r.symbol,
+        "session_mode": r.session_mode,
+        "interval": r.interval,
+        "days": r.days,
+        "candle_count": r.candle_count,
+        "session_days": r.session_days,
+        "config": r.config,
+        "trades": [trade(t) for t in r.trades],
+        "metrics": r.metrics,
+        "metrics_net": r.metrics_net,
+        "charges_total": r.charges_total,
+        "slippage_total": r.slippage_total,
+        "diagnostics": {
+            "intra_bar_ambiguity": r.intra_bar_ambiguity,
+            "primary_flips": r.primary_flips,
+            "confirm_blocks": r.confirm_blocks,
+            "cooldown_blocks": r.cooldown_blocks,
+            "max_trades_blocks": r.max_trades_blocks,
+            "squareoff_exits": r.squareoff_exits,
+        },
+    }
+
+
+def main():
+    args = build_parser().parse_args()
+
+    # Fetch historical candles
+    candles = run_async(_fetch_candles(args.symbol, args.interval, args.days))
+
+    # Build config from CLI args
+    cfg = _build_config(args)
+
+    # Run backtest
+    try:
+        result = run_scalp_equity_backtest(
+            candles, cfg, symbol=args.symbol,
+            interval=args.interval, slippage_bps=args.slippage_bps,
+        )
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    if args.json:
+        print_json(_result_to_json(result))
+    else:
+        print(_format_summary(result))
+
+
+if __name__ == "__main__":
+    main()

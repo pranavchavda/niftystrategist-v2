@@ -1,0 +1,1 @@
+{"nodes": [{"id": "api_conversations", "label": "Conversations API", "file_type": "python", "source_file": "backend/api/conversations.py", "description": "REST endpoints for conversation management, forking, compaction, token usage"}], "edges": [], "hyperedges": []}

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "requirements_forecast", "label": "TimesFM Dependencies", "file_type": "text", "source_file": "backend/requirements-forecast.txt", "description": "Google TimesFM (price forecasting model), PyTorch backend for inference"}], "edges": [], "hyperedges": []}

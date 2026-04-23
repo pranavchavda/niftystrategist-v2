@@ -15,6 +15,11 @@ from strategies.templates import list_templates, get_template
 from backtesting.engine import BacktestEngine, run_backtest_for_day
 from backtesting.fno_engine import run_fno_backtest, LegTrade
 from backtesting.metrics import compute_metrics
+from backtesting.scalp_equity import (
+    run_scalp_equity_backtest,
+    ScalpBacktestResult,
+)
+from monitor.scalp_models import ScalpSessionConfig, SessionMode
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,36 @@ class FnOBacktestRequest(BaseModel):
     params: dict = {}
     days: int = 10
     interval: str = "5minute"
+
+
+class ScalpBacktestRequest(BaseModel):
+    """Scalp-style equity backtest request.
+
+    Mirrors ScalpSessionConfig so a live session can be pasted in, a
+    backtest run, and a "save as session" performed with zero field
+    remapping.
+    """
+    symbol: str
+    days: int = 30
+    interval: str = "5minute"
+    session_mode: str = "equity_intraday"
+
+    primary_indicator: str = "utbot"
+    primary_params: dict | None = None
+    confirm_indicator: str | None = None
+    confirm_params: dict | None = None
+    indicator_timeframe: str | None = None  # if unset, derived from interval
+
+    sl_points: float | None = None
+    target_points: float | None = None
+    trail_points: float | None = None
+    trail_percent: float | None = None
+    trail_arm_points: float | None = None
+    squareoff_time: str = "15:15"
+    max_trades: int = 20
+    cooldown_seconds: int = 60
+    quantity: int
+    slippage_bps: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +483,156 @@ async def api_run_fno_backtest(
         "day_results": day_summaries,
         "all_leg_trades": [_leg_trade_to_dict(lt) for lt in result.all_leg_trades],
     }
+
+
+_INTERVAL_TO_TIMEFRAME = {
+    "1minute": "1m", "3minute": "3m", "5minute": "5m", "10minute": "10m",
+    "15minute": "15m", "30minute": "30m", "day": "1d",
+}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/backtest/scalp — scalp-style equity backtest
+# ---------------------------------------------------------------------------
+
+def _scalp_trade_to_dict(t) -> dict:
+    return {
+        "symbol": t.symbol,
+        "side": t.side,
+        "entry_price": t.entry_price,
+        "entry_time": str(t.entry_time),
+        "exit_price": t.exit_price,
+        "exit_time": str(t.exit_time),
+        "quantity": t.quantity,
+        "pnl": t.pnl,
+        "pnl_pct": t.pnl_pct,
+        "exit_reason": t.exit_reason,
+        "holding_minutes": t.holding_minutes,
+        "gross_pnl": getattr(t, "_gross_pnl", t.pnl),
+        "charges": getattr(t, "_charges_total", 0.0),
+    }
+
+
+def _scalp_result_to_dict(r: ScalpBacktestResult) -> dict:
+    # Equity curve using net P&L per trade.
+    initial = r.config.get("quantity", 1) * (r.trades[0].entry_price if r.trades else 0)
+    initial = initial or 100_000
+    curve = [round(initial, 2)]
+    for t in r.trades:
+        curve.append(round(curve[-1] + t.pnl, 2))
+
+    return {
+        "symbol": r.symbol,
+        "session_mode": r.session_mode,
+        "interval": r.interval,
+        "days": r.days,
+        "candle_count": r.candle_count,
+        "session_days": r.session_days,
+        "config": r.config,
+        "trades": [_scalp_trade_to_dict(t) for t in r.trades],
+        "metrics": r.metrics,
+        "metrics_net": r.metrics_net,
+        "charges_total": r.charges_total,
+        "slippage_total": r.slippage_total,
+        "equity_curve": curve,
+        "initial_capital": initial,
+        "diagnostics": {
+            "intra_bar_ambiguity": r.intra_bar_ambiguity,
+            "primary_flips": r.primary_flips,
+            "confirm_blocks": r.confirm_blocks,
+            "cooldown_blocks": r.cooldown_blocks,
+            "max_trades_blocks": r.max_trades_blocks,
+            "squareoff_exits": r.squareoff_exits,
+        },
+    }
+
+
+@router.post("/scalp")
+async def api_run_scalp_backtest(
+    body: ScalpBacktestRequest,
+    user: User = Depends(get_current_user),
+):
+    """Run a scalp-style equity backtest using the same state machine as the
+    live scalper. Accepts the same config shape as a ScalpSession so results
+    can be converted directly into a live session."""
+    if body.session_mode not in (
+        SessionMode.EQUITY_INTRADAY.value, SessionMode.EQUITY_SWING.value,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="session_mode must be equity_intraday or equity_swing",
+        )
+    if body.interval not in _INTERVAL_TO_TIMEFRAME:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported interval: {body.interval}",
+        )
+    if body.quantity <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be > 0")
+
+    token = await get_user_upstox_token(user.id)
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Upstox token not available. Authenticate via Settings.",
+        )
+
+    # Fetch historical candles
+    try:
+        client = UpstoxClient(access_token=token, user_id=user.id)
+        ohlcv = await client.get_historical_data(
+            body.symbol, interval=body.interval, days=body.days,
+        )
+    except Exception as e:
+        logger.error(f"scalp backtest: failed to fetch candles: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch historical data: {e}")
+
+    if not ohlcv:
+        raise HTTPException(status_code=404, detail=f"No historical data for {body.symbol}")
+
+    candles = [
+        {
+            "timestamp": c.timestamp, "open": c.open, "high": c.high,
+            "low": c.low, "close": c.close, "volume": c.volume,
+        }
+        for c in ohlcv
+    ]
+
+    # Build config
+    tf = body.indicator_timeframe or _INTERVAL_TO_TIMEFRAME[body.interval]
+    cfg = ScalpSessionConfig(
+        name=f"backtest-{body.symbol}",
+        user_id=user.id,
+        session_mode=body.session_mode,
+        underlying=body.symbol,
+        indicator_timeframe=tf,
+        primary_indicator=body.primary_indicator,
+        primary_params=body.primary_params,
+        confirm_indicator=body.confirm_indicator,
+        confirm_params=body.confirm_params,
+        sl_points=body.sl_points,
+        target_points=body.target_points,
+        trail_points=body.trail_points,
+        trail_percent=body.trail_percent,
+        trail_arm_points=body.trail_arm_points,
+        squareoff_time=body.squareoff_time,
+        max_trades=body.max_trades,
+        cooldown_seconds=body.cooldown_seconds,
+        quantity=body.quantity,
+    )
+
+    # Run — offload to a worker thread so the sync loop doesn't block the event loop.
+    try:
+        result = await asyncio.to_thread(
+            run_scalp_equity_backtest,
+            candles, cfg,
+            symbol=body.symbol, interval=body.interval,
+            slippage_bps=body.slippage_bps,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return _scalp_result_to_dict(result)
 
 
 def _set_fno_sl_prices(

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "monitor_daemon", "label": "Monitor Daemon", "file_type": "python", "source_file": "backend/monitor/daemon.py", "description": "Separate process evaluating user-defined trigger rules and executing trading actions"}], "edges": [], "hyperedges": []}

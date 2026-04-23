@@ -1,0 +1,1 @@
+{"nodes": [{"id": "service_upstox_client", "label": "Upstox Client Service", "file_type": "python", "source_file": "backend/services/upstox_client.py", "description": "Wrapper around Upstox SDK with quote, order, portfolio, holdings, trades endpoints"}], "edges": [], "hyperedges": []}

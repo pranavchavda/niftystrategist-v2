@@ -1,0 +1,1 @@
+{"nodes": [{"id": "cli_nf_strategy", "label": "nf-strategy Tool", "file_type": "python", "source_file": "backend/cli-tools/nf-strategy", "description": "Deploy strategy templates (orb, breakout, mean-reversion, scalp) as linked monitor rules"}], "edges": [], "hyperedges": []}

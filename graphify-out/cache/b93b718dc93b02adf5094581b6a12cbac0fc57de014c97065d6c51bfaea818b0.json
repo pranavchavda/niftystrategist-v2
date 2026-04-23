@@ -1,0 +1,1 @@
+{"nodes": [{"id": "monitor_stream_connection", "label": "WebSocket Connection Manager", "file_type": "python", "source_file": "backend/monitor/streams/connection.py", "description": "Exponential backoff reconnection, auth failure detection, TOTP refresh callback"}], "edges": [], "hyperedges": []}

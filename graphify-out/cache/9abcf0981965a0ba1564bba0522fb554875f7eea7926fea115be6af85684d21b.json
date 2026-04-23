@@ -1,0 +1,1 @@
+{"nodes": [{"id": "cli_nf_portfolio", "label": "nf-portfolio Tool", "file_type": "python", "source_file": "backend/cli-tools/nf-portfolio", "description": "View holdings, positions, P&L, position size calculator"}], "edges": [], "hyperedges": []}

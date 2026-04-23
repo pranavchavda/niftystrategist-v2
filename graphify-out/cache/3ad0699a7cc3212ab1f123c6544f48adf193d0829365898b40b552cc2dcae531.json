@@ -1,0 +1,1 @@
+{"nodes": [{"id": "monitor_user_manager", "label": "User Manager", "file_type": "python", "source_file": "backend/monitor/user_manager.py", "description": "Per-user sessions managing WebSocket streams, candle buffers, indicator state"}], "edges": [], "hyperedges": []}

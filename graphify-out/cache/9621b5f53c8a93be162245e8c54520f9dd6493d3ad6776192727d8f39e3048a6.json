@@ -1,0 +1,1 @@
+{"nodes": [{"id": "cli_nf_options", "label": "nf-options Tool", "file_type": "python", "source_file": "backend/cli-tools/nf-options", "description": "Option chain, live chain with greeks, place/sell F&O orders, trade planner"}], "edges": [], "hyperedges": []}

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "frontend_charts", "label": "Charts Route (Frontend)", "file_type": "typescript", "source_file": "frontend-v2/app/routes/charts.tsx", "description": "TradingView-style UI with lightweight-charts, symbol search, indicator panel, synchronized panes"}], "edges": [], "hyperedges": []}

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "chat_base_agent", "label": "Base Agent", "file_type": "python", "source_file": "backend/agents/base_agent.py", "description": "Abstract base class supporting 4 LLM providers: Anthropic, OpenRouter, Gateway, OpenAI"}], "edges": [], "hyperedges": []}

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "monitor_candle_buffer", "label": "Candle Buffer", "file_type": "python", "source_file": "backend/monitor/candle_buffer.py", "description": "Aggregates price ticks into OHLCV candles with configurable timeframe"}], "edges": [], "hyperedges": []}

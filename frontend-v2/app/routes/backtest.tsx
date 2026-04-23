@@ -84,7 +84,47 @@ interface BacktestResult {
   all_leg_trades?: LegTrade[];
   total_charges?: number;
   days_traded?: number;
+  // Scalp-replay extras
+  metrics_net?: BacktestMetrics;
+  charges_total?: number;
+  slippage_total?: number;
+  diagnostics?: {
+    intra_bar_ambiguity: number;
+    primary_flips: number;
+    confirm_blocks: number;
+    cooldown_blocks: number;
+    max_trades_blocks: number;
+    squareoff_exits: number;
+  };
+  session_mode?: string;
+  candle_count?: number;
+  session_days?: number;
 }
+
+const SCALP_PRIMARY_INDICATORS = [
+  { value: 'utbot', label: 'UT Bot (ATR trailing stop)',
+    defaultParams: '{"period":10,"sensitivity":1.0}' },
+  { value: 'ema_crossover', label: 'EMA Crossover',
+    defaultParams: '{"fast":9,"slow":21}' },
+  { value: 'supertrend', label: 'Supertrend',
+    defaultParams: '{"period":10,"multiplier":3.0}' },
+  { value: 'halftrend', label: 'HalfTrend',
+    defaultParams: '{"amplitude":2,"atr_period":100}' },
+  { value: 'ssl_hybrid', label: 'SSL Hybrid',
+    defaultParams: '{"period":10}' },
+  { value: 'macd', label: 'MACD Histogram', defaultParams: '{}' },
+];
+
+const SCALP_CONFIRM_INDICATORS = [
+  { value: '', label: '(none)' },
+  { value: 'qqe_mod', label: 'QQE MOD', defaultParams: '{"rsi_period":6,"smoothing":5}' },
+  { value: 'linear_regression', label: 'Linear Regression',
+    defaultParams: '{"period":20,"output":"slope"}' },
+  { value: 'rsi', label: 'RSI', defaultParams: '{"period":14}' },
+  { value: 'bollinger', label: 'Bollinger', defaultParams: '{"period":20,"band":"pctb"}' },
+  { value: 'renko', label: 'Renko', defaultParams: '{"brick_size":10.0}' },
+  { value: 'vwap', label: 'VWAP', defaultParams: '{}' },
+];
 
 export function clientLoader() {
   requirePermission('settings.access');
@@ -327,7 +367,10 @@ function MetricCard({
 export default function BacktestPage() {
   const { authToken } = useOutletContext<AuthContext>();
 
-  // Config state
+  // Mode toggle: template-based vs scalp-replay
+  const [mode, setMode] = useState<'templates' | 'scalp'>('templates');
+
+  // Template-mode state
   const [templates, setTemplates] = useState<BacktestTemplate[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [symbol, setSymbol] = useState('');
@@ -336,6 +379,22 @@ export default function BacktestPage() {
   const [params, setParams] = useState<Record<string, any>>({});
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Scalp-mode state
+  const [scalpSessionMode, setScalpSessionMode] = useState<'equity_intraday' | 'equity_swing'>('equity_intraday');
+  const [scalpPrimary, setScalpPrimary] = useState('utbot');
+  const [scalpPrimaryParams, setScalpPrimaryParams] = useState(SCALP_PRIMARY_INDICATORS[0].defaultParams);
+  const [scalpConfirm, setScalpConfirm] = useState('');
+  const [scalpConfirmParams, setScalpConfirmParams] = useState('');
+  const [scalpSL, setScalpSL] = useState<string>('');
+  const [scalpTarget, setScalpTarget] = useState<string>('');
+  const [scalpTrailPoints, setScalpTrailPoints] = useState<string>('');
+  const [scalpTrailArm, setScalpTrailArm] = useState<string>('');
+  const [scalpSquareoff, setScalpSquareoff] = useState('15:15');
+  const [scalpQuantity, setScalpQuantity] = useState<string>('10');
+  const [scalpMaxTrades, setScalpMaxTrades] = useState<string>('20');
+  const [scalpCooldown, setScalpCooldown] = useState<string>('60');
+  const [scalpSlippageBps, setScalpSlippageBps] = useState<string>('0');
 
   // Results
   const [result, setResult] = useState<BacktestResult | null>(null);
@@ -411,6 +470,90 @@ export default function BacktestPage() {
     }
   };
 
+  const runScalpBacktest = async () => {
+    setRunning(true);
+    setError(null);
+    setResult(null);
+
+    const parseJson = (s: string, fallback: any): any => {
+      if (!s.trim()) return fallback;
+      try {
+        return JSON.parse(s);
+      } catch {
+        return null;
+      }
+    };
+    const primaryParams = parseJson(scalpPrimaryParams, null);
+    if (scalpPrimaryParams.trim() && primaryParams === null) {
+      setError('Primary params must be valid JSON');
+      setRunning(false);
+      return;
+    }
+    const confirmParams = scalpConfirm
+      ? parseJson(scalpConfirmParams, {}) : null;
+    if (scalpConfirm && scalpConfirmParams.trim() && confirmParams === null) {
+      setError('Confirm params must be valid JSON');
+      setRunning(false);
+      return;
+    }
+
+    const toNum = (s: string): number | null =>
+      s.trim() === '' ? null : Number(s);
+
+    const body: Record<string, any> = {
+      symbol,
+      days,
+      interval,
+      session_mode: scalpSessionMode,
+      primary_indicator: scalpPrimary,
+      primary_params: primaryParams,
+      confirm_indicator: scalpConfirm || null,
+      confirm_params: confirmParams,
+      sl_points: toNum(scalpSL),
+      target_points: toNum(scalpTarget),
+      trail_points: toNum(scalpTrailPoints),
+      trail_arm_points: toNum(scalpTrailArm),
+      squareoff_time: scalpSquareoff,
+      max_trades: parseInt(scalpMaxTrades) || 20,
+      cooldown_seconds: parseInt(scalpCooldown) || 0,
+      quantity: parseInt(scalpQuantity) || 0,
+      slippage_bps: parseFloat(scalpSlippageBps) || 0,
+    };
+
+    try {
+      const res = await fetch('/api/backtest/scalp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.detail || 'Backtest failed');
+        return;
+      }
+      setResult(data);
+    } catch (e: any) {
+      setError(e.message || 'Network error');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const onScalpPrimaryChange = (value: string) => {
+    setScalpPrimary(value);
+    const spec = SCALP_PRIMARY_INDICATORS.find(i => i.value === value);
+    setScalpPrimaryParams(spec?.defaultParams ?? '{}');
+  };
+
+  const onScalpConfirmChange = (value: string) => {
+    setScalpConfirm(value);
+    const spec = SCALP_CONFIRM_INDICATORS.find(i => i.value === value);
+    setScalpConfirmParams(spec?.defaultParams ?? '');
+  };
+
   const updateParam = (key: string, value: any) => {
     setParams(prev => ({ ...prev, [key]: value }));
   };
@@ -433,12 +576,41 @@ export default function BacktestPage() {
           </div>
         </div>
 
+        {/* Mode tabs */}
+        <div className="mb-6 flex items-center gap-1 rounded-lg bg-zinc-100 dark:bg-zinc-800/50 p-1 w-fit">
+          <button
+            type="button"
+            onClick={() => { setMode('templates'); setResult(null); setError(null); }}
+            className={`px-4 py-1.5 text-sm font-medium rounded-md transition ${
+              mode === 'templates'
+                ? 'bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-100 shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+            }`}
+          >
+            Strategy Templates
+          </button>
+          <button
+            type="button"
+            onClick={() => { setMode('scalp'); setResult(null); setError(null); }}
+            className={`px-4 py-1.5 text-sm font-medium rounded-md transition ${
+              mode === 'scalp'
+                ? 'bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-100 shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+            }`}
+          >
+            Scalp Replay
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Config Panel */}
           <div className="lg:col-span-1">
             <div className="rounded-xl border border-zinc-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 p-5 sticky top-8">
-              <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">Configuration</h2>
+              <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">
+                {mode === 'templates' ? 'Configuration' : 'Scalp Replay Config'}
+              </h2>
 
+              {mode === 'templates' && (
               <div className="space-y-4">
                 {/* Template */}
                 <div>
@@ -623,6 +795,198 @@ export default function BacktestPage() {
                   </div>
                 )}
               </div>
+              )}
+
+              {mode === 'scalp' && (
+              <div className="space-y-4">
+                {/* Symbol */}
+                <div>
+                  <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Symbol</label>
+                  <Input
+                    type="text"
+                    value={symbol}
+                    onChange={e => setSymbol(e.target.value.toUpperCase())}
+                    placeholder="e.g. RELIANCE, HDFCBANK"
+                  />
+                </div>
+
+                {/* Session mode */}
+                <div>
+                  <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Session Mode</label>
+                  <select
+                    className={selectClassName}
+                    value={scalpSessionMode}
+                    onChange={e => setScalpSessionMode(e.target.value as any)}
+                  >
+                    <option value="equity_intraday">Intraday (squareoff at cutoff)</option>
+                    <option value="equity_swing">Swing / Delivery (hold across days)</option>
+                  </select>
+                </div>
+
+                {/* Days */}
+                <div>
+                  <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Lookback (days)</label>
+                  <Input
+                    type="number"
+                    value={days}
+                    onChange={e => setDays(parseInt(e.target.value) || 30)}
+                    min={1}
+                    max={365}
+                  />
+                  <p className="mt-1 text-xs text-zinc-400">1-minute bars cap at ~30 days. Daily bars go back much further.</p>
+                </div>
+
+                {/* Interval */}
+                <div>
+                  <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Candle Interval</label>
+                  <select
+                    className={selectClassName}
+                    value={interval}
+                    onChange={e => setInterval_(e.target.value)}
+                  >
+                    <option value="1minute">1 minute</option>
+                    <option value="5minute">5 minutes</option>
+                    <option value="15minute">15 minutes</option>
+                    <option value="30minute">30 minutes</option>
+                    <option value="day">Daily</option>
+                  </select>
+                </div>
+
+                {/* Indicator config */}
+                <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
+                  <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-3">Signal</h3>
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Primary Indicator</label>
+                    <select
+                      className={selectClassName}
+                      value={scalpPrimary}
+                      onChange={e => onScalpPrimaryChange(e.target.value)}
+                    >
+                      {SCALP_PRIMARY_INDICATORS.map(i => (
+                        <option key={i.value} value={i.value}>{i.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Primary Params (JSON)</label>
+                    <textarea
+                      className={`${selectClassName} font-mono text-xs`}
+                      rows={2}
+                      value={scalpPrimaryParams}
+                      onChange={e => setScalpPrimaryParams(e.target.value)}
+                    />
+                  </div>
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                      Confirm Indicator
+                      <InfoTip text="Optional filter — must agree with primary flip direction before entry. Leave as (none) to skip." />
+                    </label>
+                    <select
+                      className={selectClassName}
+                      value={scalpConfirm}
+                      onChange={e => onScalpConfirmChange(e.target.value)}
+                    >
+                      {SCALP_CONFIRM_INDICATORS.map(i => (
+                        <option key={i.value} value={i.value}>{i.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {scalpConfirm && (
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Confirm Params (JSON)</label>
+                      <textarea
+                        className={`${selectClassName} font-mono text-xs`}
+                        rows={2}
+                        value={scalpConfirmParams}
+                        onChange={e => setScalpConfirmParams(e.target.value)}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Exits */}
+                <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
+                  <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-3">Exits</h3>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">SL Points</label>
+                      <Input type="number" value={scalpSL} onChange={e => setScalpSL(e.target.value)} placeholder="optional" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Target Points</label>
+                      <Input type="number" value={scalpTarget} onChange={e => setScalpTarget(e.target.value)} placeholder="optional" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Trail Arm</label>
+                      <Input type="number" value={scalpTrailArm} onChange={e => setScalpTrailArm(e.target.value)} placeholder="profit pts" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Trail Points</label>
+                      <Input type="number" value={scalpTrailPoints} onChange={e => setScalpTrailPoints(e.target.value)} placeholder="giveback" />
+                    </div>
+                  </div>
+                  {scalpSessionMode === 'equity_intraday' && (
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Squareoff Time (IST)</label>
+                      <Input type="text" value={scalpSquareoff} onChange={e => setScalpSquareoff(e.target.value)} placeholder="HH:MM" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Sizing + discipline */}
+                <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
+                  <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-3">Sizing & Discipline</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Quantity</label>
+                      <Input type="number" value={scalpQuantity} onChange={e => setScalpQuantity(e.target.value)} min={1} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Max Trades / Day</label>
+                      <Input type="number" value={scalpMaxTrades} onChange={e => setScalpMaxTrades(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Cooldown (s)</label>
+                      <Input type="number" value={scalpCooldown} onChange={e => setScalpCooldown(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                        Slippage (bps)
+                        <InfoTip text="Fill haircut in basis points. 1 bp = 0.01%. Default 0 for v1." />
+                      </label>
+                      <Input type="number" value={scalpSlippageBps} onChange={e => setScalpSlippageBps(e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Run Button */}
+                <Button
+                  color="amber"
+                  className="w-full justify-center mt-2"
+                  onClick={runScalpBacktest}
+                  disabled={running || !symbol || !scalpQuantity}
+                >
+                  {running ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span className="ml-2">Running replay...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4" />
+                      <span className="ml-2">Run Scalp Replay</span>
+                    </>
+                  )}
+                </Button>
+
+                {error && (
+                  <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                    {error}
+                  </div>
+                )}
+              </div>
+              )}
             </div>
           </div>
 
@@ -666,13 +1030,23 @@ export default function BacktestPage() {
                     icon={Target}
                     color={(m.win_rate ?? 0) >= 50 ? 'emerald' : 'red'}
                   />
-                  <MetricCard
-                    label="Net P&L"
-                    value={formatINR(m.net_pnl ?? 0)}
-                    subValue={`${(m.return_pct ?? 0) >= 0 ? '+' : ''}${(m.return_pct ?? 0).toFixed(2)}%`}
-                    icon={(m.net_pnl ?? 0) >= 0 ? TrendingUp : TrendingDown}
-                    color={(m.net_pnl ?? 0) >= 0 ? 'emerald' : 'red'}
-                  />
+                  {(() => {
+                    // When result.metrics_net is present (scalp replay), prefer its net P&L in
+                    // the headline card so Net actually means net-of-charges. Otherwise fall
+                    // back to metrics.net_pnl (template backtests don't model charges).
+                    const netSource = result.metrics_net ?? m;
+                    const netVal = netSource.net_pnl ?? 0;
+                    const retPct = netSource.return_pct ?? m.return_pct ?? 0;
+                    return (
+                      <MetricCard
+                        label="Net P&L"
+                        value={formatINR(netVal)}
+                        subValue={`${retPct >= 0 ? '+' : ''}${retPct.toFixed(2)}%`}
+                        icon={netVal >= 0 ? TrendingUp : TrendingDown}
+                        color={netVal >= 0 ? 'emerald' : 'red'}
+                      />
+                    );
+                  })()}
                   <MetricCard
                     label="Profit Factor"
                     value={m.profit_factor === 'inf' || m.profit_factor === Infinity ? '--' : Number(m.profit_factor ?? 0).toFixed(2)}
@@ -733,6 +1107,96 @@ export default function BacktestPage() {
                   <div className="rounded-xl border border-zinc-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 p-5">
                     <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-3">Equity Curve</h3>
                     <EquityCurve data={result.equity_curve} initialCapital={result.initial_capital} />
+                  </div>
+                )}
+
+                {/* Scalp Replay: gross vs net + diagnostics */}
+                {result.diagnostics && result.metrics_net && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="rounded-xl border border-zinc-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 p-5">
+                      <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-3">
+                        Gross vs Net P&L
+                      </h3>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500 dark:text-zinc-400">Gross P&L</span>
+                          <span className={`font-mono font-semibold ${result.metrics.net_pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                            {formatINR(result.metrics.net_pnl ?? 0)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-zinc-400">
+                          <span>Charges (round-trip)</span>
+                          <span className="font-mono">−{formatINR(result.charges_total ?? 0)}</span>
+                        </div>
+                        {(result.slippage_total ?? 0) > 0 && (
+                          <div className="flex justify-between text-zinc-400">
+                            <span>Slippage</span>
+                            <span className="font-mono">−{formatINR(result.slippage_total ?? 0)}</span>
+                          </div>
+                        )}
+                        <div className="border-t border-zinc-200 dark:border-zinc-700 pt-2 flex justify-between">
+                          <span className="text-zinc-600 dark:text-zinc-300 font-medium">Net P&L</span>
+                          <span className={`font-mono font-bold ${result.metrics_net.net_pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                            {formatINR(result.metrics_net.net_pnl ?? 0)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-zinc-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 p-5">
+                      <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-3">
+                        Replay Diagnostics
+                      </h3>
+                      <div className="space-y-1.5 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500 dark:text-zinc-400">Primary flips</span>
+                          <span className="font-mono text-zinc-700 dark:text-zinc-300">{result.diagnostics.primary_flips}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500 dark:text-zinc-400">Blocked by confirm</span>
+                          <span className="font-mono text-zinc-700 dark:text-zinc-300">{result.diagnostics.confirm_blocks}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500 dark:text-zinc-400">Blocked by cooldown</span>
+                          <span className="font-mono text-zinc-700 dark:text-zinc-300">{result.diagnostics.cooldown_blocks}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500 dark:text-zinc-400">Blocked by max-trades</span>
+                          <span className="font-mono text-zinc-700 dark:text-zinc-300">{result.diagnostics.max_trades_blocks}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500 dark:text-zinc-400">Squareoff exits</span>
+                          <span className="font-mono text-zinc-700 dark:text-zinc-300">{result.diagnostics.squareoff_exits}</span>
+                        </div>
+                        {(() => {
+                          const total = result.trades?.length ?? 0;
+                          const ambig = result.diagnostics!.intra_bar_ambiguity;
+                          const pct = total > 0 ? (100 * ambig / total) : 0;
+                          const warn = pct > 20;
+                          return (
+                            <div className="flex justify-between items-center">
+                              <span className="text-zinc-500 dark:text-zinc-400">Intra-bar ambiguity</span>
+                              <span className={`font-mono ${warn ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-zinc-700 dark:text-zinc-300'}`}>
+                                {ambig}/{total} ({pct.toFixed(1)}%)
+                              </span>
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const total = result.trades?.length ?? 0;
+                          const ambig = result.diagnostics!.intra_bar_ambiguity;
+                          const pct = total > 0 ? (100 * ambig / total) : 0;
+                          if (pct > 20) {
+                            return (
+                              <div className="mt-2 p-2 text-xs rounded bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/50">
+                                ⚠️ High intra-bar ambiguity — results approximate. Consider a smaller interval.
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+                    </div>
                   </div>
                 )}
 

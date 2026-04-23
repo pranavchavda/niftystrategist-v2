@@ -1,0 +1,1 @@
+{"nodes": [{"id": "cli_nf_backtest", "label": "nf-backtest Tool", "file_type": "python", "source_file": "backend/cli-tools/nf-backtest", "description": "Backtest strategy templates against historical data"}], "edges": [], "hyperedges": []}
