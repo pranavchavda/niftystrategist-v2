@@ -151,7 +151,7 @@ SONAR_MODELS = {"sonar", "sonar-pro", "sonar-reasoning", "sonar-reasoning-pro", 
 AGENT_PRESETS = {"fast-search", "pro-search", "deep-research"}
 
 # Default frontier model for the Agent API (highest accuracy third-party model)
-DEFAULT_AGENT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+DEFAULT_AGENT_MODEL = "google/gemini-3-flash-preview"
 
 # Default Sonar model (highest accuracy Perplexity-native model)
 DEFAULT_SONAR_MODEL = "sonar-pro"
@@ -297,9 +297,11 @@ Please include:
 2. Overall market sentiment and analysis
 3. Key market drivers and risks
 4. Sectors or companies most affected
+5. top 5 short and 5 long candidates for intraday trading with reasoning base on news signals
 
-Focus on the most significant and recent developments. Exclude anything outside the time window. Do NOT include investment recommendations, trade advice, buy/sell calls, or allocation suggestions — this briefing is factual context only."""
 
+Focus on the most significant and recent developments. this briefing is factual context only, not opinion, and should not be construed as investment advice or recommendations. The agent will use this information to make trading decisions, so it is important that the information is accurate and up-to-date. It should also be comprehensive and cover all relevant aspects of the news.
+"""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -418,8 +420,14 @@ Please include:
 2. Overall market sentiment and analysis
 3. Key market drivers and risks
 4. Sectors or companies most affected
+5. top 5 short and 5 long candidates for intraday trading with reasoning base on news signals
 
-Focus on the most significant and recent developments. Exclude anything outside the time window. Do NOT include investment recommendations, trade advice, buy/sell calls, or allocation suggestions — this briefing is factual context only."""
+
+The purpose of this briefing is to provide a comprehensive roundup of news that will help the NiftyStrategist trading agent make informed decisions for today's intraday trading.
+
+Focus on the most significant and recent developments. this briefing is factual context only, not opinion, and should not be construed as investment advice or recommendations. The agent will use this information to make trading decisions, so it is important that the information is accurate and up-to-date. It should also be comprehensive and cover all relevant aspects of the news.
+
+"""
 
         headers = {
             "accept": "application/json",
