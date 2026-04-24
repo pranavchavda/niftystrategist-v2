@@ -1,0 +1,98 @@
+// Bombay-isms for the homepage greeting. Four flavors, ~20 each.
+// Each template contains `{name}` — caller substitutes the user's name.
+
+const GREETINGS: string[] = [
+  // Bom-glish (D-Street English)
+  "Opening bell's live, {name} — grab the tape!",
+  "{name}, screens green, lassi on ice",
+  "Bulls stampeding down Mint Road, {name}",
+  "{name}, FIIs cooking something — smell it?",
+  "Tape's tight, {name} — where's the breakout?",
+  "Chai, charts, chaos — welcome back {name}",
+  "{name}, BSE bell just rang — game on",
+  "Nariman Point's already caffeinated, {name}",
+  "{name}, long the dip or short the rip?",
+  "Volume humming, {name} — the tape's whispering",
+  "{name}, Nifty's flirting with resistance again",
+  "BKC's in before you, {name} — catch up!",
+  "Tape reader mode: ON, {name}",
+  "{name}, bulls bulling, bears lurking",
+  "D-Street's buzzing, {name} — your move",
+  "{name}, let's hunt some alpha today",
+  "Ticker's waiting, {name} — hop on",
+  "{name}, the tape never lies — only traders do",
+  "Circuits, corrections, and coffee, {name}",
+  "{name}, bhav bhagwan hai — respect the tape",
+
+  // Bambaiya Hindi
+  "Aye {name}! Apun aa gaya, bazaar bhi ready",
+  "Kya {name} bhidu, aaj ka scene kya hai?",
+  "{name} mamu, Nifty full-tight chal raha hai",
+  "Bole toh {name}, aaj paisa banega bhai",
+  "{name}, charts dekh — item hai aaj",
+  "Arre {name}, FIIs ka mood kharab lag raha",
+  "{name}, circuit laga toh samajhna apun ka din",
+  "Aye {name}, Dalal Street pe aag lagi hai aaj",
+  "{name} mamu, long maarega ya short?",
+  "Kya bolta {name}, bhav nikla kya?",
+  "{name}, tapri pe chai, screen pe green",
+  "Full tej hai {name}, kud ja bindaas",
+  "{name} bhai, bazaar ka mood set hai aaj",
+  "Aaj ka bhav bata {name}, kya chalu hai?",
+  "{name}, apun ki trade, apun ka rule",
+  "Kya re {name}, kitna kamaya kal?",
+  "{name}, bazaar bolta hai, apun sunta hai",
+  "Arre {name}, Nifty ne aankh mari aaj!",
+  "{name} bhidu, stop-loss laga ke aaya na?",
+  "Seedha baat {name} — tape padh, trade kar",
+
+  // Mum-rathi (Mumbai Marathi)
+  "Kay {name}, bazaar madhe kay gondhal aaj?",
+  "Chaha ghya {name}, chart baghha, trade kara",
+  "Namaskar {name}, Nifty kay mhanto aaj?",
+  "{name} dada, tej ki mandi cha mood?",
+  "Bhau {name}, portfolio cha kay scene?",
+  "Arre {name}, bulls yetahet building madhe!",
+  "{name}, aaj cha plan kay — long ki short?",
+  "Kay chalu {name}? Bazaar garam ki thanda?",
+  "Chala {name}, Dalal Street varti dhamaal!",
+  "{name} mitra, FIIs kay karataat aaj?",
+  "{name}, circuit lagla tar thevu ka?",
+  "Apla bhav yeyil {name}, dhiraane ghya",
+  "Trade karuya {name}, paisa kamavuya aaj",
+  "Kay re {name}, tape vachta ka?",
+  "{name}, screen varti laksh dya dada",
+  "Chalu zhaalay {name}, jau dya!",
+  "Opening bell vajli {name} — sajja",
+  "{name} bhau, bhav bolto ka aaj?",
+  "Kay bolta {name}, Nifty madhe kay majja?",
+  "{name}, chaha-charts-crore — ha cha kram",
+
+  // Bom-jrati (Bombay Gujarati)
+  "Kem cho {name}? Aaje no dhando kevo?",
+  "{name}, bajaar ma su chalu che aaje?",
+  "Majama {name}? Nifty no mood kevo?",
+  "Aavo {name}, vyapar karvaye aaje",
+  "{name} bhai, aaje game chhe — taiyaar?",
+  "Cha piyo {name}, chart jovo, trade karo",
+  "Arre {name}, bulls aavi gaya market ma",
+  "{name} bhai, dhando tagdo lage che aaje",
+  "Kem {name}, teji ke mandi no mood?",
+  "{name}, FII-DII su khichdi pakaave che?",
+  "{name}, circuit lage toh kehjo haan",
+  "{name} bhai, Dalal Street par dhamaal che",
+  "Chaalo {name}, paisa kamaviye aaje",
+  "{name}, bhav nikle toh avaj karjo",
+  "Kem cho {name}? Long ke short aaje?",
+  "Opening bell vaagi gayo {name} — taiyaar?",
+  "{name} bhai, bajaar garam che aaje",
+  "{name}, screener ma su dekhaye che bhai?",
+  "Vepaar no divas {name} — kaam par lago",
+  "{name}, tape vaanchta aavde che ne?",
+];
+
+export function pickBombayGreeting(name: string): string {
+  const firstName = (name || "").trim().split(/\s+/)[0] || "trader";
+  const template = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+  return template.replace("{name}", firstName);
+}

@@ -24,6 +24,7 @@ import {
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
 import { decodeJWT } from '../utils/route-permissions';
+import { pickBombayGreeting } from '../utils/bombay-greetings';
 
 // Logo handled inline with ArrowTrendingUpIcon
 
@@ -165,13 +166,8 @@ export default function Index() {
     return payload?.permissions || [];
   }, [userName]);
 
-  // Greeting logic
-  const greeting = useMemo(() => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Good morning';
-    if (hour < 18) return 'Good afternoon';
-    return 'Good evening';
-  }, []);
+  // Bombay greeting — random pick per session
+  const greeting = useMemo(() => pickBombayGreeting(userName || 'trader'), [userName]);
 
   // Filter sections
   const visibleSections = useMemo(() => {
@@ -279,7 +275,7 @@ export default function Index() {
             <div className="flex flex-col gap-6 md:flex-row md:items-end justify-between">
               <div>
                 <h1 className="text-3xl sm:text-4xl font-bold tracking-tight bg-gradient-to-t from-zinc-900 to-zinc-500 dark:from-white dark:to-zinc-400 bg-clip-text text-transparent mb-2">
-                  {greeting}, {userName}.
+                  {greeting}
                 </h1>
                 {!isPendingActivation && (
                   <p className="mt-2 text-lg text-zinc-500 dark:text-zinc-400">
