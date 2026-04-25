@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Optional
@@ -22,6 +23,10 @@ from fastapi.responses import StreamingResponse
 
 from auth import User, get_current_user
 from services.chart_overlays import compute_overlays, OVERLAY_COMPUTERS
+from services.chart_market_stream import (
+    TIMEFRAME_TO_MINUTES,
+    get_chart_stream,
+)
 from services.instruments_cache import (
     search_symbols,
     search_indices,
@@ -175,26 +180,229 @@ async def charts_indicators(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _resolve_stream_backend(requested: Optional[str]) -> str:
+    """Resolve which streaming backend to use for this request.
+
+    Priority: query param > env var > "auto".
+    "auto" picks "ws" if the chart stream singleton is healthy, else "poll".
+    """
+    raw = (requested or os.getenv("CHARTS_STREAM_BACKEND", "auto") or "auto").lower()
+    if raw not in ("auto", "ws", "poll"):
+        raw = "auto"
+    if raw == "auto":
+        cs = get_chart_stream()
+        if cs is not None and cs.healthy:
+            return "ws"
+        return "poll"
+    if raw == "ws":
+        cs = get_chart_stream()
+        if cs is None or not cs.healthy:
+            # Caller asked for ws but it's unavailable; degrade silently.
+            return "poll"
+    return raw
+
+
+async def _stream_via_ws(
+    request: Request, sym: str, instrument_key: str, timeframe: str
+):
+    """SSE generator backed by the shared analytics-token WebSocket.
+
+    Emits ticks as `data:` frames and (for intraday timeframes) server-built
+    OHLC bars as `event: candle` frames. Frontend can consume either or
+    both — bars-only is cleanest, but ticks remain useful for last-price
+    labels and the existing client-side fold fallback.
+    """
+    cs = get_chart_stream()
+    assert cs is not None  # guarded by _resolve_stream_backend
+
+    tick_q = await cs.subscribe_ticks(instrument_key)
+    candle_q: Optional[asyncio.Queue] = None
+    if timeframe in TIMEFRAME_TO_MINUTES:
+        candle_q = await cs.subscribe_candles(instrument_key, timeframe)
+
+    yield (
+        f"event: ready\n"
+        f"data: {json.dumps({'symbol': sym, 'instrument_key': instrument_key, 'timeframe': timeframe, 'backend': 'ws', 'server_candles': candle_q is not None})}\n\n"
+    ).encode()
+
+    async def _next_event():
+        # Wait for either a tick or a candle, whichever arrives first.
+        getters = [asyncio.create_task(tick_q.get())]
+        if candle_q is not None:
+            getters.append(asyncio.create_task(candle_q.get()))
+        try:
+            done, pending = await asyncio.wait(
+                getters, timeout=15.0, return_when=asyncio.FIRST_COMPLETED
+            )
+            for p in pending:
+                p.cancel()
+            if not done:
+                return None  # timeout → emit heartbeat
+            results: list[tuple[str, dict]] = []
+            for d in done:
+                payload = d.result()
+                # Disambiguate by source queue.
+                if candle_q is not None and getters[1] in done and d is getters[1]:
+                    results.append(("candle", payload))
+                else:
+                    results.append(("tick", payload))
+            # Drain whatever else is buffered now (lightweight) so we don't
+            # accumulate latency under bursts.
+            results.extend(_drain_nowait(tick_q, "tick"))
+            if candle_q is not None:
+                results.extend(_drain_nowait(candle_q, "candle"))
+            return results
+        finally:
+            for g in getters:
+                if not g.done():
+                    g.cancel()
+
+    try:
+        while True:
+            if await request.is_disconnected():
+                return
+            events = await _next_event()
+            if events is None:
+                yield b": ping\n\n"
+                continue
+            for kind, payload in events:
+                if kind == "candle":
+                    yield (
+                        f"event: candle\n"
+                        f"data: {json.dumps(payload)}\n\n"
+                    ).encode()
+                else:
+                    yield f"data: {json.dumps(payload)}\n\n".encode()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"charts.stream({sym}) ws error: {e}", exc_info=True)
+        try:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode()
+        except Exception:
+            pass
+    finally:
+        try:
+            await cs.unsubscribe_ticks(instrument_key, tick_q)
+        except Exception as e:
+            logger.warning(f"charts.stream({sym}) tick unsubscribe failed: {e}")
+        if candle_q is not None:
+            try:
+                await cs.unsubscribe_candles(instrument_key, timeframe, candle_q)
+            except Exception as e:
+                logger.warning(f"charts.stream({sym}) candle unsubscribe failed: {e}")
+
+
+def _drain_nowait(q: asyncio.Queue, kind: str) -> list[tuple[str, dict]]:
+    out: list[tuple[str, dict]] = []
+    while True:
+        try:
+            out.append((kind, q.get_nowait()))
+        except asyncio.QueueEmpty:
+            break
+    return out
+
+
+async def _stream_via_polling(
+    request: Request,
+    user: User,
+    sym: str,
+    symbol: str,
+    instrument_key: str,
+    timeframe: str,
+    interval_ms: int,
+):
+    """Original REST-polling fallback. Kept as a kill switch for the WS path."""
+    client = await cockpit_api._get_client_for_user(user)
+
+    yield (
+        f"event: ready\n"
+        f"data: {json.dumps({'symbol': sym, 'instrument_key': instrument_key, 'timeframe': timeframe, 'backend': 'poll'})}\n\n"
+    ).encode()
+
+    last_ltp: Optional[float] = None
+    last_heartbeat = time.monotonic()
+    interval_s = interval_ms / 1000.0
+    consecutive_errors = 0
+
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+
+            tick_emitted = False
+            try:
+                quote = await client.get_quote(symbol)
+                ltp = quote.get("ltp") if isinstance(quote, dict) else None
+                if ltp is not None:
+                    ltp_f = float(ltp)
+                    now = time.monotonic()
+                    if ltp_f != last_ltp or (now - last_heartbeat) > 15.0:
+                        payload = {"ltp": ltp_f, "ltt": int(time.time() * 1000)}
+                        yield f"data: {json.dumps(payload)}\n\n".encode()
+                        last_ltp = ltp_f
+                        last_heartbeat = now
+                        tick_emitted = True
+                consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                logger.warning(f"charts.stream({symbol}) quote error #{consecutive_errors}: {e}")
+                if consecutive_errors >= 5:
+                    yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode()
+                    break
+
+            if not tick_emitted and (time.monotonic() - last_heartbeat) > 15.0:
+                yield b": ping\n\n"
+                last_heartbeat = time.monotonic()
+
+            slept = 0.0
+            while slept < interval_s:
+                if await request.is_disconnected():
+                    return
+                step = min(0.25, interval_s - slept)
+                await asyncio.sleep(step)
+                slept += step
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"charts.stream({symbol}): {e}", exc_info=True)
+        try:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode()
+        except Exception:
+            pass
+
+
 @router.get("/stream/{symbol}")
 async def charts_stream(
     request: Request,
     symbol: str,
     timeframe: str = Query(default="1D"),
     interval_ms: int = Query(default=2000, ge=500, le=15000),
+    stream: Optional[str] = Query(default=None, description="Override: auto|ws|poll"),
     user: User = Depends(get_current_user),
 ):
-    """SSE stream of the latest trade price for a single instrument.
+    """SSE stream of live price + (optional) server-side OHLC bars.
 
-    Backed by polling Upstox's REST market-quote endpoint rather than the
-    WebSocket market-data feed. The feed is limited to ~1 concurrent WS per
-    user access token, and the monitor/scalp daemon already owns that WS,
-    so a second WS from this web process gets 403. Polling avoids the
-    contention at the cost of coarser tick cadence (1–3s).
+    Two backends:
+      - `ws`: subscribes to a shared analytics-token WebSocket (true tick
+        cadence, server-side OHLC for intraday timeframes).
+      - `poll`: legacy REST polling (1–3s lag, kept as a kill switch).
 
-    Emits events of shape:
-        data: {"ltp": 2545.50, "ltt": 1713515432000}
+    Selection priority: `?stream=` query > `CHARTS_STREAM_BACKEND` env >
+    `auto` (= ws if singleton healthy, else poll).
 
-    On client disconnect the polling loop exits.
+    Wire format:
+        event: ready
+        data:  {"symbol", "instrument_key", "timeframe", "backend", "server_candles"?}
+
+        data:  {"ltp": 2545.50, "ltt": 1713515432000}            # tick
+
+        event: candle
+        data:  {"time": 1713515400, "open": ..., "high": ..., "low": ...,
+                "close": ..., "volume": ..., "closed": false}    # ws path only,
+                                                                 # intraday only
+
+    On client disconnect both paths exit cleanly.
     """
     sym = symbol.upper()
     instrument_key = get_instrument_key(sym)
@@ -203,68 +411,17 @@ async def charts_stream(
     if not instrument_key:
         raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
 
-    # Resolve once — reuse the same per-user client on every poll iteration.
-    client = await cockpit_api._get_client_for_user(user)
+    backend = _resolve_stream_backend(stream)
 
-    async def sse_generator():
-        try:
-            yield f"event: ready\ndata: {json.dumps({'symbol': sym, 'instrument_key': instrument_key, 'timeframe': timeframe})}\n\n".encode()
-
-            last_ltp: Optional[float] = None
-            last_heartbeat = time.monotonic()
-            interval_s = interval_ms / 1000.0
-            consecutive_errors = 0
-
-            while True:
-                if await request.is_disconnected():
-                    break
-
-                tick_emitted = False
-                try:
-                    quote = await client.get_quote(symbol)
-                    ltp = quote.get("ltp") if isinstance(quote, dict) else None
-                    if ltp is not None:
-                        ltp_f = float(ltp)
-                        # Only emit on change or after 15s of no emission (heartbeat).
-                        now = time.monotonic()
-                        if ltp_f != last_ltp or (now - last_heartbeat) > 15.0:
-                            payload = {"ltp": ltp_f, "ltt": int(time.time() * 1000)}
-                            yield f"data: {json.dumps(payload)}\n\n".encode()
-                            last_ltp = ltp_f
-                            last_heartbeat = now
-                            tick_emitted = True
-                    consecutive_errors = 0
-                except Exception as e:
-                    consecutive_errors += 1
-                    logger.warning(f"charts.stream({symbol}) quote error #{consecutive_errors}: {e}")
-                    if consecutive_errors >= 5:
-                        yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode()
-                        break
-
-                # SSE keep-alive comment if nothing emitted in >15s.
-                if not tick_emitted and (time.monotonic() - last_heartbeat) > 15.0:
-                    yield b": ping\n\n"
-                    last_heartbeat = time.monotonic()
-
-                # Sleep in small slices so disconnect is noticed quickly.
-                slept = 0.0
-                while slept < interval_s:
-                    if await request.is_disconnected():
-                        return
-                    step = min(0.25, interval_s - slept)
-                    await asyncio.sleep(step)
-                    slept += step
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"charts.stream({symbol}): {e}", exc_info=True)
-            try:
-                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode()
-            except Exception:
-                pass
+    if backend == "ws":
+        gen = _stream_via_ws(request, sym, instrument_key, timeframe)
+    else:
+        gen = _stream_via_polling(
+            request, user, sym, symbol, instrument_key, timeframe, interval_ms
+        )
 
     return StreamingResponse(
-        sse_generator(),
+        gen,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

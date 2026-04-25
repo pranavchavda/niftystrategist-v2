@@ -700,7 +700,13 @@ function ChartsView({ authToken }: { authToken: string }) {
       }, 16000);
     };
 
+    // Sticky once flipped on — when the backend is emitting server-built
+    // candles (`event: candle`) we trust those exclusively and stop folding
+    // ticks into the live bar to avoid double-counting.
+    let serverCandlesActive = false;
+
     const applyTick = (ltp: number, lttMs: number) => {
+      if (serverCandlesActive) return;
       const series = priceCandleRef.current;
       if (!series) return;
       const tickTimeSec = Math.floor(lttMs / 1000);
@@ -739,6 +745,27 @@ function ChartsView({ authToken }: { authToken: string }) {
       series.update({
         time: live.time as Time,
         open: live.open, high: live.high, low: live.low, close: live.close,
+      });
+    };
+
+    const applyServerCandle = (c: {
+      time: number; open: number; high: number; low: number; close: number;
+      volume?: number; closed?: boolean;
+    }) => {
+      const series = priceCandleRef.current;
+      if (!series) return;
+      serverCandlesActive = true;
+      const newBar: Candle = {
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      };
+      liveBarRef.current = newBar;
+      series.update({
+        time: c.time as Time,
+        open: c.open, high: c.high, low: c.low, close: c.close,
       });
     };
 
@@ -784,7 +811,21 @@ function ChartsView({ authToken }: { authToken: string }) {
             if (!payload) continue;
             try {
               const parsed = JSON.parse(payload);
-              if (typeof parsed.ltp === 'number') {
+              if (eventLine?.startsWith('event: candle')) {
+                if (
+                  typeof parsed.time === 'number' &&
+                  typeof parsed.open === 'number' &&
+                  typeof parsed.high === 'number' &&
+                  typeof parsed.low === 'number' &&
+                  typeof parsed.close === 'number'
+                ) {
+                  applyServerCandle(parsed);
+                  setLastTickPrice(parsed.close);
+                  lastSeenMs = Date.now();
+                  setLiveStatus('open');
+                  armWaitingTimer();
+                }
+              } else if (typeof parsed.ltp === 'number') {
                 applyTick(parsed.ltp, parsed.ltt || Date.now());
                 setLastTickPrice(parsed.ltp);
                 lastSeenMs = Date.now();

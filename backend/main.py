@@ -763,11 +763,42 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to start workflow scheduler: {e}")
         # Non-fatal — app continues without scheduler
 
+    # Start the shared chart market-data stream (analytics token).
+    try:
+        from services.chart_market_stream import (
+            ChartMarketStream,
+            analytics_token_from_env,
+            set_chart_stream,
+        )
+        analytics_token = analytics_token_from_env()
+        if analytics_token:
+            chart_stream = ChartMarketStream(access_token=analytics_token)
+            await chart_stream.start()
+            set_chart_stream(chart_stream)
+            logger.info("Chart market stream started (analytics token)")
+        else:
+            logger.warning(
+                "UPSTOX_ANALYTICS_TOKEN not set — charts will fall back to REST polling"
+            )
+    except Exception as e:
+        logger.error(f"Failed to start chart market stream: {e}")
+        # Non-fatal — SSE handler falls back to polling automatically.
+
     # Yield to allow app to run
     yield
 
     # Cleanup on shutdown
     logger.info("Shutting down Nifty Strategist...")
+
+    # Stop the chart market-data stream
+    try:
+        from services.chart_market_stream import get_chart_stream, set_chart_stream
+        cs = get_chart_stream()
+        if cs:
+            await cs.stop()
+            set_chart_stream(None)
+    except Exception as e:
+        logger.error(f"Error shutting down chart stream: {e}")
 
     # Shutdown workflow scheduler
     try:
