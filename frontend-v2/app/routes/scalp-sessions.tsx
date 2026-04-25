@@ -4,7 +4,7 @@ import { requirePermission } from '../utils/route-permissions';
 import {
   Flame, Plus, Trash2, Loader2, Power, PowerOff, ChevronDown, ChevronUp,
   AlertTriangle, X, TrendingUp, TrendingDown, CircleDot, Square, Clock,
-  Activity,
+  Activity, Pencil,
 } from 'lucide-react';
 import { Button } from '../components/catalyst/button';
 import { Dialog, DialogTitle, DialogBody, DialogActions } from '../components/catalyst/dialog';
@@ -248,9 +248,11 @@ export default function ScalpSessionsRoute() {
   const [error, setError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
 
-  // Create dialog
+  // Create / Edit dialog (shared form). editingSession=null → create mode.
   const [showCreate, setShowCreate] = useState(false);
+  const [editingSession, setEditingSession] = useState<ScalpSession | null>(null);
   const [creating, setCreating] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [formData, setFormData] = useState<any>({
     name: '',
     session_mode: 'options_scalp',
@@ -385,6 +387,90 @@ export default function ScalpSessionsRoute() {
       setError(err instanceof Error ? err.message : 'Failed to create');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const openEdit = (s: ScalpSession) => {
+    const primary = s.primary_indicator || 'utbot';
+    setFormData({
+      name: s.name,
+      session_mode: s.session_mode || 'options_scalp',
+      underlying: s.underlying || '',
+      expiry: s.expiry || '',
+      lots: s.lots ?? 1,
+      quantity: s.quantity ?? '',
+      indicator_timeframe: s.indicator_timeframe,
+      utbot_period: s.utbot_period,
+      utbot_sensitivity: s.utbot_sensitivity,
+      primary_indicator: primary,
+      primary_params: s.primary_params || { ...(PARAM_DEFAULTS[primary] || {}) },
+      confirm_indicator: s.confirm_indicator || '',
+      confirm_params: s.confirm_params || {},
+      sl_points: s.sl_points ?? '',
+      target_points: s.target_points ?? '',
+      trail_percent: s.trail_percent ?? '',
+      trail_points: s.trail_points ?? '',
+      trail_arm_points: s.trail_arm_points ?? '',
+      squareoff_time: s.squareoff_time,
+      max_trades: s.max_trades,
+      cooldown_seconds: s.cooldown_seconds,
+    });
+    setEditingSession(s);
+  };
+
+  const handleSave = async () => {
+    if (!editingSession) return;
+    setSavingEdit(true);
+    setError(null);
+    try {
+      const isHolding = editingSession.state !== 'IDLE';
+      const body: any = {
+        name: formData.name,
+        sl_points: formData.sl_points === '' ? null : Number(formData.sl_points),
+        target_points: formData.target_points === '' ? null : Number(formData.target_points),
+        trail_percent: formData.trail_percent === '' ? null : Number(formData.trail_percent),
+        trail_points: formData.trail_points === '' ? null : Number(formData.trail_points),
+        trail_arm_points: formData.trail_arm_points === '' ? null : Number(formData.trail_arm_points),
+        squareoff_time: formData.squareoff_time,
+        max_trades: Number(formData.max_trades),
+        cooldown_seconds: Number(formData.cooldown_seconds),
+        primary_indicator: formData.primary_indicator,
+        primary_params: formData.primary_params || null,
+        confirm_indicator: formData.confirm_indicator || null,
+        confirm_params: formData.confirm_indicator ? (formData.confirm_params || {}) : null,
+      };
+      if (formData.primary_indicator === 'utbot' && formData.primary_params) {
+        body.utbot_period = formData.primary_params.period ?? formData.utbot_period;
+        body.utbot_sensitivity = formData.primary_params.sensitivity ?? formData.utbot_sensitivity;
+      }
+      // Instrument-shape fields are only sent when IDLE — locked otherwise.
+      if (!isHolding) {
+        body.session_mode = formData.session_mode;
+        body.underlying = formData.underlying;
+        body.indicator_timeframe = formData.indicator_timeframe;
+        if (formData.session_mode === 'options_scalp') {
+          body.expiry = formData.expiry;
+          body.lots = Number(formData.lots);
+          body.quantity = null;
+        } else {
+          body.expiry = '';
+          body.quantity = formData.quantity === '' ? null : Number(formData.quantity);
+        }
+      }
+      const res = await fetch(`/api/scalp/sessions/${editingSession.id}`, {
+        method: 'PATCH', headers, body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save');
+      }
+      setEditingSession(null);
+      showAction('Session updated');
+      await fetchSessions();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -571,6 +657,9 @@ export default function ScalpSessionsRoute() {
                         <Square className="w-4 h-4 text-red-500" />
                       </Button>
                     )}
+                    <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); openEdit(s); }} title="Edit settings">
+                      <Pencil className="w-4 h-4 text-zinc-400 hover:text-blue-500" />
+                    </Button>
                     <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); toggleEnabled(s.id, s.enabled); }} title={s.enabled ? 'Disable' : 'Enable'}>
                       {s.enabled ? <Power className="w-4 h-4 text-green-500" /> : <PowerOff className="w-4 h-4 text-zinc-400" />}
                     </Button>
@@ -681,10 +770,38 @@ export default function ScalpSessionsRoute() {
         )
       )}
 
-      {/* Create Dialog */}
-      <Dialog open={showCreate} onClose={() => setShowCreate(false)}>
-        <DialogTitle>Create Signal Session</DialogTitle>
+      {/* Create / Edit Dialog (shared) */}
+      {(() => {
+        const isEditing = editingSession !== null;
+        const isHolding = isEditing && editingSession!.state !== 'IDLE';
+        const lockInstrument = isHolding;
+        const dialogOpen = showCreate || isEditing;
+        const closeDialog = () => {
+          if (isEditing) setEditingSession(null);
+          else setShowCreate(false);
+        };
+        const submitting = isEditing ? savingEdit : creating;
+        const onSubmit = isEditing ? handleSave : handleCreate;
+        const submitDisabled = submitting || !formData.name || (
+          !isEditing &&
+          formData.session_mode !== 'equity_intraday' &&
+          formData.session_mode !== 'equity_swing' &&
+          !formData.expiry
+        );
+      return (
+      <Dialog open={dialogOpen} onClose={closeDialog}>
+        <DialogTitle>
+          {isEditing ? `Edit: ${editingSession!.name}` : 'Create Signal Session'}
+        </DialogTitle>
         <DialogBody>
+          {isHolding && (
+            <div className="mb-4 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/50 text-amber-800 dark:text-amber-300 rounded-lg text-xs flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div>
+                Session is <b>{editingSession!.state}</b>. Instrument fields (mode, underlying, expiry, lots/qty, timeframe) are locked until IDLE — changing them mid-position would orphan the open contract. Other params (SL, target, trail, indicators, max trades, cooldown) take effect on the next tick.
+              </div>
+            </div>
+          )}
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Name</label>
@@ -695,6 +812,7 @@ export default function ScalpSessionsRoute() {
               <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Mode</label>
               <select
                 value={formData.session_mode}
+                disabled={lockInstrument}
                 onChange={e => {
                   const next = e.target.value;
                   setFormData((p: any) => ({
@@ -709,7 +827,7 @@ export default function ScalpSessionsRoute() {
                     indicator_timeframe: next === 'equity_swing' ? '1d' : '1m',
                   }));
                 }}
-                className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                 {SESSION_MODES.map(m => (
                   <option key={m.value} value={m.value}>{m.label} — {m.description}</option>
                 ))}
@@ -720,15 +838,19 @@ export default function ScalpSessionsRoute() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Underlying</label>
-                  <select value={formData.underlying} onChange={e => setFormData((p: any) => ({ ...p, underlying: e.target.value, expiry: '' }))}
-                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                  <select value={formData.underlying} disabled={lockInstrument} onChange={e => setFormData((p: any) => ({ ...p, underlying: e.target.value, expiry: '' }))}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                     {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'].map(u => <option key={u} value={u}>{u}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Expiry</label>
-                  <select value={formData.expiry} onChange={e => setFormData((p: any) => ({ ...p, expiry: e.target.value }))}
-                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                  <select value={formData.expiry} disabled={lockInstrument} onChange={e => setFormData((p: any) => ({ ...p, expiry: e.target.value }))}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                    {/* When editing, the session's current expiry may not be in the live list — show it explicitly */}
+                    {isEditing && formData.expiry && !expiries.includes(formData.expiry) && (
+                      <option value={formData.expiry}>{formData.expiry}</option>
+                    )}
                     {expiries.map(e => <option key={e} value={e}>{e}</option>)}
                   </select>
                 </div>
@@ -737,15 +859,20 @@ export default function ScalpSessionsRoute() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Symbol</label>
-                  <EquitySymbolPicker
-                    authToken={authToken}
-                    value={formData.underlying}
-                    onSelect={(sym) => setFormData((p: any) => ({ ...p, underlying: sym }))}
-                  />
+                  {lockInstrument ? (
+                    <Input value={formData.underlying} disabled />
+                  ) : (
+                    <EquitySymbolPicker
+                      authToken={authToken}
+                      value={formData.underlying}
+                      onSelect={(sym) => setFormData((p: any) => ({ ...p, underlying: sym }))}
+                    />
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Quantity</label>
                   <Input type="number" min={1} value={formData.quantity}
+                    disabled={lockInstrument}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => ({ ...p, quantity: e.target.value }))}
                     placeholder="shares" />
                 </div>
@@ -755,13 +882,13 @@ export default function ScalpSessionsRoute() {
               {formData.session_mode === 'options_scalp' && (
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Lots</label>
-                  <Input type="number" value={formData.lots} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => ({ ...p, lots: Number(e.target.value) }))} min={1} />
+                  <Input type="number" value={formData.lots} disabled={lockInstrument} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => ({ ...p, lots: Number(e.target.value) }))} min={1} />
                 </div>
               )}
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Timeframe</label>
-                <select value={formData.indicator_timeframe} onChange={e => setFormData((p: any) => ({ ...p, indicator_timeframe: e.target.value }))}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                <select value={formData.indicator_timeframe} disabled={lockInstrument} onChange={e => setFormData((p: any) => ({ ...p, indicator_timeframe: e.target.value }))}
+                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                   {(formData.session_mode === 'equity_swing'
                     ? ['15m', '1h', '1d']
                     : ['1m', '3m', '5m', '15m']
@@ -863,12 +990,14 @@ export default function ScalpSessionsRoute() {
           </div>
         </DialogBody>
         <DialogActions>
-          <Button plain onClick={() => setShowCreate(false)}>Cancel</Button>
-          <Button onClick={handleCreate} disabled={creating || !formData.name || (formData.session_mode !== 'equity_intraday' && formData.session_mode !== 'equity_swing' && !formData.expiry)}>
-            {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create'}
+          <Button plain onClick={closeDialog}>Cancel</Button>
+          <Button onClick={onSubmit} disabled={submitDisabled}>
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (isEditing ? 'Save' : 'Create')}
           </Button>
         </DialogActions>
       </Dialog>
+      );
+      })()}
     </div>
   );
 }
