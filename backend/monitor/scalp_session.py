@@ -658,6 +658,9 @@ class ScalpSessionManager:
                 strike=atm_strike, instrument_token=instrument_key, quantity=quantity,
                 underlying_price=underlying_price,
                 order_id=order_result.get("order_id"),
+                trigger_snapshot=self._build_decision_snapshot(
+                    session, decision_price=underlying_price,
+                ),
             )
             await self._persist_state(session)
 
@@ -750,6 +753,9 @@ class ScalpSessionManager:
                 entry_price=underlying_price,
                 underlying_price=underlying_price,
                 order_id=order_result.get("order_id"),
+                trigger_snapshot=self._build_decision_snapshot(
+                    session, decision_price=underlying_price,
+                ),
             )
             await self._persist_state(session)
 
@@ -889,6 +895,9 @@ class ScalpSessionManager:
             pnl_points=pnl_points,
             pnl_amount=pnl_amount,
             order_id=order_result.get("order_id"),
+            trigger_snapshot=self._build_decision_snapshot(
+                session, decision_price=exit_price,
+            ),
         )
 
         order_id = order_result.get("order_id")
@@ -1112,6 +1121,30 @@ class ScalpSessionManager:
                     logger.info("Scalp: unsubscribed from %s for user %d", instrument_token, user_id)
         except Exception as e:
             logger.error("Failed to unsubscribe %s: %s", instrument_token, e)
+
+    # ── Snapshot helper ──────────────────────────────────────────────
+
+    def _build_decision_snapshot(
+        self, session: ScalpSession, *, decision_price: float | None = None,
+    ) -> dict | None:
+        """Capture last ~30 candles + recomputed indicator series for chart
+        rendering. Display-only. Delegates to ``snapshot_builder`` so the
+        backfill script can use the same logic on historical candles.
+        """
+        from monitor.snapshot_builder import build_decision_snapshot
+        buf = self._candle_buffers.get(str(session.id))
+        if not buf:
+            return None
+        cfg = session.config
+        return build_decision_snapshot(
+            buf.get_candles(),
+            primary_indicator=cfg.primary_indicator,
+            primary_params=cfg.primary_params,
+            confirm_indicator=cfg.confirm_indicator,
+            confirm_params=cfg.confirm_params,
+            timeframe=cfg.indicator_timeframe,
+            decision_price=decision_price,
+        )
 
     # ── Persistence helpers ──────────────────────────────────────────
 

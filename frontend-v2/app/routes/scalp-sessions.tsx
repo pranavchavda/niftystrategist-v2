@@ -10,6 +10,7 @@ import { Button } from '../components/catalyst/button';
 import { Dialog, DialogTitle, DialogBody, DialogActions } from '../components/catalyst/dialog';
 import { Badge } from '../components/catalyst/badge';
 import { Input } from '../components/catalyst/input';
+import { SnapshotChartButton, type DecisionSnapshot } from '../components/scalp/SnapshotChart';
 
 // Indicator catalogs and per-indicator default param schemas. Used to render
 // dynamic param inputs as the user picks a primary or confirm indicator.
@@ -223,6 +224,7 @@ interface SessionLog {
   pnl_amount: number | null;
   order_id: string | null;
   underlying_price: number | null;
+  trigger_snapshot: DecisionSnapshot | null;
   created_at: string | null;
   session_id?: number;
   session_name?: string;
@@ -701,7 +703,7 @@ export default function ScalpSessionsRoute() {
                           ) : (
                             <div className="space-y-1">
                               {sessionLogs.map(log => (
-                                <div key={log.id} className="flex items-center gap-3 text-xs py-1.5 border-b border-zinc-200/50 dark:border-zinc-700/30 last:border-0">
+                                <div key={log.id} className="flex items-center gap-3 text-xs py-2 border-b border-zinc-200/50 dark:border-zinc-700/30 last:border-0">
                                   {eventBadge(log.event_type)}
                                   <span className="text-zinc-500">
                                     {log.option_type && `${log.option_type} `}
@@ -714,7 +716,15 @@ export default function ScalpSessionsRoute() {
                                       </span>
                                     )}
                                   </span>
-                                  <span className="ml-auto text-zinc-400">
+                                  {log.trigger_snapshot && (
+                                    <SnapshotChartButton
+                                      snapshot={log.trigger_snapshot}
+                                      eventType={log.event_type}
+                                      optionType={log.option_type}
+                                      strike={log.strike}
+                                    />
+                                  )}
+                                  <span className="ml-auto text-zinc-400 whitespace-nowrap">
                                     {log.created_at && new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Kolkata' })} IST
                                   </span>
                                 </div>

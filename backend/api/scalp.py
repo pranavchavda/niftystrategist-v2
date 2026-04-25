@@ -146,6 +146,7 @@ def _serialize_log(log) -> dict:
         "pnl_amount": log.pnl_amount,
         "order_id": log.order_id,
         "underlying_price": log.underlying_price,
+        "trigger_snapshot": log.trigger_snapshot,
         "created_at": _iso_utc(log.created_at),
     }
 
