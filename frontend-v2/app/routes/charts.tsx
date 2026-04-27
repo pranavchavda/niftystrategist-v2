@@ -478,57 +478,66 @@ function ChartsView({ authToken }: { authToken: string }) {
     [activeIndicators],
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/charts/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}`,
-          { headers: { Authorization: `Bearer ${authToken}` } },
-        );
-        if (!res.ok) {
-          let msg = `${res.status}`;
-          try {
-            const body = await res.json();
-            if (body?.detail) msg = `${res.status} — ${body.detail}`;
-          } catch { /* ignore */ }
-          throw new Error(msg);
-        }
-        const data = await res.json();
-        if (!cancelled) setCandles(data.candles || []);
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'Failed to load candles');
-      } finally {
-        if (!cancelled) setLoading(false);
+  const fetchCandles = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/charts/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}`,
+        { headers: { Authorization: `Bearer ${authToken}` } },
+      );
+      if (!res.ok) {
+        let msg = `${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.detail) msg = `${res.status} — ${body.detail}`;
+        } catch { /* ignore */ }
+        throw new Error(msg);
       }
-    })();
-    return () => { cancelled = true; };
+      const data = await res.json();
+      setCandles(data.candles || []);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load candles');
+    }
   }, [symbol, timeframe, authToken]);
 
-  useEffect(() => {
-    let cancelled = false;
+  const fetchIndicators = useCallback(async () => {
     if (activeIndicators.length === 0) {
       setIndicatorData({ lines: {}, markers: [], panes: [] });
       return;
     }
-    (async () => {
-      try {
-        const names = activeIndicators.map((i) => i.apiName).join(',');
-        const res = await fetch(
-          `/api/charts/indicators/${encodeURIComponent(symbol)}?timeframe=${timeframe}&indicators=${encodeURIComponent(names)}`,
-          { headers: { Authorization: `Bearer ${authToken}` } },
-        );
-        if (!res.ok) throw new Error(`${res.status}`);
-        const data: IndicatorResponse = await res.json();
-        if (!cancelled) setIndicatorData(data);
-      } catch {
-        if (!cancelled) setIndicatorData({ lines: {}, markers: [], panes: [] });
-      }
-    })();
-    return () => { cancelled = true; };
+    try {
+      const names = activeIndicators.map((i) => i.apiName).join(',');
+      const res = await fetch(
+        `/api/charts/indicators/${encodeURIComponent(symbol)}?timeframe=${timeframe}&indicators=${encodeURIComponent(names)}`,
+        { headers: { Authorization: `Bearer ${authToken}` } },
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data: IndicatorResponse = await res.json();
+      setIndicatorData(data);
+    } catch {
+      setIndicatorData({ lines: {}, markers: [], panes: [] });
+    }
   }, [symbol, timeframe, activeIndicators, authToken]);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    fetchCandles().finally(() => setLoading(false));
+  }, [fetchCandles]);
+
+  useEffect(() => {
+    fetchIndicators();
+  }, [fetchIndicators]);
+
+  // Expose to the SSE stream so it can refresh on candle close — see the
+  // applyServerCandle handler. Refs avoid restarting the SSE useEffect on
+  // every dep change.
+  const refreshHistoryRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    refreshHistoryRef.current = () => {
+      fetchCandles();
+      fetchIndicators();
+    };
+  }, [fetchCandles, fetchIndicators]);
 
   const priceRef = useRef<HTMLDivElement>(null);
   const volumeRef = useRef<HTMLDivElement>(null);
@@ -734,6 +743,9 @@ function ChartsView({ authToken }: { authToken: string }) {
             time: bucketStart as Time,
             open: ltp, high: ltp, low: ltp, close: ltp,
           });
+          // Tick-fold rollover (no server candles): refresh historicals so
+          // pane time-axis and indicators advance with the new closed bar.
+          refreshHistoryRef.current();
           return;
         }
         // Ignore ticks older than the live bar (shouldn't happen).
@@ -768,6 +780,11 @@ function ChartsView({ authToken }: { authToken: string }) {
         time: c.time as Time,
         open: c.open, high: c.high, low: c.low, close: c.close,
       });
+      // On bar close, pull fresh candles + indicator data so the RSI/MACD
+      // panes pick up the new closed bar (their time axes and whitespace
+      // padding are driven by the historical candles state, which the
+      // live SSE stream alone can't extend).
+      if (c.closed) refreshHistoryRef.current();
     };
 
     const run = async () => {

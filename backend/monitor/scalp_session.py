@@ -27,6 +27,27 @@ from monitor.scalp_models import (
 def _is_equity(mode: str) -> bool:
     return mode in (SessionMode.EQUITY_INTRADAY.value, SessionMode.EQUITY_SWING.value)
 
+
+def _is_nse_market_open() -> bool:
+    """True iff NSE is currently in a regular trading session.
+
+    Used to gate scalp entries/exits — orders submitted outside market
+    hours either (a) get auto-flipped to AMO at the order layer and queue
+    for the *next* trading session, or (b) silently never fill. Both
+    desync the daemon's view of position state from the broker. Observed
+    2026-04-27: pre-open scalp signals at 9:01-9:14 IST placed AMO
+    BUYs that filled at open and AMO SELLs that never filled, leaving
+    stuck longs while the daemon believed it was IDLE.
+    """
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    if now.weekday() >= 5:
+        return False
+    open_t = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    close_t = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return open_t <= now <= close_t
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -786,6 +807,23 @@ class ScalpSessionManager:
         cfg = session.config
 
         if not session.is_holding:
+            return
+
+        # Pre-market signal-driven exits get auto-flipped to AMO at the
+        # order layer, queue for the next session, and never fill — leaving
+        # the broker long while the daemon believes IDLE. Observed
+        # 2026-04-27 on session 30 (BUYs filled at open, SELLs to flatten
+        # got AMO'd and never filled, position rode into market open
+        # uncovered). Squareoff and user-disable exits are allowed through
+        # because they happen during regular hours by definition (squareoff
+        # time is configured intra-session) or are explicit user intent.
+        signal_exits = {"exit_sl", "exit_target", "exit_trail", "exit_reversal"}
+        if reason in signal_exits and not _is_nse_market_open():
+            logger.info(
+                "Session %d: skip %s exit — NSE not in regular session "
+                "(would AMO and fail to fill)",
+                session.id, reason,
+            )
             return
 
         # Pre-exit broker reconcile: if an awakening, user, or other actor
