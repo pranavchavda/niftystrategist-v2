@@ -17,6 +17,7 @@ import {
   type SeriesMarker,
   type LogicalRange,
   type MouseEventParams,
+  type WhitespaceData,
 } from 'lightweight-charts';
 import { Search, Plus, X, Loader2, TrendingUp, TrendingDown, Radio } from 'lucide-react';
 import { requirePermission } from '../utils/route-permissions';
@@ -979,23 +980,26 @@ function ChartsView({ authToken }: { authToken: string }) {
       const { chart } = makeChart(container, isDark, intraday, isLast);
       paneChartsRef.current[pane.id] = chart;
 
-      if (pane.levels && pane.levels.length > 0 && pane.lines) {
-        const firstLineEntry = Object.values(pane.lines)[0];
-        if (firstLineEntry && firstLineEntry.length > 0) {
-          for (const lvl of pane.levels) {
-            const lineSeries = chart.addSeries(LineSeries, {
-              color: isDark ? 'rgba(113, 113, 122, 0.5)' : 'rgba(161, 161, 170, 0.6)',
-              lineWidth: 1,
-              lineStyle: LineStyle.Dashed,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false,
-            });
-            lineSeries.setData([
-              { time: firstLineEntry[0].time as Time, value: lvl },
-              { time: firstLineEntry[firstLineEntry.length - 1].time as Time, value: lvl },
-            ]);
-          }
+      if (pane.levels && pane.levels.length > 0 && pane.lines && candles.length > 0) {
+        // Span the full chart by anchoring level lines to the first/last
+        // candle time, not the indicator's first/last point — the indicator
+        // typically has a warm-up gap (e.g. RSI(14)) and we want the dashed
+        // levels to reach both edges so they line up with the price pane.
+        const firstTime = candles[0].time as Time;
+        const lastTime = candles[candles.length - 1].time as Time;
+        for (const lvl of pane.levels) {
+          const lineSeries = chart.addSeries(LineSeries, {
+            color: isDark ? 'rgba(113, 113, 122, 0.5)' : 'rgba(161, 161, 170, 0.6)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          lineSeries.setData([
+            { time: firstTime, value: lvl },
+            { time: lastTime, value: lvl },
+          ]);
         }
       }
 
@@ -1007,6 +1011,10 @@ function ChartsView({ authToken }: { authToken: string }) {
         d: '#f59e0b',
         atr: '#10b981',
       };
+      // Pad pane series to one entry per candle so logical-range sync
+      // with the price pane stays aligned. Bars without an indicator value
+      // (e.g. the RSI(14) warm-up window) become whitespace entries —
+      // they consume a logical bar slot but draw nothing.
       let colorIdx = 0;
       for (const [name, points] of Object.entries(pane.lines || {})) {
         if (!points || points.length === 0) continue;
@@ -1019,10 +1027,15 @@ function ChartsView({ authToken }: { authToken: string }) {
           priceLineVisible: false,
           lastValueVisible: true,
         });
-        const data: LineData<Time>[] = points.map((p) => ({
-          time: p.time as Time,
-          value: p.value,
-        }));
+        const valueByTime = new Map(points.map((p) => [p.time, p.value]));
+        const data: (LineData<Time> | WhitespaceData<Time>)[] = candles.length > 0
+          ? candles.map((c) => {
+              const v = valueByTime.get(c.time);
+              return v !== undefined
+                ? { time: c.time as Time, value: v }
+                : { time: c.time as Time };
+            })
+          : points.map((p) => ({ time: p.time as Time, value: p.value }));
         series.setData(data);
       }
 
@@ -1031,11 +1044,23 @@ function ChartsView({ authToken }: { authToken: string }) {
           priceFormat: { type: 'price', precision: 4, minMove: 0.0001 },
           priceLineVisible: false,
         });
-        const histData: HistogramData<Time>[] = pane.histogram.map((h) => ({
-          time: h.time as Time,
-          value: h.value,
-          color: h.value >= 0 ? 'rgba(22, 163, 74, 0.6)' : 'rgba(220, 38, 38, 0.6)',
-        }));
+        const histByTime = new Map(pane.histogram.map((h) => [h.time, h.value]));
+        const histData: (HistogramData<Time> | WhitespaceData<Time>)[] = candles.length > 0
+          ? candles.map((c) => {
+              const v = histByTime.get(c.time);
+              return v !== undefined
+                ? {
+                    time: c.time as Time,
+                    value: v,
+                    color: v >= 0 ? 'rgba(22, 163, 74, 0.6)' : 'rgba(220, 38, 38, 0.6)',
+                  }
+                : { time: c.time as Time };
+            })
+          : pane.histogram.map((h) => ({
+              time: h.time as Time,
+              value: h.value,
+              color: h.value >= 0 ? 'rgba(22, 163, 74, 0.6)' : 'rgba(220, 38, 38, 0.6)',
+            }));
         hist.setData(histData);
       }
 
@@ -1061,7 +1086,7 @@ function ChartsView({ authToken }: { authToken: string }) {
         } catch { /* ignore */ }
       }
     });
-  }, [indicatorData, isDark, intraday]);
+  }, [indicatorData, isDark, intraday, candles]);
 
   const lastCandle = candles[candles.length - 1];
   const prevCandle = candles[candles.length - 2];

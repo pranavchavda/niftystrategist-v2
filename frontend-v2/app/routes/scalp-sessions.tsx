@@ -309,6 +309,21 @@ export default function ScalpSessionsRoute() {
 
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
 
+  // Poll every 5s so state transitions (IDLE → HOLDING_CE/PE → IDLE) the
+  // daemon makes in the background show up without a manual reload. Page
+  // visibility-gated to avoid burning requests on a backgrounded tab.
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === 'visible') fetchSessions();
+    };
+    const id = setInterval(tick, 5000);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [fetchSessions]);
+
   const fetchAllLogs = useCallback(async () => {
     try {
       const res = await fetch('/api/scalp/logs?limit=200', {
@@ -323,7 +338,17 @@ export default function ScalpSessionsRoute() {
   }, [authToken]);
 
   useEffect(() => {
-    if (activeTab === 'logs') fetchAllLogs();
+    if (activeTab !== 'logs') return;
+    fetchAllLogs();
+    const tick = () => {
+      if (document.visibilityState === 'visible') fetchAllLogs();
+    };
+    const id = setInterval(tick, 5000);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', tick);
+    };
   }, [activeTab, fetchAllLogs]);
 
   // Fetch expiries when underlying changes
