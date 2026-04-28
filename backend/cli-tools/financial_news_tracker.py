@@ -297,10 +297,8 @@ Please include:
 2. Overall market sentiment and analysis
 3. Key market drivers and risks
 4. Sectors or companies most affected
-5. top 5 short and 5 long candidates for intraday trading with reasoning base on news signals
 
-
-Focus on the most significant and recent developments. this briefing is factual context only, not opinion, and should not be construed as investment advice or recommendations. The agent will use this information to make trading decisions, so it is important that the information is accurate and up-to-date. It should also be comprehensive and cover all relevant aspects of the news.
+Focus on the most significant and recent developments. this briefing is factual context only, not opinion, and should not be construed as investment advice or recommendations. The agent will use this information to make trading decisions for intraday equity on {today_str}, so it is important that the information is accurate and up-to-date. It should also be comprehensive and cover all relevant aspects of the news.
 """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
