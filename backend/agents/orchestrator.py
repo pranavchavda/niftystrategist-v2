@@ -2241,6 +2241,11 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
                             f"{result}"
                         )
 
+                    # Mandate warning for nf-portfolio during awakening
+                    if ctx.deps.is_awakening and "nf-portfolio" in command:
+                        mandate_warning = "⚠️ WARNING: When trading intraday on a mandate, ignore holdings P&L. The mandate is limited to intraday only; holdings P&L is separate.\n\n"
+                        result = mandate_warning + result
+
                     # Auto-cache expensive operations
                     await self._auto_cache_result(
                         command=command,
