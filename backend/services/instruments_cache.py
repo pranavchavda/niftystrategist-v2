@@ -15,6 +15,7 @@ Usage::
 import csv
 import gzip
 import io
+import json
 import logging
 import os
 import time
@@ -64,6 +65,19 @@ _NIFTY_500_CACHE = os.path.join(_CACHE_DIR, "nifty500_constituents.csv")
 _NIFTY_500_META = os.path.join(_CACHE_DIR, "nifty500_constituents.meta")
 NIFTY_500_SYMBOLS: set[str] = set()
 
+# NSE ETFs — fetched from the NSE ETF JSON endpoint. The list isn't an "index"
+# so niftyindices.com doesn't host it; this hits NSE directly (needs a real UA
+# + Referer or it 401s). NSE rate-limits this endpoint sporadically, so we
+# also ship a bundled seed file as a guaranteed fallback. A weekly scheduler
+# job refreshes the live cache (NSE typically lists 3–8 new ETFs per month).
+_NSE_ETF_URL = "https://www.nseindia.com/api/etf"
+_NSE_ETF_CACHE = os.path.join(_CACHE_DIR, "nse_etfs.json")
+_NSE_ETF_META = os.path.join(_CACHE_DIR, "nse_etfs.meta")
+_NSE_ETF_SEED = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "seed", "nse_etfs.json"
+)
+NSE_ETF_SYMBOLS: set[str] = set()
+
 # In-memory lookup tables (populated by ensure_loaded)
 _symbol_to_instrument_key: dict[str, str] = {}
 _symbol_to_name: dict[str, str] = {}
@@ -72,6 +86,7 @@ _index_key_to_name: dict[str, str] = {}  # instrument_key → display name
 _index_key_to_tradingsymbol: dict[str, str] = {}  # instrument_key → tradingsymbol
 _loaded = False
 _nifty500_loaded = False
+_etfs_loaded = False
 
 # Common index aliases not directly in the CSV. Keys are canonicalized
 # (uppercase, spaces/underscores/hyphens stripped). Values are the canonical
@@ -289,6 +304,146 @@ def _load_nifty500() -> bool:
         return False
 
 
+def _etf_cache_is_fresh() -> bool:
+    """Return True if NSE ETF cache exists and is less than _TTL_SECONDS old."""
+    if not os.path.exists(_NSE_ETF_META):
+        return False
+    try:
+        with open(_NSE_ETF_META) as f:
+            ts = float(f.read().strip())
+        return (time.time() - ts) < _TTL_SECONDS
+    except (ValueError, OSError):
+        return False
+
+
+def _parse_etf_symbols(raw: str) -> set[str]:
+    """Extract uppercased symbol set from an NSE ETF JSON payload."""
+    data = json.loads(raw)
+    return {
+        (r.get("symbol") or "").strip().upper()
+        for r in data.get("data", [])
+        if r.get("symbol")
+    }
+
+
+def refresh_etf_cache() -> bool:
+    """Force-download the NSE ETF list and overwrite the disk cache.
+
+    Used by the weekly scheduler job. Returns True on success. Does not touch
+    the in-memory NSE_ETF_SYMBOLS — call _load_etfs() afterwards (or restart)
+    if you want the new symbols served immediately.
+    """
+    global _etfs_loaded
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    try:
+        logger.info("Refreshing NSE ETF list (forced)")
+        req = urllib.request.Request(
+            _NSE_ETF_URL,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.nseindia.com/market-data/exchange-traded-funds-etf",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+        symbols = _parse_etf_symbols(raw)
+        if not symbols:
+            logger.warning("NSE ETF refresh returned no symbols; keeping old cache")
+            return False
+        with open(_NSE_ETF_CACHE, "w", encoding="utf-8") as f:
+            f.write(raw)
+        with open(_NSE_ETF_META, "w") as f:
+            f.write(str(time.time()))
+        # Bust the in-memory load so next ensure_loaded() picks up the new set.
+        _etfs_loaded = False
+        logger.info(f"NSE ETF refresh OK: {len(symbols)} symbols")
+        return True
+    except Exception as e:
+        logger.warning(f"NSE ETF refresh failed: {e}")
+        return False
+
+
+def _load_etfs() -> bool:
+    """Populate NSE_ETF_SYMBOLS from cache → live download → bundled seed.
+
+    The NSE ETF endpoint requires a real browser User-Agent and a Referer
+    header — without them it 401s. NSE also rate-limits sporadically, so we
+    fall back to a bundled seed file (refreshed weekly via scheduler).
+    """
+    global NSE_ETF_SYMBOLS, _etfs_loaded
+
+    if _etfs_loaded:
+        return True
+
+    # 1. Fresh disk cache (last successful download).
+    if _etf_cache_is_fresh() and os.path.exists(_NSE_ETF_CACHE):
+        try:
+            with open(_NSE_ETF_CACHE, encoding="utf-8") as f:
+                symbols = _parse_etf_symbols(f.read())
+            if symbols:
+                NSE_ETF_SYMBOLS = symbols
+                _etfs_loaded = True
+                logger.info(f"NSE ETFs loaded from cache: {len(symbols)} symbols")
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to parse NSE ETF cache: {e}")
+
+    # 2. Live download from NSE.
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    try:
+        logger.info("Downloading NSE ETF list")
+        req = urllib.request.Request(
+            _NSE_ETF_URL,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.nseindia.com/market-data/exchange-traded-funds-etf",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+        symbols = _parse_etf_symbols(raw)
+        if symbols:
+            with open(_NSE_ETF_CACHE, "w", encoding="utf-8") as f:
+                f.write(raw)
+            with open(_NSE_ETF_META, "w") as f:
+                f.write(str(time.time()))
+            NSE_ETF_SYMBOLS = symbols
+            _etfs_loaded = True
+            logger.info(f"NSE ETFs cached: {len(symbols)} symbols")
+            return True
+        logger.warning("NSE ETF JSON parsed but no symbols found")
+    except Exception as e:
+        logger.warning(f"Failed to download NSE ETF list: {e}")
+
+    # 3. Bundled seed fallback.
+    if os.path.exists(_NSE_ETF_SEED):
+        try:
+            with open(_NSE_ETF_SEED, encoding="utf-8") as f:
+                symbols = _parse_etf_symbols(f.read())
+            if symbols:
+                NSE_ETF_SYMBOLS = symbols
+                _etfs_loaded = True
+                logger.warning(
+                    f"NSE ETFs loaded from bundled seed (live + cache unavailable): {len(symbols)} symbols"
+                )
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to parse bundled NSE ETF seed: {e}")
+
+    _etfs_loaded = True  # Don't retry every call if everything failed.
+    return False
+
+
 def ensure_loaded() -> None:
     """Download instruments CSV if stale/missing, then load into memory.
 
@@ -309,6 +464,7 @@ def ensure_loaded() -> None:
 
     _load_from_disk()
     _load_nifty500()
+    _load_etfs()
 
 
 def get_instrument_key(symbol: str) -> str | None:
@@ -332,6 +488,12 @@ def is_nifty500(symbol: str) -> bool:
     """Return True if symbol is a Nifty 500 constituent."""
     ensure_loaded()
     return symbol.upper() in NIFTY_500_SYMBOLS
+
+
+def is_etf(symbol: str) -> bool:
+    """Return True if symbol is an NSE-listed ETF."""
+    ensure_loaded()
+    return symbol.upper() in NSE_ETF_SYMBOLS
 
 
 def get_universe(name: str = "nifty500") -> set[str]:

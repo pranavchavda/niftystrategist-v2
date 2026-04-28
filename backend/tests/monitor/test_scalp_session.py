@@ -1196,3 +1196,56 @@ def test_parse_timeframe_supports_daily():
     assert _parse_timeframe("1d") == 24 * 60
     assert _parse_timeframe("1h") == 60
     assert _parse_timeframe("5m") == 5
+
+
+class TestActiveWindows:
+    """active_windows gate for new entries (Ashok 2026-04-28 chop avoidance)."""
+
+    def _ist(self, hh: int, mm: int):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime(2026, 4, 28, hh, mm, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    def test_no_windows_always_active(self):
+        from monitor.scalp_session import _in_active_window
+        assert _in_active_window([], now_ist=self._ist(12, 0)) is True
+        assert _in_active_window(None, now_ist=self._ist(12, 0)) is True  # type: ignore
+
+    def test_inside_morning_window(self):
+        from monitor.scalp_session import _in_active_window
+        windows = [{"start": "09:15", "end": "10:30"}]
+        assert _in_active_window(windows, now_ist=self._ist(9, 30)) is True
+        assert _in_active_window(windows, now_ist=self._ist(10, 0)) is True
+
+    def test_start_inclusive_end_exclusive(self):
+        from monitor.scalp_session import _in_active_window
+        windows = [{"start": "09:15", "end": "10:30"}]
+        assert _in_active_window(windows, now_ist=self._ist(9, 15)) is True   # exact start
+        assert _in_active_window(windows, now_ist=self._ist(10, 30)) is False  # exact end
+
+    def test_outside_all_windows(self):
+        from monitor.scalp_session import _in_active_window
+        windows = [{"start": "09:15", "end": "10:30"}]
+        assert _in_active_window(windows, now_ist=self._ist(11, 0)) is False
+        assert _in_active_window(windows, now_ist=self._ist(8, 0)) is False
+
+    def test_multiple_windows_chop_skip(self):
+        """Ashok's profile: trade 09:15–10:30 + 13:30–15:00, skip mid-day chop."""
+        from monitor.scalp_session import _in_active_window
+        windows = [
+            {"start": "09:15", "end": "10:30"},
+            {"start": "13:30", "end": "15:00"},
+        ]
+        assert _in_active_window(windows, now_ist=self._ist(10, 0)) is True   # morning
+        assert _in_active_window(windows, now_ist=self._ist(12, 0)) is False  # chop hour
+        assert _in_active_window(windows, now_ist=self._ist(14, 0)) is True   # afternoon
+
+    def test_malformed_window_skipped_not_crashing(self):
+        from monitor.scalp_session import _in_active_window
+        windows = [
+            {"start": "garbage", "end": "10:30"},
+            {"start": "13:30", "end": "15:00"},
+        ]
+        # Bad entry skipped, valid one still works.
+        assert _in_active_window(windows, now_ist=self._ist(14, 0)) is True
+        assert _in_active_window(windows, now_ist=self._ist(11, 0)) is False

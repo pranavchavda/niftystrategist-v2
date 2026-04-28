@@ -1,6 +1,7 @@
 """Scalp session management API — CRUD for stateful options scalping sessions."""
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -11,7 +12,7 @@ from auth import User, get_current_user
 from database.session import get_db_context
 from monitor import scalp_crud
 from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP, ScalpState, SessionMode
-from services.instruments_cache import get_instrument_key
+from services.instruments_cache import get_instrument_key, is_etf, is_nifty500
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class CreateSessionRequest(BaseModel):
     trail_points: Optional[float] = None
     trail_arm_points: Optional[float] = None
     squareoff_time: str = "15:15"
+    active_windows: Optional[list[dict]] = None
     max_trades: int = 20
     cooldown_seconds: int = 60
     primary_indicator: Optional[str] = None
@@ -64,6 +66,7 @@ class UpdateSessionRequest(BaseModel):
     trail_points: Optional[float] = None
     trail_arm_points: Optional[float] = None
     squareoff_time: Optional[str] = None
+    active_windows: Optional[list[dict]] = None
     max_trades: Optional[int] = None
     cooldown_seconds: Optional[int] = None
     enabled: Optional[bool] = None
@@ -76,6 +79,43 @@ class UpdateSessionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _validate_active_windows(windows: list[dict] | None) -> list[dict] | None:
+    """Validate the active_windows shape. Returns the cleaned list or None.
+
+    Each entry must be {"start": "HH:MM", "end": "HH:MM"} (24h, IST).
+    Empty list is normalized to None (no gating).
+    """
+    if windows is None:
+        return None
+    if not isinstance(windows, list):
+        raise HTTPException(status_code=400, detail="active_windows must be a list")
+    if len(windows) == 0:
+        return None
+    cleaned: list[dict] = []
+    for i, w in enumerate(windows):
+        if not isinstance(w, dict) or "start" not in w or "end" not in w:
+            raise HTTPException(
+                status_code=400,
+                detail=f"active_windows[{i}] must be {{'start': 'HH:MM', 'end': 'HH:MM'}}",
+            )
+        start, end = str(w["start"]), str(w["end"])
+        if not _HHMM_RE.match(start) or not _HHMM_RE.match(end):
+            raise HTTPException(
+                status_code=400,
+                detail=f"active_windows[{i}] times must be 24h HH:MM (got start={start!r}, end={end!r})",
+            )
+        if start >= end:
+            raise HTTPException(
+                status_code=400,
+                detail=f"active_windows[{i}] start ({start}) must be before end ({end})",
+            )
+        cleaned.append({"start": start, "end": end})
+    return cleaned
+
 
 def _iso_utc(dt: datetime | None) -> str | None:
     """ISO-format a naive UTC datetime with an explicit +00:00 suffix so that
@@ -115,6 +155,7 @@ def _serialize_session(row) -> dict:
         "trail_arm_points": row.trail_arm_points,
         "pending_action": row.pending_action,
         "squareoff_time": row.squareoff_time,
+        "active_windows": row.active_windows,
         "max_trades": row.max_trades,
         "cooldown_seconds": row.cooldown_seconds,
         # Runtime state
@@ -199,7 +240,14 @@ async def api_create_session(
         if not body.expiry:
             raise HTTPException(status_code=400, detail="expiry is required for options_scalp")
     else:
-        # Equity modes: resolve the symbol via instruments cache.
+        # Equity modes: must be a Nifty 500 constituent or NSE-listed ETF, and
+        # resolvable via the instruments cache. This keeps sessions on liquid,
+        # well-tracked names and rules out illiquid penny stocks.
+        if not (is_nifty500(underlying_upper) or is_etf(underlying_upper)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Equity symbol '{body.underlying}' is not in the Nifty 500 universe and is not a listed NSE ETF. Pick a Nifty 500 constituent or an NSE ETF.",
+            )
         instrument_key = get_instrument_key(underlying_upper)
         if not instrument_key:
             raise HTTPException(
@@ -246,6 +294,7 @@ async def api_create_session(
             trail_points=body.trail_points,
             trail_arm_points=body.trail_arm_points,
             squareoff_time=body.squareoff_time,
+            active_windows=_validate_active_windows(body.active_windows),
             max_trades=body.max_trades,
             cooldown_seconds=body.cooldown_seconds,
         )
@@ -305,23 +354,44 @@ async def api_update_session(
                 )
             else:
                 updates["enabled"] = body.enabled
+        # Effective session_mode for underlying validation: use incoming value
+        # if mode is being changed in the same PATCH, else fall back to row's
+        # current mode. Equity modes resolve via instruments cache; options_scalp
+        # uses the index map.
+        effective_mode = body.session_mode if body.session_mode is not None else row.session_mode
+        if body.session_mode is not None:
+            updates["session_mode"] = body.session_mode
         if body.underlying is not None:
             upper = body.underlying.upper()
-            if upper not in UNDERLYING_INSTRUMENT_MAP:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unknown underlying '{body.underlying}'. Valid: {', '.join(sorted(set(UNDERLYING_INSTRUMENT_MAP.values()), key=str))}",
-                )
-            updates["underlying"] = upper
-            updates["underlying_instrument_token"] = UNDERLYING_INSTRUMENT_MAP[upper]
+            if effective_mode == SessionMode.OPTIONS_SCALP.value:
+                if upper not in UNDERLYING_INSTRUMENT_MAP:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Unknown underlying '{body.underlying}' for options_scalp. "
+                               f"Valid: {', '.join(sorted(UNDERLYING_INSTRUMENT_MAP.keys()))}",
+                    )
+                updates["underlying"] = upper
+                updates["underlying_instrument_token"] = UNDERLYING_INSTRUMENT_MAP[upper]
+            else:
+                if not (is_nifty500(upper) or is_etf(upper)):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Equity symbol '{body.underlying}' is not in the Nifty 500 universe and is not a listed NSE ETF. Pick a Nifty 500 constituent or an NSE ETF.",
+                    )
+                instrument_key = get_instrument_key(upper)
+                if not instrument_key:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Equity symbol '{body.underlying}' not found in instruments cache",
+                    )
+                updates["underlying"] = upper
+                updates["underlying_instrument_token"] = instrument_key
         if body.expiry is not None:
             updates["expiry"] = body.expiry
         if body.lots is not None:
             updates["lots"] = body.lots
         if body.quantity is not None:
             updates["quantity"] = body.quantity
-        if body.session_mode is not None:
-            updates["session_mode"] = body.session_mode
         if body.product is not None:
             updates["product"] = body.product
         if body.indicator_timeframe is not None:
@@ -342,6 +412,8 @@ async def api_update_session(
             updates["trail_arm_points"] = body.trail_arm_points
         if body.squareoff_time is not None:
             updates["squareoff_time"] = body.squareoff_time
+        if body.active_windows is not None:
+            updates["active_windows"] = _validate_active_windows(body.active_windows)
         if body.max_trades is not None:
             updates["max_trades"] = body.max_trades
         if body.cooldown_seconds is not None:

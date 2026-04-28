@@ -28,6 +28,37 @@ def _is_equity(mode: str) -> bool:
     return mode in (SessionMode.EQUITY_INTRADAY.value, SessionMode.EQUITY_SWING.value)
 
 
+def _in_active_window(
+    windows: list[dict[str, str]],
+    now_ist: datetime | None = None,
+) -> bool:
+    """True iff `now_ist` falls inside any {start, end} window.
+
+    Times are 24h IST strings ("HH:MM"). Comparison is inclusive of start,
+    exclusive of end — matching how trading windows are usually quoted
+    ("trade 09:15 to 10:30" means stop at 10:30 sharp, not 10:30:01).
+    Malformed entries are skipped silently rather than crashing the engine.
+    """
+    if not windows:
+        return True
+    if now_ist is None:
+        from zoneinfo import ZoneInfo
+        now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    cur = now_ist.time()
+    for w in windows:
+        try:
+            sh, sm = (int(p) for p in str(w["start"]).split(":"))
+            eh, em = (int(p) for p in str(w["end"]).split(":"))
+        except (KeyError, ValueError, TypeError):
+            continue
+        from datetime import time as _time
+        start_t = _time(hour=sh, minute=sm)
+        end_t = _time(hour=eh, minute=em)
+        if start_t <= cur < end_t:
+            return True
+    return False
+
+
 def _is_nse_market_open() -> bool:
     """True iff NSE is currently in a regular trading session.
 
@@ -565,6 +596,16 @@ class ScalpSessionManager:
                     return
             except Exception:
                 pass
+
+        # Active windows guard — block new entries outside any configured
+        # IST window. None / empty = always active. Existing positions are
+        # NOT affected (SL/target/trail/squareoff continue evaluating).
+        if cfg.active_windows and not _in_active_window(cfg.active_windows):
+            logger.info(
+                "Session %d: outside active windows %s — skip entry",
+                session.id, cfg.active_windows,
+            )
+            return
 
         # Cooldown guard
         if rt.last_exit_time:

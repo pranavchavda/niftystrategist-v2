@@ -782,6 +782,11 @@ class ScalpSessionDB(Base):
     trail_arm_points = Column(Float, nullable=True)
     squareoff_time = Column(String(5), default="15:15", nullable=False)
 
+    # Optional list of {"start": "HH:MM", "end": "HH:MM"} IST windows. NULL =
+    # always active. When set, daemon blocks new entries outside any window;
+    # existing positions still managed (SL/target/trail/squareoff).
+    active_windows = Column(JSON, nullable=True)
+
     # API-to-daemon signal. Set by web process to request an exit+disable
     # or exit+delete of a HOLDING session; daemon clears after handling.
     pending_action = Column(String(20), nullable=True)

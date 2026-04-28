@@ -27,6 +27,7 @@ const CONFIRM_INDICATORS: { value: string; label: string }[] = [
   { value: '', label: '— None —' },
   { value: 'qqe_mod', label: 'QQE MOD' },
   { value: 'macd', label: 'MACD' },
+  { value: 'rsi', label: 'RSI 14' },
   { value: 'halftrend', label: 'HalfTrend' },
   { value: 'ssl_hybrid', label: 'SSL Hybrid' },
   { value: 'utbot', label: 'UT Bot' },
@@ -40,7 +41,15 @@ const PARAM_DEFAULTS: Record<string, Record<string, number>> = {
   supertrend: { period: 10, multiplier: 3.0 },
   renko: { brick_size: 10 },
   qqe_mod: { rsi_period: 6, smoothing: 5 },
+  rsi: { period: 14 },
   macd: {},
+};
+
+// Indicators that need a non-numeric param injected at submit time so the
+// scalp engine's signed-scalar contract is satisfied (engine detects flips
+// via sign change). RSI's natural 0..100 range needs centering on 50.
+const PARAM_OVERRIDES: Record<string, Record<string, string>> = {
+  rsi: { output: 'centered' },
 };
 
 const PARAM_LABELS: Record<string, string> = {
@@ -199,6 +208,7 @@ interface ScalpSession {
   confirm_indicator?: string | null;
   confirm_params?: Record<string, number> | null;
   squareoff_time: string;
+  active_windows: { start: string; end: string }[] | null;
   state: string;
   current_option_type: string | null;
   current_strike: number | null;
@@ -275,6 +285,7 @@ export default function ScalpSessionsRoute() {
     trail_points: '',
     trail_arm_points: '',
     squareoff_time: '15:15',
+    active_windows: [] as { start: string; end: string }[],
     max_trades: 20,
     cooldown_seconds: 60,
   });
@@ -387,6 +398,16 @@ export default function ScalpSessionsRoute() {
         body.confirm_indicator = null;
         body.confirm_params = null;
       }
+      // Inject non-numeric param overrides (e.g. RSI needs output='centered'
+      // for the engine's signed-scalar contract).
+      const primaryOverride = PARAM_OVERRIDES[body.primary_indicator];
+      if (primaryOverride) {
+        body.primary_params = { ...(body.primary_params || {}), ...primaryOverride };
+      }
+      const confirmOverride = body.confirm_indicator ? PARAM_OVERRIDES[body.confirm_indicator] : null;
+      if (confirmOverride) {
+        body.confirm_params = { ...(body.confirm_params || {}), ...confirmOverride };
+      }
       // Keep utbot_period/utbot_sensitivity in sync when primary is utbot,
       // so legacy code paths and back-compat fallbacks see consistent values.
       if (body.primary_indicator === 'utbot' && body.primary_params) {
@@ -401,6 +422,11 @@ export default function ScalpSessionsRoute() {
         delete body.lots;
       } else {
         body.quantity = null;
+      }
+      // active_windows: empty list → null (no gating); strip blank rows.
+      if (Array.isArray(body.active_windows)) {
+        const cleaned = body.active_windows.filter((w: any) => w && w.start && w.end);
+        body.active_windows = cleaned.length === 0 ? null : cleaned;
       }
       const res = await fetch('/api/scalp/sessions', { method: 'POST', headers, body: JSON.stringify(body) });
       if (!res.ok) {
@@ -439,6 +465,7 @@ export default function ScalpSessionsRoute() {
       trail_points: s.trail_points ?? '',
       trail_arm_points: s.trail_arm_points ?? '',
       squareoff_time: s.squareoff_time,
+      active_windows: s.active_windows ?? [],
       max_trades: s.max_trades,
       cooldown_seconds: s.cooldown_seconds,
     });
@@ -459,6 +486,10 @@ export default function ScalpSessionsRoute() {
         trail_points: formData.trail_points === '' ? null : Number(formData.trail_points),
         trail_arm_points: formData.trail_arm_points === '' ? null : Number(formData.trail_arm_points),
         squareoff_time: formData.squareoff_time,
+        active_windows: (() => {
+          const cleaned = (formData.active_windows || []).filter((w: any) => w && w.start && w.end);
+          return cleaned.length === 0 ? null : cleaned;
+        })(),
         max_trades: Number(formData.max_trades),
         cooldown_seconds: Number(formData.cooldown_seconds),
         primary_indicator: formData.primary_indicator,
@@ -466,6 +497,15 @@ export default function ScalpSessionsRoute() {
         confirm_indicator: formData.confirm_indicator || null,
         confirm_params: formData.confirm_indicator ? (formData.confirm_params || {}) : null,
       };
+      // Inject non-numeric param overrides (e.g. RSI output='centered').
+      const primaryOverride = PARAM_OVERRIDES[formData.primary_indicator];
+      if (primaryOverride && body.primary_params) {
+        body.primary_params = { ...body.primary_params, ...primaryOverride };
+      }
+      const confirmOverride = formData.confirm_indicator ? PARAM_OVERRIDES[formData.confirm_indicator] : null;
+      if (confirmOverride && body.confirm_params) {
+        body.confirm_params = { ...body.confirm_params, ...confirmOverride };
+      }
       if (formData.primary_indicator === 'utbot' && formData.primary_params) {
         body.utbot_period = formData.primary_params.period ?? formData.utbot_period;
         body.utbot_sensitivity = formData.primary_params.sensitivity ?? formData.utbot_sensitivity;
@@ -592,7 +632,7 @@ export default function ScalpSessionsRoute() {
               <p className="text-sm text-zinc-500">Stateful indicator-driven trading — options scalp, equity intraday, equity swing</p>
             </div>
           </div>
-          <Button onClick={() => { setFormData({ name: '', session_mode: 'options_scalp', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, quantity: '', indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
+          <Button onClick={() => { setFormData({ name: '', session_mode: 'options_scalp', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, quantity: '', indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', active_windows: [], max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
             <Plus className="w-4 h-4" /> New Session
           </Button>
         </div>
@@ -937,6 +977,75 @@ export default function ScalpSessionsRoute() {
                 </div>
               )}
             </div>
+            {formData.session_mode !== 'equity_swing' && (
+              <div className="rounded-lg border border-zinc-200 dark:border-zinc-700 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Active Windows (IST)</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setFormData((p: any) => ({
+                        ...p,
+                        active_windows: [
+                          { start: '09:15', end: '10:30' },
+                          { start: '13:30', end: '15:00' },
+                        ],
+                      }))}
+                      className="text-xs text-indigo-600 hover:underline">
+                      Use 09:15–10:30 + 13:30–15:00
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData((p: any) => ({
+                        ...p,
+                        active_windows: [...(p.active_windows || []), { start: '', end: '' }],
+                      }))}
+                      className="text-xs text-zinc-600 hover:underline">
+                      + Add window
+                    </button>
+                  </div>
+                </div>
+                {(formData.active_windows || []).length === 0 ? (
+                  <p className="text-xs text-zinc-500 italic">No windows — entries fire any time during market hours.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {formData.active_windows.map((w: { start: string; end: string }, idx: number) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <Input
+                          placeholder="09:15"
+                          value={w.start}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => {
+                            const next = [...(p.active_windows || [])];
+                            next[idx] = { ...next[idx], start: e.target.value };
+                            return { ...p, active_windows: next };
+                          })}
+                          className="flex-1" />
+                        <span className="text-xs text-zinc-500">→</span>
+                        <Input
+                          placeholder="10:30"
+                          value={w.end}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => {
+                            const next = [...(p.active_windows || [])];
+                            next[idx] = { ...next[idx], end: e.target.value };
+                            return { ...p, active_windows: next };
+                          })}
+                          className="flex-1" />
+                        <button
+                          type="button"
+                          onClick={() => setFormData((p: any) => ({
+                            ...p,
+                            active_windows: (p.active_windows || []).filter((_: any, i: number) => i !== idx),
+                          }))}
+                          className="text-xs text-red-600 hover:underline px-2">
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-zinc-500 mt-2">Block new entries outside these IST windows. Existing positions are still managed (SL / target / trail / squareoff).</p>
+              </div>
+            )}
             <div className="space-y-3 rounded-lg border border-zinc-200 dark:border-zinc-700 p-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>

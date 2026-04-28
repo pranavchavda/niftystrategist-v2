@@ -70,6 +70,9 @@ class WorkflowScheduler:
         # Add pre-market forecast batch job (08:30 IST = 03:00 UTC, weekdays)
         self._add_forecast_batch_job()
 
+        # Refresh NSE ETF list once a week (Sunday 02:00 UTC = 07:30 IST)
+        self._add_etf_refresh_job()
+
         # Thread embedding is now event-driven (triggered on message save)
         # instead of polling every 60s. See thread_embedder.schedule_debounced_embed()
 
@@ -476,6 +479,36 @@ class WorkflowScheduler:
 
         except Exception as e:
             logger.exception("Proactive TOTP refresh: fatal error: %s", e)
+
+    def _add_etf_refresh_job(self):
+        """Refresh the NSE ETF list weekly (Sunday 02:00 UTC = 07:30 IST).
+
+        NSE rate-limits the live ETF API and a bundled seed ships with the
+        repo as a fallback. Refreshing once a week is plenty — NSE typically
+        lists 3–8 new ETFs per month.
+        """
+        job_id = "nse_etf_refresh"
+
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        self.scheduler.add_job(
+            func=self._refresh_etf_list,
+            trigger=CronTrigger(day_of_week="sun", hour=2, minute=0),
+            id=job_id,
+            name="Weekly NSE ETF list refresh (Sun 07:30 IST)",
+            replace_existing=True,
+        )
+        logger.info("Scheduled weekly NSE ETF list refresh (Sun 02:00 UTC)")
+
+    async def _refresh_etf_list(self):
+        """Pull fresh ETF list from NSE and overwrite the disk cache."""
+        from services.instruments_cache import refresh_etf_cache
+        try:
+            ok = refresh_etf_cache()
+            logger.info("Weekly ETF refresh: %s", "OK" if ok else "FAILED (kept old cache)")
+        except Exception as e:
+            logger.exception("Weekly ETF refresh: fatal error: %s", e)
 
     def _add_forecast_batch_job(self):
         """Add a pre-market batch forecast job for all users' watchlist symbols.

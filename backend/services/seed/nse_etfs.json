@@ -1,0 +1,967 @@
+{
+  "data": [
+    {
+      "symbol": "ABGSEC"
+    },
+    {
+      "symbol": "ABSL10BANK"
+    },
+    {
+      "symbol": "ABSLBANETF"
+    },
+    {
+      "symbol": "ABSLLIQUID"
+    },
+    {
+      "symbol": "ABSLMSCIN"
+    },
+    {
+      "symbol": "ABSLNN50ET"
+    },
+    {
+      "symbol": "ABSLPSE"
+    },
+    {
+      "symbol": "ALPHA"
+    },
+    {
+      "symbol": "ALPHAETF"
+    },
+    {
+      "symbol": "ALPL30IETF"
+    },
+    {
+      "symbol": "AONEGOLD"
+    },
+    {
+      "symbol": "AONELIQUID"
+    },
+    {
+      "symbol": "AONENIFTY"
+    },
+    {
+      "symbol": "AONESILVER"
+    },
+    {
+      "symbol": "AONETMMQ50"
+    },
+    {
+      "symbol": "AONETOTAL"
+    },
+    {
+      "symbol": "AUTOBEES"
+    },
+    {
+      "symbol": "AUTOIETF"
+    },
+    {
+      "symbol": "AXISBNKETF"
+    },
+    {
+      "symbol": "AXISBPSETF"
+    },
+    {
+      "symbol": "AXISCETF"
+    },
+    {
+      "symbol": "AXISGOLD"
+    },
+    {
+      "symbol": "AXISHCETF"
+    },
+    {
+      "symbol": "AXISILVER"
+    },
+    {
+      "symbol": "AXISNIFTY"
+    },
+    {
+      "symbol": "AXISTECETF"
+    },
+    {
+      "symbol": "AXISVALUE"
+    },
+    {
+      "symbol": "AXSENSEX"
+    },
+    {
+      "symbol": "BANK10ADD"
+    },
+    {
+      "symbol": "BANKADD"
+    },
+    {
+      "symbol": "BANKBEES"
+    },
+    {
+      "symbol": "BANKBETA"
+    },
+    {
+      "symbol": "BANKBETF"
+    },
+    {
+      "symbol": "BANKETF"
+    },
+    {
+      "symbol": "BANKIETF"
+    },
+    {
+      "symbol": "BANKNIFTY1"
+    },
+    {
+      "symbol": "BANKPSU"
+    },
+    {
+      "symbol": "BBETF0432"
+    },
+    {
+      "symbol": "BBNPNBETF"
+    },
+    {
+      "symbol": "BBNPPGOLD"
+    },
+    {
+      "symbol": "BFSI"
+    },
+    {
+      "symbol": "BSE500IETF"
+    },
+    {
+      "symbol": "BSLGOLDETF"
+    },
+    {
+      "symbol": "BSLNIFTY"
+    },
+    {
+      "symbol": "BSLSENETFG"
+    },
+    {
+      "symbol": "CASHIETF"
+    },
+    {
+      "symbol": "CHEMICAL"
+    },
+    {
+      "symbol": "CHOICEGOLD"
+    },
+    {
+      "symbol": "COMMOIETF"
+    },
+    {
+      "symbol": "CONS"
+    },
+    {
+      "symbol": "CONSUMBEES"
+    },
+    {
+      "symbol": "CONSUMER"
+    },
+    {
+      "symbol": "CONSUMIETF"
+    },
+    {
+      "symbol": "CPSEETF"
+    },
+    {
+      "symbol": "DEFENCE"
+    },
+    {
+      "symbol": "DIVIDEND"
+    },
+    {
+      "symbol": "DIVOPPBEES"
+    },
+    {
+      "symbol": "EBANKNIFTY"
+    },
+    {
+      "symbol": "EBBETF0430"
+    },
+    {
+      "symbol": "EBBETF0431"
+    },
+    {
+      "symbol": "EBBETF0433"
+    },
+    {
+      "symbol": "ECAPINSURE"
+    },
+    {
+      "symbol": "EGOLD"
+    },
+    {
+      "symbol": "ELIQUID"
+    },
+    {
+      "symbol": "ELM250"
+    },
+    {
+      "symbol": "EMULTIMQ"
+    },
+    {
+      "symbol": "ENERGY"
+    },
+    {
+      "symbol": "ENIFTY"
+    },
+    {
+      "symbol": "EQUAL200"
+    },
+    {
+      "symbol": "EQUAL50"
+    },
+    {
+      "symbol": "EQUAL50ADD"
+    },
+    {
+      "symbol": "ESENSEX"
+    },
+    {
+      "symbol": "ESG"
+    },
+    {
+      "symbol": "ESILVER"
+    },
+    {
+      "symbol": "EVIETF"
+    },
+    {
+      "symbol": "EVINDIA"
+    },
+    {
+      "symbol": "FINIETF"
+    },
+    {
+      "symbol": "FLEXIADD"
+    },
+    {
+      "symbol": "FMCGIETF"
+    },
+    {
+      "symbol": "GILT10BETA"
+    },
+    {
+      "symbol": "GILT5BETA"
+    },
+    {
+      "symbol": "GILT5YBEES"
+    },
+    {
+      "symbol": "GOLD1"
+    },
+    {
+      "symbol": "GOLD360"
+    },
+    {
+      "symbol": "GOLDADD"
+    },
+    {
+      "symbol": "GOLDBEES"
+    },
+    {
+      "symbol": "GOLDBETA"
+    },
+    {
+      "symbol": "GOLDBND"
+    },
+    {
+      "symbol": "GOLDCASE"
+    },
+    {
+      "symbol": "GOLDETF"
+    },
+    {
+      "symbol": "GOLDIETF"
+    },
+    {
+      "symbol": "GROWWCAPM"
+    },
+    {
+      "symbol": "GROWWCHEM"
+    },
+    {
+      "symbol": "GROWWDEFNC"
+    },
+    {
+      "symbol": "GROWWEV"
+    },
+    {
+      "symbol": "GROWWGOLD"
+    },
+    {
+      "symbol": "GROWWHOSPI"
+    },
+    {
+      "symbol": "GROWWLIQID"
+    },
+    {
+      "symbol": "GROWWLOVOL"
+    },
+    {
+      "symbol": "GROWWMC150"
+    },
+    {
+      "symbol": "GROWWMETAL"
+    },
+    {
+      "symbol": "GROWWMOM50"
+    },
+    {
+      "symbol": "GROWWN200"
+    },
+    {
+      "symbol": "GROWWNET"
+    },
+    {
+      "symbol": "GROWWNIFTY"
+    },
+    {
+      "symbol": "GROWWNXT50"
+    },
+    {
+      "symbol": "GROWWPOWER"
+    },
+    {
+      "symbol": "GROWWPSE"
+    },
+    {
+      "symbol": "GROWWPSUBK"
+    },
+    {
+      "symbol": "GROWWRAIL"
+    },
+    {
+      "symbol": "GROWWRLTY"
+    },
+    {
+      "symbol": "GROWWSC250"
+    },
+    {
+      "symbol": "GROWWSLVR"
+    },
+    {
+      "symbol": "GSEC10ABSL"
+    },
+    {
+      "symbol": "GSEC10IETF"
+    },
+    {
+      "symbol": "GSEC10YEAR"
+    },
+    {
+      "symbol": "GSEC5IETF"
+    },
+    {
+      "symbol": "HDFCBSE500"
+    },
+    {
+      "symbol": "HDFCGOLD"
+    },
+    {
+      "symbol": "HDFCGROWTH"
+    },
+    {
+      "symbol": "HDFCLIQUID"
+    },
+    {
+      "symbol": "HDFCLOWVOL"
+    },
+    {
+      "symbol": "HDFCMID150"
+    },
+    {
+      "symbol": "HDFCMOMENT"
+    },
+    {
+      "symbol": "HDFCNEXT50"
+    },
+    {
+      "symbol": "HDFCNIF100"
+    },
+    {
+      "symbol": "HDFCNIFBAN"
+    },
+    {
+      "symbol": "HDFCNIFIT"
+    },
+    {
+      "symbol": "HDFCNIFTY"
+    },
+    {
+      "symbol": "HDFCPSUBK"
+    },
+    {
+      "symbol": "HDFCPVTBAN"
+    },
+    {
+      "symbol": "HDFCQUAL"
+    },
+    {
+      "symbol": "HDFCSENSEX"
+    },
+    {
+      "symbol": "HDFCSILVER"
+    },
+    {
+      "symbol": "HDFCSML250"
+    },
+    {
+      "symbol": "HDFCVALUE"
+    },
+    {
+      "symbol": "HEALTHADD"
+    },
+    {
+      "symbol": "HEALTHCARE"
+    },
+    {
+      "symbol": "HEALTHIETF"
+    },
+    {
+      "symbol": "HEALTHY"
+    },
+    {
+      "symbol": "HNGSNGBEES"
+    },
+    {
+      "symbol": "HSBCGOLD"
+    },
+    {
+      "symbol": "ICICIB22"
+    },
+    {
+      "symbol": "IDFNIFTYET"
+    },
+    {
+      "symbol": "INFRA"
+    },
+    {
+      "symbol": "INFRABEES"
+    },
+    {
+      "symbol": "INFRAIETF"
+    },
+    {
+      "symbol": "INTERNET"
+    },
+    {
+      "symbol": "IT"
+    },
+    {
+      "symbol": "ITADD"
+    },
+    {
+      "symbol": "ITBEES"
+    },
+    {
+      "symbol": "ITBETA"
+    },
+    {
+      "symbol": "ITETF"
+    },
+    {
+      "symbol": "ITIETF"
+    },
+    {
+      "symbol": "IVZINGOLD"
+    },
+    {
+      "symbol": "IVZINNIFTY"
+    },
+    {
+      "symbol": "JUNIORBEES"
+    },
+    {
+      "symbol": "LICMFGOLD"
+    },
+    {
+      "symbol": "LICNETFGSC"
+    },
+    {
+      "symbol": "LICNETFN50"
+    },
+    {
+      "symbol": "LICNETFSEN"
+    },
+    {
+      "symbol": "LICNFNHGP"
+    },
+    {
+      "symbol": "LICNMID100"
+    },
+    {
+      "symbol": "LIQGRWBEES"
+    },
+    {
+      "symbol": "LIQUID"
+    },
+    {
+      "symbol": "LIQUID1"
+    },
+    {
+      "symbol": "LIQUIDADD"
+    },
+    {
+      "symbol": "LIQUIDBEES"
+    },
+    {
+      "symbol": "LIQUIDBETF"
+    },
+    {
+      "symbol": "LIQUIDCASE"
+    },
+    {
+      "symbol": "LIQUIDETF"
+    },
+    {
+      "symbol": "LIQUIDIETF"
+    },
+    {
+      "symbol": "LIQUIDPLUS"
+    },
+    {
+      "symbol": "LIQUIDSBI"
+    },
+    {
+      "symbol": "LIQUIDSHRI"
+    },
+    {
+      "symbol": "LOWVOL"
+    },
+    {
+      "symbol": "LOWVOL1"
+    },
+    {
+      "symbol": "LOWVOLIETF"
+    },
+    {
+      "symbol": "LTGILTBEES"
+    },
+    {
+      "symbol": "LTGILTCASE"
+    },
+    {
+      "symbol": "MAFANG"
+    },
+    {
+      "symbol": "MAHKTECH"
+    },
+    {
+      "symbol": "MAKEINDIA"
+    },
+    {
+      "symbol": "MANUFGBEES"
+    },
+    {
+      "symbol": "MASPTOP50"
+    },
+    {
+      "symbol": "METAL"
+    },
+    {
+      "symbol": "METALIETF"
+    },
+    {
+      "symbol": "MID150"
+    },
+    {
+      "symbol": "MID150BEES"
+    },
+    {
+      "symbol": "MID150CASE"
+    },
+    {
+      "symbol": "MIDCAP"
+    },
+    {
+      "symbol": "MIDCAPADD"
+    },
+    {
+      "symbol": "MIDCAPBETA"
+    },
+    {
+      "symbol": "MIDCAPETF"
+    },
+    {
+      "symbol": "MIDCAPIETF"
+    },
+    {
+      "symbol": "MIDQ50ADD"
+    },
+    {
+      "symbol": "MIDSELIETF"
+    },
+    {
+      "symbol": "MIDSMALL"
+    },
+    {
+      "symbol": "MNC"
+    },
+    {
+      "symbol": "MOALPHA50"
+    },
+    {
+      "symbol": "MOBANK10"
+    },
+    {
+      "symbol": "MOCAPITAL"
+    },
+    {
+      "symbol": "MODEFENCE"
+    },
+    {
+      "symbol": "MOENERGY"
+    },
+    {
+      "symbol": "MOGOLD"
+    },
+    {
+      "symbol": "MOGSEC"
+    },
+    {
+      "symbol": "MOHEALTH"
+    },
+    {
+      "symbol": "MOINFRA"
+    },
+    {
+      "symbol": "MOIPO"
+    },
+    {
+      "symbol": "MOLOWVOL"
+    },
+    {
+      "symbol": "MOM100"
+    },
+    {
+      "symbol": "MOM30IETF"
+    },
+    {
+      "symbol": "MOM50"
+    },
+    {
+      "symbol": "MOMENTUM"
+    },
+    {
+      "symbol": "MOMENTUM30"
+    },
+    {
+      "symbol": "MOMENTUM50"
+    },
+    {
+      "symbol": "MOMGF"
+    },
+    {
+      "symbol": "MOMIDMTM"
+    },
+    {
+      "symbol": "MOMNC"
+    },
+    {
+      "symbol": "MOMOMENTUM"
+    },
+    {
+      "symbol": "MON100"
+    },
+    {
+      "symbol": "MON50EQUAL"
+    },
+    {
+      "symbol": "MONEXT50"
+    },
+    {
+      "symbol": "MONIFTY100"
+    },
+    {
+      "symbol": "MONIFTY500"
+    },
+    {
+      "symbol": "MONQ50"
+    },
+    {
+      "symbol": "MOPSE"
+    },
+    {
+      "symbol": "MOQUALITY"
+    },
+    {
+      "symbol": "MOREALTY"
+    },
+    {
+      "symbol": "MOSERVICE"
+    },
+    {
+      "symbol": "MOSILVER"
+    },
+    {
+      "symbol": "MOSMALL250"
+    },
+    {
+      "symbol": "MOTOUR"
+    },
+    {
+      "symbol": "MOVALUE"
+    },
+    {
+      "symbol": "MSCIADD"
+    },
+    {
+      "symbol": "MSCIINDIA"
+    },
+    {
+      "symbol": "MULTICAP"
+    },
+    {
+      "symbol": "NETF"
+    },
+    {
+      "symbol": "NEXT30ADD"
+    },
+    {
+      "symbol": "NEXT50"
+    },
+    {
+      "symbol": "NEXT50ADD"
+    },
+    {
+      "symbol": "NEXT50BETA"
+    },
+    {
+      "symbol": "NEXT50ETF"
+    },
+    {
+      "symbol": "NEXT50IETF"
+    },
+    {
+      "symbol": "NIF100BEES"
+    },
+    {
+      "symbol": "NIF100IETF"
+    },
+    {
+      "symbol": "NIFTY1"
+    },
+    {
+      "symbol": "NIFTY100EW"
+    },
+    {
+      "symbol": "NIFTYADD"
+    },
+    {
+      "symbol": "NIFTYBEES"
+    },
+    {
+      "symbol": "NIFTYBETA"
+    },
+    {
+      "symbol": "NIFTYBETF"
+    },
+    {
+      "symbol": "NIFTYCASE"
+    },
+    {
+      "symbol": "NIFTYETF"
+    },
+    {
+      "symbol": "NIFTYIETF"
+    },
+    {
+      "symbol": "NIFTYQLITY"
+    },
+    {
+      "symbol": "NPBET"
+    },
+    {
+      "symbol": "NV20"
+    },
+    {
+      "symbol": "NV20BEES"
+    },
+    {
+      "symbol": "NV20IETF"
+    },
+    {
+      "symbol": "OILIETF"
+    },
+    {
+      "symbol": "PHARMABEES"
+    },
+    {
+      "symbol": "PSUBANK"
+    },
+    {
+      "symbol": "PSUBANKADD"
+    },
+    {
+      "symbol": "PSUBNKBEES"
+    },
+    {
+      "symbol": "PSUBNKIETF"
+    },
+    {
+      "symbol": "PVTBANIETF"
+    },
+    {
+      "symbol": "PVTBANKADD"
+    },
+    {
+      "symbol": "QGOLDHALF"
+    },
+    {
+      "symbol": "QNIFTY"
+    },
+    {
+      "symbol": "QUAL30IETF"
+    },
+    {
+      "symbol": "QUALITY30"
+    },
+    {
+      "symbol": "SBIBPB"
+    },
+    {
+      "symbol": "SBIETFCON"
+    },
+    {
+      "symbol": "SBIETFIT"
+    },
+    {
+      "symbol": "SBIETFPB"
+    },
+    {
+      "symbol": "SBIETFQLTY"
+    },
+    {
+      "symbol": "SBILIQETF"
+    },
+    {
+      "symbol": "SBIMIDMOM"
+    },
+    {
+      "symbol": "SBINEQWETF"
+    },
+    {
+      "symbol": "SBINMID150"
+    },
+    {
+      "symbol": "SBISILVER"
+    },
+    {
+      "symbol": "SELECTIPO"
+    },
+    {
+      "symbol": "SENSEXADD"
+    },
+    {
+      "symbol": "SENSEXBETA"
+    },
+    {
+      "symbol": "SENSEXETF"
+    },
+    {
+      "symbol": "SENSEXIETF"
+    },
+    {
+      "symbol": "SETF10GILT"
+    },
+    {
+      "symbol": "SETFGOLD"
+    },
+    {
+      "symbol": "SETFNIF50"
+    },
+    {
+      "symbol": "SETFNIFBK"
+    },
+    {
+      "symbol": "SETFNN50"
+    },
+    {
+      "symbol": "SHARIABEES"
+    },
+    {
+      "symbol": "SILVER"
+    },
+    {
+      "symbol": "SILVER1"
+    },
+    {
+      "symbol": "SILVER360"
+    },
+    {
+      "symbol": "SILVERADD"
+    },
+    {
+      "symbol": "SILVERAG"
+    },
+    {
+      "symbol": "SILVERBEES"
+    },
+    {
+      "symbol": "SILVERBETA"
+    },
+    {
+      "symbol": "SILVERBND"
+    },
+    {
+      "symbol": "SILVERCASE"
+    },
+    {
+      "symbol": "SILVERIETF"
+    },
+    {
+      "symbol": "SMALL250"
+    },
+    {
+      "symbol": "SMALLADD"
+    },
+    {
+      "symbol": "SMALLCAP"
+    },
+    {
+      "symbol": "SML100CASE"
+    },
+    {
+      "symbol": "SNXT30BEES"
+    },
+    {
+      "symbol": "SNXT50BETA"
+    },
+    {
+      "symbol": "TATAGOLD"
+    },
+    {
+      "symbol": "TATSILV"
+    },
+    {
+      "symbol": "TECH"
+    },
+    {
+      "symbol": "TNIDETF"
+    },
+    {
+      "symbol": "TOP100CASE"
+    },
+    {
+      "symbol": "TOP10ADD"
+    },
+    {
+      "symbol": "TOP15IETF"
+    },
+    {
+      "symbol": "TOP20"
+    },
+    {
+      "symbol": "TWCGOLDETF"
+    },
+    {
+      "symbol": "UNIONGOLD"
+    },
+    {
+      "symbol": "VAL30IETF"
+    },
+    {
+      "symbol": "VALUE"
+    }
+  ]
+}

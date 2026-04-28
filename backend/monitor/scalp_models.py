@@ -73,6 +73,12 @@ class ScalpSessionConfig(BaseModel):
     trail_arm_points: float | None = None
     squareoff_time: str = "15:15"
 
+    # Optional IST time windows during which new entries may fire. None /
+    # empty = always active (current behavior). Format:
+    #   [{"start": "09:15", "end": "10:30"}, {"start": "13:30", "end": "15:00"}]
+    # Existing positions are always managed regardless of windows.
+    active_windows: list[dict[str, str]] | None = None
+
     max_trades: int = 20
     cooldown_seconds: int = 60
 

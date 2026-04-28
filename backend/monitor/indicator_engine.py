@@ -13,12 +13,22 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
     df = df.sort_values("timestamp").reset_index(drop=True)
     try:
         if indicator == "rsi":
+            # output="value" (default) → 0..100 (back-compat for monitor rules
+            #   that use lte 30 / gte 70 thresholds).
+            # output="centered" → rsi - 50 so cross-zero = cross-50.
+            #   Required when RSI is used as a scalp primary or confirm
+            #   (engine detects flips via sign change).
             period = params.get("period", 14)
+            output = params.get("output", "value")
             if len(df) < period + 1:
                 return None
             rsi = ta.momentum.RSIIndicator(df["close"], window=period)
             val = rsi.rsi().iloc[-1]
-            return None if pd.isna(val) else float(val)
+            if pd.isna(val):
+                return None
+            if output == "centered":
+                return float(val) - 50.0
+            return float(val)
         elif indicator == "macd":
             if len(df) < 26:
                 return None
