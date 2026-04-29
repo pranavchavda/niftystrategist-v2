@@ -88,6 +88,11 @@ const OVERLAY_STYLE: Record<string, { color: string; title?: string }> = {
   bb_middle: { color: '#8b5cf6', title: 'BB Middle' },
   bb_lower: { color: '#8b5cf6', title: 'BB Lower' },
   vwap: { color: '#06b6d4', title: 'VWAP' },
+  halftrend_line: { color: '#22d3ee', title: 'HalfTrend' },
+  ssl_line: { color: '#a855f7', title: 'SSL Hybrid' },
+  ema_fast: { color: '#10b981', title: 'EMA 9' },
+  ema_slow: { color: '#ef4444', title: 'EMA 21' },
+  supertrend_line: { color: '#facc15', title: 'Supertrend' },
 };
 
 const PRESET_INDICATORS: IndicatorDef[] = [
@@ -100,10 +105,16 @@ const PRESET_INDICATORS: IndicatorDef[] = [
   { key: 'bbands', label: 'Bollinger Bands', apiName: 'bbands', kind: 'overlay' },
   { key: 'vwap', label: 'VWAP', apiName: 'vwap', kind: 'overlay' },
   { key: 'utbot', label: 'UT Bot', apiName: 'utbot', kind: 'overlay' },
+  { key: 'halftrend', label: 'HalfTrend', apiName: 'halftrend', kind: 'overlay' },
+  { key: 'ssl_hybrid', label: 'SSL Hybrid', apiName: 'ssl_hybrid', kind: 'overlay' },
+  { key: 'ema_crossover', label: 'EMA Cross 9/21', apiName: 'ema_crossover', kind: 'overlay' },
+  { key: 'supertrend', label: 'Supertrend', apiName: 'supertrend', kind: 'overlay' },
   { key: 'rsi', label: 'RSI (14)', apiName: 'rsi', kind: 'pane' },
   { key: 'macd', label: 'MACD', apiName: 'macd', kind: 'pane' },
   { key: 'stoch', label: 'Stochastic', apiName: 'stoch', kind: 'pane' },
   { key: 'atr', label: 'ATR', apiName: 'atr', kind: 'pane' },
+  { key: 'qqe_mod', label: 'QQE MOD', apiName: 'qqe_mod', kind: 'pane' },
+  { key: 'renko', label: 'Renko Trend', apiName: 'renko', kind: 'pane' },
 ];
 
 const POPULAR_INDICES = ['NIFTY 50', 'NIFTY BANK', 'NIFTY FIN SERVICE', 'NIFTY MID SELECT', 'SENSEX'];
@@ -130,6 +141,8 @@ const PANE_ID_FOR: Record<string, string> = {
   macd: 'macd',
   stoch: 'stoch',
   atr: 'atr',
+  qqe_mod: 'qqe_mod',
+  renko: 'renko',
 };
 
 function useDarkMode(): boolean {

@@ -66,11 +66,57 @@ def _interval_and_days(timeframe: str, override_days: Optional[int]) -> tuple[st
 
 
 async def _fetch_candles(user: User, symbol: str, interval: str, days: int) -> list[dict]:
-    """Fetch OHLC candles normalized to the shape the frontend expects."""
+    """Fetch OHLC candles normalized to the shape the frontend expects.
+
+    Upstox's historical endpoint excludes today, so the bare multi-day result
+    ends at yesterday's close. We tack on today's data per timeframe:
+      - intraday (1m/5m/15m/30m): re-fetch via days=1 (routes to intraday API)
+        and concat after stripping any same-day rows already in `raw`.
+      - daily (interval=="day"): synthesize today's bar from the live quote
+        (open/high/low/ltp/volume) and append.
+    Without this the chart's last bar is yesterday and the header price
+    (which reads lastCandle.close when not Live) is stale.
+    """
     client = await cockpit_api._get_client_for_user(user)
     raw = await client.get_historical_data(symbol.upper(), interval=interval, days=days)
     raw.sort(key=lambda c: c.timestamp)
     intraday = interval in ("1minute", "5minute", "15minute", "30minute")
+
+    # Tack on today's data so the chart and header reflect current session.
+    if intraday:
+        try:
+            today_raw = await client.get_historical_data(symbol.upper(), interval=interval, days=1)
+        except Exception as e:
+            logger.warning(f"charts.candles({symbol}, {interval}) intraday tail fetch failed: {e}")
+            today_raw = []
+        if today_raw:
+            today_raw.sort(key=lambda c: c.timestamp)
+            today_date = today_raw[0].timestamp[:10]
+            # Drop any same-day rows from the historical pull to avoid dupes.
+            raw = [c for c in raw if c.timestamp[:10] != today_date]
+            raw.extend(today_raw)
+            raw.sort(key=lambda c: c.timestamp)
+    elif interval == "day":
+        try:
+            quote = await client.get_quote(symbol.upper())
+        except Exception as e:
+            logger.warning(f"charts.candles({symbol}, day) quote fetch failed: {e}")
+            quote = None
+        if quote and quote.get("ltp") is not None and quote.get("open") is not None:
+            today_iso = datetime.now().strftime("%Y-%m-%d")
+            # Drop any synthetic same-day bar already present (defensive).
+            raw = [c for c in raw if c.timestamp[:10] != today_iso]
+            from models.analysis import OHLCVData
+            raw.append(OHLCVData(
+                timestamp=today_iso,
+                open=float(quote["open"]),
+                high=float(quote.get("high") or quote["ltp"]),
+                low=float(quote.get("low") or quote["ltp"]),
+                close=float(quote["ltp"]),
+                volume=int(quote.get("volume") or 0),
+            ))
+            raw.sort(key=lambda c: c.timestamp)
+
     out: list[dict] = []
     for c in raw:
         if intraday:
@@ -139,6 +185,7 @@ async def charts_candles(
     except Exception as e:
         logger.error(f"charts.candles({symbol}, {timeframe}): {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/indicators/{symbol}")
@@ -445,6 +492,12 @@ async def charts_available_indicators():
             {"name": "macd", "label": "MACD", "kind": "pane", "parameterized": False},
             {"name": "stoch", "label": "Stochastic", "kind": "pane", "parameterized": False},
             {"name": "atr", "label": "ATR", "kind": "pane", "parameterized": True, "default_period": 14},
+            {"name": "halftrend", "label": "HalfTrend", "kind": "overlay", "parameterized": False},
+            {"name": "ssl_hybrid", "label": "SSL Hybrid", "kind": "overlay", "parameterized": False},
+            {"name": "ema_crossover", "label": "EMA Cross 9/21", "kind": "overlay", "parameterized": False},
+            {"name": "supertrend", "label": "Supertrend", "kind": "overlay", "parameterized": False},
+            {"name": "qqe_mod", "label": "QQE MOD", "kind": "pane", "parameterized": False},
+            {"name": "renko", "label": "Renko Trend", "kind": "pane", "parameterized": False},
         ],
         "known": sorted(OVERLAY_COMPUTERS.keys()),
     }

@@ -326,6 +326,400 @@ def compute_utbot_overlay(
     return {"lines": {"utbot_stop": stop_line}, "markers": markers, "panes": []}
 
 
+# ---------------------------------------------------------------------------
+# Supertrend (trailing stop overlay + flip markers)
+# ---------------------------------------------------------------------------
+
+def compute_supertrend_overlay(
+    candles: list[dict],
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> dict:
+    """Port of monitor/indicator_engine.py::supertrend, full-series.
+
+    Emits `supertrend_line` (the active band — lower band when bullish,
+    upper band when bearish) and buy/sell flip markers.
+    """
+    if len(candles) < period + 1:
+        return {"lines": {"supertrend_line": []}, "markers": [], "panes": []}
+
+    df = _to_df(candles)
+    high = df["high"].astype(float).reset_index(drop=True)
+    low = df["low"].astype(float).reset_index(drop=True)
+    close = df["close"].astype(float).reset_index(drop=True)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    hl2 = (high + low) / 2
+    basic_upper = hl2 + multiplier * atr
+    basic_lower = hl2 - multiplier * atr
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    n = len(df)
+    direction = [0] * n  # +1 bullish, -1 bearish
+    for i in range(period, n):
+        if (
+            basic_upper.iloc[i] < final_upper.iloc[i - 1]
+            or close.iloc[i - 1] > final_upper.iloc[i - 1]
+        ):
+            final_upper.iloc[i] = basic_upper.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i - 1]
+        if (
+            basic_lower.iloc[i] > final_lower.iloc[i - 1]
+            or close.iloc[i - 1] < final_lower.iloc[i - 1]
+        ):
+            final_lower.iloc[i] = basic_lower.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i - 1]
+        if i == period:
+            direction[i] = 1 if close.iloc[i] > final_upper.iloc[i] else -1
+        else:
+            prev = direction[i - 1]
+            if prev == 1 and close.iloc[i] < final_lower.iloc[i]:
+                direction[i] = -1
+            elif prev == -1 and close.iloc[i] > final_upper.iloc[i]:
+                direction[i] = 1
+            else:
+                direction[i] = prev
+
+    rows = df.to_dict("records")
+    line: list[dict] = []
+    markers: list[dict] = []
+    for i, row in enumerate(rows):
+        if direction[i] == 0:
+            continue
+        t = _time_key(row)
+        band = float(final_lower.iloc[i]) if direction[i] == 1 else float(final_upper.iloc[i])
+        if pd.isna(band):
+            continue
+        line.append({"time": t, "value": band})
+        if i > 0 and direction[i] != direction[i - 1] and direction[i - 1] != 0:
+            markers.append(
+                {
+                    "time": t,
+                    "type": "buy" if direction[i] == 1 else "sell",
+                    "text": "Supertrend",
+                }
+            )
+
+    return {"lines": {"supertrend_line": line}, "markers": markers, "panes": []}
+
+
+# ---------------------------------------------------------------------------
+# HalfTrend (trend-state overlay + flip markers)
+# ---------------------------------------------------------------------------
+
+def compute_halftrend_overlay(
+    candles: list[dict],
+    amplitude: int = 2,
+    atr_period: int = 100,
+) -> dict:
+    """Port of monitor/indicator_engine.py::halftrend, full-series.
+
+    Returns the running trend reference price (max_low_price when bullish,
+    min_high_price when bearish) plus buy/sell flip markers.
+    """
+    if len(candles) < max(amplitude + 2, atr_period):
+        return {"lines": {"halftrend_line": []}, "markers": [], "panes": []}
+
+    df = _to_df(candles)
+    high = df["high"].astype(float).reset_index(drop=True)
+    low = df["low"].astype(float).reset_index(drop=True)
+    close = df["close"].astype(float).reset_index(drop=True)
+    high_ma = high.rolling(amplitude).mean()
+    low_ma = low.rolling(amplitude).mean()
+    high_price = high.rolling(amplitude).max()
+    low_price = low.rolling(amplitude).min()
+    n = len(close)
+    trend = [0] * n        # 0 = up, 1 = down
+    next_trend = [0] * n
+    max_low_price = float(low.iloc[0])
+    min_high_price = float(high.iloc[0])
+    line_value = [float("nan")] * n
+    line_value[0] = max_low_price
+    for i in range(1, n):
+        trend[i] = trend[i - 1]
+        next_trend[i] = next_trend[i - 1]
+        if next_trend[i - 1] == 1:
+            max_low_price = max(
+                float(low_price.iloc[i]) if not pd.isna(low_price.iloc[i]) else max_low_price,
+                max_low_price,
+            )
+            if (
+                not pd.isna(high_ma.iloc[i])
+                and high_ma.iloc[i] < max_low_price
+                and close.iloc[i] < low.iloc[i - 1]
+            ):
+                trend[i] = 1
+                next_trend[i] = 0
+                max_low_price = float(low.iloc[i - 1])
+        else:
+            min_high_price = min(
+                float(high_price.iloc[i]) if not pd.isna(high_price.iloc[i]) else min_high_price,
+                min_high_price,
+            )
+            if (
+                not pd.isna(low_ma.iloc[i])
+                and low_ma.iloc[i] > min_high_price
+                and close.iloc[i] > high.iloc[i - 1]
+            ):
+                trend[i] = 0
+                next_trend[i] = 1
+                min_high_price = float(high.iloc[i - 1])
+        line_value[i] = max_low_price if trend[i] == 0 else min_high_price
+
+    rows = df.to_dict("records")
+    line: list[dict] = []
+    markers: list[dict] = []
+    for i, row in enumerate(rows):
+        v = line_value[i]
+        if pd.isna(v):
+            continue
+        t = _time_key(row)
+        line.append({"time": t, "value": float(v)})
+        if i > 0 and trend[i] != trend[i - 1]:
+            # trend==0 is bullish; flipping to 0 = buy.
+            markers.append(
+                {
+                    "time": t,
+                    "type": "buy" if trend[i] == 0 else "sell",
+                    "text": "HalfTrend",
+                }
+            )
+
+    return {"lines": {"halftrend_line": line}, "markers": markers, "panes": []}
+
+
+# ---------------------------------------------------------------------------
+# SSL Hybrid (channel overlay + flip markers)
+# ---------------------------------------------------------------------------
+
+def compute_ssl_hybrid_overlay(
+    candles: list[dict],
+    period: int = 10,
+) -> dict:
+    """Port of monitor/indicator_engine.py::ssl_hybrid, full-series.
+
+    Emits `ssl_line` (active channel band: high-SMA when bullish, low-SMA
+    when bearish) and buy/sell flip markers. Baseline gating is omitted
+    because it just suppresses the indicator value on the rules side; on
+    a chart we always want a continuous reference.
+    """
+    if len(candles) < period + 1:
+        return {"lines": {"ssl_line": []}, "markers": [], "panes": []}
+
+    df = _to_df(candles)
+    high = df["high"].astype(float).reset_index(drop=True)
+    low = df["low"].astype(float).reset_index(drop=True)
+    close = df["close"].astype(float).reset_index(drop=True)
+    ssl_up = high.rolling(period).mean()
+    ssl_down = low.rolling(period).mean()
+    n = len(df)
+    trend = [0] * n
+    for i in range(period, n):
+        if pd.isna(ssl_up.iloc[i]) or pd.isna(ssl_down.iloc[i]):
+            trend[i] = trend[i - 1]
+            continue
+        if close.iloc[i] > ssl_up.iloc[i]:
+            trend[i] = 1
+        elif close.iloc[i] < ssl_down.iloc[i]:
+            trend[i] = -1
+        else:
+            trend[i] = trend[i - 1]
+
+    rows = df.to_dict("records")
+    line: list[dict] = []
+    markers: list[dict] = []
+    for i, row in enumerate(rows):
+        if trend[i] == 0:
+            continue
+        band = float(ssl_up.iloc[i]) if trend[i] == 1 else float(ssl_down.iloc[i])
+        if pd.isna(band):
+            continue
+        t = _time_key(row)
+        line.append({"time": t, "value": band})
+        if i > 0 and trend[i] != trend[i - 1] and trend[i - 1] != 0:
+            markers.append(
+                {
+                    "time": t,
+                    "type": "buy" if trend[i] == 1 else "sell",
+                    "text": "SSL Hybrid",
+                }
+            )
+
+    return {"lines": {"ssl_line": line}, "markers": markers, "panes": []}
+
+
+# ---------------------------------------------------------------------------
+# EMA crossover (two lines + cross markers)
+# ---------------------------------------------------------------------------
+
+def compute_ema_crossover_overlay(
+    candles: list[dict],
+    fast: int = 9,
+    slow: int = 21,
+) -> dict:
+    """EMA fast/slow with buy/sell markers on cross."""
+    if len(candles) < slow + 1:
+        return {"lines": {"ema_fast": [], "ema_slow": []}, "markers": [], "panes": []}
+
+    df = _to_df(candles)
+    close = df["close"].astype(float)
+    ema_fast = ta.trend.EMAIndicator(close, window=fast).ema_indicator()
+    ema_slow = ta.trend.EMAIndicator(close, window=slow).ema_indicator()
+
+    rows = df.to_dict("records")
+    fast_line: list[dict] = []
+    slow_line: list[dict] = []
+    markers: list[dict] = []
+    prev_diff = None
+    for i, row in enumerate(rows):
+        f = ema_fast.iloc[i]
+        s = ema_slow.iloc[i]
+        if pd.isna(f) or pd.isna(s):
+            continue
+        t = _time_key(row)
+        fast_line.append({"time": t, "value": float(f)})
+        slow_line.append({"time": t, "value": float(s)})
+        diff = float(f) - float(s)
+        if prev_diff is not None:
+            if prev_diff <= 0 and diff > 0:
+                markers.append({"time": t, "type": "buy", "text": "EMA Cross"})
+            elif prev_diff >= 0 and diff < 0:
+                markers.append({"time": t, "type": "sell", "text": "EMA Cross"})
+        prev_diff = diff
+
+    return {
+        "lines": {"ema_fast": fast_line, "ema_slow": slow_line},
+        "markers": markers,
+        "panes": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# QQE MOD (oscillator pane)
+# ---------------------------------------------------------------------------
+
+def compute_qqe_mod_pane(
+    candles: list[dict],
+    rsi_period: int = 6,
+    smoothing: int = 5,
+) -> dict:
+    """QQE MOD smoothed-RSI momentum, centered at 0 (>0 bullish, <0 bearish)."""
+    needed = rsi_period + smoothing + 2
+    if len(candles) < needed:
+        return {"lines": {}, "markers": [], "panes": []}
+
+    df = _to_df(candles)
+    close = df["close"].astype(float)
+    rsi = ta.momentum.RSIIndicator(close, window=rsi_period).rsi()
+    rsi_ma = ta.trend.EMAIndicator(rsi, window=smoothing).ema_indicator()
+    centered = rsi_ma - 50.0
+    return {
+        "lines": {},
+        "markers": [],
+        "panes": [
+            {
+                "id": "qqe_mod",
+                "title": f"QQE MOD({rsi_period},{smoothing})",
+                "lines": {"qqe": _line_from_series(df, centered)},
+                "levels": [0],
+            }
+        ],
+    }
+
+
+def compute_renko_pane(
+    candles: list[dict],
+    brick_size: float | None = None,
+    atr_period: int | None = None,
+) -> dict:
+    """Renko trend as a histogram pane keyed by candle close time.
+
+    Walks the close series forming bricks; emits the running brick direction
+    (+1 bullish / -1 bearish) at every candle close so it can be plotted
+    alongside the candle chart on a shared time axis. This is the chart-side
+    proxy for the rules engine's Renko indicator (`monitor/indicator_engine.py:374`).
+
+    Box-size selection priority:
+      1. Explicit `brick_size`        (fixed)
+      2. `atr_period`                 (ATR over first `atr_period+1` bars,
+                                        frozen for the window)
+      3. Auto fallback                (`round(median_close * 0.001, 2)`,
+                                        i.e. 0.1% of median price)
+    """
+    if len(candles) < 2:
+        return {"lines": {}, "markers": [], "panes": []}
+
+    size: float | None = None
+    method = "fixed"
+    if brick_size is not None and brick_size > 0:
+        size = float(brick_size)
+    elif atr_period is not None and atr_period > 1:
+        ap = int(atr_period)
+        if len(candles) < ap + 1:
+            return {"lines": {}, "markers": [], "panes": []}
+        trs: list[float] = []
+        for i in range(1, ap + 1):
+            hi = float(candles[i]["high"])
+            lo = float(candles[i]["low"])
+            pc = float(candles[i - 1]["close"])
+            trs.append(max(hi - lo, abs(hi - pc), abs(lo - pc)))
+        atr_val = sum(trs) / len(trs) if trs else 0.0
+        if atr_val <= 0:
+            return {"lines": {}, "markers": [], "panes": []}
+        size = float(atr_val)
+        method = "atr"
+    else:
+        closes_sorted = sorted(float(c["close"]) for c in candles)
+        median = closes_sorted[len(closes_sorted) // 2]
+        size = round(median * 0.001, 2)
+    if not size or size <= 0:
+        return {"lines": {}, "markers": [], "panes": []}
+
+    base = float(candles[0]["close"])
+    trend = 0
+    histogram: list[dict] = []
+    for c in candles[1:]:
+        close = float(c["close"])
+        diff = close - base
+        while diff >= size:
+            base += size
+            trend = 1
+            diff = close - base
+        while diff <= -size:
+            base -= size
+            trend = -1
+            diff = close - base
+        # Suppress points before the first brick forms — the chart's
+        # whitespace handling will skip them.
+        if trend == 0:
+            continue
+        histogram.append({
+            "time": c["time"],
+            "value": float(trend),
+        })
+
+    return {
+        "lines": {},
+        "markers": [],
+        "panes": [
+            {
+                "id": "renko",
+                "title": f"Renko Trend ({method} {size:.2f})",
+                "histogram": histogram,
+                "lines": {},
+                "range": [-1.5, 1.5],
+                "levels": [0],
+            }
+        ],
+    }
+
+
 OVERLAY_COMPUTERS = {
     "utbot": compute_utbot_overlay,
     "sma": compute_sma_overlay,
@@ -336,6 +730,12 @@ OVERLAY_COMPUTERS = {
     "macd": compute_macd_pane,
     "stoch": compute_stoch_pane,
     "atr": compute_atr_pane,
+    "supertrend": compute_supertrend_overlay,
+    "halftrend": compute_halftrend_overlay,
+    "ssl_hybrid": compute_ssl_hybrid_overlay,
+    "ema_crossover": compute_ema_crossover_overlay,
+    "qqe_mod": compute_qqe_mod_pane,
+    "renko": compute_renko_pane,
 }
 
 
