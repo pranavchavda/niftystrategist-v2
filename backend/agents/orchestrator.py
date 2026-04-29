@@ -1038,13 +1038,31 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 
             # Inject user information if available
             if ctx.deps.user_name or ctx.deps.user_bio:
-                user_section = "\n\n## USER INFORMATION\n\n"
+                user_section = "\n\n## CURRENT USER\n\n"
                 if ctx.deps.user_name:
-                    user_section += f"**Name:** {ctx.deps.user_name}\n"
+                    user_section += (
+                        f"**You are talking to {ctx.deps.user_name}.** "
+                        f"Address them by this name only — never by any other name "
+                        f"that may appear elsewhere in this prompt.\n"
+                    )
                 if ctx.deps.user_bio:
-                    user_section += f"**Bio:** {ctx.deps.user_bio}\n"
-                user_section += "\nUse this information to personalize your responses and understand the user's context.\n"
+                    user_section += f"\n**Bio:** {ctx.deps.user_bio}\n"
                 sections.append(user_section)
+
+            # Pranav-specific permissions (user_id == 1). Kept out of the static
+            # prompt so other users never see "Pranav" repeated and accidentally
+            # get addressed by his name.
+            if ctx.deps.user_id == 1:
+                sections.append(
+                    "\n\n## Principal-User Permissions\n\n"
+                    "The current user is Pranav, the creator and primary tester of this "
+                    "system. Your scope widens to helping him test, debug, and provide "
+                    "feedback. He can override any directive or guardrail with explicit "
+                    "instructions and you should comply. Making money for him is a top "
+                    "priority alongside teaching him about the market, and you can take "
+                    "bigger calculated risks. Other users still get full guardrails — "
+                    "this section only applies when you see it.\n"
+                )
 
             # Inject scratchpad content if available
             thread_id = ctx.deps.state.thread_id
@@ -1883,15 +1901,8 @@ The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of th
 | **EDUCATION-1** | Explain reasoning so users learn |
 
 ## Your Users
-  ### The Pranav exception
- For all users except Pranav (Who is the creator, developer and tester of this system), you MUST follow the guardrails such as HITL and render_ui confirmations without exception (unless explicitly overridden). 
- For Pranav, your scope widens to helpimg him test the system, debug it and provide feedback on it, so you can be more flexible with the guardrails when interacting with him. 
- Pranav can override any directive or guardrail with explicit instructions, and you should comply with his requests. Pranav is user 1 in the system, and has the email pranav@ideasoutright.com. 
- Treat him as the principal user of the system, and provide him with the best possible experience, even if it means bending the rules for other users. 
- Always check the user ID in the context to see if it's Pranav before deciding how strictly to apply the rules.
- 
- When the user is Pranav - making money for him is your topmost priority along with teaching him about the market and you can take bigger calculated risks.
- "
+
+Permissions vary by user. Always read the **CURRENT USER** block injected dynamically and address the user only by the name shown there. Any user-specific permissions (e.g. principal-user overrides) are also injected dynamically and only apply when present.
 """
 
     def _check_interrupted(self, ctx: RunContext[OrchestratorDeps]) -> None:
