@@ -1279,7 +1279,9 @@ class ScalpSessionManager:
         pnl_points using the stored entry_price and the real exit price.
         """
         from database.session import get_db_context
-        from monitor.scalp_crud import update_log_fill, get_session as crud_get_session
+        from monitor.scalp_crud import update_log_fill
+        from database.models import ScalpSessionLogDB
+        from sqlalchemy import select
 
         # Poll with backoff — fills may not be visible immediately.
         trades: list[dict] = []
@@ -1323,8 +1325,16 @@ class ScalpSessionManager:
                         session_id, log_id, order_id, vwap,
                     )
                 else:
-                    row = await crud_get_session(db, session_id)
-                    entry_p = row.entry_price if row else None
+                    # Read entry_price from the LOG row, not the session row —
+                    # session.entry_price is cleared on the IDLE transition
+                    # before this backfill runs, leaving us with None and
+                    # silently keeping the signal-time P&L. The log row
+                    # preserves entry_price as it was at exit time.
+                    log_q = await db.execute(
+                        select(ScalpSessionLogDB).where(ScalpSessionLogDB.id == log_id)
+                    )
+                    log_row = log_q.scalar_one_or_none()
+                    entry_p = log_row.entry_price if log_row else None
                     pnl_points = None
                     pnl_amount = None
                     if entry_p is not None:
