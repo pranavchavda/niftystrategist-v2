@@ -349,10 +349,16 @@ class ScalpSessionManager:
         self._prev_primary_values[buf_key] = prev_val
         self._primary_values[buf_key] = primary_val
 
-        logger.debug(
-            "Scalp session %d (%s): candle close #%d, primary=%s prev=%s state=%s",
-            session.id, cfg.primary_indicator, new_count,
-            primary_val, prev_val, session.runtime.state.value,
+        # Diagnostic trace: every candle close at INFO so we can see why a
+        # session never enters (None primary, no flip, etc.). Tag makes it
+        # easy to grep. Promoted from debug 2026-04-29 after sessions 25/28
+        # went silent for a full session with no visibility into why.
+        logger.info(
+            "[scalp-trace] session=%d primary=%s val=%s prev=%s closes=%d state=%s ltp=%.2f",
+            session.id, cfg.primary_indicator,
+            f"{primary_val:.4f}" if primary_val is not None else "None",
+            f"{prev_val:.4f}" if prev_val is not None else "None",
+            new_count, session.runtime.state.value, ltp,
         )
 
         if primary_val is None or prev_val is None:
