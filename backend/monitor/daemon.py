@@ -96,7 +96,12 @@ class MonitorDaemon:
         self._running = True
         logger.info("Monitor daemon starting (paper=%s)", self._paper_mode)
 
-        # Initial rule load + scalp session load
+        # Initial rule load + scalp session load. Order matters:
+        # _poll_rules must run first because it loads access tokens, which
+        # load_sessions() needs to seed candle buffers. Scalp-only users
+        # (no monitor rules) miss their order_node_url on this first cycle
+        # but pick it up on the next poll 30s later — that delay is the
+        # acceptable cost of preserving buffer seeding for everyone.
         await self._poll_rules()
         await self._scalp_manager.load_sessions()
         await self._scalp_manager.reconcile_on_startup()
@@ -278,8 +283,15 @@ class MonitorDaemon:
             schema = crud.db_rule_to_schema(db_rule)
             rules_by_user.setdefault(schema.user_id, []).append(schema)
 
-        # Load access tokens and order node URLs from DB for all users with active rules
-        await self._load_user_configs(rules_by_user.keys())
+        # Load access tokens and order node URLs from DB for all users with
+        # active rules OR active scalp sessions. Scalp-only users (no monitor
+        # rules) still need their order_node_url loaded so scalp orders route
+        # through the user's static-IP order node — otherwise Upstox rejects
+        # with UDAPI1154 (IP mismatch).
+        config_user_ids = set(rules_by_user.keys()) | set(
+            self._scalp_manager._sessions.keys()
+        )
+        await self._load_user_configs(config_user_ids)
 
         # Determine users to start/stop/sync
         old_users = set(self._rules_by_user.keys())
