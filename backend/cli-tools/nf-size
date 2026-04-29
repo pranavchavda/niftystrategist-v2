@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Position-size calculator for intraday equity (and F&O options).
+
+Tells the orchestrator how many shares/lots to take so that a stop-loss
+hit equals at most `risk_pct` of available capital. Removes the "guess"
+from sizing — the agent runs this and uses the recommended_qty.
+
+Equity:
+    nf-size RELIANCE --sl-points 15
+    nf-size HDFCBANK --sl-points 8 --risk-pct 1.5 --capital 50000
+
+F&O option (premium-side SL):
+    nf-size NIFTY26MAY24500CE --option --sl-premium 12
+    nf-size BANKNIFTY26MAY52000PE --option --sl-premium 20 --lots-cap 5
+
+The binding constraint is reported so the agent can explain its sizing:
+  - "risk"     → SL × qty hit the risk budget first
+  - "capital"  → qty × entry hit the capital wall first
+  - "lot_cap"  → user-supplied lot cap binds (F&O only)
+"""
+
+import argparse
+import math
+import os
+import re
+import sys
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import init_client, print_error, print_json, run_async  # noqa: E402
+
+
+DEFAULT_RISK_PCT = 2.0
+
+
+def _resolve_capital(client, requested) -> float:
+    """Resolve --capital: number, 'auto', or default to auto."""
+    if requested is None or str(requested).lower() == "auto":
+        funds = run_async(client.get_funds_and_margin())
+        eq = funds.get("equity") or {}
+        return float(eq.get("available_margin") or 0)
+    return float(requested)
+
+
+def size_equity(args) -> dict:
+    client = init_client()
+    symbol = args.symbol.upper()
+
+    quote = run_async(client.get_quote(symbol))
+    entry = float(quote.get("ltp") or 0)
+    if entry <= 0:
+        return {"error": f"Could not fetch live price for {symbol}"}
+
+    sl_points = float(args.sl_points)
+    if sl_points <= 0:
+        return {"error": "--sl-points must be > 0"}
+
+    risk_pct = float(args.risk_pct or DEFAULT_RISK_PCT)
+    capital = _resolve_capital(client, args.capital)
+    if capital <= 0:
+        return {"error": "Available capital is 0 — fund the account or pass --capital."}
+
+    max_risk_amount = capital * (risk_pct / 100.0)
+    qty_by_risk = math.floor(max_risk_amount / sl_points)
+
+    # Capital constraint: rough cash needed to enter. For MIS the broker
+    # gives leverage but it varies per scrip; we treat capital as the
+    # hard wall and let the agent decide if MIS leverage gives more room.
+    # `effective_capital` lets the user override when they know MIS lets
+    # them go bigger (e.g. 5x intraday margin).
+    leverage = float(args.leverage or 1.0)
+    effective_capital = capital * leverage
+    qty_by_capital = math.floor(effective_capital / entry) if entry > 0 else 0
+
+    qty = max(0, min(qty_by_risk, qty_by_capital))
+    binding = "risk" if qty_by_risk <= qty_by_capital else "capital"
+
+    actual_risk = qty * sl_points
+    capital_required = qty * entry
+
+    warnings = []
+    if qty == 0:
+        warnings.append(
+            f"No qty recommended — even 1 share risks ₹{sl_points:.2f} or "
+            f"costs ₹{entry:.2f}, exceeding limits."
+        )
+    if leverage > 1.0:
+        warnings.append(
+            f"Using {leverage}x leverage assumption — verify with broker MIS margin."
+        )
+
+    return {
+        "kind": "equity",
+        "symbol": symbol,
+        "entry_price": round(entry, 2),
+        "sl_distance": round(sl_points, 2),
+        "risk_pct": round(risk_pct, 2),
+        "available_capital": round(capital, 2),
+        "leverage": leverage,
+        "max_risk_amount": round(max_risk_amount, 2),
+        "qty_by_risk": qty_by_risk,
+        "qty_by_capital": qty_by_capital,
+        "recommended_qty": qty,
+        "actual_risk_amount": round(actual_risk, 2),
+        "capital_required": round(capital_required, 2),
+        "binding_constraint": binding,
+        "product": args.product,
+        "warnings": warnings,
+    }
+
+
+def _lookup_option(tradingsymbol: str) -> dict | None:
+    """Look up an option contract from the F&O instruments cache."""
+    sys.path.insert(0, os.path.join(_backend_dir, "cli-tools"))
+    # Reuse nf-options' loader rather than reimplementing CSV parsing.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "nf_options_mod", os.path.join(_backend_dir, "cli-tools", "nf-options")
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    cache = mod._load_options_cache()
+    return cache.get(tradingsymbol.upper())
+
+
+def size_option(args) -> dict:
+    client = init_client()
+    tradingsymbol = args.symbol.upper()
+
+    option = _lookup_option(tradingsymbol)
+    if not option:
+        return {"error": f"Option {tradingsymbol} not found in F&O cache."}
+
+    lot_size = int(option["lot_size"])
+    instrument_key = option["instrument_key"]
+
+    # Live premium via greeks/quote — get_quote works for options too.
+    try:
+        quote = run_async(client.get_quote(tradingsymbol))
+        premium = float(quote.get("ltp") or option.get("last_price") or 0)
+    except Exception:
+        premium = float(option.get("last_price") or 0)
+    if premium <= 0:
+        return {"error": f"Could not fetch live premium for {tradingsymbol}"}
+
+    sl_premium = float(args.sl_premium)
+    if sl_premium <= 0:
+        return {"error": "--sl-premium must be > 0"}
+
+    risk_pct = float(args.risk_pct or DEFAULT_RISK_PCT)
+    capital = _resolve_capital(client, args.capital)
+    if capital <= 0:
+        return {"error": "Available capital is 0 — fund the account or pass --capital."}
+
+    max_risk_amount = capital * (risk_pct / 100.0)
+    risk_per_lot = sl_premium * lot_size
+    if risk_per_lot <= 0:
+        return {"error": "Risk per lot computed to 0 — check --sl-premium and lot_size."}
+
+    lots_by_risk = math.floor(max_risk_amount / risk_per_lot)
+
+    # Capital wall: premium × lot_size × lots ≤ capital (long options pay
+    # full premium upfront; sells require margin which we don't compute here).
+    cost_per_lot = premium * lot_size
+    lots_by_capital = math.floor(capital / cost_per_lot) if cost_per_lot > 0 else 0
+
+    lots = max(0, min(lots_by_risk, lots_by_capital))
+    binding = "risk" if lots_by_risk <= lots_by_capital else "capital"
+
+    if args.lots_cap is not None:
+        cap = int(args.lots_cap)
+        if cap < lots:
+            lots = cap
+            binding = "lot_cap"
+
+    qty = lots * lot_size
+    actual_risk = lots * risk_per_lot
+    capital_required = lots * cost_per_lot
+
+    warnings = []
+    if lots == 0:
+        warnings.append(
+            f"No lots recommended — one lot risks ₹{risk_per_lot:.2f} or "
+            f"costs ₹{cost_per_lot:.2f}, exceeding limits."
+        )
+
+    return {
+        "kind": "option",
+        "symbol": tradingsymbol,
+        "instrument_key": instrument_key,
+        "lot_size": lot_size,
+        "premium": round(premium, 2),
+        "sl_premium": round(sl_premium, 2),
+        "risk_pct": round(risk_pct, 2),
+        "available_capital": round(capital, 2),
+        "max_risk_amount": round(max_risk_amount, 2),
+        "risk_per_lot": round(risk_per_lot, 2),
+        "cost_per_lot": round(cost_per_lot, 2),
+        "lots_by_risk": lots_by_risk,
+        "lots_by_capital": lots_by_capital,
+        "recommended_lots": lots,
+        "recommended_qty": qty,
+        "actual_risk_amount": round(actual_risk, 2),
+        "capital_required": round(capital_required, 2),
+        "binding_constraint": binding,
+        "warnings": warnings,
+    }
+
+
+def _print_human(result: dict) -> None:
+    if "error" in result:
+        print_error(result["error"])
+        return
+
+    print(f"\n📐 Position size — {result['symbol']}")
+    print(f"   Risk:       {result['risk_pct']}% of ₹{result['available_capital']:,.0f} "
+          f"= ₹{result['max_risk_amount']:,.0f}")
+
+    if result["kind"] == "equity":
+        print(f"   Entry:      ₹{result['entry_price']:.2f}")
+        print(f"   SL points:  {result['sl_distance']}")
+        if result["leverage"] > 1:
+            print(f"   Leverage:   {result['leverage']}x ({result['product']})")
+        print(f"\n   ➜ qty = {result['recommended_qty']}  "
+              f"(risk ₹{result['actual_risk_amount']:,.0f} / "
+              f"cost ₹{result['capital_required']:,.0f})")
+    else:
+        print(f"   Premium:    ₹{result['premium']:.2f}")
+        print(f"   SL premium: {result['sl_premium']}")
+        print(f"   Lot size:   {result['lot_size']}")
+        print(f"\n   ➜ lots = {result['recommended_lots']}  "
+              f"(qty {result['recommended_qty']}, "
+              f"risk ₹{result['actual_risk_amount']:,.0f} / "
+              f"cost ₹{result['capital_required']:,.0f})")
+
+    print(f"   Limited by: {result['binding_constraint']}")
+    for w in result.get("warnings", []):
+        print(f"   ⚠ {w}")
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Position-size calculator (intraday equity + F&O options)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  nf-size RELIANCE --sl-points 15\n"
+            "  nf-size HDFCBANK --sl-points 8 --risk-pct 1.5\n"
+            "  nf-size NIFTY26MAY24500CE --option --sl-premium 12\n"
+        ),
+    )
+    p.add_argument("symbol", help="Equity symbol or option tradingsymbol")
+    p.add_argument("--option", action="store_true",
+                   help="Treat symbol as an option contract (use --sl-premium).")
+    p.add_argument("--sl-points", type=float, default=None,
+                   help="Equity stop-loss distance in points.")
+    p.add_argument("--sl-premium", type=float, default=None,
+                   help="Option stop-loss distance in premium points.")
+    p.add_argument("--risk-pct", type=float, default=None,
+                   help=f"Max %% of capital to risk per trade (default {DEFAULT_RISK_PCT}%%).")
+    p.add_argument("--capital", default=None,
+                   help="Available capital in ₹, or 'auto' (default) to fetch from broker.")
+    p.add_argument("--leverage", type=float, default=None,
+                   help="Equity-only: MIS leverage assumption (default 1x).")
+    p.add_argument("--product", choices=["I", "D"], default="I",
+                   help="Equity product: I=intraday/MIS, D=delivery (default I).")
+    p.add_argument("--lots-cap", type=int, default=None,
+                   help="Option-only: hard cap on lots regardless of math.")
+    p.add_argument("--json", action="store_true", help="Output JSON.")
+    args = p.parse_args()
+
+    if args.option:
+        if args.sl_premium is None:
+            print_error("--sl-premium required for --option")
+            sys.exit(2)
+        result = size_option(args)
+    else:
+        if args.sl_points is None:
+            print_error("--sl-points required (or use --option for F&O)")
+            sys.exit(2)
+        result = size_equity(args)
+
+    if args.json:
+        print_json(result)
+    else:
+        _print_human(result)
+
+    if "error" in result:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
