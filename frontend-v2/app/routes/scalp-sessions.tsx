@@ -31,6 +31,7 @@ const CONFIRM_INDICATORS: { value: string; label: string }[] = [
   { value: 'halftrend', label: 'HalfTrend' },
   { value: 'ssl_hybrid', label: 'SSL Hybrid' },
   { value: 'utbot', label: 'UT Bot' },
+  { value: 'supertrend', label: 'Supertrend' },
 ];
 
 const PARAM_DEFAULTS: Record<string, Record<string, number>> = {
@@ -67,6 +68,52 @@ const PARAM_LABELS: Record<string, string> = {
   baseline_period: 'Baseline EMA',
 };
 
+function RenkoParams({
+  params, onChange,
+}: {
+  params: Record<string, number>;
+  onChange: (next: Record<string, number>) => void;
+}) {
+  const isAtr = !!params.atr_period;
+  return (
+    <div className="grid gap-3 grid-cols-2">
+      <div>
+        <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+          Box Size Method
+        </label>
+        <select
+          value={isAtr ? 'atr' : 'fixed'}
+          onChange={(e) => {
+            if (e.target.value === 'atr') {
+              onChange({ atr_period: 14 });
+            } else {
+              onChange({ brick_size: 10 });
+            }
+          }}
+          className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+          <option value="fixed">Fixed</option>
+          <option value="atr">ATR (adaptive)</option>
+        </select>
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+          {isAtr ? 'ATR Length' : 'Brick Size'}
+        </label>
+        <Input
+          type="number"
+          step={isAtr ? '1' : '0.1'}
+          value={isAtr ? (params.atr_period ?? 14) : (params.brick_size ?? 10)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            const fallback = isAtr ? 14 : 10;
+            const v = e.target.value === '' ? fallback : Number(e.target.value);
+            onChange(isAtr ? { atr_period: v } : { brick_size: v });
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function IndicatorParams({
   indicator, params, onChange,
 }: {
@@ -74,6 +121,9 @@ function IndicatorParams({
   params: Record<string, number>;
   onChange: (next: Record<string, number>) => void;
 }) {
+  if (indicator === 'renko') {
+    return <RenkoParams params={params} onChange={onChange} />;
+  }
   const schema = PARAM_DEFAULTS[indicator] || {};
   const keys = Object.keys(schema);
   if (keys.length === 0) {
