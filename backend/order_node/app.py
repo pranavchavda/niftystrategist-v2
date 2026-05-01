@@ -296,7 +296,7 @@ async def place_gtt(
     """Place a single-leg GTT order via the order node proxy."""
     token = _verify(authorization, x_node_secret)
     api_client = _make_client(token)
-    order_api = upstox_client.OrderControllerV3Api(api_client)
+    order_api = upstox_client.OrderApiV3(api_client)
 
     try:
         body = upstox_client.GttPlaceOrderRequest(
@@ -341,7 +341,7 @@ async def modify_gtt(
     """Modify an existing GTT order's quantity or trigger price."""
     token = _verify(authorization, x_node_secret)
     api_client = _make_client(token)
-    order_api = upstox_client.OrderControllerV3Api(api_client)
+    order_api = upstox_client.OrderApiV3(api_client)
 
     try:
         body = upstox_client.GttModifyOrderRequest(
@@ -373,7 +373,7 @@ async def cancel_gtt(
     """Cancel an existing GTT order."""
     token = _verify(authorization, x_node_secret)
     api_client = _make_client(token)
-    order_api = upstox_client.OrderControllerV3Api(api_client)
+    order_api = upstox_client.OrderApiV3(api_client)
 
     try:
         body = upstox_client.GttCancelOrderRequest(gtt_order_id=gtt_order_id)
@@ -396,7 +396,7 @@ async def list_gtt(
     """List all GTT orders for the user."""
     token = _verify(authorization, x_node_secret)
     api_client = _make_client(token)
-    order_api = upstox_client.OrderControllerV3Api(api_client)
+    order_api = upstox_client.OrderApiV3(api_client)
 
     try:
         response = order_api.get_gtt_order_details()
