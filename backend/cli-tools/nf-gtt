@@ -18,6 +18,7 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from base import format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from services.order_node_proxy import init_order_client
 
 
 def place_gtt(symbol: str, side: str, quantity: int, product: str,
@@ -79,6 +80,50 @@ def place_gtt(symbol: str, side: str, quantity: int, product: str,
         rules.append(rule)
 
     client = init_client()
+
+    # Route through order node proxy if configured (single-leg GTT only)
+    # OCO/MULTIPLE falls through to direct Upstox (proxy doesn't support multi-leg yet)
+    order_client = init_order_client()
+    if order_client and gtt_type == "SINGLE":
+        try:
+            instrument_token = client._get_instrument_key(sym)
+            result = order_client.place_gtt_order(
+                instrument_token=instrument_token,
+                transaction_type=side.upper(),
+                quantity=quantity,
+                price=0,
+                trigger_price=rules[0]["trigger_price"] if rules else 0,
+                order_type="LIMIT",
+                product=product,
+            )
+        except Exception as e:
+            print_error(f"GTT order failed: {e}")
+
+        if not result.success:
+            print_error(f"GTT order failed: {result.message}")
+
+        if as_json:
+            print_json({
+                "success": True,
+                "gtt_order_id": result.order_id,
+                "symbol": sym,
+                "action": side.upper(),
+                "quantity": quantity,
+                "type": gtt_type,
+                "mode": "live",
+            })
+        else:
+            print_success(f"GTT Order Placed [🔴 LIVE]")
+            print(f"\n  Symbol:    {sym}")
+            print(f"  Action:    {side.upper()}")
+            print(f"  Quantity:  {quantity}")
+            print(f"  Type:      {gtt_type}")
+            print(f"  GTT ID:    {result.order_id}")
+            for r in rules:
+                print(f"  {r['strategy']:<10} @ {format_inr(r['trigger_price'])}")
+        return
+
+    # Direct path (no order node, or OCO/MULTIPLE GTT)
     try:
         result = run_async(client.place_gtt_order(
             symbol=sym,
@@ -114,6 +159,26 @@ def modify_gtt(gtt_order_id: str, quantity: int | None,
                trigger_price: float | None, trigger_type: str | None,
                as_json: bool):
     """Modify an existing GTT order."""
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.modify_gtt_order(
+                gtt_order_id=gtt_order_id,
+                quantity=quantity,
+                trigger_price=trigger_price,
+            )
+        except Exception as e:
+            print_error(f"GTT modify failed: {e}")
+
+        if as_json:
+            print_json({"success": result.success, "gtt_order_id": gtt_order_id, "message": result.message})
+        elif result.success:
+            print_success(f"GTT order {gtt_order_id} modified.")
+        else:
+            print_error(f"GTT modify failed: {result.message}")
+        return
+
+    # Direct path (no order node)
     client = init_client()
 
     # If trigger_price is given, we pass it to the client which will merge
@@ -150,6 +215,22 @@ def modify_gtt(gtt_order_id: str, quantity: int | None,
 
 def cancel_gtt(gtt_order_id: str, as_json: bool):
     """Cancel a GTT order."""
+    order_client = init_order_client()
+    if order_client:
+        try:
+            result = order_client.cancel_gtt_order(gtt_order_id)
+        except Exception as e:
+            print_error(f"GTT cancel failed: {e}")
+
+        if as_json:
+            print_json({"success": result.success, "gtt_order_id": gtt_order_id, "message": result.message})
+        elif result.success:
+            print_success(f"GTT order {gtt_order_id} cancelled.")
+        else:
+            print_error(f"GTT cancel failed: {result.message}")
+        return
+
+    # Direct path (no order node)
     client = init_client()
     try:
         result = run_async(client.cancel_gtt_order(gtt_order_id))

@@ -287,6 +287,153 @@ async def exit_all_positions(
         return OrderResult(success=False, message=f"Exit-all failed: {e}")
 
 
+@app.post("/gtt/place", response_model=OrderResult)
+async def place_gtt(
+    req: PlaceGttRequest,
+    authorization: str = Header(""),
+    x_node_secret: str = Header("", alias="X-Node-Secret"),
+):
+    """Place a single-leg GTT order via the order node proxy."""
+    token = _verify(authorization, x_node_secret)
+    api_client = _make_client(token)
+    order_api = upstox_client.OrderControllerV3Api(api_client)
+
+    try:
+        body = upstox_client.GttPlaceOrderRequest(
+            instrument_token=req.instrument_token,
+            transaction_type=req.transaction_type,
+            quantity=req.quantity,
+            product=req.product,
+            type="SINGLE",
+            rules=[upstox_client.GttRule(
+                strategy="ENTRY",
+                trigger_type="BELOW",
+                trigger_price=req.trigger_price,
+            )],
+        )
+        response = order_api.place_gtt_order(body)
+        gtt_ids = response.data.gtt_order_ids if response.data else []
+        gtt_id = gtt_ids[0] if gtt_ids else None
+        logger.info("GTT placed: %s %s x%d trigger=%s (id=%s)",
+                    req.transaction_type, req.instrument_token, req.quantity,
+                    req.trigger_price, gtt_id)
+        return OrderResult(
+            success=True,
+            order_id=str(gtt_id) if gtt_id else None,
+            status="PENDING",
+            message=f"GTT order placed (ID: {gtt_id})",
+        )
+    except ApiException as e:
+        msg = _parse_api_error(e)
+        logger.error("GTT place failed: %s", msg)
+        return OrderResult(success=False, status="REJECTED", message=f"GTT rejected: {msg}")
+    except Exception as e:
+        logger.error("GTT place error: %s", e)
+        return OrderResult(success=False, status="REJECTED", message=f"GTT failed: {e}")
+
+
+@app.post("/gtt/modify", response_model=OrderResult)
+async def modify_gtt(
+    req: ModifyGttRequest,
+    authorization: str = Header(""),
+    x_node_secret: str = Header("", alias="X-Node-Secret"),
+):
+    """Modify an existing GTT order's quantity or trigger price."""
+    token = _verify(authorization, x_node_secret)
+    api_client = _make_client(token)
+    order_api = upstox_client.OrderControllerV3Api(api_client)
+
+    try:
+        body = upstox_client.GttModifyOrderRequest(
+            gtt_order_id=req.gtt_order_id,
+            quantity=req.quantity,
+            trigger_price=req.trigger_price,
+        )
+        response = order_api.modify_gtt_order(body)
+        logger.info("GTT modified: %s", req.gtt_order_id)
+        return OrderResult(
+            success=True,
+            order_id=req.gtt_order_id,
+            status="MODIFIED",
+            message=f"GTT {req.gtt_order_id} modified",
+        )
+    except ApiException as e:
+        msg = _parse_api_error(e)
+        return OrderResult(success=False, message=f"GTT modify failed: {msg}")
+    except Exception as e:
+        return OrderResult(success=False, message=f"GTT modify failed: {e}")
+
+
+@app.delete("/gtt/{gtt_order_id}", response_model=OrderResult)
+async def cancel_gtt(
+    gtt_order_id: str,
+    authorization: str = Header(""),
+    x_node_secret: str = Header("", alias="X-Node-Secret"),
+):
+    """Cancel an existing GTT order."""
+    token = _verify(authorization, x_node_secret)
+    api_client = _make_client(token)
+    order_api = upstox_client.OrderControllerV3Api(api_client)
+
+    try:
+        body = upstox_client.GttCancelOrderRequest(gtt_order_id=gtt_order_id)
+        response = order_api.cancel_gtt_order(body)
+        logger.info("GTT cancelled: %s", gtt_order_id)
+        return OrderResult(success=True, order_id=gtt_order_id,
+                           message=f"GTT {gtt_order_id} cancelled")
+    except ApiException as e:
+        msg = _parse_api_error(e)
+        return OrderResult(success=False, message=f"GTT cancel failed: {msg}")
+    except Exception as e:
+        return OrderResult(success=False, message=f"GTT cancel failed: {e}")
+
+
+@app.get("/gtt/list", response_model=OrderResult)
+async def list_gtt(
+    authorization: str = Header(""),
+    x_node_secret: str = Header("", alias="X-Node-Secret"),
+):
+    """List all GTT orders for the user."""
+    token = _verify(authorization, x_node_secret)
+    api_client = _make_client(token)
+    order_api = upstox_client.OrderControllerV3Api(api_client)
+
+    try:
+        response = order_api.get_gtt_order_details()
+        orders = []
+        if response.data:
+            items = response.data if isinstance(response.data, list) else [response.data]
+            for item in items:
+                order = {}
+                for attr in ("gtt_order_id", "type", "quantity", "product",
+                             "instrument_token", "trading_symbol", "exchange",
+                             "created_at", "expires_at", "status"):
+                    val = getattr(item, attr, None)
+                    if val is not None:
+                        order[attr] = str(val) if attr.endswith("_at") else val
+                item_rules = getattr(item, "rules", None)
+                if item_rules:
+                    order["rules"] = []
+                    for r in (item_rules if isinstance(item_rules, list) else [item_rules]):
+                        if isinstance(r, dict):
+                            order["rules"].append(r)
+                        else:
+                            order["rules"].append({
+                                "strategy": getattr(r, "strategy", None),
+                                "trigger_type": getattr(r, "trigger_type", None),
+                                "trigger_price": getattr(r, "trigger_price", None),
+                                "transaction_type": getattr(r, "transaction_type", None),
+                            })
+                orders.append(order)
+        return OrderResult(success=True, message="GTT orders fetched",
+                           data={"orders": orders})
+    except ApiException as e:
+        msg = _parse_api_error(e)
+        return OrderResult(success=False, message=f"GTT list failed: {msg}")
+    except Exception as e:
+        return OrderResult(success=False, message=f"GTT list failed: {e}")
+
+
 @app.post("/orders/place-multi", response_model=OrderResult)
 async def place_multi_order(
     req: PlaceMultiOrderRequest,

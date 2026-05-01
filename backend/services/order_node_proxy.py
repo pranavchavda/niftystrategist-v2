@@ -138,6 +138,72 @@ class OrderNodeProxy:
             )
         return _parse_response(resp)
 
+    # -------------------------------------------------------------------------
+    # GTT (Good Till Triggered) orders
+    # -------------------------------------------------------------------------
+
+    async def place_gtt_order(
+        self,
+        instrument_token: str,
+        transaction_type: str,
+        quantity: int,
+        price: float,
+        trigger_price: float,
+        order_type: str = "LIMIT",
+        product: str = "D",
+    ) -> ProxyResult:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{self.node_url}/gtt/place",
+                headers=self._headers(),
+                json={
+                    "instrument_token": instrument_token,
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "price": price,
+                    "trigger_price": trigger_price,
+                    "order_type": order_type,
+                    "product": product,
+                },
+            )
+        return _parse_response(resp)
+
+    async def modify_gtt_order(
+        self,
+        gtt_order_id: str,
+        quantity: int | None = None,
+        price: float | None = None,
+        trigger_price: float | None = None,
+    ) -> ProxyResult:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{self.node_url}/gtt/modify",
+                headers=self._headers(),
+                json={
+                    "gtt_order_id": gtt_order_id,
+                    "quantity": quantity,
+                    "price": price,
+                    "trigger_price": trigger_price,
+                },
+            )
+        return _parse_response(resp)
+
+    async def cancel_gtt_order(self, gtt_order_id: str) -> ProxyResult:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.delete(
+                f"{self.node_url}/gtt/{gtt_order_id}",
+                headers=self._headers(),
+            )
+        return _parse_response(resp)
+
+    async def get_gtt_orders(self) -> ProxyResult:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self.node_url}/gtt/list",
+                headers=self._headers(),
+            )
+        return _parse_response(resp)
+
 
 class OrderNodeClient:
     """Sync proxy client for the order node (used by CLI tools)."""
@@ -234,6 +300,72 @@ class OrderNodeClient:
                 f"{self.node_url}/orders/place-multi",
                 headers=self._headers(),
                 json={"orders": orders},
+            )
+        return _parse_response(resp)
+
+    # -------------------------------------------------------------------------
+    # GTT (Good Till Triggered) orders
+    # -------------------------------------------------------------------------
+
+    def place_gtt_order(
+        self,
+        instrument_token: str,
+        transaction_type: str,
+        quantity: int,
+        price: float,
+        trigger_price: float,
+        order_type: str = "LIMIT",
+        product: str = "D",
+    ) -> ProxyResult:
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                f"{self.node_url}/gtt/place",
+                headers=self._headers(),
+                json={
+                    "instrument_token": instrument_token,
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "price": price,
+                    "trigger_price": trigger_price,
+                    "order_type": order_type,
+                    "product": product,
+                },
+            )
+        return _parse_response(resp)
+
+    def modify_gtt_order(
+        self,
+        gtt_order_id: str,
+        quantity: int | None = None,
+        price: float | None = None,
+        trigger_price: float | None = None,
+    ) -> ProxyResult:
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                f"{self.node_url}/gtt/modify",
+                headers=self._headers(),
+                json={
+                    "gtt_order_id": gtt_order_id,
+                    "quantity": quantity,
+                    "price": price,
+                    "trigger_price": trigger_price,
+                },
+            )
+        return _parse_response(resp)
+
+    def cancel_gtt_order(self, gtt_order_id: str) -> ProxyResult:
+        with httpx.Client(timeout=30) as client:
+            resp = client.delete(
+                f"{self.node_url}/gtt/{gtt_order_id}",
+                headers=self._headers(),
+            )
+        return _parse_response(resp)
+
+    def get_gtt_orders(self) -> ProxyResult:
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(
+                f"{self.node_url}/gtt/list",
+                headers=self._headers(),
             )
         return _parse_response(resp)
 
