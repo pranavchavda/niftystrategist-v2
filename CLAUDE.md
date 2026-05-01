@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI-powered trading assistant for the Indian stock market (NSE/BSE). Forked from EspressoBot (e-commerce AI assistant) — kept core infrastructure (auth, chat, memory, AG-UI streaming), replaced domain tools with trading (Upstox).
 
-**Key Principles**: Maximum agent autonomy for analysis; HITL approval only for actual transactions; educational tone for non-technical users; memory system for personalization.
+**Key Principles**: Maximum agent autonomy for analysis; render_ui confirmation card (SAFETY-1) only for actual transactions; educational tone for non-technical users; memory system for personalization.
 
 **Upstox Integration**: Not a registered multi-user Upstox app (requires separate approval). The app owner's (Pranav's) Upstox credentials are in `.env`. Other users must enter their own Upstox API key and secret via the Settings page (`/settings` → Trading Settings → Upstox API Credentials), which are stored encrypted per-user in the DB.
 
@@ -95,9 +95,9 @@ Conventions: `--json` for structured output, `--help` on every tool, `--dry-run`
 
 ### Streaming & Trade Confirmation
 
-- **AG-UI**: `utils/ag_ui_wrapper.py` — SSE event stream. The `enhanced_ag_ui_stream()` function merges the Pydantic AI stream with event pollers.
+- **AG-UI**: `utils/ag_ui_wrapper.py` — SSE event stream. `enhanced_ag_ui_stream()` wraps the Pydantic AI stream and emits AG-UI events to the frontend.
 - **Trade confirmation**: System-prompt-based via `render_ui` — agent shows a confirmation card before placing/cancelling orders. Not programmatically enforced; relies on SAFETY-1 rule in orchestrator system prompt. Overridable per-user (e.g., awakening mandates).
-- **Vestigial programmatic HITL**: `utils/hitl_manager.py`, `hitl_streamer.py`, `hitl_decorator.py`, `stream_merger.py`, `routes/hitl.py` — unused infrastructure from EspressoBot. Removal plan: `docs/plans/hitl-removal-plan.md`.
+- **Programmatic HITL removed (2026-05-01, migration `034_drop_hitl_enabled.sql`)**: `utils/hitl_*.py`, `utils/stream_merger.py`, `routes/hitl.py`, frontend `ApprovalDialog` / `HITLToggle`, and `user_preferences.hitl_enabled` were all dropped. SAFETY-1 + `render_ui` is the sole gate now.
 
 ### Database Patterns
 

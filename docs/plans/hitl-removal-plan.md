@@ -1,6 +1,6 @@
 # HITL Programmatic Infrastructure Removal Plan
 
-**Status:** Deferred (researched 2026-03-06, not yet executed)
+**Status:** Done (executed 2026-05-01, migration `backend/migrations/034_drop_hitl_enabled.sql`). Kept for historical reference.
 
 ## Context
 

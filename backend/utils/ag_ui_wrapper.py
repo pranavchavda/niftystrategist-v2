@@ -47,59 +47,8 @@ async def enhanced_ag_ui_stream(original_stream: AsyncIterator[bytes], deps=None
     # Send initial routing event
     yield SSEEventEmitter.agent_routing().encode()
 
-    # Create HITL event stream for this thread
-    if thread_id:
-        from .hitl_streamer import hitl_streamer
-        await hitl_streamer.create_stream(thread_id)
-
-    # Create HITL event poller that runs independently
-    async def hitl_event_poller():
-        """Poll for HITL events every 100ms and yield them"""
-        if not thread_id:
-            return
-
-        from .hitl_streamer import hitl_streamer
-        import asyncio
-
-        try:
-            while True:
-                hitl_event = hitl_streamer.try_get_event(thread_id)
-                if hitl_event:
-                    logger.info(f"[HITL] Poller found {hitl_event.event_type}")
-                    yield ('hitl', hitl_event)
-
-                # Poll every 100ms
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            logger.info(f"[HITL] Event poller cancelled for thread {thread_id}")
-            raise  # Re-raise to properly handle cancellation
-
-    # Merge the main stream with HITL events
-    from .stream_merger import merge_streams
-
     try:
-        async for item_type, item_data in merge_streams(original_stream, hitl_event_poller()):
-            # Handle HITL events
-            if item_type == 'hitl':
-                hitl_event = item_data
-                if hitl_event.event_type == "approval_request":
-                    yield SSEEventEmitter.hitl_approval_request(
-                        tool_name=hitl_event.tool_name,
-                        tool_args=hitl_event.tool_args,
-                        explanation=hitl_event.explanation,
-                        approval_id=hitl_event.approval_id
-                    ).encode()
-                elif hitl_event.event_type == "approved":
-                    yield SSEEventEmitter.hitl_approved(hitl_event.approval_id).encode()
-                elif hitl_event.event_type == "rejected":
-                    yield SSEEventEmitter.hitl_rejected(
-                        hitl_event.approval_id,
-                        hitl_event.reason
-                    ).encode()
-                elif hitl_event.event_type == "timeout":
-                    yield SSEEventEmitter.hitl_timeout(hitl_event.approval_id).encode()
-                continue  # Don't process as chunk
-
+        async for item_type, item_data in _wrap_stream(original_stream):
             # Handle stream errors
             if item_type == 'error':
                 error = item_data
@@ -541,10 +490,14 @@ async def enhanced_ag_ui_stream(original_stream: AsyncIterator[bytes], deps=None
 
         # Note: Cannot drain async iterator in generator finally block - handled in outer wrapper
 
-        # Clean up HITL stream
-        if thread_id:
-            from .hitl_streamer import hitl_streamer
-            await hitl_streamer.cleanup(thread_id)
+
+async def _wrap_stream(original_stream: AsyncIterator[bytes]):
+    """Wrap original AG-UI byte stream as (kind, data) tuples; surface exceptions as ('error', exc)."""
+    try:
+        async for chunk in original_stream:
+            yield ('chunk', chunk)
+    except Exception as exc:
+        yield ('error', exc)
 
 
 async def enhanced_handle_ag_ui_request(

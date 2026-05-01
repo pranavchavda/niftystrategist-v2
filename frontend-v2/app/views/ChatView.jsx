@@ -16,8 +16,6 @@ import TodoPanel from "../components/TodoPanel";
 import TokenUsageBanner from "../components/TokenUsageBanner";
 import ToolsSidebar from "../components/ToolsSidebar";
 import ModelSelector from "../components/ModelSelector";
-import HITLToggle from "../components/HITLToggle";
-import ApprovalDialog from "../components/ApprovalDialog";
 import ActionsDropdown from "../components/ActionsDropdown";
 import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
 import {
@@ -78,9 +76,6 @@ function ChatView({ authToken, onConversationChange }) {
   const [isCompactingThread, setIsCompactingThread] = useState(false);
   // Token usage tracking
   const [tokenUsage, setTokenUsage] = useState(null);
-  // HITL (Human-in-the-Loop) approval state
-  const [approvalRequest, setApprovalRequest] = useState(null);
-  const [showApprovalDialog, setShowApprovalDialog] = useState(false);
   // TODO mode toggle
   const [useTodo, setUseTodo] = useState(false);
   // Mobile controls visibility
@@ -1053,35 +1048,6 @@ function ChatView({ authToken, onConversationChange }) {
 
                 // Break out of stream reading loop
                 break;
-              } else if (data.type === "HITL_APPROVAL_REQUEST") {
-                // HITL: User approval required for tool execution
-                console.log("[HITL] Approval request received:", data);
-                setApprovalRequest({
-                  approvalId: data.approval_id,
-                  toolName: data.tool,
-                  toolArgs: data.arguments,
-                  explanation: data.explanation
-                });
-                setShowApprovalDialog(true);
-                setProcessingStatus("waiting_approval");
-              } else if (data.type === "HITL_APPROVED") {
-                // HITL: User approved the action
-                console.log("[HITL] Approval granted:", data.approval_id);
-                setShowApprovalDialog(false);
-                setApprovalRequest(null);
-                setProcessingStatus("executing_tool");
-              } else if (data.type === "HITL_REJECTED") {
-                // HITL: User rejected the action
-                console.log("[HITL] Approval rejected:", data.approval_id);
-                setShowApprovalDialog(false);
-                setApprovalRequest(null);
-                setProcessingStatus("thinking");
-              } else if (data.type === "HITL_TIMEOUT") {
-                // HITL: Approval request timed out
-                console.log("[HITL] Approval timed out:", data.approval_id);
-                setShowApprovalDialog(false);
-                setApprovalRequest(null);
-                setProcessingStatus("thinking");
               }
             } catch (err) {
               console.error("Failed to parse SSE data:", err);
@@ -1639,56 +1605,6 @@ function ChatView({ authToken, onConversationChange }) {
     }
   }, [threadId, authToken, isExtractingMemories, onConversationChange]);
 
-  // HITL approval handlers
-  const handleApprove = useCallback(async (approvalId) => {
-    try {
-      const response = await fetch('/api/hitl/respond', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          approval_id: approvalId,
-          approved: true
-        })
-      });
-
-      if (!response.ok) {
-        console.error('Failed to send approval response:', response.status);
-      } else {
-        console.log('[HITL] Approval sent successfully');
-      }
-    } catch (error) {
-      console.error('Error sending approval:', error);
-    }
-  }, [authToken]);
-
-  const handleReject = useCallback(async (approvalId, reason) => {
-    try {
-      const response = await fetch('/api/hitl/respond', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          approval_id: approvalId,
-          approved: false,
-          reason: reason || 'User rejected'
-        })
-      });
-
-      if (!response.ok) {
-        console.error('Failed to send rejection response:', response.status);
-      } else {
-        console.log('[HITL] Rejection sent successfully');
-      }
-    } catch (error) {
-      console.error('Error sending rejection:', error);
-    }
-  }, [authToken]);
-
   const handleForkConversation = useCallback(async () => {
     if (!threadId || isForkingConversation || messages.length === 0) return;
 
@@ -1983,7 +1899,6 @@ function ChatView({ authToken, onConversationChange }) {
                 useTodo={useTodo}
                 onToggleTodo={() => setUseTodo(!useTodo)}
                 showForkAndExtract={messages.length > 0}
-                hitlComponent={<HITLToggle authToken={authToken} compact={true} />}
               />
             </div>
           </div>
@@ -2024,20 +1939,6 @@ function ChatView({ authToken, onConversationChange }) {
           </div>
         </div>
       </div>
-
-      {/* HITL Dialog */}
-      {approvalRequest && (
-        <ApprovalDialog
-          isOpen={showApprovalDialog}
-          onClose={() => setShowApprovalDialog(false)}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          toolName={approvalRequest.toolName}
-          toolArgs={approvalRequest.toolArgs}
-          explanation={approvalRequest.explanation}
-          approvalId={approvalRequest.approvalId}
-        />
-      )}
 
       {/* Tools Sidebar */}
       <ToolsSidebar

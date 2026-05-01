@@ -5,7 +5,7 @@ Provides Pydantic AI tools for:
 - Market data (quotes, historical data)
 - Technical analysis
 - Portfolio management
-- Order execution (with HITL)
+- Order execution
 - Watchlist management
 """
 

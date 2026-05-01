@@ -4,7 +4,6 @@ import {
     WrenchScrewdriverIcon,
     ArrowPathRoundedSquareIcon,
     SparklesIcon,
-    CheckCircleIcon,
     ListBulletIcon,
     ArrowsPointingInIcon,
 } from '@heroicons/react/24/outline';
@@ -28,8 +27,6 @@ const ActionsDropdown = ({
     onToggleTodo,
     // Display conditions
     showForkAndExtract = false,
-    // Auto Mode (HITL) - if provided, will show toggle
-    hitlComponent = null,
 }) => {
     const [isOpen, setIsOpen] = useState(false);
     const dropdownRef = useRef(null);
@@ -166,26 +163,6 @@ const ActionsDropdown = ({
 
                         {/* Divider before toggles */}
                         <div className="border-t border-zinc-200 dark:border-zinc-700 my-1" />
-
-                        {/* Approval Mode (HITL) Toggle - if provided */}
-                        {hitlComponent && (
-                            <div className="px-4 py-2.5">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
-                                        <CheckCircleIcon className="w-4 h-4 text-blue-500 dark:text-blue-400" />
-                                        <div className="text-sm">
-                                            <div className="font-medium text-zinc-700 dark:text-zinc-300">
-                                                Approval Mode
-                                            </div>
-                                            <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                                                Ask before executing tools
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="ml-auto">{hitlComponent}</div>
-                                </div>
-                            </div>
-                        )}
 
                         {/* TODO Mode Toggle */}
                         <div className="px-4 py-2.5">

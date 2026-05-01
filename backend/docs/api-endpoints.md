@@ -109,16 +109,6 @@ Same endpoints as Dashboard (alternative UI view). Market status, portfolio, pos
 | POST | `/oco` | Create OCO (One-Cancels-Other) pair |
 | GET | `/logs` | Rule firing history |
 
-## HITL (`/api/hitl`)
-
-**File:** `routes/hitl.py`
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/respond` | Respond to HITL approval request |
-| POST | `/cancel/{approval_id}` | Cancel pending approval |
-| GET | `/pending` | List pending approvals |
-
 ## Auth (`/api/auth`)
 
 **File:** `routes/auth_routes.py`
@@ -127,7 +117,8 @@ Same endpoints as Dashboard (alternative UI view). Market status, portfolio, pos
 |--------|----------|-------------|
 | GET | `/me` | Current user info |
 | GET | `/preferences` | User preferences |
-| PATCH | `/preferences/hitl` | Update HITL preferences |
+
+> Trade approvals are no longer a backend endpoint — they are handled inline via `render_ui` confirmation cards (SAFETY-1). The legacy `/api/hitl/*` routes were removed in migration `034_drop_hitl_enabled.sql`.
 
 ## Admin (`/api/admin`)
 

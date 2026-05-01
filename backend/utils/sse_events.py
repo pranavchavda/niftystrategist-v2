@@ -100,42 +100,6 @@ class SSEEventEmitter:
             "message": message
         })
 
-    @staticmethod
-    def hitl_approval_request(tool_name: str, tool_args: Dict[str, Any], explanation: str, approval_id: str) -> str:
-        """Emit human-in-the-loop approval request"""
-        return SSEEventEmitter.format_event("HITL_APPROVAL_REQUEST", {
-            "approval_id": approval_id,
-            "tool": tool_name,
-            "arguments": tool_args,
-            "explanation": explanation,
-            "message": f"Requesting approval to execute {tool_name}"
-        })
-
-    @staticmethod
-    def hitl_approved(approval_id: str) -> str:
-        """Emit approval granted event"""
-        return SSEEventEmitter.format_event("HITL_APPROVED", {
-            "approval_id": approval_id,
-            "message": "User approved the action"
-        })
-
-    @staticmethod
-    def hitl_rejected(approval_id: str, reason: Optional[str] = None) -> str:
-        """Emit approval rejected event"""
-        return SSEEventEmitter.format_event("HITL_REJECTED", {
-            "approval_id": approval_id,
-            "reason": reason,
-            "message": "User rejected the action"
-        })
-
-    @staticmethod
-    def hitl_timeout(approval_id: str) -> str:
-        """Emit approval timeout event"""
-        return SSEEventEmitter.format_event("HITL_TIMEOUT", {
-            "approval_id": approval_id,
-            "message": "Approval request timed out"
-        })
-
     # A2UI (Agent-to-User Interface) Events
     # See docs/A2UI_IMPLEMENTATION.md for full specification
 

@@ -5,8 +5,10 @@ GTT orders persist server-side and trigger automatically when price conditions
 are met, even if the app is not running. Supports single-trigger and
 OCO (One-Cancels-Other) multi-leg orders.
 
-NOTE: place, modify, and cancel subcommands are HITL-protected — they require
-user approval when called from the orchestrator via execute_bash.
+NOTE: place, modify, and cancel subcommands execute immediately. The
+orchestrator is expected to show a render_ui confirmation card before
+invoking these via execute_bash (see SAFETY-1 in the system prompt).
+Awakenings with a pre-approved trading mandate skip the card.
 """
 
 import argparse

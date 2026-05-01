@@ -3,7 +3,6 @@ Authentication routes for user info and preferences
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from auth import User, get_current_user
 from database.models import UserPreference
 from sqlalchemy import select
@@ -32,29 +31,21 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     }
 
 
-class HITLPreferenceUpdate(BaseModel):
-    """Update HITL preference"""
-    enabled: bool
-
-
 @router.get("/api/auth/preferences")
 async def get_user_preferences(current_user: User = Depends(get_current_user)):
-    """Get user preferences including HITL settings"""
+    """Get user preferences"""
     if not _db_manager:
         raise HTTPException(status_code=500, detail="Database not configured")
 
     try:
         async with _db_manager.async_session() as session:
-            # Query user preferences
             stmt = select(UserPreference).where(UserPreference.user_id == str(current_user.id))
             result = await session.execute(stmt)
             prefs = result.scalar_one_or_none()
 
             if not prefs:
-                # Create default preferences if they don't exist
                 prefs = UserPreference(
                     user_id=str(current_user.id),
-                    hitl_enabled=False,
                     theme="light",
                     sidebar_collapsed=False
                 )
@@ -62,7 +53,6 @@ async def get_user_preferences(current_user: User = Depends(get_current_user)):
                 await session.commit()
 
             return {
-                "hitl_enabled": prefs.hitl_enabled,
                 "theme": prefs.theme,
                 "sidebar_collapsed": prefs.sidebar_collapsed,
                 "default_model": prefs.default_model,
@@ -71,45 +61,4 @@ async def get_user_preferences(current_user: User = Depends(get_current_user)):
 
     except Exception as e:
         logger.error(f"Error fetching user preferences: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("/api/auth/preferences/hitl")
-async def update_hitl_preference(
-    update: HITLPreferenceUpdate,
-    current_user: User = Depends(get_current_user)
-):
-    """Update HITL (Human-in-the-Loop) preference"""
-    if not _db_manager:
-        raise HTTPException(status_code=500, detail="Database not configured")
-
-    try:
-        async with _db_manager.async_session() as session:
-            # Get or create user preferences
-            stmt = select(UserPreference).where(UserPreference.user_id == str(current_user.id))
-            result = await session.execute(stmt)
-            prefs = result.scalar_one_or_none()
-
-            if not prefs:
-                # Create new preferences
-                prefs = UserPreference(
-                    user_id=str(current_user.id),
-                    hitl_enabled=update.enabled
-                )
-                session.add(prefs)
-            else:
-                # Update existing
-                prefs.hitl_enabled = update.enabled
-
-            await session.commit()
-
-            logger.info(f"[HITL] User {current_user.email} set HITL to {update.enabled}")
-
-            return {
-                "success": True,
-                "hitl_enabled": update.enabled
-            }
-
-    except Exception as e:
-        logger.error(f"Error updating HITL preference: {e}")
         raise HTTPException(status_code=500, detail=str(e))

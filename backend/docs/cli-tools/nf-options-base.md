@@ -40,7 +40,7 @@ nf-options quote SYMBOL EXPIRY STRIKE CE|PE [--json]
 ```
 
 ### buy / sell
-Place a single option order (HITL-protected).
+Place a single option order. Orchestrator is expected to show a `render_ui` confirmation card (SAFETY-1) before invoking via `execute_bash`; awakenings with a pre-approved mandate skip the card.
 
 ```bash
 nf-options buy|sell SYMBOL EXPIRY STRIKE CE|PE LOTS [--price P] [--type MARKET|LIMIT] [--dry-run] [--json]

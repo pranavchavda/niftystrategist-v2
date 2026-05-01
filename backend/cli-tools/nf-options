@@ -12,8 +12,10 @@ Supports:
 - F&O positions viewer
 - Trade planner (strike selection, lot sizing, affordability)
 
-NOTE: place and cancel subcommands are HITL-protected — they require
-user approval when called from the orchestrator via execute_bash.
+NOTE: place and cancel subcommands execute immediately. The orchestrator is
+expected to show a render_ui confirmation card before invoking these via
+execute_bash (see SAFETY-1 in the system prompt). Awakenings with a
+pre-approved trading mandate skip the card.
 """
 
 import argparse

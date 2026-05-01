@@ -1,12 +1,10 @@
-"""Order execution tools with Human-in-the-Loop approval."""
+"""Order execution tools."""
 
 import logging
 from typing import Literal, Optional
 
 from pydantic_ai import RunContext
 from sqlalchemy import select
-
-from utils.hitl_decorator import requires_approval
 
 logger = logging.getLogger(__name__)
 
@@ -69,42 +67,7 @@ async def get_trading_client_for_user(user_email: str):
 def register_order_tools(agent, deps_type):
     """Register order execution tools with the agent."""
 
-    def _format_order_explanation(args: dict) -> str:
-        """Format a human-readable explanation for order approval."""
-        symbol = args.get("symbol", "UNKNOWN")
-        action = args.get("action", "BUY")
-        quantity = args.get("quantity", 0)
-        order_type = args.get("order_type", "MARKET")
-        limit_price = args.get("limit_price")
-        stop_loss = args.get("stop_loss")
-        target = args.get("target")
-
-        lines = [
-            f"📊 **{action} Order for {symbol}**",
-            f"",
-            f"**Quantity:** {quantity} shares",
-            f"**Order Type:** {order_type}",
-        ]
-
-        if limit_price:
-            lines.append(f"**Limit Price:** ₹{limit_price:,.2f}")
-
-        if stop_loss:
-            lines.append(f"**Stop Loss:** ₹{stop_loss:,.2f}")
-
-        if target:
-            lines.append(f"**Target:** ₹{target:,.2f}")
-
-        lines.append("")
-        lines.append("⚠️ Please confirm to execute this trade.")
-
-        return "\n".join(lines)
-
     @agent.tool
-    @requires_approval(
-        explanation_fn=_format_order_explanation,
-        tool_name_override="place_order"
-    )
     async def place_order(
         ctx: RunContext[deps_type],
         symbol: str,
@@ -301,10 +264,6 @@ def register_order_tools(agent, deps_type):
             return f"❌ Failed to get order history: {str(e)}"
 
     @agent.tool
-    @requires_approval(
-        explanation_fn=lambda args: f"❌ Cancel order: {args.get('order_id', 'UNKNOWN')}",
-        tool_name_override="cancel_order"
-    )
     async def cancel_order(
         ctx: RunContext[deps_type],
         order_id: str,

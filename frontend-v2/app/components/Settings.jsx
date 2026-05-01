@@ -8,7 +8,6 @@ import {
   Zap,
   DollarSign,
   Brain,
-  Shield,
   Server,
   Monitor,
   TrendingUp,
@@ -26,7 +25,6 @@ import {
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router';
 import { Button } from './catalyst/button';
-import { Switch } from '@headlessui/react';
 import { useTheme } from '../context/ThemeContext';
 import { bufferToBase64url, base64urlToBuffer } from '../utils/webauthn';
 
@@ -42,7 +40,6 @@ export default function Settings({ authToken, user, setUser }) {
   const [models, setModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('claude-haiku-4.5');
   const [isLoadingModels, setIsLoadingModels] = useState(true);
-  const [hitlEnabled, setHitlEnabled] = useState(true); // Default to approval mode
 
   // Trading state
   const [upstoxConnected, setUpstoxConnected] = useState(false);
@@ -89,25 +86,6 @@ export default function Settings({ authToken, user, setUser }) {
     };
 
     fetchModels();
-  }, [authToken]);
-
-  // Fetch HITL preference
-  useEffect(() => {
-    const fetchHITLPreference = async () => {
-      if (!authToken) return;
-
-      try {
-        const res = await fetch('/api/auth/preferences', {
-          headers: { Authorization: `Bearer ${authToken}` }
-        });
-        const data = await res.json();
-        setHitlEnabled(data.hitl_enabled ?? true); // Default to approval mode
-      } catch (err) {
-        console.error('Failed to fetch HITL preference:', err);
-      }
-    };
-
-    fetchHITLPreference();
   }, [authToken]);
 
   // Passkey state
@@ -293,35 +271,6 @@ export default function Settings({ authToken, user, setUser }) {
       system: 'System theme'
     };
     showSaveStatus(`${themeNames[newTheme]} enabled`, 'success');
-  };
-
-  // HITL toggle handler
-  const handleToggleHITL = async () => {
-    const newMode = !hitlEnabled;
-
-    try {
-      const res = await fetch('/api/auth/preferences/hitl', {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({ enabled: newMode })
-      });
-
-      if (res.ok) {
-        setHitlEnabled(newMode);
-        showSaveStatus(
-          newMode ? 'Approval mode enabled' : 'Auto mode enabled',
-          'success'
-        );
-      } else {
-        showSaveStatus('Failed to update approval mode', 'error');
-      }
-    } catch (err) {
-      console.error('Failed to update HITL preference:', err);
-      showSaveStatus('Failed to update approval mode', 'error');
-    }
   };
 
   // Trading mode handlers
@@ -718,54 +667,6 @@ export default function Settings({ authToken, user, setUser }) {
                 </span>
               </div>
             </div>
-          </div>
-        </section>
-
-        {/* Human-in-the-Loop Section */}
-        <section className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800">
-              <Shield className="w-5 h-5 text-zinc-700 dark:text-zinc-300" />
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-                Approval Mode
-              </h2>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                Control when the assistant requires your approval
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
-            <div className="flex-1 mr-4">
-              <div className="font-medium text-zinc-900 dark:text-zinc-100">
-                {hitlEnabled ? 'Approval Mode' : 'Auto Mode'}
-              </div>
-              <div className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
-                {hitlEnabled
-                  ? 'Approve write operations before execution (safer)'
-                  : 'Execute all operations automatically (faster)'}
-              </div>
-              <div className="text-xs text-zinc-500 dark:text-zinc-500 mt-2">
-                {hitlEnabled
-                  ? 'You\'ll be asked to approve file writes, bash commands, and edits'
-                  : 'Operations will run immediately without approval prompts'}
-              </div>
-            </div>
-            <Switch
-              checked={hitlEnabled}
-              onChange={handleToggleHITL}
-              className={`${
-                hitlEnabled ? 'bg-blue-600' : 'bg-zinc-200 dark:bg-zinc-600'
-              } relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 dark:focus:ring-offset-zinc-900`}
-            >
-              <span
-                className={`${
-                  hitlEnabled ? 'translate-x-6' : 'translate-x-1'
-                } inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow-sm`}
-              />
-            </Switch>
           </div>
         </section>
 

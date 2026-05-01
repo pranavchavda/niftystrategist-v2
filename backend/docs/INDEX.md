@@ -40,7 +40,7 @@ backend/
 |-- monitor/        # Trade monitor daemon + rule engine
 |-- database/       # Models, session management, operations
 |-- services/       # Upstox client, technical analysis, encryption
-|-- utils/          # AG-UI wrapper, HITL, encryption, tool monitor
+|-- utils/          # AG-UI wrapper, encryption, tool monitor
 |-- config/         # Model config, permissions
 |-- migrations/     # SQL migration files
 |-- tests/          # Test suites
@@ -57,7 +57,7 @@ backend/
 | Modify the agent system prompt | `agents/orchestrator.py` — `_get_system_prompt()` |
 | Add a new database model | `database/models.py`, create migration in `migrations/` |
 | Debug AG-UI streaming | `utils/ag_ui_wrapper.py` |
-| Debug HITL approval flow | `utils/hitl_streamer.py` + `routes/hitl.py` |
+| Debug trade confirmation flow | `agents/orchestrator.py` SAFETY-1 + `render_ui` cards |
 
 ### Environment Variables
 

@@ -216,7 +216,7 @@ def log_user_message(
         message: User message content
         has_images: Whether message includes images
         model: Model being used for response
-        metadata: Additional metadata (hitl_enabled, use_todo, etc.)
+        metadata: Additional metadata (use_todo, etc.)
         context: Full context being passed to orchestrator (memories, user_bio, etc.)
         conversation_history: Full list of messages in the conversation (for context size tracking)
     """
@@ -260,9 +260,6 @@ def log_user_message(
                 log_data['user_bio_length'] = len(context['user_bio'])
                 log_data['user_bio_preview'] = context['user_bio'][:200] + ('...' if len(context['user_bio']) > 200 else '')
 
-            # Log HITL and TODO settings
-            if 'hitl_enabled' in context:
-                log_data['hitl_enabled'] = context['hitl_enabled']
             if 'use_todo' in context:
                 log_data['use_todo'] = context['use_todo']
 

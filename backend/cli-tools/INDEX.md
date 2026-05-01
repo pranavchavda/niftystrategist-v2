@@ -141,7 +141,7 @@ python cli-tools/nf-order cancel abc123                          # Cancel order
 ```
 
 - `--dry-run` previews the order without executing
-- `buy` and `cancel` are HITL-protected when called from the orchestrator
+- `buy` and `cancel` require a render_ui confirmation card from the orchestrator (SAFETY-1) before execution
 
 ---
 
@@ -283,7 +283,7 @@ python cli-tools/nf-options sell NIFTY 17FEB26 25500 CE 2 --dry-run  # Preview s
 - `chain`: Uses cached instruments (fast, but prices may be stale)
 - `live-chain`: Calls Upstox Put/Call API — real-time prices + greeks
 - `greeks`: Uses Upstox v3 API for delta, gamma, theta, vega, IV (max 50 strikes)
-- `buy`/`sell` are HITL-protected when called from the orchestrator
+- `buy`/`sell` require a render_ui confirmation card from the orchestrator (SAFETY-1) before execution
 
 ---
 

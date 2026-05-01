@@ -238,7 +238,6 @@ class OrchestratorDeps(BaseModel):
     )  # Injected memories for this conversation
     user_name: Optional[str] = None  # User's display name
     user_bio: Optional[str] = None  # User's bio for context
-    hitl_enabled: bool = False  # Human-in-the-loop approval mode
     use_todo: bool = False  # Enable TODO tracking for this conversation
     interrupt_signal: Optional[Any] = None  # Interrupt signal for cancellation
     used_bash_tools: set = Field(
@@ -1227,7 +1226,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 awakening_section = "\n\n## 🤖 AUTONOMOUS AWAKENING MODE\n\n"
                 awakening_section += "You are running as a **scheduled autonomous awakening** — the user is NOT present and cannot click UI buttons.\n\n"
                 awakening_section += "**Mandate-based pre-approval:**\n"
-                awakening_section += "Review the conversation history. If the user previously approved a **trading mandate** via an HITL confirmation (you'll see `[User clicked 'approve_trade']` and mandate details such as risk-per-trade, daily loss cap, allowed instruments, cutoff time), that approval serves as **blanket pre-authorization** for this awakening session.\n\n"
+                awakening_section += "Review the conversation history. If the user previously approved a **trading mandate** via a confirmation card (you'll see `[User clicked 'approve_trade']` and mandate details such as risk-per-trade, daily loss cap, allowed instruments, cutoff time), that approval serves as **blanket pre-authorization** for this awakening session.\n\n"
                 awakening_section += "**Under a pre-approved mandate you MAY:**\n"
                 awakening_section += "- Execute `nf-order` commands directly — NO render_ui confirmation card required\n"
                 awakening_section += "- Place multiple orders provided each is within the mandate's risk-per-trade and day-loss-cap\n"
@@ -1458,7 +1457,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 You are **Nifty Strategist**, an expert trading authority with deep mastery of the Indian stock market (NSE). You are distinguished by your ability to navigate market complexities and drive consistent profitability. Your mission is to assist users by:
 - Analyzing stocks using technical indicators and real-time news
 - Identifying and explaining high-probability market opportunities
-- Executing trades with precision—utilizing human-in-the-loop (HITL) approval or autonomous mandate-based execution
+- Executing trades with precision—via render_ui confirmation cards in interactive sessions, or autonomous mandate-based execution during awakenings
 - Providing comprehensive portfolio management and watchlist oversight
 - Leveraging expert market insights, real-time analytics, and advanced execution tools to consistently drive profitability and wealth creation.
 
@@ -1475,7 +1474,7 @@ You are Nifty Strategist. Users may address you as **Nifty**, **NS**, or **The S
 
 **Key Principles**:
 - Maximum autonomy for analysis and recommendations
-- HITL approval required ONLY for actual transactions (place_order, cancel_order) during interactive sessions. Autonomous awakenings with a pre-approved mandate can execute orders without HITL.
+- Trade confirmation required ONLY for actual transactions (place_order, cancel_order) during interactive sessions — show a render_ui card before placing/cancelling. Autonomous awakenings with a pre-approved mandate skip the card.
 - Educational focus: explain reasoning in beginner-friendly language
 - Never fabricate data or claim actions that didn't happen
 
@@ -1485,7 +1484,7 @@ You are Nifty Strategist. Users may address you as **Nifty**, **NS**, or **The S
 
 1. **NATIVE ONLY**: Use the native tool calling protocol - never use XML tags or markdown code blocks for tool calls
 2. **NO PREAMBLE**: When calling a tool, just call it - don't narrate "I will now..."
-3. **HITL FOR TRADES**: place_order and cancel_order require user approval before execution
+3. **CONFIRM TRADES**: place_order and cancel_order require a render_ui confirmation card before execution (in interactive sessions)
 
 ---
 
@@ -1987,30 +1986,6 @@ Permissions vary by user. Always read the **CURRENT USER** block injected dynami
                     f"You must send the ACTUAL bash command to execute. "
                     f"Example: python cli-tools/nf-morning-scan --universe nifty500 --top 10 --json"
                 )
-
-            # HITL: Request approval before executing write operation
-            if ctx.deps.hitl_enabled:
-                from utils.hitl_manager import get_hitl_manager
-
-                hitl_manager = get_hitl_manager()
-
-                # Create explanation
-                explanation = f"Execute bash command: {command[:100]}"
-                if len(command) > 100:
-                    explanation += "..."
-
-                # Request approval (blocks until user responds or timeout)
-                approval_result = await hitl_manager.request_approval(
-                    tool_name="execute_bash",
-                    tool_args={"command": command, "timeout": timeout},
-                    explanation=explanation,
-                    timeout_seconds=60,
-                    thread_id=ctx.deps.state.thread_id,
-                )
-
-                if not approval_result["approved"]:
-                    reason = approval_result.get("reason", "User rejected")
-                    return f"❌ Command not executed: {reason}"
 
             import time
             import uuid
@@ -3428,29 +3403,6 @@ Available agents: {allowed_agents}
                     "#!/usr/bin/env python3\\nimport json\\n..."
                 )
             """
-            # HITL: Request approval before writing file
-            if ctx.deps.hitl_enabled:
-                from utils.hitl_manager import get_hitl_manager
-
-                hitl_manager = get_hitl_manager()
-
-                # Create explanation
-                file_size_kb = len(content) / 1024
-                explanation = f"Write {file_size_kb:.1f}KB to file: {file_path}"
-
-                # Request approval
-                approval_result = await hitl_manager.request_approval(
-                    tool_name="write_file",
-                    tool_args={"file_path": file_path, "content_length": len(content)},
-                    explanation=explanation,
-                    timeout_seconds=60,
-                    thread_id=ctx.deps.state.thread_id,
-                )
-
-                if not approval_result["approved"]:
-                    reason = approval_result.get("reason", "User rejected")
-                    return f"❌ File write cancelled: {reason}"
-
             try:
                 if not os.path.isabs(file_path):
                     return f"Error: file_path must be absolute. Got: {file_path}"
@@ -3506,33 +3458,6 @@ Available agents: {allowed_agents}
                     "results = client.search_reviews(query)"
                 )
             """
-            # HITL: Request approval before editing file
-            if ctx.deps.hitl_enabled:
-                from utils.hitl_manager import get_hitl_manager
-
-                hitl_manager = get_hitl_manager()
-
-                # Create explanation
-                explanation = f"Edit file {file_path}: Replace '{old_string[:50]}...' with '{new_string[:50]}...'"
-
-                # Request approval
-                approval_result = await hitl_manager.request_approval(
-                    tool_name="edit_file",
-                    tool_args={
-                        "file_path": file_path,
-                        "old_string_length": len(old_string),
-                        "new_string_length": len(new_string),
-                        "replace_all": replace_all,
-                    },
-                    explanation=explanation,
-                    timeout_seconds=60,
-                    thread_id=ctx.deps.state.thread_id,
-                )
-
-                if not approval_result["approved"]:
-                    reason = approval_result.get("reason", "User rejected")
-                    return f"❌ File edit cancelled: {reason}"
-
             try:
                 if not os.path.isabs(file_path):
                     return f"Error: file_path must be absolute. Got: {file_path}"

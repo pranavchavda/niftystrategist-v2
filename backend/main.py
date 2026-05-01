@@ -836,7 +836,7 @@ if logfire_enabled:
 
 # Import and configure conversation router with database
 from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit, monitor as monitor_api, strategies as strategies_api, backtest as backtest_api, scalp as scalp_api, charts as charts_api
-from routes import admin_docs, uploads, admin, auth_routes, hitl, mcp_servers, scratchpad, voice, notes
+from routes import admin_docs, uploads, admin, auth_routes, mcp_servers, scratchpad, voice, notes
 # Set the database manager in the conversations, memories, runs, auth_routes, and cockpit modules
 conversations._db_manager = db_manager
 memories._db_manager = db_manager
@@ -866,8 +866,6 @@ app.include_router(stats.router)
 app.include_router(admin.router)
 # Include Auth routes (user info)
 app.include_router(auth_routes.router)
-# Include HITL (Human-in-the-Loop) router - for trade approvals
-app.include_router(hitl.router)
 # Include MCP Server Management router
 app.include_router(mcp_servers.router)
 # Include Tools information router
@@ -2250,7 +2248,7 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
                 logger.info(f"Created/updated conversation {thread_id} for user {user_email}")
 
                 # Note: Enhanced log_user_message call with full context happens later
-                # after we retrieve user_memories, hitl_enabled, use_todo, etc.
+                # after we retrieve user_memories, use_todo, etc.
 
         # Create a Run record for tracking async execution
         from services.run_manager import run_manager
@@ -2299,23 +2297,6 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
         if user_memories:
             logger.info(f"Injected {len(user_memories)} memories for user {user_email}")
 
-        # Load HITL (Human-in-the-Loop) preference
-        hitl_enabled = False
-        if user:
-            try:
-                from sqlalchemy import select
-                from database.models import UserPreference
-
-                async with db_manager.async_session() as session:
-                    stmt = select(UserPreference).where(UserPreference.user_id == str(user.id))
-                    result = await session.execute(stmt)
-                    prefs = result.scalar_one_or_none()
-                    if prefs:
-                        hitl_enabled = prefs.hitl_enabled
-                        logger.info(f"[HITL] User {user.email} has HITL {'enabled' if hitl_enabled else 'disabled'}")
-            except Exception as e:
-                logger.error(f"Error loading HITL preference: {e}")
-
         # Get TODO mode preference from request
         preferences = body.get("preferences", {})
         use_todo = preferences.get("use_todo", False)
@@ -2358,7 +2339,6 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
             user_memories=user_memories,
             user_name=user.name if user else None,
             user_bio=user.bio if user else None,
-            hitl_enabled=hitl_enabled,
             use_todo=use_todo,
             interrupt_signal=interrupt_signal,
             upstox_access_token=user_upstox_token,
@@ -2380,7 +2360,6 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
             model=user_orchestrator.model_id if hasattr(user_orchestrator, 'model_id') else preferred_model,
             metadata={
                 'run_id': run_id,
-                'hitl_enabled': hitl_enabled,
                 'use_todo': use_todo,
                 'user_email': user.email if user else "anonymous",
                 'message_count': len(messages) if messages else 0
@@ -2389,7 +2368,6 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
                 'user_memories': user_memories,
                 'user_name': user.name if user else None,
                 'user_bio': user.bio if user else None,
-                'hitl_enabled': hitl_enabled,
                 'use_todo': use_todo,
                 'available_agents': user_orchestrator.specialized_agents,
             },
@@ -2728,7 +2706,7 @@ async def agent_status():
             "trading": ["get_quote", "analyze_symbol", "get_portfolio", "place_order", "watchlist"],
             "domain_agents": ["web_search", "vision"]
         },
-        "note": "Nifty Strategist v2 - AI Trading Agent with HITL approval for trades"
+        "note": "Nifty Strategist v2 - AI Trading Agent"
     }
 
 

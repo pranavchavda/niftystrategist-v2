@@ -11,7 +11,7 @@ FastAPI Backend (uvicorn, port 8000)
     |-- Orchestrator Agent (Pydantic AI)
     |   |-- execute_bash -> CLI tools (nf-quote, nf-analyze, etc.)
     |   |-- call_agent -> web_search, vision sub-agents
-    |   |-- HITL -> trade approval cards
+    |   |-- render_ui -> trade confirmation cards (SAFETY-1)
     |-- 20+ API routers (conversations, dashboard, monitor, upstox, etc.)
     |-- Services (upstox_client, technical_analysis, encryption)
     |-- Monitor Daemon (separate process, WebSocket streaming)
@@ -63,17 +63,17 @@ Conventions:
 - Subprocess env vars: `NF_ACCESS_TOKEN`, `NF_USER_ID`
 - CWD is `backend/`
 
-## Streaming & HITL
+## Streaming & Trade Confirmation
 
 ### AG-UI Protocol (`utils/ag_ui_wrapper.py`)
 
-SSE event stream with HITL event merging. The `enhanced_ag_ui_stream()` function merges the Pydantic AI stream with a separate HITL poller task (100ms intervals).
+SSE event stream. The `enhanced_ag_ui_stream()` function wraps the Pydantic AI stream and emits AG-UI events (chunks, tool calls, custom UI events) to the frontend.
 
-### Human-in-the-Loop (`utils/hitl_streamer.py`)
+### Trade Confirmation (system-prompt-based)
 
-Pauses agent execution for user approval on `place_order` and `cancel_order`. Renders approval cards in the frontend via AG-UI events.
+Trade execution is gated by **SAFETY-1** in the orchestrator system prompt: before placing/cancelling/modifying any order (equity, F&O, GTT) the agent must emit a `render_ui` confirmation card and wait for the user to click approve. There is no programmatic gate — the prompt is the contract. The legacy programmatic HITL infra (`utils/hitl_*.py`, `routes/hitl.py`, `stream_merger.py`) was removed in migration `034_drop_hitl_enabled.sql`.
 
-**Awakening exception:** When `is_awakening=True` in `OrchestratorDeps`, the agent operates autonomously within pre-approved trading mandates (no HITL cards needed since no user is present).
+**Awakening exception:** When `is_awakening=True` in `OrchestratorDeps`, the awakening-mode system-prompt section permits direct order execution within a pre-approved trading mandate (no card, since no user is present to click).
 
 ## Database
 
@@ -130,7 +130,7 @@ backend/
 |-- monitor/            # Trade monitor daemon + rule engine
 |-- database/           # Models, session, operations
 |-- services/           # Upstox client, technical analysis, encryption
-|-- utils/              # AG-UI wrapper, HITL, encryption, tool monitor
+|-- utils/              # AG-UI wrapper, encryption, tool monitor
 |-- config/             # Model config, permissions
 |-- migrations/         # SQL migration files
 |-- docs/               # This documentation

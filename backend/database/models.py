@@ -365,9 +365,6 @@ class UserPreference(Base):
     default_model = Column(String, nullable=True)
     temperature = Column(Float, default=0.7)
 
-    # Human-in-the-loop preferences (always enabled for trading)
-    hitl_enabled = Column(Boolean, default=True)
-
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
