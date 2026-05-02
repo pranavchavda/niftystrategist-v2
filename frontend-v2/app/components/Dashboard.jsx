@@ -278,6 +278,7 @@ const Dashboard = ({ authToken }) => {
               positions={cockpitData.positions}
               holdings={cockpitData.holdings}
               trades={cockpitData.trades}
+              mfHoldings={cockpitData.mfHoldings}
               onSymbolSelect={handleSymbolSelect}
               onAskAI={handleAskAI}
             />

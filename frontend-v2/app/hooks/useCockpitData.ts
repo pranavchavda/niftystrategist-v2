@@ -7,6 +7,7 @@ import type {
   DailyScorecard,
   FundsData,
   TradesData,
+  MFHoldingsData,
 } from '../components/cockpit/mock-data';
 
 interface MarketStatus {
@@ -29,6 +30,7 @@ export interface CockpitData {
   scorecard: DailyScorecard | null;
   funds: FundsData | null;
   trades: TradesData | null;
+  mfHoldings: MFHoldingsData | null;
   marketStatus: MarketStatus | null;
   isLoading: boolean;
   error: string | null;
@@ -55,6 +57,7 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
   const [scorecard, setScorecard] = useState<DailyScorecard | null>(null);
   const [funds, setFunds] = useState<FundsData | null>(null);
   const [trades, setTrades] = useState<TradesData | null>(null);
+  const [mfHoldings, setMfHoldings] = useState<MFHoldingsData | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +80,7 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
       fetchJSON(`${API_BASE}/scorecard`, authToken),
       fetchJSON(`${API_BASE}/funds`, authToken),
       fetchJSON(`${API_BASE}/trades`, authToken),
+      fetchJSON(`${API_BASE}/mf-holdings`, authToken),
     ]);
 
     // Market status
@@ -135,6 +139,11 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
       setTrades(results[7].value);
     }
 
+    // MF Holdings
+    if (results[8].status === 'fulfilled') {
+      setMfHoldings(results[8].value);
+    }
+
     // Check if all failed
     const allFailed = results.every(r => r.status === 'rejected');
     if (allFailed) {
@@ -186,6 +195,7 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
     scorecard,
     funds,
     trades,
+    mfHoldings,
     marketStatus,
     isLoading,
     error,

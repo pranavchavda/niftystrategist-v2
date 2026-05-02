@@ -7,7 +7,7 @@ import {
   ChevronRightIcon,
 } from 'lucide-react';
 import { Badge } from '../catalyst/badge';
-import type { Position, TradesData, LiveTrade } from './mock-data';
+import type { Position, TradesData, LiveTrade, MFHoldingsData } from './mock-data';
 
 const fmt = (n: number) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n);
@@ -19,15 +19,16 @@ interface PositionsTableProps {
   positions: Position[];
   holdings: Position[];
   trades: TradesData | null;
+  mfHoldings: MFHoldingsData | null;
   onSymbolSelect: (symbol: string) => void;
   onAskAI: (symbol: string, context: object) => void;
 }
 
-type Tab = 'positions' | 'holdings' | 'trades';
+type Tab = 'positions' | 'holdings' | 'trades' | 'mf';
 type SortKey = 'symbol' | 'pnl' | 'pnlPct' | 'dayChangePct' | 'holdDays';
 type SortDir = 'asc' | 'desc';
 
-export default function PositionsTable({ positions, holdings, trades, onSymbolSelect, onAskAI }: PositionsTableProps) {
+export default function PositionsTable({ positions, holdings, trades, mfHoldings, onSymbolSelect, onAskAI }: PositionsTableProps) {
   const [activeTab, setActiveTab] = useState<Tab>('positions');
   const [sortKey, setSortKey] = useState<SortKey>('pnlPct');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -97,15 +98,36 @@ export default function PositionsTable({ positions, holdings, trades, onSymbolSe
               Trades ({trades.count})
             </button>
           )}
+          {mfHoldings && mfHoldings.count > 0 && (
+            <button
+              onClick={() => setActiveTab('mf')}
+              className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
+                activeTab === 'mf'
+                  ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                  : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              Mutual Funds ({mfHoldings.count})
+            </button>
+          )}
         </div>
 
         {/* Summary */}
-        {activeTab !== 'trades' && (
+        {activeTab !== 'trades' && activeTab !== 'mf' && (
           <div className="flex items-center gap-4 text-xs">
             <span className="hidden lg:inline text-zinc-500">Invested: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(totalInvested)}</span></span>
             <span className="hidden lg:inline text-zinc-500">Current: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(totalCurrent)}</span></span>
             <span className={`font-bold tabular-nums ${totalPnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
               {totalPnl >= 0 ? '+' : ''}{fmt(totalPnl)} ({totalPnl >= 0 ? '+' : ''}{totalPnlPct.toFixed(2)}%)
+            </span>
+          </div>
+        )}
+        {activeTab === 'mf' && mfHoldings && (
+          <div className="flex items-center gap-4 text-xs">
+            <span className="hidden lg:inline text-zinc-500">Invested: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(mfHoldings.totals.invested)}</span></span>
+            <span className="hidden lg:inline text-zinc-500">Current: <span className="font-semibold text-zinc-700 dark:text-zinc-300 tabular-nums">{fmt(mfHoldings.totals.current_value)}</span></span>
+            <span className={`font-bold tabular-nums ${mfHoldings.totals.pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+              {mfHoldings.totals.pnl >= 0 ? '+' : ''}{fmt(mfHoldings.totals.pnl)} ({mfHoldings.totals.pnl >= 0 ? '+' : ''}{mfHoldings.totals.pnl_pct.toFixed(2)}%)
             </span>
           </div>
         )}
@@ -119,7 +141,61 @@ export default function PositionsTable({ positions, holdings, trades, onSymbolSe
 
       {/* Table */}
       <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
-        {activeTab === 'trades' ? (
+        {activeTab === 'mf' ? (
+          /* Mutual Fund Holdings Table */
+          !mfHoldings || mfHoldings.count === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-zinc-400">
+              <p className="text-sm">No mutual fund holdings</p>
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-zinc-50/95 dark:bg-zinc-900/95 backdrop-blur-sm z-10">
+                <tr className="border-b border-zinc-200/50 dark:border-zinc-800/50">
+                  <th className="text-left py-2 px-3 font-semibold text-zinc-500 dark:text-zinc-400">Scheme</th>
+                  <th className="hidden lg:table-cell text-left py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Folio</th>
+                  <th className="hidden md:table-cell text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Units</th>
+                  <th className="hidden xl:table-cell text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Avg NAV</th>
+                  <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">NAV</th>
+                  <th className="hidden md:table-cell text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Invested</th>
+                  <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">Current</th>
+                  <th className="text-right py-2 px-2 font-semibold text-zinc-500 dark:text-zinc-400">P&L</th>
+                  <th className="text-right py-2 px-3 font-semibold text-zinc-500 dark:text-zinc-400">P&L %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...mfHoldings.holdings]
+                  .sort((a, b) => b.current_value - a.current_value)
+                  .map((h) => {
+                    const rowBg = h.pnl >= 0
+                      ? 'hover:bg-green-50/30 dark:hover:bg-green-950/10'
+                      : 'hover:bg-red-50/30 dark:hover:bg-red-950/10';
+                    return (
+                      <tr key={`${h.isin}-${h.folio}`} className={`group border-b border-zinc-100 dark:border-zinc-800/50 transition-colors ${rowBg}`}>
+                        <td className="py-2.5 px-3 max-w-[280px]">
+                          <div className="font-semibold text-zinc-800 dark:text-zinc-200 truncate" title={h.fund}>{h.fund}</div>
+                          {h.last_price_date && (
+                            <div className="text-[10px] text-zinc-400">NAV {h.last_price_date}</div>
+                          )}
+                        </td>
+                        <td className="hidden lg:table-cell py-2.5 px-2 text-zinc-500 tabular-nums">{h.folio}</td>
+                        <td className="hidden md:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">{h.quantity.toFixed(3)}</td>
+                        <td className="hidden xl:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">{fmtDecimal(h.average_price)}</td>
+                        <td className="py-2.5 px-2 text-right font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums">{fmtDecimal(h.last_price)}</td>
+                        <td className="hidden md:table-cell py-2.5 px-2 text-right text-zinc-600 dark:text-zinc-400 tabular-nums">{fmt(h.invested)}</td>
+                        <td className="py-2.5 px-2 text-right text-zinc-800 dark:text-zinc-200 font-semibold tabular-nums">{fmt(h.current_value)}</td>
+                        <td className={`py-2.5 px-2 text-right font-bold tabular-nums ${h.pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {h.pnl >= 0 ? '+' : ''}{fmt(h.pnl)}
+                        </td>
+                        <td className={`py-2.5 px-3 text-right font-semibold tabular-nums ${h.pnl_pct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {h.pnl_pct >= 0 ? '+' : ''}{h.pnl_pct.toFixed(2)}%
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          )
+        ) : activeTab === 'trades' ? (
           /* Trades Table */
           !trades || trades.count === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-zinc-400">

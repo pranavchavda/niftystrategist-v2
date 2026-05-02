@@ -121,6 +121,33 @@ export interface TradesData {
   count: number;
 }
 
+export interface MFHolding {
+  instrument_key: string;
+  isin: string;
+  folio: string;
+  fund: string;
+  quantity: number;
+  average_price: number;
+  last_price: number;
+  last_price_date?: string;
+  pledged_quantity: number;
+  invested: number;
+  current_value: number;
+  pnl: number;
+  pnl_pct: number;
+}
+
+export interface MFHoldingsData {
+  holdings: MFHolding[];
+  count: number;
+  totals: {
+    invested: number;
+    current_value: number;
+    pnl: number;
+    pnl_pct: number;
+  };
+}
+
 // --- Mock Data ---
 
 export const mockPortfolio: PortfolioSummary = {

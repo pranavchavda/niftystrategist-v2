@@ -702,6 +702,35 @@ async def cockpit_trades(user: User = Depends(get_current_user)):
 
 
 # ---------------------------------------------------------------------------
+# GET /mf-holdings  — Mutual fund holdings
+# ---------------------------------------------------------------------------
+@router.get("/mf-holdings")
+async def cockpit_mf_holdings(user: User = Depends(get_current_user)):
+    """Return the user's mutual fund holdings from Upstox."""
+    try:
+        async def _fetch(client):
+            holdings = await client.get_mf_holdings()
+            invested = sum(h.get("invested") or 0 for h in holdings)
+            current = sum(h.get("current_value") or 0 for h in holdings)
+            pnl = sum(h.get("pnl") or 0 for h in holdings)
+            pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+            return {
+                "holdings": holdings,
+                "count": len(holdings),
+                "totals": {
+                    "invested": round(invested, 2),
+                    "current_value": round(current, 2),
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                },
+            }
+        return await _with_401_retry(user, _fetch)
+    except Exception as e:
+        logger.error(f"Error fetching MF holdings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # POST /daily-thread  — Get or create today's cockpit thread
 # ---------------------------------------------------------------------------
 COCKPIT_COMPACT_THRESHOLD = 60   # message count that triggers compaction

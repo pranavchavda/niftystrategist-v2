@@ -2695,3 +2695,73 @@ class UpstoxClient:
             raise ValueError(f"Failed to fetch P&L report: {e.status} - {e.reason}")
         except Exception as e:
             raise ValueError(f"Failed to fetch P&L report: {e}")
+
+    # -------------------------------------------------------------------
+    # Mutual Funds
+    # -------------------------------------------------------------------
+    async def get_mf_holdings(self) -> list[dict]:
+        """Fetch the user's mutual fund holdings from Upstox.
+
+        The Python SDK (v2.19) does not expose a MutualFundApi class, so we
+        call the REST endpoint directly with the same access token used by
+        the SDK.
+
+        Returns:
+            List of dicts with keys: instrument_key, isin, folio, fund,
+            quantity, average_price, last_price, last_price_date, pnl,
+            pledged_quantity, invested, current_value, pnl_pct
+        """
+        import httpx
+
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        url = "https://api.upstox.com/v2/mf/holdings"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                resp = await http.get(url, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json()
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:300] if e.response is not None else ""
+            raise ValueError(
+                f"MF holdings fetch failed: {e.response.status_code} {body}"
+            )
+        except Exception as e:
+            raise ValueError(f"MF holdings fetch failed: {e}")
+
+        if payload.get("status") != "success":
+            raise ValueError(f"MF holdings unexpected response: {payload}")
+
+        holdings: list[dict] = []
+        for row in payload.get("data") or []:
+            qty = float(row.get("quantity") or 0)
+            avg = float(row.get("average_price") or 0)
+            ltp = float(row.get("last_price") or 0)
+            invested = qty * avg
+            current = qty * ltp
+            api_pnl = row.get("pnl")
+            pnl = float(api_pnl) if api_pnl is not None else (current - invested)
+            pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+            holdings.append({
+                "instrument_key": row.get("instrument_key"),
+                "isin": row.get("isin") or row.get("instrument_key"),
+                "folio": row.get("folio"),
+                "fund": row.get("fund") or row.get("scheme") or "",
+                "quantity": qty,
+                "average_price": avg,
+                "last_price": ltp,
+                "last_price_date": row.get("last_price_date") or row.get("last_nav_date"),
+                "pledged_quantity": float(row.get("pledged_quantity") or 0),
+                "invested": round(invested, 2),
+                "current_value": round(current, 2),
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct, 2),
+            })
+        return holdings
