@@ -12,7 +12,7 @@ from auth import User, get_current_user
 from database.session import get_db_context
 from monitor import scalp_crud
 from monitor.scalp_models import UNDERLYING_INSTRUMENT_MAP, ScalpState, SessionMode
-from services.instruments_cache import get_instrument_key, is_etf, is_nifty500
+from services.instruments_cache import get_instrument_key
 
 logger = logging.getLogger(__name__)
 
@@ -240,14 +240,7 @@ async def api_create_session(
         if not body.expiry:
             raise HTTPException(status_code=400, detail="expiry is required for options_scalp")
     else:
-        # Equity modes: must be a Nifty 500 constituent or NSE-listed ETF, and
-        # resolvable via the instruments cache. This keeps sessions on liquid,
-        # well-tracked names and rules out illiquid penny stocks.
-        if not (is_nifty500(underlying_upper) or is_etf(underlying_upper)):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Equity symbol '{body.underlying}' is not in the Nifty 500 universe and is not a listed NSE ETF. Pick a Nifty 500 constituent or an NSE ETF.",
-            )
+        # Equity modes: any NSE-listed equity resolvable via the instruments cache.
         instrument_key = get_instrument_key(underlying_upper)
         if not instrument_key:
             raise HTTPException(
@@ -373,11 +366,6 @@ async def api_update_session(
                 updates["underlying"] = upper
                 updates["underlying_instrument_token"] = UNDERLYING_INSTRUMENT_MAP[upper]
             else:
-                if not (is_nifty500(upper) or is_etf(upper)):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Equity symbol '{body.underlying}' is not in the Nifty 500 universe and is not a listed NSE ETF. Pick a Nifty 500 constituent or an NSE ETF.",
-                    )
                 instrument_key = get_instrument_key(upper)
                 if not instrument_key:
                     raise HTTPException(

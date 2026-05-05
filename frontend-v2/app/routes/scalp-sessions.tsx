@@ -736,6 +736,7 @@ export default function ScalpSessionsRoute() {
                 <div className="p-4 flex items-center gap-3 cursor-pointer" onClick={() => toggleExpand(s.id)}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
+                      <span className="font-mono text-xs text-zinc-500 dark:text-zinc-400">#{s.id}</span>
                       <span className="font-medium text-zinc-900 dark:text-zinc-100">{s.name}</span>
                       {stateBadge(s.state, s.current_option_type)}
                       {s.session_mode && s.session_mode !== 'options_scalp' && (
