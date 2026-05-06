@@ -18,6 +18,7 @@ const PRIMARY_INDICATORS: { value: string; label: string }[] = [
   { value: 'utbot', label: 'UT Bot' },
   { value: 'halftrend', label: 'HalfTrend' },
   { value: 'ssl_hybrid', label: 'SSL Hybrid' },
+  { value: 'hilega_milega', label: 'Hilega Milega' },
   { value: 'ema_crossover', label: 'EMA Crossover' },
   { value: 'supertrend', label: 'Supertrend' },
   { value: 'renko', label: 'Renko' },
@@ -28,6 +29,7 @@ const CONFIRM_INDICATORS: { value: string; label: string }[] = [
   { value: 'qqe_mod', label: 'QQE MOD' },
   { value: 'macd', label: 'MACD' },
   { value: 'rsi', label: 'RSI 14' },
+  { value: 'hilega_milega', label: 'Hilega Milega' },
   { value: 'halftrend', label: 'HalfTrend' },
   { value: 'ssl_hybrid', label: 'SSL Hybrid' },
   { value: 'utbot', label: 'UT Bot' },
@@ -38,6 +40,7 @@ const PARAM_DEFAULTS: Record<string, Record<string, number>> = {
   utbot: { period: 10, sensitivity: 1.0 },
   halftrend: { amplitude: 2, channel_dev: 2.0, atr_period: 100 },
   ssl_hybrid: { period: 10 },
+  hilega_milega: { rsi_period: 9, wma_period: 21, ema_period: 3, buy_threshold: 51, sell_threshold: 49 },
   ema_crossover: { fast: 9, slow: 21 },
   supertrend: { period: 10, multiplier: 3.0 },
   renko: { brick_size: 10 },
@@ -66,6 +69,10 @@ const PARAM_LABELS: Record<string, string> = {
   rsi_period: 'RSI Period',
   smoothing: 'Smoothing',
   baseline_period: 'Baseline EMA',
+  wma_period: 'WMA of RSI',
+  ema_period: 'EMA of RSI',
+  buy_threshold: 'Buy RSI ≥',
+  sell_threshold: 'Sell RSI ≤',
 };
 
 function RenkoParams({

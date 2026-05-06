@@ -208,6 +208,72 @@ class TestSSLHybrid:
         assert val == 1.0
 
 
+# ── Hilega Milega ────────────────────────────────────────────────────
+
+
+class TestHilegaMilega:
+    # Periodic trend pattern (+1.5 / +1.5 / -0.5) gives a real pullback bar
+    # every 3 bars so RSI doesn't saturate. n=81 lands the final bar on the
+    # peak of the cycle, where ema(rsi) > wma(rsi) reliably.
+    def _noisy_uptrend(self, n: int = 81) -> list[float]:
+        out = [100.0]
+        deltas = [1.5, 1.5, -0.5]
+        for i in range(n - 1):
+            out.append(out[-1] + deltas[i % 3])
+        return out
+
+    def _noisy_downtrend(self, n: int = 81) -> list[float]:
+        out = [200.0]
+        deltas = [-1.5, -1.5, 0.5]
+        for i in range(n - 1):
+            out.append(out[-1] + deltas[i % 3])
+        return out
+
+    def test_hilega_bullish_on_uptrend(self):
+        from monitor.indicator_engine import compute_indicator
+        candles = _make_candles(self._noisy_uptrend())
+        val = compute_indicator("hilega_milega", candles, {})
+        assert val == 1.0
+
+    def test_hilega_bearish_on_downtrend(self):
+        from monitor.indicator_engine import compute_indicator
+        candles = _make_candles(self._noisy_downtrend())
+        val = compute_indicator("hilega_milega", candles, {})
+        assert val == -1.0
+
+    def test_hilega_neutral_returns_zero(self):
+        """Up move long enough to compute, then a flat tail — RSI sags toward
+        50, the gate blocks the signal, indicator returns 0."""
+        from monitor.indicator_engine import compute_indicator
+        warmup = [100.0 + i * 0.3 for i in range(40)]
+        flat = [warmup[-1]] * 30  # change=0 keeps RSI converging to 50
+        candles = _make_candles(warmup + flat)
+        val = compute_indicator("hilega_milega", candles, {})
+        assert val == 0.0
+
+    def test_hilega_insufficient_data(self):
+        from monitor.indicator_engine import compute_indicator
+        candles = _make_candles([100.0, 101.0, 102.0])
+        val = compute_indicator("hilega_milega", candles, {})
+        assert val is None
+
+    def test_hilega_raw_output_signed(self):
+        from monitor.indicator_engine import compute_indicator
+        candles = _make_candles(self._noisy_uptrend())
+        raw = compute_indicator("hilega_milega", candles, {"output": "raw"})
+        assert raw is not None
+        assert raw > 0  # ema(rsi) > wma(rsi) on uptrend
+
+    def test_hilega_rsi_threshold_blocks_weak_signal(self):
+        """A clean uptrend with EMA>WMA gets blocked by an unreachable gate."""
+        from monitor.indicator_engine import compute_indicator
+        candles = _make_candles(self._noisy_uptrend())
+        val = compute_indicator(
+            "hilega_milega", candles, {"buy_threshold": 99.5}
+        )
+        assert val == 0.0
+
+
 # ── Renko (candle-based) ─────────────────────────────────────────────
 
 

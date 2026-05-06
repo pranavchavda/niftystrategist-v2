@@ -326,6 +326,56 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
             if pd.isna(rsi_ma):
                 return None
             return float(rsi_ma - 50.0)
+        elif indicator == "hilega_milega":
+            # Hilega Milega — RSI(rsi_period) with a WMA and EMA of the RSI
+            # series. The RSI EMA crossing the RSI WMA marks the trend, gated
+            # by an RSI absolute threshold (>buy / <sell on the 50 line).
+            #
+            # Returns a signed scalar so the scalp engine's flip contract
+            # (prev <= 0 → curr > 0 = bullish) holds:
+            #
+            #   default ("signal"):
+            #     +1 when ema_rsi > wma_rsi AND rsi >= buy_threshold
+            #     -1 when ema_rsi < wma_rsi AND rsi <= sell_threshold
+            #      0 otherwise (no fresh signal)
+            #
+            #   "raw"  → ema_rsi - wma_rsi (ungated)
+            #   "rsi"  → current RSI value
+            #   "ema"  → EMA of RSI
+            #   "wma"  → WMA of RSI
+            #
+            # Defaults follow Nitish Kumar's published "NK Stock Talk" config:
+            # RSI(9), WMA(21), EMA(3). Buy/sell thresholds 51/49 are a common
+            # filter to avoid choppy 50-line whipsaws.
+            rsi_period = int(params.get("rsi_period", 9))
+            wma_period = int(params.get("wma_period", 21))
+            ema_period = int(params.get("ema_period", 3))
+            buy_threshold = float(params.get("buy_threshold", 51.0))
+            sell_threshold = float(params.get("sell_threshold", 49.0))
+            output = params.get("output", "signal")
+            needed = rsi_period + max(wma_period, ema_period) + 2
+            if len(df) < needed:
+                return None
+            rsi_series = ta.momentum.RSIIndicator(df["close"], window=rsi_period).rsi()
+            rsi_wma = ta.trend.WMAIndicator(rsi_series, window=wma_period).wma().iloc[-1]
+            rsi_ema = ta.trend.EMAIndicator(rsi_series, window=ema_period).ema_indicator().iloc[-1]
+            rsi_last = rsi_series.iloc[-1]
+            if pd.isna(rsi_wma) or pd.isna(rsi_ema) or pd.isna(rsi_last):
+                return None
+            if output == "rsi":
+                return float(rsi_last)
+            if output == "ema":
+                return float(rsi_ema)
+            if output == "wma":
+                return float(rsi_wma)
+            if output == "raw":
+                return float(rsi_ema - rsi_wma)
+            # default: gated signal
+            if rsi_ema > rsi_wma and rsi_last >= buy_threshold:
+                return 1.0
+            if rsi_ema < rsi_wma and rsi_last <= sell_threshold:
+                return -1.0
+            return 0.0
         elif indicator == "ssl_hybrid":
             # SSL Hybrid: SMA of highs / SMA of lows channel. Returns ±1.0
             # state depending on whether close broke above the high-SMA
