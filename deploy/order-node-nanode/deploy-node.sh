@@ -29,7 +29,7 @@ rsync -avz \
 cat > /tmp/order-node-requirements.txt << 'EOF'
 fastapi>=0.115.0
 uvicorn>=0.32.0
-upstox-client>=2.12.0
+upstox-python-sdk>=2.19.0
 httpx>=0.27.0
 pydantic>=2.10.0
 EOF
