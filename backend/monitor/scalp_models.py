@@ -105,6 +105,13 @@ class ScalpSessionRuntime(BaseModel):
     # until a successful persist restores it — prevents the 2026-04-22
     # scenario where the DB showed IDLE/null while broker held a short.
     persist_healthy: bool = True
+    # Exit-order in-flight + backoff state. Prevents the 2026-05-06 scenario
+    # where a broker outage caused 21 minutes of /orders/place attempts to
+    # silently time out, then dump as duplicate market sells when the broker
+    # came back. Reset on transition to IDLE.
+    exit_in_flight: bool = False
+    exit_last_attempt_at: datetime | None = None
+    exit_retry_count: int = 0
 
 
 class ScalpSession(BaseModel):

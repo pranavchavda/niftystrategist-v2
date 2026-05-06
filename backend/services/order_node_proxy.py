@@ -64,6 +64,7 @@ class OrderNodeProxy:
         price: float = 0,
         product: str = "D",
         is_amo: bool | None = None,
+        client_request_id: str | None = None,
     ) -> ProxyResult:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
@@ -78,6 +79,7 @@ class OrderNodeProxy:
                     "price": price,
                     "product": product,
                     "is_amo": is_amo,
+                    "client_request_id": client_request_id,
                 },
             )
         return _parse_response(resp)
@@ -229,6 +231,7 @@ class OrderNodeClient:
         price: float = 0,
         product: str = "D",
         is_amo: bool | None = None,
+        client_request_id: str | None = None,
     ) -> ProxyResult:
         with httpx.Client(timeout=30) as client:
             resp = client.post(
@@ -243,6 +246,7 @@ class OrderNodeClient:
                     "price": price,
                     "product": product,
                     "is_amo": is_amo,
+                    "client_request_id": client_request_id,
                 },
             )
         return _parse_response(resp)

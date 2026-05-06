@@ -262,7 +262,7 @@ async def execute_awakening(
         upstox_token = await get_user_upstox_token(user_id)
         if upstox_token:
             client = UpstoxClient(upstox_token, paper_trading=False)
-            status = await asyncio.to_thread(client.get_market_status)
+            status = await client.get_market_status_api()
             if status and status.get("status") == "CLOSED" and schedule.name != "Post-Close Review":
                 logger.info("Awakening %d: market closed (holiday?), skipping", schedule.id)
                 return {"success": True, "skipped": True, "reason": "Market closed"}

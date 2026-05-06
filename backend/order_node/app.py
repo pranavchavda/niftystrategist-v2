@@ -10,6 +10,7 @@ Auth: Bearer token (Upstox) + X-Node-Secret (shared secret with main instance).
 
 import logging
 import os
+import time
 
 import upstox_client
 from fastapi import FastAPI, Header, HTTPException
@@ -20,6 +21,30 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("order-node")
 
 NODE_SECRET = os.environ.get("NF_ORDER_NODE_SECRET", "")
+
+# ---------------------------------------------------------------------------
+# Place-order dedup — defense-in-depth against the 2026-05-06 dump-on-recovery
+# scenario. Client-side backoff (scalp_session.py) is the primary defense;
+# this catches anything that slips through (retry tools, manual chat orders
+# racing daemon retries, etc.). Window must be ≤ the client's minimum backoff
+# so legitimate retries aren't blocked. Client's first-retry backoff is 30s,
+# so we use 25s here.
+# ---------------------------------------------------------------------------
+
+_DEDUP_WINDOW_SEC = 25
+# key → (placed_at_epoch, last_result_dict)
+_recent_orders: dict[str, tuple[float, dict]] = {}
+
+
+def _dedup_key(instrument_token: str, transaction_type: str, quantity: int, order_type: str) -> str:
+    return f"{instrument_token}|{transaction_type}|{quantity}|{order_type}"
+
+
+def _purge_expired(now: float) -> None:
+    """Remove dedup entries older than the window. O(n) but n stays small."""
+    expired = [k for k, (t, _) in _recent_orders.items() if now - t > _DEDUP_WINDOW_SEC]
+    for k in expired:
+        _recent_orders.pop(k, None)
 
 app = FastAPI(title="NiftyStrategist Order Node", docs_url=None, redoc_url=None)
 
@@ -85,6 +110,12 @@ class PlaceOrderRequest(BaseModel):
     price: float = 0
     product: str = "D"  # D=Delivery, I=Intraday
     is_amo: bool | None = None  # None = auto-detect
+    # Optional idempotency key. When supplied, dedup is keyed on this id and
+    # the (instrument, side, qty, order_type) tuple is ignored — letting two
+    # legitimately-parallel same-tuple orders from different sources both
+    # proceed (each gets a unique id). When absent, falls back to tuple dedup
+    # as a safety net for callers that don't generate ids (CLI, manual chat).
+    client_request_id: str | None = None
 
 
 class ModifyOrderRequest(BaseModel):
@@ -145,6 +176,35 @@ async def place_order(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
+
+    # Dedup against the 2026-05-06 dump-on-recovery flood: same instrument +
+    # side + qty + order_type within _DEDUP_WINDOW_SEC returns the prior
+    # outcome instead of re-submitting. Single-thread asyncio loop makes
+    # check-then-set atomic between awaits.
+    now = time.time()
+    _purge_expired(now)
+    if req.client_request_id:
+        key = f"id:{req.client_request_id}"
+    else:
+        key = _dedup_key(req.instrument_token, req.transaction_type, req.quantity, req.order_type)
+    prior = _recent_orders.get(key)
+    if prior is not None:
+        prior_at, prior_result = prior
+        logger.warning(
+            "Duplicate order suppressed: %s (prior %.1fs ago, success=%s, order_id=%s)",
+            key, now - prior_at, prior_result.get("success"), prior_result.get("order_id"),
+        )
+        # Mirror the prior outcome so the daemon's success/failure handling
+        # stays correct: prior-success → daemon transitions IDLE; prior-failure
+        # → daemon stays HOLDING and lets backoff/reconcile retry. Annotate
+        # the message so the dedup is visible in logs.
+        return OrderResult(
+            success=prior_result.get("success", False),
+            order_id=prior_result.get("order_id"),
+            status=prior_result.get("status") or "DUPLICATE",
+            message=f"[deduped {now - prior_at:.0f}s] {prior_result.get('message', '')}",
+        )
+
     api_client = _make_client(token)
     order_api = upstox_client.OrderApiV3(api_client)
 
@@ -169,19 +229,25 @@ async def place_order(
         amo_label = " [AMO]" if is_amo else ""
         logger.info("Order placed: %s %s %s x%d (id=%s)%s",
                      req.transaction_type, req.symbol, req.order_type, req.quantity, order_id, amo_label)
-        return OrderResult(
+        result = OrderResult(
             success=True,
             order_id=order_id,
             status="PENDING",
             message=f"Order placed successfully{amo_label} (ID: {order_id})",
         )
+        _recent_orders[key] = (time.time(), result.model_dump())
+        return result
     except ApiException as e:
         msg = _parse_api_error(e)
         logger.error("Place order failed: %s", msg)
-        return OrderResult(success=False, status="REJECTED", message=f"Order rejected: {msg}")
+        result = OrderResult(success=False, status="REJECTED", message=f"Order rejected: {msg}")
+        _recent_orders[key] = (time.time(), result.model_dump())
+        return result
     except Exception as e:
         logger.error("Place order error: %s", e)
-        return OrderResult(success=False, status="REJECTED", message=f"Order failed: {e}")
+        result = OrderResult(success=False, status="REJECTED", message=f"Order failed: {e}")
+        _recent_orders[key] = (time.time(), result.model_dump())
+        return result
 
 
 @app.post("/orders/modify", response_model=OrderResult)

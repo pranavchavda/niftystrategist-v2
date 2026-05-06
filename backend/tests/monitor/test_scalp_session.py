@@ -621,6 +621,195 @@ class TestExitPosition:
             mock_order.assert_called_once()
 
 
+class TestExitBackoff:
+    """2026-05-06 broker-outage fix: in-flight + exponential backoff prevent
+    a 30s retry storm during broker downtime, and the dump-on-recovery flood
+    of duplicate exits."""
+
+    def test_backoff_schedule(self):
+        from monitor.scalp_session import _exit_backoff_seconds
+        assert _exit_backoff_seconds(0) == 30
+        assert _exit_backoff_seconds(1) == 60
+        assert _exit_backoff_seconds(2) == 120
+        assert _exit_backoff_seconds(3) == 240
+        assert _exit_backoff_seconds(4) == 300
+        assert _exit_backoff_seconds(10) == 300
+
+    @pytest.mark.asyncio
+    async def test_first_failed_attempt_increments_retry_and_records_time(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+
+        with patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": False, "error": "timed out"}), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            assert session.runtime.state == ScalpState.HOLDING_CE
+            assert session.runtime.exit_retry_count == 1
+            assert session.runtime.exit_last_attempt_at is not None
+            assert session.runtime.exit_in_flight is False  # always cleared
+
+    @pytest.mark.asyncio
+    async def test_in_flight_blocks_concurrent_attempt(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+        session.runtime.exit_in_flight = True  # simulate prior coroutine still submitting
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock) as mock_order, \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            mock_order.assert_not_called()
+            assert session.runtime.state == ScalpState.HOLDING_CE
+            assert session.runtime.exit_in_flight is True  # untouched
+
+    @pytest.mark.asyncio
+    async def test_backoff_blocks_retry_within_window(self):
+        """After 1 failure, a retry within 30s should be skipped silently."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+        session.runtime.exit_retry_count = 1  # next backoff = 60s
+        session.runtime.exit_last_attempt_at = datetime.utcnow() - timedelta(seconds=15)
+
+        with patch.object(mgr, '_place_order', new_callable=AsyncMock) as mock_order, \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            mock_order.assert_not_called()
+            assert session.runtime.state == ScalpState.HOLDING_CE
+            assert session.runtime.exit_retry_count == 1  # not incremented
+
+    @pytest.mark.asyncio
+    async def test_backoff_allows_retry_after_window(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+        session.runtime.exit_retry_count = 1  # backoff = 60s
+        session.runtime.exit_last_attempt_at = datetime.utcnow() - timedelta(seconds=90)
+
+        with patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": False, "error": "timed out"}) as mock_order, \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            mock_order.assert_called_once()
+            assert session.runtime.exit_retry_count == 2  # incremented further
+
+    @pytest.mark.asyncio
+    async def test_squareoff_bypasses_backoff(self):
+        """Forced exits run regardless — broker outage must not block shutdown."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+        session.runtime.exit_retry_count = 5  # max backoff
+        session.runtime.exit_last_attempt_at = datetime.utcnow()  # 0s ago
+        session.runtime.exit_in_flight = True  # also bypassed
+
+        with patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": True, "order_id": "X"}) as mock_order, \
+             patch.object(mgr, '_unsubscribe_instrument', new_callable=AsyncMock), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_squareoff", 170.0)
+
+            mock_order.assert_called_once()
+            assert session.runtime.state == ScalpState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_successful_exit_resets_retry_count(self):
+        """After failures during outage, the recovery exit must clear state
+        so the next session's first failure starts at retry=0 (30s backoff)."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+        session.runtime.exit_retry_count = 3
+        session.runtime.exit_last_attempt_at = datetime.utcnow() - timedelta(seconds=300)
+
+        with patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          return_value={"success": True, "order_id": "X"}), \
+             patch.object(mgr, '_unsubscribe_instrument', new_callable=AsyncMock), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            assert session.runtime.state == ScalpState.IDLE
+            assert session.runtime.exit_retry_count == 0
+            assert session.runtime.exit_last_attempt_at is None
+
+    @pytest.mark.asyncio
+    async def test_exception_during_place_increments_retry_and_clears_in_flight(self):
+        """An httpx.TimeoutException (or any raise) must still clear in_flight
+        and bump retry_count — otherwise in_flight=True would lock the session
+        forever after a single network error."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_CE,
+            entry_price=200.0,
+            current_instrument_token="NSE_FO|43885",
+            current_option_type="CE",
+        )
+
+        with patch("strategies.fno_utils.get_lot_size", return_value=25), \
+             patch.object(mgr, '_place_order', new_callable=AsyncMock,
+                          side_effect=RuntimeError("connection refused")), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_broker_position_exists', new_callable=AsyncMock, return_value=True), \
+             patch.object(mgr, '_persist_state', new_callable=AsyncMock):
+
+            await mgr._exit_position(session, "exit_sl", 170.0)
+
+            assert session.runtime.exit_in_flight is False
+            assert session.runtime.exit_retry_count == 1
+            assert session.runtime.state == ScalpState.HOLDING_CE
+
+
 class TestPersistHealthy:
     @pytest.mark.asyncio
     async def test_entry_blocked_when_persist_unhealthy(self):

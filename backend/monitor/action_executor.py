@@ -160,6 +160,12 @@ class ActionExecutor:
             if not instrument_token:
                 instrument_token = client._get_instrument_key(action.symbol)
 
+            # Idempotency id keyed on (rule, fire_count): the rule_evaluator
+            # increments fire_count atomically before each fire, so two parallel
+            # tick processings of the same rule share the same id and collapse
+            # at the order node. Distinct fires get distinct ids.
+            client_request_id = f"rule:{rule.id}:fire:{rule.fire_count}"
+
             result = await proxy.place_order(
                 symbol=action.symbol,
                 instrument_token=instrument_token,
@@ -168,6 +174,7 @@ class ActionExecutor:
                 order_type=action.order_type,
                 price=action.price if action.price is not None else 0,
                 product=action.product,
+                client_request_id=client_request_id,
             )
             return {
                 "success": result.success,

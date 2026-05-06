@@ -1096,6 +1096,27 @@ class UpstoxClient:
             return all_syms
         return sorted(self.SYMBOL_TO_ISIN.keys())
 
+    async def get_positions(self) -> list:
+        """Return raw Upstox PositionData objects for the current session.
+
+        Each item exposes ``instrument_token``, ``tradingsymbol``, ``quantity``
+        (signed — negative for shorts), ``product``, ``average_price``,
+        ``last_price``, ``pnl``, etc. Used by the scalp-session reconciler to
+        verify a held position still exists at the broker before firing an
+        exit (2026-04-22 ADANIENSOL fix).
+
+        Raises ValueError if no access token; caller treats network errors as
+        "could not verify" rather than "broker is flat".
+        """
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        api_client = upstox_client.ApiClient(self._configuration)
+        portfolio_api = upstox_client.PortfolioApi(api_client)
+        response = portfolio_api.get_positions(api_version="v2")
+        return response.data or []
+
     async def get_orders(self) -> list[dict]:
         """
         Get all orders for the current day.

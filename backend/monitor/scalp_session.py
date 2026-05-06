@@ -79,6 +79,11 @@ def _is_nse_market_open() -> bool:
     return open_t <= now <= close_t
 
 
+def _exit_backoff_seconds(retry_count: int) -> int:
+    """Exponential backoff for failed exit-order retries: 30→60→120→240→300s cap."""
+    return min(30 * (2 ** retry_count), 300)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -856,6 +861,31 @@ class ScalpSessionManager:
         if not session.is_holding:
             return
 
+        # In-flight + backoff guard. Forced exits (squareoff, user-disable)
+        # bypass — those are explicit shutdowns and must run regardless.
+        # 2026-05-06: a broker outage caused exits to time out every 30s for
+        # 21 minutes, then dump as ~10 duplicate market sells when the broker
+        # recovered. In-flight stops concurrent submits; backoff stops the
+        # retry storm; existing _broker_position_exists reconcile catches the
+        # "exit already happened" case once the broker is healthy again.
+        forced_exits = {"exit_squareoff", "exit_disabled"}
+        if reason not in forced_exits:
+            if rt.exit_in_flight:
+                logger.info(
+                    "Session %d: skip %s exit — prior attempt still in flight",
+                    session.id, reason,
+                )
+                return
+            if rt.exit_last_attempt_at is not None:
+                elapsed = (datetime.utcnow() - rt.exit_last_attempt_at).total_seconds()
+                backoff = _exit_backoff_seconds(rt.exit_retry_count)
+                if elapsed < backoff:
+                    logger.info(
+                        "Session %d: skip %s exit — backoff %ds (retry=%d, elapsed=%.0fs)",
+                        session.id, reason, backoff, rt.exit_retry_count, elapsed,
+                    )
+                    return
+
         # Pre-market signal-driven exits get auto-flipped to AMO at the
         # order layer, queue for the next session, and never fill — leaving
         # the broker long while the daemon believes IDLE. Observed
@@ -928,17 +958,26 @@ class ScalpSessionManager:
             exit_price, rt.entry_price, txn,
         )
 
+        rt.exit_in_flight = True
+        rt.exit_last_attempt_at = datetime.utcnow()
         try:
-            order_result = await self._place_order(
-                user_id=cfg.user_id,
-                instrument_token=rt.current_instrument_token,
-                symbol=symbol,
-                transaction_type=txn,
-                quantity=quantity,
-                product=product,
-            )
+            try:
+                order_result = await self._place_order(
+                    user_id=cfg.user_id,
+                    instrument_token=rt.current_instrument_token,
+                    symbol=symbol,
+                    transaction_type=txn,
+                    quantity=quantity,
+                    product=product,
+                )
+            except Exception as e:
+                rt.exit_retry_count += 1
+                logger.error("Session %d: exit order failed: %s", session.id, e, exc_info=True)
+                await self._log_event(session, "error", trigger_snapshot={"error": str(e)})
+                return
 
             if not order_result.get("success"):
+                rt.exit_retry_count += 1
                 logger.error("Session %d: exit order failed: %s", session.id, order_result)
                 await self._log_event(
                     session, "order_failed", option_type=rt.current_option_type,
@@ -946,11 +985,8 @@ class ScalpSessionManager:
                     trigger_snapshot={"reason": reason, "order_result": order_result},
                 )
                 return  # Stay HOLDING, retry on next qualifying tick
-
-        except Exception as e:
-            logger.error("Session %d: exit order failed: %s", session.id, e, exc_info=True)
-            await self._log_event(session, "error", trigger_snapshot={"error": str(e)})
-            return
+        finally:
+            rt.exit_in_flight = False
 
         # Calculate P&L. SHORT inverts: profit when exit < entry.
         pnl_points = None
@@ -1003,6 +1039,8 @@ class ScalpSessionManager:
         rt.highest_premium = None
         rt.trail_armed = False
         rt.last_premium_ltp = None
+        rt.exit_last_attempt_at = None
+        rt.exit_retry_count = 0
         rt.trade_count += 1
         rt.last_exit_time = datetime.utcnow()
 
@@ -1050,6 +1088,8 @@ class ScalpSessionManager:
         rt.highest_premium = None
         rt.trail_armed = False
         rt.last_premium_ltp = None
+        rt.exit_last_attempt_at = None
+        rt.exit_retry_count = 0
 
     async def reconcile_on_startup(self) -> None:
         """Check HOLDING sessions against actual broker positions on daemon start."""
@@ -1108,9 +1148,17 @@ class ScalpSessionManager:
             node_url = await self._get_order_node_url(user_id)
 
         if node_url:
+            # Fresh idempotency id per logical decision. Scalp self-retries are
+            # already gated client-side by exit_in_flight + backoff, so a fresh
+            # id per call lets two legitimately-parallel orders from different
+            # sources (e.g., scalp + manual chat) both proceed despite hitting
+            # the same instrument/side/qty within the server's dedup window.
+            import uuid
+            client_request_id = f"scalp:{user_id}:{uuid.uuid4().hex[:12]}"
             return await self._place_order_via_node(
                 user_id, node_url, instrument_token, symbol,
                 transaction_type, quantity, product, order_type,
+                client_request_id=client_request_id,
             )
 
         return await self._place_order_direct(
@@ -1153,6 +1201,7 @@ class ScalpSessionManager:
     async def _place_order_via_node(
         self, user_id, node_url, instrument_token, symbol,
         transaction_type, quantity, product, order_type,
+        client_request_id: str | None = None,
     ) -> dict:
         """Place order through user's order node proxy."""
         from services.order_node_proxy import OrderNodeProxy
@@ -1168,6 +1217,7 @@ class ScalpSessionManager:
                 order_type=order_type,
                 price=0,
                 product=product,
+                client_request_id=client_request_id,
             )
             return {
                 "success": result.success,
