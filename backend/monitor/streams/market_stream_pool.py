@@ -227,6 +227,28 @@ class MarketStreamPool:
         if self._stream is not None:
             if new_subs:
                 await self._stream.subscribe(new_subs)
+                # Upstox quirk (2026-05-07 incident): NSE_INDEX
+                # instruments subscribed via diff-add after the initial
+                # connect are silently never delivered. Subscribed via
+                # the *initial* subscribe message (i.e. on connect),
+                # they work. Force a reconnect when any new index key
+                # joins so the next ``_on_connected`` resubscribes from
+                # ``_subscribed_keys`` (which now includes the index)
+                # — that path Upstox honours.
+                index_added = any(k.startswith("NSE_INDEX|") for k in new_subs)
+                if index_added and self._stream._ws is not None:
+                    logger.info(
+                        "[MarketStreamPool] NSE_INDEX subscribed via diff "
+                        "(%s) — forcing reconnect so Upstox honours it",
+                        sorted(k for k in new_subs if k.startswith("NSE_INDEX|")),
+                    )
+                    try:
+                        await self._stream._ws.close()
+                    except Exception as e:
+                        logger.warning(
+                            "[MarketStreamPool] reconnect ws.close failed: %s",
+                            e,
+                        )
             if drop_subs:
                 await self._stream.unsubscribe(drop_subs)
 
