@@ -100,10 +100,15 @@ class MonitorDaemon:
                 # buffers and indicator engine still run per-user.
                 await self._user_manager._on_market_tick(user_id, tick_data)
 
+            # ltpc mode — lighter payload (LTP + close only), and the
+            # mode that ChartMarketStream uses successfully for NSE_INDEX
+            # delivery via the same analytics token. Empirical: 2026-05-07
+            # silent-feed bug only manifested with mode="full" for index
+            # instruments, never on the chart stream's ltpc path.
             self._market_pool = MarketStreamPool(
                 get_owner_token=_get_owner_token,
                 tick_handler=_pool_tick_handler,
-                mode="full",
+                mode="ltpc",
             )
 
         self._user_manager = UserManager(
