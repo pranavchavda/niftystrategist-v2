@@ -25,6 +25,7 @@ rsync -avz --delete \
     --exclude '*.pyc' \
     --exclude '.env' \
     --exclude '.pytest_cache/' \
+    --exclude '.cache/' \
     backend/ ${REMOTE_USER}@${SERVER_IP}:${REMOTE_DIR}/backend/
 
 # --- Sync frontend build ---
@@ -49,6 +50,13 @@ if [ ! -d "venv" ]; then
 fi
 source venv/bin/activate
 pip install -q -r requirements.txt 2>/dev/null || pip install -q -r pyproject.toml 2>/dev/null || echo "Install deps manually if needed"
+
+# Pre-warm the NSE instruments cache. Belt-and-suspenders to the
+# rsync --exclude '.cache/' above: if the cache was missing for any
+# reason (fresh server, manual wipe), this populates it before the
+# monitor daemon starts and tries to resolve ATM strikes.
+NF_USER_ID=1 ./venv/bin/python cli-tools/nf-quote --list-indices > /dev/null 2>&1 \
+    || echo "(instruments cache warmup failed — non-fatal)"
 ENDSSH
 
 # --- Restart services (as root, since deploy user sudo is restricted) ---

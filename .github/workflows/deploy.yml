@@ -43,6 +43,7 @@ jobs:
             --exclude '*.pyc' \
             --exclude '.env' \
             --exclude '.pytest_cache/' \
+            --exclude '.cache/' \
             -e "ssh -i ~/.ssh/deploy_key" \
             backend/ deploy@${{ secrets.SERVER_IP }}:/opt/niftystrategist/backend/
 
@@ -62,6 +63,23 @@ jobs:
           source venv/bin/activate
           pip install -q uv
           uv pip install -r requirements.txt
+          EOF
+
+      - name: Warm instruments cache
+        run: |
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.SERVER_IP }} << 'EOF'
+          set -e
+          cd /opt/niftystrategist/backend
+          source venv/bin/activate
+          # Pre-warm the NSE instruments CSV (and the indices/ETF caches).
+          # Origin: 2026-05-07 — the rsync --delete used to wipe .cache/ on
+          # every deploy, leaving session-creation paths that need to
+          # resolve ATM strikes failing with FileNotFoundError until a
+          # user happened to run nf-quote. Running a no-op fetch here
+          # makes the cache durable across deploys regardless of whether
+          # .cache/ was in the source tree.
+          NF_USER_ID=1 ./venv/bin/python cli-tools/nf-quote --list-indices > /dev/null 2>&1 || \
+            echo "Warning: instruments cache warmup failed — service will still start, but first scalp entry needing ATM resolution may need to retry."
           EOF
 
       - name: Restart services
