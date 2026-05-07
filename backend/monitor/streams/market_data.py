@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+from datetime import datetime, time, timedelta
 from typing import Any, Callable, Coroutine
 
 import aiohttp
@@ -16,6 +18,20 @@ logger = logging.getLogger(__name__)
 MARKET_DATA_AUTH_URL = (
     "https://api.upstox.com/v3/feed/market-data-feed/authorize"
 )
+
+# NSE market hours in UTC (IST 09:15–15:30 → UTC 03:45–10:00).
+# Mon–Fri only. Holidays are not modelled; a holiday-morning false-positive
+# triggers one harmless reconnect.
+_MKT_OPEN_UTC = time(3, 45)
+_MKT_CLOSE_UTC = time(10, 0)
+
+
+def _in_market_hours(now: datetime | None = None) -> bool:
+    now = now or datetime.utcnow()
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return _MKT_OPEN_UTC <= t <= _MKT_CLOSE_UTC
 
 
 class MarketDataStream(BaseWebSocketStream):
@@ -56,6 +72,8 @@ class MarketDataStream(BaseWebSocketStream):
         mode: str = "full_d30",
         fallback_mode: str | None = "full",
         on_auth_failure: Callable[[], Coroutine[Any, Any, None]] | None = None,
+        silence_threshold: float | None = None,
+        watchdog_interval: float = 30.0,
     ):
         self._access_token = access_token
         self._mode = mode
@@ -64,15 +82,92 @@ class MarketDataStream(BaseWebSocketStream):
         self._subscribed_keys: set[str] = set()
         self._proto_module: Any = None  # Lazy-loaded protobuf module
 
+        # Silent-stream watchdog. Some Upstox tokens land in a state where
+        # the WebSocket stays connected and "subscribed" but the feed
+        # delivers no data — TCP alive, ticks absent. Observed live on
+        # 2026-05-07 for user 5: stream kept syncing for hours with zero
+        # market data. Reconnect (via ws.close()) recovers it.
+        self._silence_threshold = silence_threshold or float(
+            os.getenv("NF_STREAM_SILENCE_THRESHOLD_SEC", "60")
+        )
+        self._watchdog_interval = watchdog_interval
+        self._last_tick_at: datetime | None = None
+        self._watchdog_task: asyncio.Task | None = None
+
+        # Wrap the user callback so we can timestamp every successful tick.
+        self._user_on_message = on_message
+
+        async def timestamped_on_message(parsed: dict) -> None:
+            self._last_tick_at = datetime.utcnow()
+            await self._user_on_message(parsed)
+
         async def get_url() -> str:
             return await self._authorize()
 
         super().__init__(
             name="MarketDataStream",
             get_auth_url=get_url,
-            on_message=on_message,
+            on_message=timestamped_on_message,
             on_auth_failure=on_auth_failure,
         )
+
+    async def start(self):
+        await super().start()
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+
+    async def stop(self):
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
+        await super().stop()
+
+    async def _watchdog_loop(self):
+        """Periodically check that ticks are flowing.
+
+        If the stream is connected, has subscriptions, market is open, and
+        no tick has arrived for ``silence_threshold`` seconds, force a
+        reconnect by closing the WebSocket — the existing reconnect loop
+        in ``BaseWebSocketStream._run_loop`` will rebuild it and re-sub.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self._watchdog_interval)
+            except asyncio.CancelledError:
+                break
+            if not self._running:
+                break
+            if not self._subscribed_keys:
+                continue
+            if not _in_market_hours():
+                continue
+            now = datetime.utcnow()
+            last = self._last_tick_at
+            if last is None:
+                # Pre-_on_connected — no clock yet. Skip.
+                continue
+            elapsed = (now - last).total_seconds()
+            if elapsed <= self._silence_threshold:
+                continue
+            logger.warning(
+                "[MarketDataStream] WATCHDOG: no ticks for %.0fs "
+                "(threshold=%.0fs, %d subs) — forcing reconnect",
+                elapsed, self._silence_threshold, len(self._subscribed_keys),
+            )
+            ws = self._ws
+            if ws is not None:
+                try:
+                    await ws.close()
+                except Exception as e:
+                    logger.warning(
+                        "[MarketDataStream] WATCHDOG: ws.close() raised: %s", e,
+                    )
+            # Reset so the next connect's grace window starts fresh.
+            self._last_tick_at = None
 
     async def _authorize(self) -> str:
         """Get one-time WSS URL from Upstox.
@@ -217,6 +312,9 @@ class MarketDataStream(BaseWebSocketStream):
 
     async def _on_connected(self, ws):
         """Re-subscribe to all keys after reconnect."""
+        # Seed the watchdog clock from connect so a stream that never
+        # delivers its first tick still trips silence detection.
+        self._last_tick_at = datetime.utcnow()
         if self._subscribed_keys:
             logger.info(
                 "[MarketDataStream] Reconnected — re-subscribing to %d instruments: %s",
