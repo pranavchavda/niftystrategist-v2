@@ -158,6 +158,8 @@ def run_fno_backtest(
     strategy_name: str,
     underlying: str,
     initial_capital: float,
+    progress_cb=None,
+    cancel_check=None,
 ) -> FnOBacktestResult:
     """Run multi-leg F&O backtest across multiple days.
 
@@ -205,7 +207,23 @@ def run_fno_backtest(
     day_results: list[FnODayResult] = []
     all_leg_trades: list[LegTrade] = []
 
-    for day_key in sorted(all_days):
+    sorted_days = sorted(all_days)
+    for day_idx, day_key in enumerate(sorted_days):
+        # Progress + cancel between days. Per-leg per-day work is fast
+        # post-cache (one BacktestEngine per leg) so checking once per
+        # day is plenty.
+        if cancel_check is not None:
+            try:
+                if cancel_check():
+                    break
+            except Exception:
+                pass
+        if progress_cb is not None:
+            try:
+                progress_cb(day_idx, len(sorted_days))
+            except Exception:
+                pass
+
         day_legs: list[LegTrade] = []
 
         for inst_key in instruments:
@@ -246,6 +264,12 @@ def run_fno_backtest(
         equity_curve.append(round(equity_curve[-1] + dr.net_pnl, 2))
 
     total_charges = sum(dr.total_charges for dr in day_results)
+
+    if progress_cb is not None:
+        try:
+            progress_cb(len(sorted_days), len(sorted_days))
+        except Exception:
+            pass
 
     return FnOBacktestResult(
         strategy=strategy_name,

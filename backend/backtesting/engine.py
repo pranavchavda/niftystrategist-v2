@@ -8,6 +8,7 @@ from typing import Any
 from backtesting.metrics import compute_metrics
 from backtesting.simulator import Trade, TradeSimulator
 from monitor.indicator_engine import compute_indicator
+from monitor.indicator_series import compute_indicator_series
 from strategies.templates import RuleSpec
 
 
@@ -94,11 +95,15 @@ class BacktestEngine:
         symbol: str,
         strategy_name: str = "",
         initial_capital: float = 100_000,
+        progress_cb=None,
+        cancel_check=None,
     ):
         self.candles = sorted(candles, key=lambda c: c["timestamp"])
         self.symbol = symbol
         self.strategy_name = strategy_name
         self.initial_capital = initial_capital
+        self.progress_cb = progress_cb
+        self.cancel_check = cancel_check
 
         # Build rule states
         self._rules: list[_RuleState] = [_RuleState(spec=r) for r in rules]
@@ -107,21 +112,48 @@ class BacktestEngine:
         # Renko state: keyed by brick_size so multiple brick sizes can coexist
         self._renko: dict[float, _RenkoState] = {}
 
+        # Precomputed indicator series cache. Keyed by (indicator_name,
+        # frozen_params) so multiple rules using the same indicator+params
+        # share the work. Built lazily on first access — many rules don't
+        # use indicator triggers at all, so paying upfront for all of them
+        # would be waste.
+        self._indicator_cache: dict[tuple[str, tuple], list] = {}
+
     def run(self) -> BacktestResult:
         """Run the backtest candle by candle."""
         candle_history: list[dict] = []
+        total = len(self.candles)
+        _PROGRESS_BATCH = 200
 
         for i, candle in enumerate(self.candles):
+            if self.cancel_check is not None and i % _PROGRESS_BATCH == 0:
+                try:
+                    if self.cancel_check():
+                        break
+                except Exception:
+                    pass
+            if self.progress_cb is not None and i % _PROGRESS_BATCH == 0:
+                try:
+                    self.progress_cb(i, total)
+                except Exception:
+                    pass
+
             candle_history.append(candle)
             ts = self._parse_timestamp(candle["timestamp"])
 
             # Evaluate all rules against this candle
-            fired_rules = self._evaluate_candle(candle, candle_history, ts)
+            fired_rules = self._evaluate_candle(candle, candle_history, ts, i)
 
             # Process fired rules in priority order: entry first, then exits
             # But only process exits if we have a position, entries if we're flat
             for rs in fired_rules:
                 self._process_fire(rs, candle, ts)
+
+        if self.progress_cb is not None:
+            try:
+                self.progress_cb(total, total)
+            except Exception:
+                pass
 
         # Close any remaining open position at last candle's close
         if not self._sim.is_flat and self.candles:
@@ -148,7 +180,7 @@ class BacktestEngine:
         )
 
     def _evaluate_candle(
-        self, candle: dict, history: list[dict], ts: datetime
+        self, candle: dict, history: list[dict], ts: datetime, idx: int
     ) -> list[_RuleState]:
         """Evaluate all rules against a candle, return list of fired rules."""
         fired: list[_RuleState] = []
@@ -156,7 +188,7 @@ class BacktestEngine:
         for rs in self._rules:
             if not rs.should_evaluate:
                 continue
-            if self._check_rule(rs, candle, history, ts):
+            if self._check_rule(rs, candle, history, ts, idx):
                 fired.append(rs)
 
         # Sort: entries first (so position opens before exit rules check),
@@ -165,7 +197,7 @@ class BacktestEngine:
         return fired
 
     def _check_rule(
-        self, rs: _RuleState, candle: dict, history: list[dict], ts: datetime
+        self, rs: _RuleState, candle: dict, history: list[dict], ts: datetime, idx: int
     ) -> bool:
         """Check if a single rule fires on this candle."""
         spec = rs.spec
@@ -175,7 +207,7 @@ class BacktestEngine:
             return self._check_price(tc, candle)
 
         if spec.trigger_type == "indicator":
-            return self._check_indicator(tc, history)
+            return self._check_indicator_at(tc, idx)
 
         if spec.trigger_type == "time":
             return self._check_time(tc, ts)
@@ -204,14 +236,37 @@ class BacktestEngine:
             return candle["open"] > price and candle["low"] <= price
         return False
 
-    def _check_indicator(self, tc: dict, history: list[dict]) -> bool:
-        """Check indicator trigger against rolling candle history."""
+    def _get_indicator_series(
+        self, indicator: str, params: dict
+    ) -> list:
+        """Lazily precompute and cache the full indicator series for the
+        whole candle stream. Same (indicator, params) pair across multiple
+        rules shares one series — no duplicate work."""
+        # Frozen params tuple for hashable cache key. Sort keys for stability.
+        key = (indicator, tuple(sorted((params or {}).items())))
+        cached = self._indicator_cache.get(key)
+        if cached is None:
+            cached = compute_indicator_series(indicator, self.candles, params or {})
+            self._indicator_cache[key] = cached
+        return cached
+
+    def _check_indicator_at(self, tc: dict, idx: int) -> bool:
+        """Check indicator trigger using the precomputed series at index ``idx``.
+
+        Replaces the prior per-bar ``compute_indicator(history)`` (and the
+        double-call pattern for crosses, which evaluated both ``history``
+        and ``history[:-1]``). The series is computed once per (indicator,
+        params) combo per backtest run; lookups here are O(1).
+        """
         indicator = tc.get("indicator", "")
         condition = tc.get("condition", "")
         value = tc.get("value", 0)
         params = tc.get("params", {})
 
-        computed = compute_indicator(indicator, history, params)
+        series = self._get_indicator_series(indicator, params)
+        if idx >= len(series):
+            return False
+        computed = series[idx]
         if computed is None:
             return False
 
@@ -219,20 +274,17 @@ class BacktestEngine:
             return computed <= value
         if condition == "gte":
             return computed >= value
-        # For crosses_above/below we'd need previous value — approximate by
-        # checking current vs threshold (indicators change slowly across candles)
         if condition == "crosses_above":
-            # Check if we just crossed: compute with history[:-1] too
-            if len(history) < 4:
+            if idx < 1:
                 return False
-            prev = compute_indicator(indicator, history[:-1], params)
+            prev = series[idx - 1]
             if prev is None:
                 return False
             return prev < value and computed >= value
         if condition == "crosses_below":
-            if len(history) < 4:
+            if idx < 1:
                 return False
-            prev = compute_indicator(indicator, history[:-1], params)
+            prev = series[idx - 1]
             if prev is None:
                 return False
             return prev > value and computed <= value

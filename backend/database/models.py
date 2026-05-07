@@ -1058,6 +1058,50 @@ class UserAwakeningSchedule(Base):
 
 
 # ==============================================================================
+# Backtest Jobs
+# ==============================================================================
+
+class BacktestJob(Base):
+    """A backtest run, tracked as a job so the API can return immediately
+    and the engine can stream progress over SSE.
+
+    Created by POST /api/backtest/jobs, picked up by a background worker,
+    progress polled or streamed by the frontend, result reloaded on demand
+    from the run-history list.
+    """
+    __tablename__ = "backtest_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # equity | fno | scalp — dispatcher key
+    kind = Column(String(20), nullable=False)
+    name = Column(String(200), default="", nullable=False)
+
+    # Frozen request body the engine ran on. Re-running this row reproduces
+    # the same trades.
+    config = Column(JSON, nullable=False)
+
+    # queued | running | completed | failed | cancelled
+    status = Column(String(15), default="queued", nullable=False)
+
+    progress_done = Column(Integer, nullable=True)
+    progress_total = Column(Integer, nullable=True)
+    progress_message = Column(String(200), nullable=True)
+
+    result = Column(JSON, nullable=True)
+
+    error_message = Column(Text, nullable=True)
+    error_traceback = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    cancel_requested = Column(Boolean, default=False, nullable=False)
+
+
+# ==============================================================================
 # Database Connection Manager
 # ==============================================================================
 

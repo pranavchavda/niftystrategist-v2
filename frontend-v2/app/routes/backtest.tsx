@@ -101,6 +101,8 @@ interface BacktestResult {
   session_days?: number;
 }
 
+// Indicators usable as a scalp PRIMARY (must return signed scalar so the
+// flip contract `prev<=0 → curr>0 = bullish` works).
 const SCALP_PRIMARY_INDICATORS = [
   { value: 'utbot', label: 'UT Bot (ATR trailing stop)',
     defaultParams: '{"period":10,"sensitivity":1.0}' },
@@ -112,7 +114,12 @@ const SCALP_PRIMARY_INDICATORS = [
     defaultParams: '{"amplitude":2,"atr_period":100}' },
   { value: 'ssl_hybrid', label: 'SSL Hybrid',
     defaultParams: '{"period":10}' },
+  { value: 'hilega_milega', label: 'Hilega Milega (RSI EMA/WMA cross)',
+    defaultParams: '{"rsi_period":9,"wma_period":21,"ema_period":3}' },
+  { value: 'linear_regression', label: 'Linear Regression (slope)',
+    defaultParams: '{"period":20,"output":"slope"}' },
   { value: 'macd', label: 'MACD Histogram', defaultParams: '{}' },
+  { value: 'rsi', label: 'RSI (centered)', defaultParams: '{"period":14,"output":"centered"}' },
 ];
 
 const SCALP_CONFIRM_INDICATORS = [
@@ -120,16 +127,91 @@ const SCALP_CONFIRM_INDICATORS = [
   { value: 'qqe_mod', label: 'QQE MOD', defaultParams: '{"rsi_period":6,"smoothing":5}' },
   { value: 'linear_regression', label: 'Linear Regression',
     defaultParams: '{"period":20,"output":"slope"}' },
-  { value: 'rsi', label: 'RSI', defaultParams: '{"period":14}' },
+  { value: 'rsi', label: 'RSI (centered)', defaultParams: '{"period":14,"output":"centered"}' },
   { value: 'bollinger', label: 'Bollinger', defaultParams: '{"period":20,"band":"pctb"}' },
   { value: 'renko', label: 'Renko', defaultParams: '{"brick_size":10.0}' },
   { value: 'vwap', label: 'VWAP', defaultParams: '{}' },
+  { value: 'hilega_milega', label: 'Hilega Milega', defaultParams: '{"output":"raw"}' },
 ];
+
+// Indicators that have a native O(n) series implementation — used to flag
+// slow-path indicators in the UI so users know what'll cost them on long
+// ranges. Mirrors monitor/indicator_series.py:_SERIES_REGISTRY.
+const NATIVE_SERIES_INDICATORS = new Set([
+  'rsi', 'macd', 'ema_crossover', 'volume_spike', 'vwap', 'bollinger',
+  'supertrend', 'utbot', 'halftrend', 'qqe_mod', 'hilega_milega', 'ssl_hybrid',
+]);
 
 export function clientLoader() {
   requirePermission('settings.access');
   return null;
 }
+
+// ─── SSE helper ──────────────────────────────────────────────────────
+// Browsers' built-in EventSource doesn't support custom headers, so we
+// open the SSE connection via fetch + ReadableStream and parse the
+// "data: ..." lines ourselves. Returns an object with a .close() method
+// so callers can abort.
+
+function openSseStream(
+  jobId: number,
+  authToken: string,
+  handlers: { onEvent: (data: any) => void; onError: (msg: string) => void }
+): { close: () => void } {
+  const controller = new AbortController();
+  let cancelled = false;
+
+  (async () => {
+    try {
+      const res = await fetch(`/api/backtest/jobs/${jobId}/stream`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        if (!cancelled) handlers.onError('SSE connection failed');
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        // SSE messages are separated by blank lines.
+        let sep;
+        while ((sep = buf.indexOf('\n\n')) !== -1) {
+          const raw = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          for (const line of raw.split('\n')) {
+            if (line.startsWith('data: ')) {
+              const payload = line.slice(6);
+              try {
+                handlers.onEvent(JSON.parse(payload));
+              } catch {
+                // Malformed event — skip rather than tearing down the stream.
+              }
+            }
+            // ":<text>" comments (heartbeats) are ignored.
+          }
+        }
+      }
+    } catch (e: any) {
+      // AbortError from controller.abort() is expected on close()
+      if (!cancelled && e?.name !== 'AbortError') {
+        handlers.onError(e?.message || 'SSE stream error');
+      }
+    }
+  })();
+
+  return {
+    close: () => {
+      cancelled = true;
+      controller.abort();
+    },
+  };
+}
+
 
 // ─── Tooltip ─────────────────────────────────────────────────────────
 
@@ -396,8 +478,30 @@ export default function BacktestPage() {
   const [scalpCooldown, setScalpCooldown] = useState<string>('60');
   const [scalpSlippageBps, setScalpSlippageBps] = useState<string>('0');
 
-  // Results
+  // Results + job state
   const [result, setResult] = useState<BacktestResult | null>(null);
+  const [jobId, setJobId] = useState<number | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [progressDone, setProgressDone] = useState<number | null>(null);
+  const [progressTotal, setProgressTotal] = useState<number | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  // Wall-clock since the job started — gives the user a "this is taking N
+  // seconds" signal, which paired with bars/sec makes long runs feel alive.
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const [jobElapsedMs, setJobElapsedMs] = useState<number>(0);
+  const eventSourceRef = React.useRef<EventSource | null>(null);
+
+  // Run history (sidebar)
+  const [history, setHistory] = useState<any[]>([]);
+
+  // Tick the elapsed timer once per second while a job is running.
+  useEffect(() => {
+    if (!jobStartedAt) return;
+    const id = setInterval(() => {
+      setJobElapsedMs(Date.now() - jobStartedAt);
+    }, 250);
+    return () => clearInterval(id);
+  }, [jobStartedAt]);
 
   // Fetch templates
   useEffect(() => {
@@ -440,41 +544,203 @@ export default function BacktestPage() {
 
   const isFnO = currentTemplate?.category === 'fno';
 
-  const runBacktest = async () => {
-    setRunning(true);
+  // ── Job-based run helpers ──────────────────────────────────────────
+  // The legacy single-fetch pattern (still left in place server-side as a
+  // safety net) blocked uvicorn for the duration of a run. The new flow:
+  // 1) POST /api/backtest/jobs → returns {job_id} immediately
+  // 2) Open SSE on /api/backtest/jobs/{id}/stream → live progress + final result
+  // 3) DELETE /api/backtest/jobs/{id} → cancel mid-run
+
+  const closeStream = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  }, []);
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      const res = await fetch('/api/backtest/jobs?limit=25', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setHistory(data.jobs || []);
+      }
+    } catch {
+      // History is non-critical — silent.
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    refreshHistory();
+  }, [refreshHistory]);
+
+  const startJob = useCallback(async (kind: string, name: string, config: any) => {
+    closeStream();
     setError(null);
     setResult(null);
+    setJobId(null);
+    setJobStatus(null);
+    setProgressDone(null);
+    setProgressTotal(null);
+    setProgressMessage(null);
+    setRunning(true);
+    setJobStartedAt(Date.now());
+    setJobElapsedMs(0);
+
+    let createdId: number | null = null;
     try {
-      const endpoint = isFnO ? '/api/backtest/run-fno' : '/api/backtest/run';
-      const body = isFnO
-        ? { template: selectedTemplate, days, interval, params }
-        : { template: selectedTemplate, symbol, days, interval, params };
-      const res = await fetch(endpoint, {
+      const res = await fetch('/api/backtest/jobs', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ kind, name, config }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.detail || 'Backtest failed');
+        setError(data.detail || 'Failed to create backtest job');
+        setRunning(false);
+        setJobStartedAt(null);
         return;
       }
-      setResult(data);
+      createdId = data.job_id;
+      setJobId(createdId);
+      setJobStatus('queued');
+    } catch (e: any) {
+      setError(e.message || 'Network error creating job');
+      setRunning(false);
+      setJobStartedAt(null);
+      return;
+    }
+
+    // Open SSE. EventSource doesn't support custom headers, so we pass the
+    // token via query param. The backend reads it via the same auth path.
+    // (If we don't already accept tokens via query string, we'll need to —
+    // but checking auth.py shows it reads Authorization header only. Fall
+    // back to a manual fetch+ReadableStream parser.)
+    const stream = openSseStream(createdId!, authToken, {
+      onEvent: (data) => {
+        setJobStatus(data.status);
+        setProgressDone(data.progress_done);
+        setProgressTotal(data.progress_total);
+        setProgressMessage(data.progress_message);
+        if (data.status === 'completed' && data.result) {
+          setResult(data.result);
+          setRunning(false);
+          setJobStartedAt(null);
+          refreshHistory();
+        } else if (data.status === 'failed') {
+          setError(data.error_message || 'Backtest failed');
+          setRunning(false);
+          setJobStartedAt(null);
+          refreshHistory();
+        } else if (data.status === 'cancelled') {
+          setError('Backtest cancelled');
+          setRunning(false);
+          setJobStartedAt(null);
+          refreshHistory();
+        }
+      },
+      onError: (msg) => {
+        setError(msg);
+        setRunning(false);
+        setJobStartedAt(null);
+      },
+    });
+    eventSourceRef.current = stream as any;
+  }, [authToken, closeStream, refreshHistory]);
+
+  const cancelCurrentJob = useCallback(async () => {
+    if (!jobId) return;
+    try {
+      await fetch(`/api/backtest/jobs/${jobId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      // Don't close the stream — let the SSE drive UI to "cancelled" state
+      // so the user sees the transition.
+    } catch (e: any) {
+      setError('Cancel request failed: ' + (e.message || ''));
+    }
+  }, [authToken, jobId]);
+
+  // Click a row in the history sidebar — load that run's saved result
+  // straight into the results panel without re-running.
+  const loadHistoricRun = useCallback(async (id: number) => {
+    closeStream();
+    setError(null);
+    setRunning(false);
+    setJobStartedAt(null);
+    try {
+      const res = await fetch(`/api/backtest/jobs/${id}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.detail || 'Failed to load run');
+        return;
+      }
+      setJobId(id);
+      setJobStatus(data.status);
+      if (data.status === 'completed') {
+        setResult(data.result);
+      } else if (data.status === 'failed') {
+        setError(data.error_message || 'This run failed');
+        setResult(null);
+      } else {
+        // Re-attach to a still-running job (possible after a refresh).
+        setRunning(true);
+        setJobStartedAt(Date.now());
+        const stream = openSseStream(id, authToken, {
+          onEvent: (d) => {
+            setJobStatus(d.status);
+            setProgressDone(d.progress_done);
+            setProgressTotal(d.progress_total);
+            setProgressMessage(d.progress_message);
+            if (d.status === 'completed' && d.result) {
+              setResult(d.result);
+              setRunning(false);
+              setJobStartedAt(null);
+              refreshHistory();
+            } else if (d.status === 'failed' || d.status === 'cancelled') {
+              setRunning(false);
+              setJobStartedAt(null);
+              refreshHistory();
+            }
+          },
+          onError: (msg) => {
+            setError(msg);
+            setRunning(false);
+            setJobStartedAt(null);
+          },
+        });
+        eventSourceRef.current = stream as any;
+      }
     } catch (e: any) {
       setError(e.message || 'Network error');
-    } finally {
-      setRunning(false);
     }
+  }, [authToken, closeStream, refreshHistory]);
+
+  // Clean up the stream on unmount.
+  useEffect(() => {
+    return () => closeStream();
+  }, [closeStream]);
+
+  const runBacktest = async () => {
+    const kind = isFnO ? 'fno' : 'equity';
+    const config = isFnO
+      ? { template: selectedTemplate, days, interval, params }
+      : { template: selectedTemplate, symbol, days, interval, params };
+    const name = isFnO
+      ? `${selectedTemplate} · ${params?.underlying || ''} · ${days}d`
+      : `${selectedTemplate} · ${symbol} · ${days}d`;
+    await startJob(kind, name, config);
   };
 
   const runScalpBacktest = async () => {
-    setRunning(true);
-    setError(null);
-    setResult(null);
-
     const parseJson = (s: string, fallback: any): any => {
       if (!s.trim()) return fallback;
       try {
@@ -486,21 +752,19 @@ export default function BacktestPage() {
     const primaryParams = parseJson(scalpPrimaryParams, null);
     if (scalpPrimaryParams.trim() && primaryParams === null) {
       setError('Primary params must be valid JSON');
-      setRunning(false);
       return;
     }
     const confirmParams = scalpConfirm
       ? parseJson(scalpConfirmParams, {}) : null;
     if (scalpConfirm && scalpConfirmParams.trim() && confirmParams === null) {
       setError('Confirm params must be valid JSON');
-      setRunning(false);
       return;
     }
 
     const toNum = (s: string): number | null =>
       s.trim() === '' ? null : Number(s);
 
-    const body: Record<string, any> = {
+    const config: Record<string, any> = {
       symbol,
       days,
       interval,
@@ -520,26 +784,8 @@ export default function BacktestPage() {
       slippage_bps: parseFloat(scalpSlippageBps) || 0,
     };
 
-    try {
-      const res = await fetch('/api/backtest/scalp', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.detail || 'Backtest failed');
-        return;
-      }
-      setResult(data);
-    } catch (e: any) {
-      setError(e.message || 'Network error');
-    } finally {
-      setRunning(false);
-    }
+    const name = `scalp · ${symbol} · ${interval} · ${days}d · ${scalpPrimary}`;
+    await startJob('scalp', name, config);
   };
 
   const onScalpPrimaryChange = (value: string) => {
@@ -797,6 +1043,10 @@ export default function BacktestPage() {
               </div>
               )}
 
+              {/* Run history (sidebar bottom) ─────────────────────────
+                   Shown after the form so the active form stays at the
+                   top. Click any row to reload its result without
+                   re-running. */}
               {mode === 'scalp' && (
               <div className="space-y-4">
                 {/* Symbol */}
@@ -987,6 +1237,52 @@ export default function BacktestPage() {
                 )}
               </div>
               )}
+
+              {/* Run history — last N completed/failed runs. Click a row
+                   to reload its result without re-running. Stays in the
+                   sticky config sidebar so it's always visible. */}
+              {history.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-zinc-200 dark:border-zinc-700">
+                  <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
+                    Recent Runs
+                  </h3>
+                  <div className="space-y-1 max-h-72 overflow-y-auto">
+                    {history.map((j: any) => {
+                      const isActive = j.id === jobId;
+                      const statusColor =
+                        j.status === 'completed' ? 'emerald' :
+                        j.status === 'failed' ? 'red' :
+                        j.status === 'cancelled' ? 'zinc' : 'amber';
+                      const ts = j.created_at ? new Date(j.created_at + 'Z') : null;
+                      return (
+                        <button
+                          key={j.id}
+                          onClick={() => loadHistoricRun(j.id)}
+                          className={`w-full text-left px-2 py-1.5 rounded transition-colors ${
+                            isActive
+                              ? 'bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-500/40'
+                              : 'hover:bg-zinc-50 dark:hover:bg-zinc-800/50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-xs">
+                            <span className="font-medium text-zinc-700 dark:text-zinc-300 truncate">
+                              {j.config_summary || j.name || `${j.kind} #${j.id}`}
+                            </span>
+                            <Badge color={statusColor as any}>{j.status}</Badge>
+                          </div>
+                          <div className="text-[10px] text-zinc-400 mt-0.5">
+                            {ts ? ts.toLocaleString('en-IN', {
+                              timeZone: 'Asia/Kolkata',
+                              month: 'short', day: 'numeric',
+                              hour: '2-digit', minute: '2-digit', hour12: true,
+                            }) : ''}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1003,10 +1299,64 @@ export default function BacktestPage() {
             )}
 
             {running && (
-              <div className="flex flex-col items-center justify-center py-24">
-                <Loader2 className="w-10 h-10 animate-spin text-amber-500 mb-4" />
-                <p className="text-zinc-500 dark:text-zinc-400 font-medium">Running backtest...</p>
-                <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-1">This may take a moment for longer lookback periods.</p>
+              <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10 p-6">
+                <div className="flex items-start gap-4">
+                  <Loader2 className="w-6 h-6 animate-spin text-amber-500 flex-shrink-0 mt-1" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-3 mb-1">
+                      <p className="font-semibold text-zinc-700 dark:text-zinc-200">
+                        {jobStatus === 'queued' ? 'Queued' :
+                         jobStatus === 'running' ? 'Running backtest' :
+                         jobStatus === 'cancelled' ? 'Cancelling…' :
+                         'Starting…'}
+                      </p>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+                        {(jobElapsedMs / 1000).toFixed(1)}s
+                      </span>
+                    </div>
+                    {progressMessage && (
+                      <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-3">{progressMessage}</p>
+                    )}
+                    {progressTotal && progressTotal > 0 ? (
+                      <>
+                        <div className="h-2 rounded-full bg-amber-200/40 dark:bg-amber-900/30 overflow-hidden mb-1">
+                          <div
+                            className="h-full bg-amber-500 transition-all duration-200"
+                            style={{ width: `${Math.min(100, ((progressDone ?? 0) / progressTotal) * 100)}%` }}
+                          />
+                        </div>
+                        <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+                          <span>{(progressDone ?? 0).toLocaleString()} / {progressTotal.toLocaleString()}</span>
+                          <span>
+                            {(() => {
+                              const done = progressDone ?? 0;
+                              const pct = progressTotal > 0 ? (done / progressTotal) * 100 : 0;
+                              const elapsed = jobElapsedMs / 1000;
+                              const rate = elapsed > 0 && done > 0 ? done / elapsed : 0;
+                              return `${pct.toFixed(1)}%${rate > 0 ? ` · ${Math.round(rate).toLocaleString()}/s` : ''}`;
+                            })()}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="h-2 rounded-full bg-amber-200/40 dark:bg-amber-900/30 overflow-hidden">
+                        <div className="h-full w-1/3 bg-amber-500 animate-pulse" />
+                      </div>
+                    )}
+                    <div className="mt-4 flex items-center gap-2">
+                      <Button
+                        outline
+                        onClick={cancelCurrentJob}
+                        disabled={!jobId || jobStatus === 'cancelled'}
+                      >
+                        Cancel
+                      </Button>
+                      {jobId && (
+                        <span className="text-xs text-zinc-400 font-mono">job #{jobId}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1141,6 +1491,52 @@ export default function BacktestPage() {
                           </span>
                         </div>
                       </div>
+
+                      {/* Cost-drag callout. The single biggest reason
+                          equity scalp Net looks brutal vs Gross is the
+                          fixed ₹60 round-trip brokerage on Upstox Plus —
+                          it dominates small-quantity trades. Surface
+                          this directly so users don't blame the strategy
+                          for what's actually a sizing issue. */}
+                      {(() => {
+                        const trades = result.trades ?? [];
+                        if (trades.length === 0) return null;
+                        const totalNotional = trades.reduce(
+                          (s: number, t: any) => s + (t.entry_price ?? 0) * (t.quantity ?? 0), 0
+                        );
+                        const avgNotional = totalNotional / trades.length;
+                        const totalCharges = result.charges_total ?? 0;
+                        const chargesPerTrade = totalCharges / trades.length;
+                        const drag = totalNotional > 0 ? (totalCharges / totalNotional) * 100 : 0;
+                        const lowSize = avgNotional > 0 && avgNotional < 50000;
+                        return (
+                          <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800/50 space-y-1 text-xs">
+                            <div className="flex justify-between text-zinc-500 dark:text-zinc-400">
+                              <span>Avg notional / trade</span>
+                              <span className="font-mono">{formatINR(avgNotional)}</span>
+                            </div>
+                            <div className="flex justify-between text-zinc-500 dark:text-zinc-400">
+                              <span>Avg charges / trade</span>
+                              <span className="font-mono">{formatINR(chargesPerTrade)}</span>
+                            </div>
+                            <div className="flex justify-between text-zinc-500 dark:text-zinc-400">
+                              <span>Cost drag (charges / turnover)</span>
+                              <span className={`font-mono ${drag > 1 ? 'text-amber-600 dark:text-amber-400' : ''}`}>
+                                {drag.toFixed(2)}%
+                              </span>
+                            </div>
+                            {lowSize && (
+                              <div className="mt-2 p-2 rounded bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/50 leading-relaxed">
+                                ⚠️ Avg notional below ₹50k. Upstox Plus equity intraday charges
+                                ~₹75/round-trip (mostly the ₹60 brokerage flat fee). Strategies
+                                at this size pay ~7%+ in charges before any move — the issue is
+                                sizing, not the signal. Increase quantity or test on Kotak Neo
+                                (zero brokerage on API orders) when that integration ships.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     <div className="rounded-xl border border-zinc-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 p-5">

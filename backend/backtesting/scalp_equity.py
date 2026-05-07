@@ -31,6 +31,7 @@ from typing import Any, Literal
 from backtesting.metrics import compute_metrics
 from backtesting.simulator import Trade, TradeSimulator
 from monitor.indicator_engine import compute_indicator
+from monitor.indicator_series import compute_indicator_series
 from monitor.scalp_models import ScalpSessionConfig, SessionMode
 
 
@@ -190,10 +191,23 @@ def _confirm_agrees(
     When no confirm is configured, returns (True, None). When configured but
     not ready (insufficient data), returns (False, None) — matches the live
     scalper's posture of skipping unconfirmed signals rather than firing.
+
+    Kept for back-compat / tests; the bar loop in run_scalp_equity_backtest
+    now uses _confirm_agrees_at against a precomputed series instead.
     """
     if not cfg.confirm_indicator:
         return True, None
     val = compute_indicator(cfg.confirm_indicator, candles, cfg.confirm_params or {})
+    return _confirm_agrees_at(cfg, val, direction_sign)
+
+
+def _confirm_agrees_at(
+    cfg: ScalpSessionConfig, val: float | None, direction_sign: int
+) -> tuple[bool, float | None]:
+    """Same contract as _confirm_agrees, but takes a precomputed value at
+    the current bar instead of recomputing the indicator from history."""
+    if not cfg.confirm_indicator:
+        return True, None
     if val is None:
         return False, None
     if direction_sign > 0 and val <= 0:
@@ -215,6 +229,8 @@ def run_scalp_equity_backtest(
     symbol: str,
     interval: str,
     slippage_bps: float = 0.0,
+    progress_cb=None,
+    cancel_check=None,
 ) -> ScalpBacktestResult:
     """Run a scalp-style bar-replay backtest.
 
@@ -230,6 +246,14 @@ def run_scalp_equity_backtest(
             ``config.indicator_timeframe`` per v1 contract.
         slippage_bps: optional slippage haircut applied to every fill in
             basis points (1 bp = 0.01%). Default 0.
+        progress_cb: optional callback ``(bars_done, bars_total) -> None``
+            invoked roughly every PROGRESS_BATCH bars. Used by the job
+            runner to persist progress for SSE streaming. Exceptions in
+            the callback are swallowed — progress is never load-bearing.
+        cancel_check: optional callback ``() -> bool``. When it returns
+            True the bar loop exits cleanly mid-run. The job runner uses
+            this to honour user-initiated cancels. Whatever trades have
+            already accumulated are returned; partial results are valid.
 
     Returns:
         ScalpBacktestResult with trades + gross/net metrics + diagnostics.
@@ -286,7 +310,40 @@ def run_scalp_equity_backtest(
     # Slippage as multiplier on fill price (asymmetric by side applied at close time).
     slip_frac = slippage_bps / 10_000.0  # 1 bp = 0.0001
 
+    # ── Precompute indicator series (one-time, before the bar loop) ───
+    # Replaces per-bar `compute_indicator(history[: i + 1], ...)` calls,
+    # which were O(n²) over the full backtest. Native series impls are
+    # O(n) per indicator; fallback indicators stay O(n²) but are computed
+    # once not per-bar-twice. Parity with compute_indicator is enforced
+    # by tests/monitor/test_indicator_series_parity.py.
+    primary_series = compute_indicator_series(
+        config.primary_indicator, normalised, config.primary_params or {}
+    )
+    confirm_series: list[float | None] | None = None
+    if config.confirm_indicator:
+        confirm_series = compute_indicator_series(
+            config.confirm_indicator, normalised, config.confirm_params or {}
+        )
+
+    total_bars = len(normalised)
+    # Progress / cancel cadence. Once every ~200 bars is plenty: at 16k
+    # bars/sec post-cache that's ~80 progress updates per second worst
+    # case, well below SSE consumer's poll rate.
+    _PROGRESS_BATCH = 200
+
     for i, bar in enumerate(normalised):
+        if cancel_check is not None and i % _PROGRESS_BATCH == 0:
+            try:
+                if cancel_check():
+                    break
+            except Exception:
+                pass  # never let a misbehaving callback sink the run
+        if progress_cb is not None and i % _PROGRESS_BATCH == 0:
+            try:
+                progress_cb(i, total_bars)
+            except Exception:
+                pass
+
         ts = _parse_candle_ts(bar["timestamp"])
         bar_date = ts.date()
         session_days.add(bar_date)
@@ -316,11 +373,8 @@ def run_scalp_equity_backtest(
                 # Don't evaluate re-entry this bar — day is over.
                 continue
 
-        # ── Indicator evaluation ──────────────────────────────────────
-        history = normalised[: i + 1]
-        primary_val = compute_indicator(
-            config.primary_indicator, history, config.primary_params or {}
-        )
+        # ── Indicator evaluation (O(1) lookup against precomputed series) ──
+        primary_val = primary_series[i]
 
         if prev_primary is not None and primary_val is not None:
             bullish_flip = prev_primary <= 0 and primary_val > 0
@@ -382,7 +436,8 @@ def run_scalp_equity_backtest(
                 continue
 
             # Confirm gate
-            agrees, _ = _confirm_agrees(config, history, direction_sign)
+            confirm_val = confirm_series[i] if confirm_series is not None else None
+            agrees, _ = _confirm_agrees_at(config, confirm_val, direction_sign)
             if not agrees:
                 confirm_blocks += 1
                 prev_primary = primary_val
@@ -404,6 +459,14 @@ def run_scalp_equity_backtest(
             sim.open_position(direction, entry_price, ts, quantity)
 
         prev_primary = primary_val
+
+    # Final progress emit so the UI sees 100% even if the last bar wasn't
+    # on a PROGRESS_BATCH boundary (or the loop broke early on cancel).
+    if progress_cb is not None:
+        try:
+            progress_cb(total_bars, total_bars)
+        except Exception:
+            pass
 
     # Close any still-open position at the last bar for accounting completeness
     # (swing mode without an opposite flip, or an intraday session that ran out

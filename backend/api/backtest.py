@@ -3,9 +3,10 @@
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import User, get_current_user
@@ -20,6 +21,7 @@ from backtesting.scalp_equity import (
     ScalpBacktestResult,
 )
 from monitor.scalp_models import ScalpSessionConfig, SessionMode
+from services import backtest_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -411,11 +413,12 @@ async def api_run_fno_backtest(
     if not inst_keys:
         raise HTTPException(status_code=400, detail="No instrument_tokens found in strategy rules")
 
-    # Fetch historical candles for each leg
+    # Fetch historical candles for each leg in parallel. Was sequential —
+    # 4-leg iron condor over 90 days previously meant 4 serial round-trips
+    # to Upstox; now it's one wall-clock round trip.
     client = UpstoxClient(access_token=token, user_id=user.id)
-    leg_candles: dict[str, list[dict]] = {}
 
-    for ik in inst_keys:
+    async def _fetch_leg(ik: str) -> tuple[str, list[dict]]:
         try:
             ohlcv = await client.get_historical_data(
                 symbol=underlying,
@@ -423,7 +426,7 @@ async def api_run_fno_backtest(
                 days=body.days,
                 instrument_key=ik,
             )
-            leg_candles[ik] = [
+            return ik, [
                 {
                     "timestamp": c.timestamp,
                     "open": c.open,
@@ -434,13 +437,17 @@ async def api_run_fno_backtest(
                 }
                 for c in ohlcv
             ]
-            logger.info(f"Fetched {len(ohlcv)} candles for {ik}")
         except Exception as e:
             logger.error(f"Failed to fetch candles for {ik}: {e}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to fetch historical data for instrument {ik}: {e}",
             )
+
+    fetched = await asyncio.gather(*[_fetch_leg(ik) for ik in inst_keys])
+    leg_candles: dict[str, list[dict]] = {ik: candles for ik, candles in fetched}
+    for ik, candles in leg_candles.items():
+        logger.info(f"Fetched {len(candles)} candles for {ik}")
 
     if not any(leg_candles.values()):
         raise HTTPException(status_code=404, detail="No historical data for any option leg")
@@ -661,3 +668,164 @@ def _set_fno_sl_prices(
                     f"Set SL price for {r.name}: entry_premium={entry_premium}, "
                     f"SL={tc['price']} (+{sl_pct}%)"
                 )
+
+
+# ===========================================================================
+# Job-based endpoints — non-blocking, SSE-streaming, cancellable.
+#
+# These are the new pattern. The synchronous /run, /run-fno, /scalp endpoints
+# above stay around as a safety net while the frontend migrates; once the new
+# UI ships and we've confirmed parity, they get deleted (task #10).
+# ===========================================================================
+
+
+class BacktestJobRequest(BaseModel):
+    """Universal job request. ``kind`` selects which engine runs;
+    ``config`` is whatever shape that engine's old endpoint accepted.
+
+    For ``kind=scalp``: same fields as ``ScalpBacktestRequest``.
+    For ``kind=equity``: ``{template, symbol, days, interval, params}``.
+    For ``kind=fno``: ``{template, days, interval, params}``.
+    """
+    kind: Literal["equity", "fno", "scalp"]
+    name: str = ""
+    config: dict
+
+
+@router.post("/jobs")
+async def api_create_backtest_job(
+    body: BacktestJobRequest,
+    user: User = Depends(get_current_user),
+):
+    """Enqueue a backtest job. Returns ``{job_id}`` immediately; the actual
+    work happens in the background. Subscribe to
+    ``GET /api/backtest/jobs/{id}/stream`` for live progress."""
+    job = await backtest_jobs.enqueue_job(
+        user_id=user.id,
+        kind=body.kind,
+        name=body.name,
+        config=body.config,
+    )
+    # Fire-and-forget; the task lives until terminal status. No await on the
+    # task — that's the whole point of the job pattern.
+    asyncio.create_task(backtest_jobs.run_job(job.id))
+    return {"job_id": job.id, "status": job.status}
+
+
+@router.get("/jobs")
+async def api_list_backtest_jobs(
+    limit: int = 50,
+    user: User = Depends(get_current_user),
+):
+    """Run history for the current user, newest first."""
+    jobs = await backtest_jobs.list_jobs(user.id, limit=limit)
+    return {
+        "jobs": [
+            {
+                "id": j.id,
+                "kind": j.kind,
+                "name": j.name,
+                "status": j.status,
+                "progress_done": j.progress_done,
+                "progress_total": j.progress_total,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+                # Truncated config preview — full body available via /jobs/{id}.
+                "config_summary": _job_config_summary(j.kind, j.config),
+            }
+            for j in jobs
+        ]
+    }
+
+
+def _job_config_summary(kind: str, config: dict) -> str:
+    """One-line label for the run-history list, kind-aware."""
+    if kind == "scalp":
+        return (
+            f"{config.get('symbol', '?')} · {config.get('interval', '?')} · "
+            f"{config.get('days', '?')}d · {config.get('primary_indicator', '?')}"
+        )
+    if kind == "equity":
+        return (
+            f"{config.get('template', '?')} · {config.get('symbol', '?')} · "
+            f"{config.get('days', '?')}d"
+        )
+    if kind == "fno":
+        params = config.get("params", {}) or {}
+        return (
+            f"{config.get('template', '?')} · {params.get('underlying', '?')} · "
+            f"{config.get('days', '?')}d"
+        )
+    return ""
+
+
+@router.get("/jobs/{job_id}")
+async def api_get_backtest_job(
+    job_id: int,
+    user: User = Depends(get_current_user),
+):
+    """Snapshot of a specific job, including the full result blob when
+    ``status=completed``. Suitable for re-loading a historic run into the UI."""
+    job = await backtest_jobs.get_job(job_id, user_id=user.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "id": job.id,
+        "kind": job.kind,
+        "name": job.name,
+        "status": job.status,
+        "config": job.config,
+        "progress_done": job.progress_done,
+        "progress_total": job.progress_total,
+        "progress_message": job.progress_message,
+        "result": job.result,
+        "error_message": job.error_message,
+        "error_traceback": job.error_traceback,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "cancel_requested": job.cancel_requested,
+    }
+
+
+@router.delete("/jobs/{job_id}")
+async def api_cancel_backtest_job(
+    job_id: int,
+    user: User = Depends(get_current_user),
+):
+    """Soft cancel — sets cancel_requested. The worker exits cleanly on the
+    next progress checkpoint (~200 bars). Already-terminal jobs return 409."""
+    cancelled = await backtest_jobs.cancel_job(job_id, user.id)
+    if not cancelled:
+        # Distinguish missing vs already-terminal so the frontend can decide.
+        job = await backtest_jobs.get_job(job_id, user_id=user.id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job already {job.status} — cannot cancel",
+        )
+    return {"job_id": job_id, "cancel_requested": True}
+
+
+@router.get("/jobs/{job_id}/stream")
+async def api_stream_backtest_job(
+    job_id: int,
+    user: User = Depends(get_current_user),
+):
+    """SSE: streams ``data: {...}\\n\\n`` events whenever the job's state or
+    progress changes. Closes when the job hits a terminal status. Heartbeat
+    comments every 15s keep proxies from idle-closing."""
+    # Verify ownership up front so we don't open an SSE for someone else's job.
+    job = await backtest_jobs.get_job(job_id, user_id=user.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return StreamingResponse(
+        backtest_jobs.stream_job_progress(job_id, user.id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
