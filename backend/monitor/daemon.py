@@ -83,6 +83,14 @@ class MonitorDaemon:
             from monitor.streams.market_stream_pool import MarketStreamPool
 
             async def _get_owner_token(force_refresh: bool) -> str | None:
+                # Prefer the long-lived analytics token if configured —
+                # it's read-only, 1-year validity, and isolated from
+                # per-user OAuth churn (which has been the source of
+                # today's silent-feed flakes). Falls back to the
+                # feed-owner user's regular OAuth token.
+                analytics = os.getenv("UPSTOX_ANALYTICS_TOKEN", "").strip()
+                if analytics:
+                    return analytics
                 return await self._load_access_token(
                     self._feed_owner_user_id, force_refresh=force_refresh
                 )
