@@ -15,6 +15,7 @@ from monitor.candle_seeder import seed_candle_buffer
 from monitor.indicator_engine import compute_indicator
 from monitor.models import MonitorRule
 from monitor.streams.market_data import MarketDataStream
+from monitor.streams.market_stream_pool import MarketStreamPool
 from monitor.streams.portfolio import PortfolioStream
 
 logger = logging.getLogger(__name__)
@@ -126,12 +127,17 @@ class UserManager:
         on_portfolio_event: Callable[[int, dict], Coroutine[Any, Any, None]],
         on_auth_failure: Callable[[int], Coroutine[Any, Any, None]] | None = None,
         get_client: Callable[[int], Coroutine[Any, Any, Any]] | None = None,
+        market_pool: MarketStreamPool | None = None,
     ):
         self._sessions: dict[int, UserSession] = {}
         self._on_tick = on_tick
         self._on_portfolio_event_cb = on_portfolio_event
         self._on_auth_failure = on_auth_failure
         self._get_client = get_client
+        # When provided, ALL market-data streaming goes through this
+        # shared pool instead of per-user MarketDataStream connections.
+        # Portfolio streams are still per-user. See market_stream_pool.py.
+        self._market_pool = market_pool
 
     def get_session(self, user_id: int) -> UserSession | None:
         """Get the session for a user, or None if not active."""
@@ -170,16 +176,31 @@ class UserManager:
             on_message=lambda event: self._on_portfolio_event(user_id, event),
             on_auth_failure=auth_failure_cb,
         )
-        market_stream = MarketDataStream(
-            access_token=access_token,
-            on_message=lambda tick_data: self._on_market_tick(user_id, tick_data),
-            # NSE_INDEX instruments deliver ZERO updates in "full_d30" mode
-            # (verified live 2026-04-23: index sessions silently dead until
-            # downgrade). Indices have no market depth, so the depth-30 feed
-            # excludes them entirely. "full" supports both equity and indices.
-            mode="full",
-            on_auth_failure=auth_failure_cb,
-        )
+        # When the shared pool is wired, this user does NOT own a
+        # per-user MarketDataStream — the pool delivers ticks via
+        # set_interest. Keep ``market_stream`` populated as an attribute
+        # placeholder so existing UserSession code paths don't break.
+        market_stream: Any
+        if self._market_pool is not None:
+            market_stream = _PooledMarketStream(
+                pool=self._market_pool,
+                user_id=user_id,
+                user_manager=self,
+            )
+        else:
+            market_stream = MarketDataStream(
+                access_token=access_token,
+                on_message=lambda tick_data: self._on_market_tick(
+                    user_id, tick_data
+                ),
+                # NSE_INDEX instruments deliver ZERO updates in
+                # "full_d30" mode (verified live 2026-04-23: index
+                # sessions silently dead until downgrade). Indices have
+                # no market depth, so the depth-30 feed excludes them
+                # entirely. "full" supports both equity and indices.
+                mode="full",
+                on_auth_failure=auth_failure_cb,
+            )
 
         session = UserSession(
             user_id=user_id,
@@ -190,7 +211,7 @@ class UserManager:
         )
         self._sessions[user_id] = session
 
-        # Start both streams
+        # Start both streams (pooled "stream" is a no-op start)
         await portfolio_stream.start()
         await market_stream.start()
 
@@ -419,3 +440,56 @@ class UserManager:
         new_val = compute_indicator(indicator, candles, params)
         if new_val is not None:
             session.indicator_values[ind_key] = new_val
+
+
+class _PooledMarketStream:
+    """Adapter that exposes the MarketDataStream interface but routes
+    everything through a shared MarketStreamPool.
+
+    Drop-in replacement so existing call sites in UserManager
+    (``start()``, ``stop()``, ``subscribe()``, ``unsubscribe()``) keep
+    working without branching on whether a pool is in use. The actual
+    WebSocket connection is owned by the pool, not by this object.
+
+    Lookups for ``state`` / ``connected`` defer to the pool's underlying
+    stream when available. Other attributes raise.
+    """
+
+    def __init__(
+        self, pool: MarketStreamPool, user_id: int, user_manager: "UserManager"
+    ):
+        self._pool = pool
+        self._user_id = user_id
+        self._user_manager = user_manager
+
+    async def start(self) -> None:
+        # Pool is already running (or will be started by daemon). No-op.
+        return None
+
+    async def stop(self) -> None:
+        # Drop user's interest from the pool. This is sufficient — the
+        # actual stream stays up serving other users.
+        await self._pool.drop_user(self._user_id)
+
+    async def subscribe(self, instrument_keys: list[str]) -> None:
+        if not instrument_keys:
+            return
+        # Merge requested keys with the user's existing interest so the
+        # pool's diff logic only sees the additions as "new".
+        current = self._pool.interest_for(self._user_id)
+        await self._pool.set_interest(
+            self._user_id, current | set(instrument_keys)
+        )
+
+    async def unsubscribe(self, instrument_keys: list[str]) -> None:
+        if not instrument_keys:
+            return
+        current = self._pool.interest_for(self._user_id)
+        await self._pool.set_interest(
+            self._user_id, current - set(instrument_keys)
+        )
+
+    @property
+    def connected(self) -> bool:
+        s = self._pool.stream
+        return bool(s and s.connected)

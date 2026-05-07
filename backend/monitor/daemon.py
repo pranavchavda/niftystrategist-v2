@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Optional
 
@@ -59,11 +60,50 @@ class MonitorDaemon:
         # concurrently before fire_count is incremented, causing duplicates.
         self._tick_locks: dict[int, asyncio.Lock] = {}
 
+        # Shared market-data feed (opt-in via NF_SHARED_MARKET_FEED=1).
+        # When enabled, ALL users' market-data needs are served by a
+        # single MarketDataStream owned by the feed-owner user (default
+        # user 1). Per-user MarketDataStream connections are skipped.
+        # PortfolioStream stays per-user.
+        #
+        # Background — 2026-05-07 silent-feed bug: per-user streams
+        # proved unreliable for NSE_INDEX|Nifty 50 ticks (Upstox accepts
+        # the diff-add subscribe but never delivers data). The shared
+        # feed sidesteps this by always putting the index in the
+        # initial subscribe set.
+        self._shared_feed_enabled = os.getenv(
+            "NF_SHARED_MARKET_FEED", "0"
+        ).lower() in ("1", "true", "yes")
+        self._feed_owner_user_id = int(
+            os.getenv("NF_FEED_OWNER_USER_ID", "1")
+        )
+        self._market_pool: MarketStreamPool | None = None
+
+        if self._shared_feed_enabled:
+            from monitor.streams.market_stream_pool import MarketStreamPool
+
+            async def _get_owner_token(force_refresh: bool) -> str | None:
+                return await self._load_access_token(
+                    self._feed_owner_user_id, force_refresh=force_refresh
+                )
+
+            async def _pool_tick_handler(user_id: int, tick_data: dict) -> None:
+                # Hand the pool's fan-out tick to UserManager so candle
+                # buffers and indicator engine still run per-user.
+                await self._user_manager._on_market_tick(user_id, tick_data)
+
+            self._market_pool = MarketStreamPool(
+                get_owner_token=_get_owner_token,
+                tick_handler=_pool_tick_handler,
+                mode="full",
+            )
+
         self._user_manager = UserManager(
             on_tick=self._on_tick,
             on_portfolio_event=self._on_portfolio_event,
             on_auth_failure=self._on_stream_auth_failure,
             get_client=self._get_client,
+            market_pool=self._market_pool,
         )
         self._action_executor = ActionExecutor(
             get_client=self._get_client,
@@ -94,7 +134,26 @@ class MonitorDaemon:
         time triggers. Runs until ``stop()`` is called.
         """
         self._running = True
-        logger.info("Monitor daemon starting (paper=%s)", self._paper_mode)
+        logger.info(
+            "Monitor daemon starting (paper=%s, shared_feed=%s, owner_uid=%s)",
+            self._paper_mode,
+            self._shared_feed_enabled,
+            self._feed_owner_user_id if self._shared_feed_enabled else None,
+        )
+
+        # If the shared market feed is enabled, start it before the
+        # first poll so user sessions register interest with a running
+        # pool from the start. If the owner token isn't loadable yet
+        # (e.g. TOTP cooldown), the pool stays stopped and the next
+        # rotate_token attempt picks it up.
+        if self._market_pool is not None:
+            try:
+                await self._market_pool.start()
+            except Exception as e:
+                logger.error(
+                    "Shared market feed failed to start at boot: %s. "
+                    "Will retry on next owner-token rotation.", e,
+                )
 
         # Initial rule load + scalp session load. Order matters:
         # _poll_rules must run first because it loads access tokens, which
@@ -118,6 +177,8 @@ class MonitorDaemon:
         """Graceful shutdown — stops all user sessions."""
         self._running = False
         await self._user_manager.stop_all()
+        if self._market_pool is not None:
+            await self._market_pool.stop()
         logger.info("Monitor daemon stopped")
 
     def set_access_token(self, user_id: int, token: str) -> None:
@@ -343,6 +404,15 @@ class MonitorDaemon:
                     uid, token, rules_by_user[uid],
                     extra_instruments=scalp_instruments or None,
                 )
+                # If this user owns the shared market feed, the pool's
+                # underlying token also needs to roll. ``rotate_token``
+                # rebuilds the stream and re-subscribes to the union of
+                # all current interest.
+                if (
+                    self._market_pool is not None
+                    and uid == self._feed_owner_user_id
+                ):
+                    await self._market_pool.rotate_token()
             else:
                 await self._user_manager.sync_rules(
                     uid, rules_by_user[uid],
