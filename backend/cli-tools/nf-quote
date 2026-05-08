@@ -15,7 +15,7 @@ from base import (  # noqa: E402
     format_change,
     format_inr,
     format_volume,
-    init_client,
+    init_market_data_client,
     print_error,
     print_json,
     run_async,
@@ -31,7 +31,7 @@ from services.instruments_cache import (  # noqa: E402
 
 def fetch_quotes(symbols: list[str], as_json: bool):
     """Fetch live quotes for one or more symbols."""
-    client = init_client()
+    client = init_market_data_client()
 
     results = []
     errors = []
@@ -96,7 +96,7 @@ def fetch_historical(symbol: str, interval: str, days: int, as_json: bool):
     """Fetch historical OHLCV data."""
     sym = validate_symbol(symbol)
 
-    client = init_client()
+    client = init_market_data_client()
     try:
         candles = run_async(client.get_historical_data(sym, interval=interval, days=days))
     except Exception as e:

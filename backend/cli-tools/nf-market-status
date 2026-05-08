@@ -16,14 +16,14 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import init_client, run_async
+from base import init_market_data_client, run_async
 from utils.market_status import get_market_status, format_duration, _ist_now
 
 
 async def _get_upstox_status() -> str | None:
     """Try to get market status from Upstox API."""
     try:
-        client = init_client()
+        client = init_market_data_client()
         if not client.access_token:
             return None
         result = await client.get_market_status_api()
@@ -36,7 +36,7 @@ async def _get_upstox_status() -> str | None:
 
 def show_holidays(date: str | None, as_json: bool):
     """Show market holidays."""
-    client = init_client()
+    client = init_market_data_client()
     try:
         holidays = run_async(client.get_market_holidays(date=date))
     except Exception as e:
@@ -92,7 +92,7 @@ def show_holidays(date: str | None, as_json: bool):
 
 def show_timings(date: str, as_json: bool):
     """Show exchange timings for a date."""
-    client = init_client()
+    client = init_market_data_client()
     try:
         timings = run_async(client.get_market_timings(date=date))
     except Exception as e:

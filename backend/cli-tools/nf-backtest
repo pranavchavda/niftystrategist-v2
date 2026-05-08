@@ -14,7 +14,7 @@ if _backend_dir not in sys.path:
 
 from base import (  # noqa: E402
     format_inr,
-    init_client,
+    init_market_data_client,
     print_error,
     print_json,
     run_async,
@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def fetch_candles(symbol: str, interval: str, days: int) -> list[dict]:
     """Fetch historical candles via Upstox client."""
-    client = init_client()
+    client = init_market_data_client()
     ohlcv_list = await client.get_historical_data(symbol, interval=interval, days=days)
     # Convert OHLCVData objects to dicts
     candles = []

@@ -27,7 +27,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_inr, init_client, print_error, print_json, print_success, run_async
+from base import format_inr, init_client, init_market_data_client, print_error, print_json, print_success, run_async
 from services.order_node_proxy import init_order_client
 
 # Options instrument cache file (same as equity cache - it contains F&O too)
@@ -621,7 +621,7 @@ def show_greeks(symbol: str, expiry: str, strikes: list = None,
     if len(instrument_keys) > 50:
         instrument_keys = instrument_keys[:50]
 
-    client = init_client()
+    client = init_market_data_client()  # public greeks read
     try:
         greeks = run_async(client.get_option_greeks(instrument_keys))
     except Exception as e:
@@ -670,7 +670,7 @@ def show_greeks(symbol: str, expiry: str, strikes: list = None,
 
 def show_live_chain(symbol: str, expiry: str, as_json: bool = False):
     """Show live option chain with greeks from Upstox API."""
-    client = init_client()
+    client = init_market_data_client()  # public chain read
     try:
         chain = run_async(client.get_option_chain_live(symbol, expiry))
     except Exception as e:
@@ -884,8 +884,8 @@ def plan_trade(symbol: str, expiry: str, side: str = "buy", bias: str = None,
 
     lot_size = matching[0]["lot_size"]
 
-    # Get live spot price if possible
-    client = init_client()
+    # Get live spot price if possible (public chain read)
+    client = init_market_data_client()
     spot = None
     try:
         chain = run_async(client.get_option_chain_live(symbol, expiry))

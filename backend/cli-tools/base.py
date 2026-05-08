@@ -34,6 +34,11 @@ def init_client() -> UpstoxClient:
     The orchestrator injects this env var when spawning CLI tool subprocesses.
     Falls back to UPSTOX_ACCESS_TOKEN for direct terminal usage.
     When NF_ACCESS_TOKEN is set (live user token), paper_trading is disabled.
+
+    Use this for user-scoped reads/writes (portfolio, positions, orders,
+    funds, trades, profile). For public market data (quotes, historical,
+    chains, greeks, market status), prefer init_market_data_client() — it
+    routes through the longer-lived analytics token when available.
     """
     live_token = os.environ.get("NF_ACCESS_TOKEN")
     token = live_token or os.environ.get("UPSTOX_ACCESS_TOKEN")
@@ -43,6 +48,27 @@ def init_client() -> UpstoxClient:
         paper_trading=not live_token,
         user_id=user_id,
     )
+
+
+def init_market_data_client() -> UpstoxClient:
+    """Create an UpstoxClient suitable for non-user-specific market reads.
+
+    Prefers UPSTOX_ANALYTICS_TOKEN — exchange-wide, doesn't expire daily —
+    over per-user tokens, eliminating UDAPI100050 401s when a user's token
+    is stale. Falls back to NF_ACCESS_TOKEN / UPSTOX_ACCESS_TOKEN when the
+    analytics env var isn't set.
+
+    Use for: quotes, historical OHLC, option chain, greeks, market status,
+    holiday/timing API. Do NOT use for: portfolio, positions, orders, funds.
+    """
+    analytics = os.environ.get("UPSTOX_ANALYTICS_TOKEN", "").strip()
+    if analytics:
+        return UpstoxClient(
+            access_token=analytics,
+            paper_trading=False,
+            user_id=int(os.environ.get("NF_USER_ID", "1")),
+        )
+    return init_client()
 
 
 def run_async(coro):

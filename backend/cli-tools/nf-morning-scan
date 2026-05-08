@@ -30,7 +30,7 @@ from base import (  # noqa: E402
     format_change,
     format_inr,
     format_volume,
-    init_client,
+    init_market_data_client,
     print_error,
     print_json,
 )
@@ -476,7 +476,7 @@ async def run_scan(
     universe_name: str = "nifty500",
 ) -> list[dict]:
     """Run the full morning scan."""
-    client = init_client()
+    client = init_market_data_client()
     t0 = time.time()
 
     # Build symbol universe

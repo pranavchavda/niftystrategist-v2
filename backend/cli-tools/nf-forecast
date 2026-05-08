@@ -17,7 +17,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from base import format_inr, init_market_data_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
 def _get_user_id() -> int:
@@ -58,7 +58,7 @@ def _get_forecaster():
 def forecast_single(symbol: str, horizon: int, as_json: bool):
     """Forecast a single stock."""
     sym = validate_symbol(symbol)
-    client = init_client()
+    client = init_market_data_client()
     forecaster = _get_forecaster()
 
     print(f"Fetching historical data for {sym}...", file=sys.stderr)
@@ -86,7 +86,7 @@ def forecast_single(symbol: str, horizon: int, as_json: bool):
 
 def forecast_multiple(symbols: list[str], horizon: int, as_json: bool):
     """Forecast multiple stocks."""
-    client = init_client()
+    client = init_market_data_client()
     forecaster = _get_forecaster()
 
     symbols_data = []
