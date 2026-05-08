@@ -79,6 +79,18 @@ class WorkflowScheduler:
         # Load recurring awakening schedules
         await self._load_awakening_schedules()
 
+        # Reconcile awakening jobs every 60s — catches schedules created /
+        # modified / deleted directly in the DB (e.g. via nf-mandate CLI
+        # subprocess) without an in-process notification path.
+        from apscheduler.triggers.interval import IntervalTrigger
+        self.scheduler.add_job(
+            func=self._reconcile_awakening_schedules,
+            trigger=IntervalTrigger(seconds=60),
+            id="reconcile_awakening_schedules",
+            name="Reconcile awakening schedules from DB",
+            replace_existing=True,
+        )
+
         # Start the scheduler
         self.scheduler.start()
         self._started = True
@@ -683,7 +695,12 @@ class WorkflowScheduler:
     # ========================================================================
 
     async def _load_awakening_schedules(self):
-        """Load all enabled awakening schedules and create CronTrigger jobs."""
+        """Load all enabled awakening schedules and create CronTrigger jobs.
+
+        Idempotent — `_add_awakening_job` uses `replace_existing=True` and
+        job_id is keyed on schedule.id, so repeated calls are safe. Used at
+        startup and by the 60s reconcile job below.
+        """
         from database.models import UserAwakeningSchedule
         from services.awakening_scheduler import ist_to_utc
 
@@ -700,10 +717,43 @@ class WorkflowScheduler:
                     self._add_awakening_job(schedule)
 
                 logger.info("Loaded %d enabled awakening schedules", len(schedules))
+                return [s.id for s in schedules]
             except Exception as e:
                 logger.error("Failed to load awakening schedules: %s", e)
+                return []
             finally:
                 break
+        return []
+
+    async def _reconcile_awakening_schedules(self):
+        """Periodic reconcile: pick up DB-direct schedule changes.
+
+        APScheduler's job table lives in memory; CLI tools that write
+        directly to the DB (e.g. `nf-mandate schedules add`) don't notify
+        the scheduler in-process and their schedules silently never fire.
+        This method runs every 60s, re-loads enabled schedules (idempotent
+        via replace_existing), and removes any jobs whose schedule was
+        disabled/deleted in the DB.
+
+        Origin: 2026-05-08 — agent-created Tier-2 Gap-Fades schedule never
+        fired because nf-mandate's _notify_scheduler_update is a no-op
+        from a subprocess.
+        """
+        try:
+            enabled_ids = await self._load_awakening_schedules()
+            enabled_set = set(enabled_ids)
+            for job in self.scheduler.get_jobs():
+                if not job.id.startswith("awakening_"):
+                    continue
+                try:
+                    sid = int(job.id.split("_", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                if sid not in enabled_set:
+                    self.scheduler.remove_job(job.id)
+                    logger.info("Removed stale awakening job %s (schedule disabled/deleted)", job.id)
+        except Exception as e:
+            logger.error("Awakening reconcile failed: %s", e)
 
     def _add_awakening_job(self, schedule):
         """Add a CronTrigger job for an awakening schedule.

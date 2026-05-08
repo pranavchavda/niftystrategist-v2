@@ -199,16 +199,42 @@ async def run_schedule_now(
     schedule_id: int,
     current_user: User = Depends(get_current_user),
 ):
-    """Manually trigger an awakening schedule (runs immediately)."""
+    """Manually trigger an awakening schedule.
+
+    Returns 202 immediately and runs the awakening as a background task.
+    Awakenings can take 5-10 minutes — the previous synchronous version
+    timed out at the proxy/browser layer (showing "Failed to run") even
+    though the agent kept executing on the server.
+
+    Output appears in the daily thread when complete (or as a partial
+    summary if the agent crashes mid-run).
+    """
     from services.awakening_scheduler import get_schedule as _get, execute_awakening
+    import asyncio
 
     async with get_db_context() as session:
         schedule = await _get(session, schedule_id, current_user.id)
         if not schedule:
             raise HTTPException(404, "Schedule not found")
+        # Snapshot fields needed for the background task — the session closes
+        # when this handler returns. The background task opens its own session.
+        schedule_id_snapshot = schedule.id
 
-        result = await execute_awakening(session, schedule)
-        return result
+    async def _run_in_background(sid: int):
+        try:
+            async with get_db_context() as session2:
+                sched = await _get(session2, sid, current_user.id)
+                if sched:
+                    await execute_awakening(session2, sched)
+        except Exception as e:
+            logger.exception("Manual awakening run failed (id=%d): %s", sid, e)
+
+    asyncio.create_task(_run_in_background(schedule_id_snapshot))
+    return {
+        "started": True,
+        "schedule_id": schedule_id_snapshot,
+        "message": "Awakening started — output will appear in the daily thread shortly",
+    }
 
 
 @router.post("/schedules/seed")

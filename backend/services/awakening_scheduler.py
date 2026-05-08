@@ -410,12 +410,22 @@ async def execute_awakening(
         await session.commit()
 
         logger.error("Awakening '%s' (id=%d) timed out after %ds", schedule.name, schedule.id, schedule.timeout_seconds)
+        await _write_partial_summary_on_crash(
+            engine=engine if 'engine' in locals() else None,
+            session=session,
+            thread_id=thread_id,
+            user_id=user_id,
+            schedule=schedule,
+            run_id=run.id,
+            error_class="TimeoutError",
+            error_msg=error_msg,
+        )
         return {"success": False, "error": error_msg, "thread_id": thread_id}
 
     except Exception as e:
         end_time = utc_now()
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
-        error_msg = str(e)
+        error_msg = str(e) or repr(e)
 
         run.status = "FAILED"
         run.completed_at = end_time
@@ -427,4 +437,75 @@ async def execute_awakening(
         await session.commit()
 
         logger.exception("Awakening '%s' (id=%d) failed: %s", schedule.name, schedule.id, e)
-        return {"success": False, "error": error_msg, "thread_id": thread_id}
+        await _write_partial_summary_on_crash(
+            engine=engine if 'engine' in locals() else None,
+            session=session,
+            thread_id=thread_id if 'thread_id' in locals() else None,
+            user_id=user_id,
+            schedule=schedule,
+            run_id=run.id,
+            error_class=type(e).__name__,
+            error_msg=error_msg,
+        )
+        return {"success": False, "error": error_msg, "thread_id": thread_id if 'thread_id' in locals() else None}
+
+
+async def _write_partial_summary_on_crash(
+    *, engine, session, thread_id, user_id, schedule, run_id, error_class, error_msg,
+):
+    """On awakening crash/timeout, write what got done before the failure.
+
+    Reads workflow_action_logs for this run and synthesises a markdown
+    summary of executed tool calls so the next awakening (and the user)
+    can see what happened. Without this, a mid-run LLM error or timeout
+    leaves the daily thread silent — even though the agent may have
+    deployed strategies, placed orders, or set rules before crashing.
+    Origin: 2026-05-08 — Tier-2 Gap-Fades crashed on a JSONDecodeError
+    from OpenRouter; 3 ORB strategies had been deployed but no record
+    of them appeared in the thread.
+    """
+    if not thread_id or not engine:
+        return
+    try:
+        from database.models import WorkflowActionLog
+        from sqlalchemy import select as _select
+        from services.workflow_engine import WorkflowEngine
+
+        result = await session.execute(
+            _select(WorkflowActionLog)
+            .where(WorkflowActionLog.workflow_run_id == run_id)
+            .order_by(WorkflowActionLog.sequence_order)
+        )
+        actions = result.scalars().all()
+
+        lines = [f"⚠️ **Awakening '{schedule.name}' crashed — partial summary**"]
+        lines.append(f"Failure: `{error_class}: {error_msg[:400]}`")
+        lines.append("")
+        if not actions:
+            lines.append("No tool calls were executed before the failure.")
+        else:
+            lines.append(f"Tool calls executed before crash ({len(actions)}):")
+            lines.append("")
+            for a in actions:
+                args_str = (a.tool_args or {}).get("command") or str(a.tool_args)[:200]
+                status = a.execution_status or "unknown"
+                marker = "✓" if status == "success" else ("✗" if status == "failed" else "·")
+                lines.append(f"{marker} `{a.tool_name}` ({status}): `{args_str[:300]}`")
+
+        lines.append("")
+        lines.append(
+            "_Next awakening: re-fetch portfolio + active rules to confirm true state. "
+            "Tool calls listed above may have committed broker-side; verify before acting._"
+        )
+
+        await engine._write_followup_to_thread(
+            thread_id=thread_id,
+            user_id=user_id,
+            response_text="\n".join(lines),
+        )
+        logger.info(
+            "Awakening '%s' (id=%d): wrote partial-crash summary with %d tool calls to thread %s",
+            schedule.name, schedule.id, len(actions), thread_id,
+        )
+    except Exception as e:
+        logger.error("Failed to write partial summary on crash: %s", e)
