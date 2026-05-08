@@ -10,8 +10,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import User, get_current_user
-from api.upstox_oauth import get_user_upstox_token
-from services.upstox_client import UpstoxClient
 from strategies.templates import list_templates, get_template
 from backtesting.engine import BacktestEngine, run_backtest_for_day
 from backtesting.fno_engine import run_fno_backtest, LegTrade
@@ -249,17 +247,11 @@ async def api_run_backtest(
             detail=f"Invalid interval. Choose from: {', '.join(valid_intervals)}",
         )
 
-    # Get Upstox token for historical data
-    token = await get_user_upstox_token(user.id)
-    if not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Upstox token not available. Please authenticate via Settings.",
-        )
-
-    # Fetch historical candles
+    # Historical data is public — use shared analytics token when available,
+    # falls back to user token. Avoids 401 when user's per-user token is stale.
+    from api.cockpit import get_market_data_client
     try:
-        client = UpstoxClient(access_token=token, user_id=user.id)
+        client = await get_market_data_client(user)
         ohlcv_list = await client.get_historical_data(
             body.symbol, interval=body.interval, days=body.days,
         )
@@ -382,10 +374,6 @@ async def api_run_fno_backtest(
             detail=f"Invalid interval. Choose from: {', '.join(valid_intervals)}",
         )
 
-    token = await get_user_upstox_token(user.id)
-    if not token:
-        raise HTTPException(status_code=401, detail="Upstox token not available.")
-
     # Clean params
     params = {k: v for k, v in body.params.items() if v is not None and v != ""}
     params.setdefault("capital", 100_000)
@@ -416,7 +404,8 @@ async def api_run_fno_backtest(
     # Fetch historical candles for each leg in parallel. Was sequential —
     # 4-leg iron condor over 90 days previously meant 4 serial round-trips
     # to Upstox; now it's one wall-clock round trip.
-    client = UpstoxClient(access_token=token, user_id=user.id)
+    from api.cockpit import get_market_data_client
+    client = await get_market_data_client(user)
 
     async def _fetch_leg(ik: str) -> tuple[str, list[dict]]:
         try:
@@ -577,16 +566,10 @@ async def api_run_scalp_backtest(
     if body.quantity <= 0:
         raise HTTPException(status_code=400, detail="quantity must be > 0")
 
-    token = await get_user_upstox_token(user.id)
-    if not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Upstox token not available. Authenticate via Settings.",
-        )
-
-    # Fetch historical candles
+    # Historical data is public; use analytics-token-preferring helper.
+    from api.cockpit import get_market_data_client
     try:
-        client = UpstoxClient(access_token=token, user_id=user.id)
+        client = await get_market_data_client(user)
         ohlcv = await client.get_historical_data(
             body.symbol, interval=body.interval, days=body.days,
         )

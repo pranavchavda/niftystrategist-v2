@@ -77,7 +77,10 @@ async def _fetch_candles(user: User, symbol: str, interval: str, days: int) -> l
     Without this the chart's last bar is yesterday and the header price
     (which reads lastCandle.close when not Live) is stale.
     """
-    client = await cockpit_api._get_client_for_user(user)
+    # Charts pull only public market data (OHLC + quote) — prefer the shared
+    # analytics token, which doesn't expire daily, over the caller's per-user
+    # token. Falls back to user token automatically when env var isn't set.
+    client = await cockpit_api.get_market_data_client(user)
     raw = await client.get_historical_data(symbol.upper(), interval=interval, days=days)
     raw.sort(key=lambda c: c.timestamp)
     intraday = interval in ("1minute", "5minute", "15minute", "30minute")
@@ -360,7 +363,7 @@ async def _stream_via_polling(
     interval_ms: int,
 ):
     """Original REST-polling fallback. Kept as a kill switch for the WS path."""
-    client = await cockpit_api._get_client_for_user(user)
+    client = await cockpit_api.get_market_data_client(user)
 
     yield (
         f"event: ready\n"

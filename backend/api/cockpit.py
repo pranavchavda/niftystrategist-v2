@@ -84,6 +84,34 @@ def invalidate_client_cache(user_id: int) -> None:
     _live_clients.pop(user_id, None)
 
 
+# Cached analytics-token-backed client. Reused across endpoints since it has
+# no per-user state and the analytics token doesn't change at runtime.
+_analytics_client: UpstoxClient | None = None
+
+
+async def get_market_data_client(user: User) -> UpstoxClient:
+    """Return a client suitable for non-user-specific market reads.
+
+    Prefers the shared UPSTOX_ANALYTICS_TOKEN (longer-lived, exchange-wide)
+    over the caller's per-user token. Falls back to the user's token when
+    the env var isn't set, so behaviour is unchanged in environments without
+    an analytics token configured. Use for: historical OHLC, quotes, option
+    chain, greeks, market status — anything that doesn't return user data.
+    Use _get_client_for_user for: portfolio, positions, holdings, funds,
+    orders, trades, profile.
+    """
+    global _analytics_client
+    from services.chart_market_stream import analytics_token_from_env
+    token = analytics_token_from_env()
+    if token:
+        if _analytics_client is None:
+            _analytics_client = UpstoxClient(
+                access_token=token, paper_trading=False, user_id=user.id,
+            )
+        return _analytics_client
+    return await _get_client_for_user(user)
+
+
 def _is_401_error(exc: Exception) -> bool:
     """Check if an exception is an Upstox 401 Unauthorized error."""
     return "401" in str(exc) and ("Unauthorized" in str(exc) or "Invalid token" in str(exc))
@@ -127,12 +155,7 @@ async def cockpit_market_status(user: User = Depends(get_current_user)):
     """
     upstox_status = None
     try:
-        from services.chart_market_stream import analytics_token_from_env
-        analytics_token = analytics_token_from_env()
-        if analytics_token:
-            client = UpstoxClient(access_token=analytics_token, paper_trading=False, user_id=user.id)
-        else:
-            client = await _get_client_for_user(user)
+        client = await get_market_data_client(user)
         api_result = await client.get_market_status_api()
         if api_result:
             upstox_status = api_result.get("status")
