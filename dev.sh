@@ -218,32 +218,32 @@ start_frontend() {
 
     cd frontend-v2
 
-    # Check Node.js version and switch to v22+ if needed
+    # Check Node.js version and switch to v24+ if needed
     if command -v node &> /dev/null; then
         NODE_VERSION=$(node -v | grep -oE '[0-9]+' | head -n1)
         print_color "Current Node.js version: v$NODE_VERSION" "$BLUE"
 
-        if [ "$NODE_VERSION" -lt 22 ]; then
+        if [ "$NODE_VERSION" -lt 24 ]; then
             print_color "Node.js version $NODE_VERSION is below 22" "$YELLOW"
 
             # Check if nvm is available
             if [ -s "$HOME/.nvm/nvm.sh" ]; then
-                print_color "Loading nvm and switching to Node.js v22..." "$YELLOW"
+                print_color "Loading nvm and switching to Node.js v24..." "$YELLOW"
                 export NVM_DIR="$HOME/.nvm"
                 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-                # Install Node.js v22 if not already installed
-                if ! nvm ls 22 &> /dev/null; then
-                    print_color "Installing Node.js v22..." "$YELLOW"
-                    nvm install 22
+                # Install Node.js v24 if not already installed
+                if ! nvm ls 24 &> /dev/null; then
+                    print_color "Installing Node.js v24..." "$YELLOW"
+                    nvm install 24
                 fi
 
-                # Use Node.js v22
-                nvm use 22
+                # Use Node.js v24
+                nvm use 24
                 NEW_VERSION=$(node -v | grep -oE '[0-9]+' | head -n1)
                 print_color "Switched to Node.js v$NEW_VERSION" "$GREEN"
             else
-                print_color "nvm not found. Please install nvm or upgrade Node.js to v22+" "$RED"
+                print_color "nvm not found. Please install nvm or upgrade Node.js to v24+" "$RED"
                 print_color "   Visit: https://github.com/nvm-sh/nvm#installing-and-updating" "$BLUE"
                 exit 1
             fi

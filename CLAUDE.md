@@ -29,7 +29,7 @@ cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
 cd frontend-v2 && pnpm install && pnpm run dev
 ```
 
-**Frontend uses pnpm, not npm.** Node 22+ required (dev.sh handles via nvm).
+**Frontend uses pnpm, not npm.** Node 24+ required (dev.sh handles via nvm). CI also uses Node 24.
 
 ## Deployment
 
