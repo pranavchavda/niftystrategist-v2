@@ -1225,8 +1225,12 @@ class ScalpSessionManager:
                 "message": result.message,
             }
         except Exception as e:
-            logger.error("Scalp order via node failed (user=%d): %s", user_id, e)
-            return {"success": False, "error": str(e)}
+            # exc_info + repr so empty-str exceptions (httpx, OSError) still
+            # tell us the class. 2026-05-08: previously logged "%s" with str(e)
+            # which is empty for many connection errors.
+            logger.error("Scalp order via node failed (user=%d): %r", user_id, e, exc_info=True)
+            err_msg = f"{type(e).__name__}: {e}".rstrip(": ")
+            return {"success": False, "error": err_msg}
 
     # ── Subscription helpers ─────────────────────────────────────────
 

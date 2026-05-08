@@ -8,6 +8,7 @@ Stateless: receives the Upstox access token per-request, never stores it.
 Auth: Bearer token (Upstox) + X-Node-Secret (shared secret with main instance).
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -67,6 +68,21 @@ def _make_client(token: str) -> upstox_client.ApiClient:
     config = upstox_client.Configuration()
     config.access_token = token
     return upstox_client.ApiClient(config)
+
+
+# Cap on each Upstox SDK call. The SDK doesn't expose a hard timeout, so we
+# wrap every call with asyncio.wait_for. If Upstox stalls, the handler returns
+# an error and the daemon's backoff path takes over — instead of pinning the
+# worker thread (and previously, blocking the whole event loop). 2026-05-08.
+_UPSTOX_CALL_TIMEOUT_SEC = 20
+
+
+async def _call_sdk(fn, *args, **kwargs):
+    """Run a sync Upstox SDK call in a worker thread with a timeout."""
+    return await asyncio.wait_for(
+        asyncio.to_thread(fn, *args, **kwargs),
+        timeout=_UPSTOX_CALL_TIMEOUT_SEC,
+    )
 
 
 def _is_market_open() -> bool:
@@ -223,7 +239,7 @@ async def place_order(
             disclosed_quantity=0,
             is_amo=is_amo,
         )
-        response = order_api.place_order(body)
+        response = await _call_sdk(order_api.place_order, body)
         order_ids = response.data.order_ids if response.data else []
         order_id = order_ids[0] if order_ids else None
         amo_label = " [AMO]" if is_amo else ""
@@ -243,9 +259,20 @@ async def place_order(
         result = OrderResult(success=False, status="REJECTED", message=f"Order rejected: {msg}")
         _recent_orders[key] = (time.time(), result.model_dump())
         return result
+    except asyncio.TimeoutError:
+        msg = f"Upstox SDK call exceeded {_UPSTOX_CALL_TIMEOUT_SEC}s timeout"
+        logger.error("Place order timeout: %s", msg)
+        result = OrderResult(success=False, status="REJECTED", message=f"Order timed out: {msg}")
+        # Don't cache timeouts — let the caller's retry hit Upstox directly
+        return result
     except Exception as e:
-        logger.error("Place order error: %s", e)
-        result = OrderResult(success=False, status="REJECTED", message=f"Order failed: {e}")
+        # exc_info captures the traceback for empty-str exceptions (httpx, etc.)
+        logger.error("Place order error: %r", e, exc_info=True)
+        result = OrderResult(
+            success=False,
+            status="REJECTED",
+            message=f"Order failed: {type(e).__name__}: {e}".rstrip(": "),
+        )
         _recent_orders[key] = (time.time(), result.model_dump())
         return result
 
@@ -270,7 +297,7 @@ async def modify_order(
             validity="DAY",
             disclosed_quantity=0,
         )
-        response = order_api.modify_order(body)
+        response = await _call_sdk(order_api.modify_order, body)
         logger.info("Order modified: %s", req.order_id)
         return OrderResult(
             success=True,
@@ -296,7 +323,7 @@ async def cancel_order(
     order_api = upstox_client.OrderApiV3(api_client)
 
     try:
-        response = order_api.cancel_order(order_id)
+        response = await _call_sdk(order_api.cancel_order, order_id)
         logger.info("Order cancelled: %s", order_id)
         return OrderResult(success=True, order_id=order_id, message=f"Order {order_id} cancelled")
     except ApiException as e:
@@ -323,7 +350,7 @@ async def cancel_all_orders(
             kwargs["tag"] = req.tag
         if req.segment:
             kwargs["segment"] = req.segment
-        response = order_api.cancel_multi_order(**kwargs)
+        response = await _call_sdk(order_api.cancel_multi_order, **kwargs)
         logger.info("Cancel-all: tag=%s segment=%s", req.tag, req.segment)
         return OrderResult(success=True, message="All matching orders cancelled")
     except ApiException as e:
@@ -343,7 +370,7 @@ async def exit_all_positions(
     order_api = upstox_client.OrderApiV3(api_client)
 
     try:
-        response = order_api.exit_positions(cancel_orders=True)
+        response = await _call_sdk(order_api.exit_positions, cancel_orders=True)
         logger.info("Exit-all positions executed")
         return OrderResult(success=True, message="All positions exit orders placed")
     except ApiException as e:
@@ -377,7 +404,7 @@ async def place_gtt(
                 trigger_price=req.trigger_price,
             )],
         )
-        response = order_api.place_gtt_order(body)
+        response = await _call_sdk(order_api.place_gtt_order, body)
         gtt_ids = response.data.gtt_order_ids if response.data else []
         gtt_id = gtt_ids[0] if gtt_ids else None
         logger.info("GTT placed: %s %s x%d trigger=%s (id=%s)",
@@ -415,7 +442,7 @@ async def modify_gtt(
             quantity=req.quantity,
             trigger_price=req.trigger_price,
         )
-        response = order_api.modify_gtt_order(body)
+        response = await _call_sdk(order_api.modify_gtt_order, body)
         logger.info("GTT modified: %s", req.gtt_order_id)
         return OrderResult(
             success=True,
@@ -443,7 +470,7 @@ async def cancel_gtt(
 
     try:
         body = upstox_client.GttCancelOrderRequest(gtt_order_id=gtt_order_id)
-        response = order_api.cancel_gtt_order(body)
+        response = await _call_sdk(order_api.cancel_gtt_order, body)
         logger.info("GTT cancelled: %s", gtt_order_id)
         return OrderResult(success=True, order_id=gtt_order_id,
                            message=f"GTT {gtt_order_id} cancelled")
@@ -465,7 +492,7 @@ async def list_gtt(
     order_api = upstox_client.OrderApiV3(api_client)
 
     try:
-        response = order_api.get_gtt_order_details()
+        response = await _call_sdk(order_api.get_gtt_order_details)
         orders = []
         if response.data:
             items = response.data if isinstance(response.data, list) else [response.data]
@@ -529,7 +556,7 @@ async def place_multi_order(
                 correlation_id=o.get("correlation_id"),
                 tag=o.get("tag"),
             ))
-        response = order_api.place_multi_order(order_requests)
+        response = await _call_sdk(order_api.place_multi_order, order_requests)
         logger.info("Multi-order placed: %d legs", len(order_requests))
         return OrderResult(
             success=True,
