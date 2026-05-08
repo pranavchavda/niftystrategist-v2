@@ -675,6 +675,21 @@ export default function ScalpSessionsRoute() {
     return <Badge>{type}</Badge>;
   };
 
+  // Format a log timestamp for the per-session "Recent Events" list. Today's
+  // events show HH:MM:SS only; events from prior IST days are prefixed with
+  // "DD Mon" so multi-day session logs aren't ambiguous (the panel previously
+  // showed only HH:MM, which made a 2-day-old +₹4098 win look like today's).
+  const formatLogTime = (iso: string | null): string => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const istNow = new Date(Date.now()).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+    const istLog = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+    const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Kolkata' });
+    if (istLog === istNow) return `${time} IST`;
+    const datePart = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
+    return `${datePart}, ${time} IST`;
+  };
+
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
       {/* Header */}
@@ -848,7 +863,7 @@ export default function ScalpSessionsRoute() {
                                     />
                                   )}
                                   <span className="ml-auto text-zinc-400 whitespace-nowrap">
-                                    {log.created_at && new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Kolkata' })} IST
+                                    {formatLogTime(log.created_at)}
                                   </span>
                                 </div>
                               ))}
