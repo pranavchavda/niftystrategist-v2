@@ -256,12 +256,18 @@ async def execute_awakening(
         logger.error("Awakening %d: user %d not found", schedule.id, user_id)
         return {"success": False, "error": f"User {user_id} not found"}
 
-    # Check market holiday via Upstox API (best-effort)
+    # Check market holiday via Upstox API (best-effort). Market status is
+    # exchange-wide so prefer the shared analytics token (avoids 401s when the
+    # user's personal token has expired). Falls back to the user's token if
+    # UPSTOX_ANALYTICS_TOKEN isn't set.
     try:
         from services.upstox_client import UpstoxClient
-        upstox_token = await get_user_upstox_token(user_id)
-        if upstox_token:
-            client = UpstoxClient(upstox_token, paper_trading=False)
+        from services.chart_market_stream import analytics_token_from_env
+        token = analytics_token_from_env()
+        if not token:
+            token = await get_user_upstox_token(user_id)
+        if token:
+            client = UpstoxClient(token, paper_trading=False)
             status = await client.get_market_status_api()
             if status and status.get("status") == "CLOSED" and schedule.name != "Post-Close Review":
                 logger.info("Awakening %d: market closed (holiday?), skipping", schedule.id)

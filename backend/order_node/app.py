@@ -73,8 +73,10 @@ def _make_client(token: str) -> upstox_client.ApiClient:
 # Cap on each Upstox SDK call. The SDK doesn't expose a hard timeout, so we
 # wrap every call with asyncio.wait_for. If Upstox stalls, the handler returns
 # an error and the daemon's backoff path takes over — instead of pinning the
-# worker thread (and previously, blocking the whole event loop). 2026-05-08.
-_UPSTOX_CALL_TIMEOUT_SEC = 20
+# worker thread (and previously, blocking the whole event loop). Bumped 20→40
+# 2026-05-08 evening: Upstox latency spikes on busy ticks routinely run 20–35s
+# but do return — premature timeout was causing failed-fill ambiguity.
+_UPSTOX_CALL_TIMEOUT_SEC = 40
 
 
 async def _call_sdk(fn, *args, **kwargs):

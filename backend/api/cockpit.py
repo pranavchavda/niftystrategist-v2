@@ -118,10 +118,21 @@ async def _get_db() -> AsyncSession:
 # ---------------------------------------------------------------------------
 @router.get("/market-status")
 async def cockpit_market_status(user: User = Depends(get_current_user)):
-    """Return current NSE market status (Upstox API with IST-based fallback)."""
+    """Return current NSE market status (Upstox API with IST-based fallback).
+
+    Market status is exchange-wide, identical for every user — so prefer the
+    shared analytics token (UPSTOX_ANALYTICS_TOKEN env var) over the caller's
+    personal token. Per-user tokens expire daily and were causing repeated
+    UDAPI100050 401s every 30 min on the main process. Analytics token doesn't.
+    """
     upstox_status = None
     try:
-        client = await _get_client_for_user(user)
+        from services.chart_market_stream import analytics_token_from_env
+        analytics_token = analytics_token_from_env()
+        if analytics_token:
+            client = UpstoxClient(access_token=analytics_token, paper_trading=False, user_id=user.id)
+        else:
+            client = await _get_client_for_user(user)
         api_result = await client.get_market_status_api()
         if api_result:
             upstox_status = api_result.get("status")
