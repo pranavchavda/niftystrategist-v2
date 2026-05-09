@@ -157,6 +157,42 @@ function useDarkMode(): boolean {
   return isDark;
 }
 
+// localStorage-backed UI state. Survives tab close. Versioned so a future
+// breaking change to the shape can invalidate stale entries instead of
+// crashing on load.
+const STORAGE_VERSION = 1;
+const STORAGE_KEY = `nf.charts.state.v${STORAGE_VERSION}`;
+
+interface PersistedChartState {
+  symbol?: string;
+  timeframe?: Timeframe;
+  indicatorKeys?: string[];
+}
+
+function loadPersistedState(): PersistedChartState {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as PersistedChartState;
+  } catch {
+    return {};
+  }
+}
+
+function savePersistedState(patch: PersistedChartState) {
+  if (typeof window === 'undefined') return;
+  try {
+    const current = loadPersistedState();
+    const next = { ...current, ...patch };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    /* quota / private mode — ignore */
+  }
+}
+
 function SymbolSearch({
   value,
   onSelect,
@@ -456,21 +492,39 @@ function ChartsView({ authToken }: { authToken: string }) {
   const isDark = useDarkMode();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const persistedRef = useRef<PersistedChartState>(loadPersistedState());
+  const persisted = persistedRef.current;
+
   const [symbol, setSymbol] = useState<string>(() => {
     const fromQuery = searchParams.get('symbol');
-    return fromQuery && fromQuery.trim() ? fromQuery.trim().toUpperCase() : 'NIFTY 50';
+    if (fromQuery && fromQuery.trim()) return fromQuery.trim().toUpperCase();
+    if (persisted.symbol && persisted.symbol.trim()) return persisted.symbol.trim().toUpperCase();
+    return 'NIFTY 50';
   });
-  const [timeframe, setTimeframe] = useState<Timeframe>('1D');
+  const [timeframe, setTimeframe] = useState<Timeframe>(() => {
+    const tf = persisted.timeframe;
+    return tf && (TIMEFRAMES as readonly string[]).includes(tf) ? tf : '1D';
+  });
   const [candles, setCandles] = useState<Candle[]>([]);
   const [indicatorData, setIndicatorData] = useState<IndicatorResponse | null>(null);
-  const [activeIndicators, setActiveIndicators] = useState<IndicatorDef[]>([
-    PRESET_INDICATORS.find((i) => i.key === 'ema_21')!,
-    PRESET_INDICATORS.find((i) => i.key === 'rsi')!,
-  ]);
+  const [activeIndicators, setActiveIndicators] = useState<IndicatorDef[]>(() => {
+    const keys = persisted.indicatorKeys;
+    if (Array.isArray(keys) && keys.length > 0) {
+      const restored = keys
+        .map((k) => PRESET_INDICATORS.find((i) => i.key === k))
+        .filter((i): i is IndicatorDef => Boolean(i));
+      if (restored.length > 0) return restored;
+    }
+    return [
+      PRESET_INDICATORS.find((i) => i.key === 'ema_21')!,
+      PRESET_INDICATORS.find((i) => i.key === 'rsi')!,
+    ];
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
-  const [liveStatus, setLiveStatus] = useState<'off' | 'connecting' | 'open' | 'waiting' | 'error'>('off');
+  const [liveStatus, setLiveStatus] = useState<'off' | 'connecting' | 'open' | 'waiting' | 'reconnecting' | 'error'>('off');
+  const [liveBackend, setLiveBackend] = useState<'ws' | 'poll' | null>(null);
   const [lastTickPrice, setLastTickPrice] = useState<number | null>(null);
 
   const intraday = timeframe === '1m' || timeframe === '5m' || timeframe === '15m' || timeframe === '30m';
@@ -485,6 +539,14 @@ function ChartsView({ authToken }: { authToken: string }) {
       setSearchParams(next, { replace: true });
     }
   }, [symbol, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    savePersistedState({
+      symbol,
+      timeframe,
+      indicatorKeys: activeIndicators.map((i) => i.key),
+    });
+  }, [symbol, timeframe, activeIndicators]);
 
   const paneIndicators = useMemo(
     () => activeIndicators.filter((i) => i.kind === 'pane'),
@@ -707,20 +769,43 @@ function ChartsView({ authToken }: { authToken: string }) {
   useEffect(() => {
     if (!live) {
       setLiveStatus('off');
+      setLiveBackend(null);
       return;
     }
     if (candles.length === 0) return;
 
-    const controller = new AbortController();
-    setLiveStatus('connecting');
-    let lastSeenMs = Date.now();
+    let cancelled = false;
+    let activeController: AbortController | null = null;
     let waitingTimer: number | null = null;
+    let reconnectTimer: number | null = null;
+    let attempt = 0; // 0 = first try, then 1, 2, ... for retries
+    let lastSeenMs = Date.now();
+
+    setLiveStatus('connecting');
 
     const armWaitingTimer = () => {
       if (waitingTimer) window.clearTimeout(waitingTimer);
       waitingTimer = window.setTimeout(() => {
         if (Date.now() - lastSeenMs > 15000) setLiveStatus('waiting');
       }, 16000);
+    };
+
+    const backoffMs = (n: number) => {
+      // 1s, 2s, 4s, 8s, 15s, cap 30s — small jitter avoids thundering-herd
+      // when many tabs reconnect together after a backend blip.
+      const base = Math.min(30000, 1000 * 2 ** Math.min(n, 5));
+      const jitter = Math.floor(Math.random() * 500);
+      return base + jitter;
+    };
+
+    const scheduleReconnect = () => {
+      if (cancelled) return;
+      const delay = backoffMs(attempt);
+      attempt += 1;
+      setLiveStatus('reconnecting');
+      reconnectTimer = window.setTimeout(() => {
+        if (!cancelled) connect();
+      }, delay);
     };
 
     // Sticky once flipped on — when the backend is emitting server-built
@@ -800,7 +885,12 @@ function ChartsView({ authToken }: { authToken: string }) {
       if (c.closed) refreshHistoryRef.current();
     };
 
-    const run = async () => {
+    const connect = async () => {
+      if (cancelled) return;
+      const controller = new AbortController();
+      activeController = controller;
+      if (attempt === 0) setLiveStatus('connecting');
+
       try {
         const res = await fetch(
           `/api/charts/stream/${encodeURIComponent(symbol)}?timeframe=${timeframe}`,
@@ -813,7 +903,7 @@ function ChartsView({ authToken }: { authToken: string }) {
           },
         );
         if (!res.ok || !res.body) {
-          setLiveStatus('error');
+          if (!cancelled) scheduleReconnect();
           return;
         }
         setLiveStatus('open');
@@ -822,6 +912,7 @@ function ChartsView({ authToken }: { authToken: string }) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let sawData = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -834,14 +925,23 @@ function ChartsView({ authToken }: { authToken: string }) {
             const eventLine = lines.find((l) => l.startsWith('event: '));
             const dataLine = lines.find((l) => l.startsWith('data: '));
             if (eventLine?.startsWith('event: error')) {
-              setLiveStatus('error');
-              continue;
+              // Backend gave up — kill this connection and let the
+              // reconnect loop try again with backoff.
+              try { controller.abort(); } catch { /* ignore */ }
+              if (!cancelled) scheduleReconnect();
+              return;
             }
             if (!dataLine) continue;
             const payload = dataLine.slice(6).trim();
             if (!payload) continue;
             try {
               const parsed = JSON.parse(payload);
+              if (eventLine?.startsWith('event: ready')) {
+                if (parsed.backend === 'ws' || parsed.backend === 'poll') {
+                  setLiveBackend(parsed.backend);
+                }
+                continue;
+              }
               if (eventLine?.startsWith('event: candle')) {
                 if (
                   typeof parsed.time === 'number' &&
@@ -855,6 +955,8 @@ function ChartsView({ authToken }: { authToken: string }) {
                   lastSeenMs = Date.now();
                   setLiveStatus('open');
                   armWaitingTimer();
+                  sawData = true;
+                  attempt = 0; // healthy stream — reset backoff
                 }
               } else if (typeof parsed.ltp === 'number') {
                 applyTick(parsed.ltp, parsed.ltt || Date.now());
@@ -862,24 +964,38 @@ function ChartsView({ authToken }: { authToken: string }) {
                 lastSeenMs = Date.now();
                 setLiveStatus('open');
                 armWaitingTimer();
+                sawData = true;
+                attempt = 0;
               }
             } catch {
               /* ignore bad frames */
             }
           }
         }
-      } catch (e: any) {
-        if (e?.name !== 'AbortError') {
-          setLiveStatus('error');
+        // Stream ended without an explicit error — backend dropped us
+        // (deploy, idle timeout, network). If the user still wants live,
+        // try again. Reset backoff if we actually saw data this round.
+        if (!cancelled) {
+          if (sawData) attempt = 0;
+          scheduleReconnect();
         }
+      } catch (e: any) {
+        if (cancelled || e?.name === 'AbortError') return;
+        scheduleReconnect();
       }
     };
-    run();
+
+    connect();
 
     return () => {
-      controller.abort();
+      cancelled = true;
+      if (activeController) {
+        try { activeController.abort(); } catch { /* ignore */ }
+      }
       if (waitingTimer) window.clearTimeout(waitingTimer);
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
       setLastTickPrice(null);
+      setLiveBackend(null);
     };
     // candles.length > 0 is what we actually need — use sentinel to avoid
     // re-subscribing on every candle mutation.
@@ -1174,16 +1290,22 @@ function ChartsView({ authToken }: { authToken: string }) {
 
         <button
           onClick={() => setLive((v) => !v)}
-          title={live ? 'Stop live stream' : 'Start live stream'}
+          title={
+            live
+              ? `Stop live stream${liveBackend ? ` (${liveBackend})` : ''}`
+              : 'Start live stream'
+          }
           className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded transition-colors ${
             live
               ? liveStatus === 'open'
                 ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
                 : liveStatus === 'waiting'
                   ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
-                  : liveStatus === 'error'
-                    ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-                    : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300'
+                  : liveStatus === 'reconnecting'
+                    ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+                    : liveStatus === 'error'
+                      ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+                      : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300'
               : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
           }`}
         >
@@ -1195,14 +1317,16 @@ function ChartsView({ authToken }: { authToken: string }) {
           </span>
           {live
             ? liveStatus === 'open'
-              ? 'LIVE'
+              ? `LIVE${liveBackend === 'poll' ? ' · poll' : ''}`
               : liveStatus === 'connecting'
                 ? '…'
                 : liveStatus === 'waiting'
                   ? 'idle'
-                  : liveStatus === 'error'
-                    ? 'err'
-                    : 'LIVE'
+                  : liveStatus === 'reconnecting'
+                    ? 'reconn…'
+                    : liveStatus === 'error'
+                      ? 'err'
+                      : 'LIVE'
             : 'LIVE'}
         </button>
 
