@@ -277,13 +277,8 @@ export default function Index() {
                 <h1 className="text-3xl sm:text-4xl font-bold tracking-tight bg-gradient-to-t from-zinc-900 to-zinc-500 dark:from-white dark:to-zinc-400 bg-clip-text text-transparent mb-2">
                   {greeting}
                 </h1>
-                <div className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500/10 to-purple-500/10 dark:from-blue-400/10 dark:to-purple-400/10 rounded-full border border-blue-200/50 dark:border-blue-700/30">
-                  <span className="animate-pulse text-sm font-medium bg-gradient-to-r from-blue-600 to-purple-600 dark:from-blue-400 dark:to-purple-400 bg-clip-text text-transparent">
-                    Hello Pranav, this is Hermes 🤖
-                  </span>
-                </div>
                 {!isPendingActivation && (
-                  <p className="mt-3 text-lg text-zinc-500 dark:text-zinc-400">
+                  <p className="mt-2 text-lg text-zinc-500 dark:text-zinc-400">
                     What would you like to analyze today?
                   </p>
                 )}
