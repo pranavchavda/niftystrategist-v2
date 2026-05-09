@@ -694,33 +694,127 @@ class MonitorDaemon:
 
         Runs outside the tick lock so the daemon can process the next tick
         immediately. Errors are logged but don't crash the daemon.
+
+        On failed place_order: revert the optimistic state changes that the
+        in-memory tick handler applied (fire_count bump, max_fires-driven
+        disable, kill/activate chain). Without revert, a failed entry order
+        could leave the position un-protected by SL/target/squareoff (which
+        the kill chain would have wiped) and the rule prematurely disabled.
+        Origin: 2026-05-08 FINCABLES — long trail rule's exit timed out;
+        fire_count and also_cancel_rules ran anyway, leaving the position
+        dangling. See project_exit_rule_stacking_bug.md.
         """
         try:
             async with get_db_context() as db_session:
-                await self._action_executor.execute(
+                action_result = await self._action_executor.execute(
                     rule, result, trigger_snapshot, db_session
                 )
-                # Persist kill/activate chain state (enabled, fire_count)
-                # so DB stays in sync with in-memory daemon state.
-                if chain_affected:
-                    for r in chain_affected:
-                        try:
-                            await crud.sync_rule_fire_state(
-                                session=db_session,
-                                rule_id=r.id,
-                                fire_count=r.fire_count,
-                                enabled=r.enabled,
-                            )
-                        except Exception as e:
-                            logger.error(
-                                "Failed to sync chain rule %d state: %s",
-                                r.id, e,
-                            )
+
+                order_failed = (
+                    result.action_type == "place_order"
+                    and isinstance(action_result, dict)
+                    and not action_result.get("success", False)
+                )
+
+                if order_failed:
+                    await self._revert_failed_fire(
+                        rule, result, chain_affected, db_session, action_result
+                    )
+                else:
+                    # Persist kill/activate chain state (enabled, fire_count)
+                    # so DB stays in sync with in-memory daemon state.
+                    if chain_affected:
+                        for r in chain_affected:
+                            try:
+                                await crud.sync_rule_fire_state(
+                                    session=db_session,
+                                    rule_id=r.id,
+                                    fire_count=r.fire_count,
+                                    enabled=r.enabled,
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    "Failed to sync chain rule %d state: %s",
+                                    r.id, e,
+                                )
         except Exception as e:
             logger.error(
                 "Background execute_and_record failed for rule %d: %s",
                 rule.id, e, exc_info=True,
             )
+
+    async def _revert_failed_fire(
+        self,
+        rule: MonitorRule,
+        result,
+        chain_affected: list[MonitorRule] | None,
+        db_session,
+        action_result: dict,
+    ) -> None:
+        """Undo the optimistic state changes for a fired rule whose order failed.
+
+        Reverts both the in-memory state (so the daemon's next tick sees the
+        rule as still-armed and the protective rules as still-active) AND
+        the DB writes that action_executor.execute() already committed
+        inside the kill/activate chain. Idempotent: re-enabling an
+        already-enabled rule is harmless.
+        """
+        err_msg = (action_result.get("error") or action_result.get("message") or "")[:200]
+
+        # Revert the rule's own fire_count + max_fires-driven disable.
+        if rule.fire_count > 0:
+            rule.fire_count -= 1
+        rule_was_disabled_now_re_armed = False
+        if not rule.enabled and (not rule.max_fires or rule.fire_count < rule.max_fires):
+            rule.enabled = True
+            rule_was_disabled_now_re_armed = True
+
+        # Revert kill chain (re-enable rules we just disabled) and activate
+        # chain (re-disable rules we just enabled).
+        session_obj = self._user_manager.get_session(rule.user_id)
+        if session_obj:
+            if result.rules_to_cancel:
+                for r in session_obj.rules:
+                    if r.id in result.rules_to_cancel:
+                        r.enabled = True
+            if result.rules_to_enable:
+                for r in session_obj.rules:
+                    if r.id in result.rules_to_enable:
+                        r.enabled = False
+
+        # Persist the revert to DB.
+        try:
+            await crud.sync_rule_fire_state(
+                session=db_session,
+                rule_id=rule.id,
+                fire_count=rule.fire_count,
+                enabled=rule.enabled,
+            )
+        except Exception as e:
+            logger.error("Failed to sync revert for rule %d: %s", rule.id, e)
+
+        if chain_affected:
+            for r in chain_affected:
+                try:
+                    await crud.sync_rule_fire_state(
+                        session=db_session,
+                        rule_id=r.id,
+                        fire_count=r.fire_count,
+                        enabled=r.enabled,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync revert for chain rule %d: %s", r.id, e
+                    )
+
+        logger.warning(
+            "Rule %d (%s) order FAILED, reverted: fire_count=%d, "
+            "re-armed=%s, restored %d cancelled rule(s), disabled %d activated rule(s). err=%s",
+            rule.id, rule.name, rule.fire_count, rule_was_disabled_now_re_armed,
+            len(result.rules_to_cancel) if result.rules_to_cancel else 0,
+            len(result.rules_to_enable) if result.rules_to_enable else 0,
+            err_msg,
+        )
 
     async def _persist_trigger_config(
         self, rule_id: int, trigger_config: dict

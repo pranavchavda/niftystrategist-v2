@@ -65,7 +65,8 @@ class TestStateTransitions:
         mgr._sessions = {999: [session]}
         mgr._underlying_map = {"999:NSE_INDEX|Nifty 50": [1]}
 
-        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True), \
+             patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
             # Simulate candle buffer with UT Bot flip
             from monitor.candle_buffer import CandleBuffer
             buf = CandleBuffer(1)
@@ -89,7 +90,8 @@ class TestStateTransitions:
         mgr = _make_manager()
         session = _make_session()
 
-        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True), \
+             patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
             await mgr._try_enter(session, "PE", 24350.0)
             mock_enter.assert_called_once_with(session, "PE", 24350.0)
 
@@ -151,7 +153,8 @@ class TestEntryGuards:
         )
         session.config.cooldown_seconds = 60
 
-        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True), \
+             patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
             await mgr._try_enter(session, "CE", 24350.0)
             mock_enter.assert_called_once()
 
@@ -1374,7 +1377,8 @@ class TestSwingExemptions:
         session = _make_equity_session(mode="equity_swing")
         session.config.squareoff_time = f"{past_time.hour:02d}:{past_time.minute:02d}"
 
-        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True), \
+             patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
             await mgr._try_enter(session, "LONG", 2500.0)
             mock_enter.assert_called_once()
 

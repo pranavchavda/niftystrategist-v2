@@ -618,6 +618,17 @@ class ScalpSessionManager:
             )
             return
 
+        # Market-hours guard — Upstox order API only accepts placement
+        # 09:00–15:30 IST (entries outside that window get UDAPI100074).
+        # Origin: 2026-05-07 22:30 UTC (4 AM IST) — user 5's daemon fired
+        # 2 entries before the order API window opened, both rejected.
+        if not _is_nse_market_open():
+            logger.info(
+                "Session %d: NSE not in regular session — skip entry",
+                session.id,
+            )
+            return
+
         # Cooldown guard
         if rt.last_exit_time:
             elapsed = (datetime.utcnow() - rt.last_exit_time).total_seconds()
