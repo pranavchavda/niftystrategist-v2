@@ -261,3 +261,143 @@ async def test_db_rule_to_schema(db_session):
     assert schema.enabled is True
     assert schema.instrument_token == "NSE_EQ|INE002A01018"
     assert schema.symbol == "RELIANCE"
+
+
+# ── Exit-rule stacking guard (2026-05-08 FINCABLES bug) ──────────────
+
+
+def _exit_rule_kwargs(name, role, transaction_type="SELL", trigger_type="price",
+                      trigger_config=None, **overrides):
+    """Build kwargs for an exit-side rule (sl/target/trail/squareoff)."""
+    if trigger_config is None:
+        trigger_config = {"condition": "lte", "price": 2400, "reference": "ltp"}
+    base = _rule_kwargs(
+        name=name,
+        trigger_type=trigger_type,
+        trigger_config=trigger_config,
+        role=role,
+    )
+    base["action_config"]["transaction_type"] = transaction_type
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_stacking_refused_when_cross_type(db_session):
+    """Adding a trail when an SL exists on the same long → refuse."""
+    from monitor.crud import create_rule, ExitStackingError
+    # Existing standalone SL on RELIANCE LONG (sell exit)
+    await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE OCO Stop-Loss @ 2400", role=None,
+        trigger_config={"condition": "lte", "price": 2400, "reference": "ltp"},
+    ))
+    # New trailing on the same position should refuse
+    with pytest.raises(ExitStackingError) as exc:
+        await create_rule(db_session, **_exit_rule_kwargs(
+            "RELIANCE Trailing SL 1.5%", role=None,
+            trigger_type="trailing_stop",
+            trigger_config={"trail_percent": 1.5, "initial_price": 2500,
+                            "highest_price": 2500, "direction": "long",
+                            "reference": "ltp"},
+        ))
+    assert exc.value.conflicts  # at least one conflicting rule id
+
+
+@pytest.mark.asyncio
+async def test_stacking_replaces_same_type(db_session):
+    """Adding a tighter trail when one exists → auto-disables old."""
+    from monitor.crud import create_rule
+    old = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE Trailing SL 5%", role="trailing_long",
+        trigger_type="trailing_stop",
+        trigger_config={"trail_percent": 5, "initial_price": 2500,
+                        "highest_price": 2500, "direction": "long",
+                        "reference": "ltp"},
+    ))
+    assert old.enabled is True
+    # Add tighter trail → old auto-disabled, new enabled
+    new = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE Trailing SL 1.5%", role="trailing_long",
+        trigger_type="trailing_stop",
+        trigger_config={"trail_percent": 1.5, "initial_price": 2500,
+                        "highest_price": 2500, "direction": "long",
+                        "reference": "ltp"},
+    ))
+    assert new.enabled is True
+    # Reload old from DB to confirm it was disabled
+    from monitor.crud import get_rule
+    refreshed = await get_rule(db_session, old.id)
+    assert refreshed.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_stacking_force_overrides_refusal(db_session):
+    """force=True bypasses the cross-type refusal."""
+    from monitor.crud import create_rule
+    await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE OCO SL @ 2400", role=None,
+    ))
+    new = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE Trailing SL 1.5%", role=None,
+        trigger_type="trailing_stop",
+        trigger_config={"trail_percent": 1.5, "initial_price": 2500,
+                        "highest_price": 2500, "direction": "long",
+                        "reference": "ltp"},
+        force=True,
+    ))
+    assert new.id is not None
+    assert new.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_stacking_strategy_template_bypasses_check(db_session):
+    """Strategy templates create multiple exit types together by design."""
+    from monitor.crud import create_rule
+    sl = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE ORB Long SL @ 2400", role="sl_long",
+        strategy_name="orb",
+    ))
+    # Same strategy adds target — should NOT refuse despite cross-type
+    target = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE ORB Long Target @ 2700", role="target_long",
+        strategy_name="orb",
+        trigger_config={"condition": "gte", "price": 2700, "reference": "ltp"},
+    ))
+    assert sl.enabled is True
+    assert target.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_stacking_oco_pair_via_also_cancel_rules(db_session):
+    """OCO target whose also_cancel_rules contains the SL bypasses refusal."""
+    from monitor.crud import create_rule
+    sl = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE OCO SL @ 2400", role=None,
+    ))
+    # Target rule lists SL in also_cancel_rules — they're explicitly OCO
+    target_kwargs = _exit_rule_kwargs(
+        "RELIANCE OCO Target @ 2700", role=None,
+        trigger_config={"condition": "gte", "price": 2700, "reference": "ltp"},
+    )
+    target_kwargs["action_config"]["also_cancel_rules"] = [sl.id]
+    target = await create_rule(db_session, **target_kwargs)
+    assert target.enabled is True
+    # SL stays enabled (kill chain handles mutual exclusion at fire time)
+    from monitor.crud import get_rule
+    refreshed_sl = await get_rule(db_session, sl.id)
+    assert refreshed_sl.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_stacking_different_position_sides_dont_conflict(db_session):
+    """A LONG exit and a SHORT exit on the same symbol coexist."""
+    from monitor.crud import create_rule
+    long_sl = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE Long SL @ 2400", role=None, transaction_type="SELL",
+    ))
+    short_sl = await create_rule(db_session, **_exit_rule_kwargs(
+        "RELIANCE Short SL @ 2600", role=None, transaction_type="BUY",
+        trigger_config={"condition": "gte", "price": 2600, "reference": "ltp"},
+    ))
+    assert long_sl.enabled is True
+    assert short_sl.enabled is True

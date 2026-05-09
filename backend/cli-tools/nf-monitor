@@ -434,10 +434,15 @@ def cmd_add_rule(args):
                 linked_order_id=args.linked_order,
                 max_fires=args.max_fires,
                 expires_at=expires_at,
+                force=getattr(args, 'force', False),
             )
             return rule
 
-    rule = run_async(_create())
+    from monitor.crud import ExitStackingError
+    try:
+        rule = run_async(_create())
+    except ExitStackingError as e:
+        print_error(str(e))
 
     if args.json:
         print_json({"created": _rule_to_dict(rule)})
@@ -546,6 +551,7 @@ def cmd_add_oco(args):
                 linked_trade_id=args.linked_trade,
                 max_fires=1,
                 expires_at=expires_at,
+                force=getattr(args, 'force', False),
             )
 
             # Step 2: Create the target rule (cancels SL rule on fire)
@@ -568,6 +574,7 @@ def cmd_add_oco(args):
                 linked_trade_id=args.linked_trade,
                 max_fires=1,
                 expires_at=expires_at,
+                force=getattr(args, 'force', False),
             )
 
             # Step 3: Update SL rule action to also cancel target rule
@@ -581,7 +588,11 @@ def cmd_add_oco(args):
 
             return sl_rule, target_rule
 
-    sl_rule, target_rule = run_async(_create_oco())
+    from monitor.crud import ExitStackingError
+    try:
+        sl_rule, target_rule = run_async(_create_oco())
+    except ExitStackingError as e:
+        print_error(str(e))
 
     sl_cond_str = "≤" if sl_condition == "lte" else "≥"
     tgt_cond_str = "≥" if target_condition == "gte" else "≤"
@@ -714,10 +725,15 @@ def cmd_add_trailing(args):
                 symbol=symbol,
                 max_fires=args.max_fires or 1,
                 expires_at=expires_at,
+                force=getattr(args, 'force', False),
             )
             return rule
 
-    rule = run_async(_create())
+    from monitor.crud import ExitStackingError
+    try:
+        rule = run_async(_create())
+    except ExitStackingError as e:
+        print_error(str(e))
 
     if args.json:
         print_json({
@@ -1217,6 +1233,8 @@ Option contract example:
     p_trail.add_argument("--name", help="Custom rule name (auto-generated if omitted)")
     p_trail.add_argument("--max-fires", type=int, default=1, help="Max fires (default: 1)")
     p_trail.add_argument("--expires", help="Expiry: 'today' or ISO datetime")
+    p_trail.add_argument("--force", action="store_true",
+                         help="Bypass exit-rule stacking guard (allow stacking with existing different-type exits like SL/target)")
     p_trail.add_argument("--json", action="store_true", help="Output as JSON")
 
     # ---- list ----

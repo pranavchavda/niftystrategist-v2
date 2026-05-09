@@ -1,6 +1,7 @@
 """CRUD operations for monitor rules and logs."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -9,6 +10,158 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitorRule as MonitorRuleDB, MonitorLog as MonitorLogDB, utc_now
 from monitor.models import MonitorRule as MonitorRuleSchema
+
+logger = logging.getLogger(__name__)
+
+
+class ExitStackingError(ValueError):
+    """Raised when a new exit-side rule would stack with an existing
+    exit rule of a different type on the same symbol+position-side.
+
+    Origin: 2026-05-08 FINCABLES — an OCO SL (price ≤ X) and a
+    standalone Trailing SL (long, 1.5%) both fired in the same tick,
+    double-sold, flipped LONG → SHORT. SAFETY-3 in the orchestrator
+    prompt is the interim guard; this exception is the server-side
+    enforcement.
+    """
+    def __init__(self, message: str, conflicts: list):
+        super().__init__(message)
+        self.conflicts = conflicts
+
+
+# Map role → exit type bucket. None = not an exit rule (entry/etc).
+_EXIT_TYPE_BUCKETS: dict[str, str] = {
+    "sl_long": "stop", "sl_short": "stop",
+    "target_long": "target", "target_short": "target",
+    "trailing_long": "trail", "trailing_short": "trail",
+    "squareoff": "squareoff",
+}
+
+
+def _classify_exit_type(rule_or_attrs) -> str | None:
+    """Classify a rule into stop/target/trail/squareoff/None.
+
+    Accepts either a MonitorRuleDB row or a dict of {role, name,
+    trigger_type, action_config}. Falls back to name + trigger_type
+    inference when role is unset (e.g. role-less rules created via
+    add-oco / add-trailing).
+    """
+    role = getattr(rule_or_attrs, "role", None) or rule_or_attrs.get("role") if isinstance(rule_or_attrs, dict) else getattr(rule_or_attrs, "role", None)
+    if role and role in _EXIT_TYPE_BUCKETS:
+        return _EXIT_TYPE_BUCKETS[role]
+    if isinstance(rule_or_attrs, dict):
+        name = (rule_or_attrs.get("name") or "").lower()
+        trigger_type = rule_or_attrs.get("trigger_type")
+    else:
+        name = (getattr(rule_or_attrs, "name", "") or "").lower()
+        trigger_type = getattr(rule_or_attrs, "trigger_type", None)
+    if trigger_type == "trailing_stop":
+        return "trail"
+    if trigger_type == "time":
+        return "squareoff"
+    if "stop-loss" in name or "stop loss" in name or " sl " in name or "oco stop" in name or name.endswith(" sl"):
+        return "stop"
+    if "target" in name:
+        return "target"
+    return None
+
+
+def _derive_position_side(rule_or_attrs) -> str | None:
+    """For an exit rule, return the side of the underlying position.
+
+    SELL exit ⇒ position is LONG. BUY exit ⇒ position is SHORT.
+    Used to scope conflict detection: a SELL trail on RELIANCE shouldn't
+    conflict with a BUY trail on RELIANCE (those exit different positions).
+    """
+    role = getattr(rule_or_attrs, "role", None) if not isinstance(rule_or_attrs, dict) else rule_or_attrs.get("role")
+    if role:
+        if "_long" in role:
+            return "LONG"
+        if "_short" in role:
+            return "SHORT"
+    if isinstance(rule_or_attrs, dict):
+        ac = rule_or_attrs.get("action_config") or {}
+    else:
+        ac = getattr(rule_or_attrs, "action_config", None) or {}
+    tx = ac.get("transaction_type")
+    if tx == "SELL":
+        return "LONG"
+    if tx == "BUY":
+        return "SHORT"
+    return None
+
+
+async def _check_exit_stacking(
+    session: AsyncSession,
+    user_id: int,
+    symbol: str | None,
+    instrument_token: str | None,
+    new_class: str,
+    new_side: str,
+    force: bool,
+    new_action_config: dict | None = None,
+) -> list[int]:
+    """Detect and resolve exit-rule stacking conflicts.
+
+    Same-type (e.g. new trail replacing existing trail): auto-disables
+    the old rules (returns their IDs so the caller can log/audit).
+    Cross-type (e.g. new trail when an OCO SL exists): raises
+    ExitStackingError unless ``force`` is set.
+
+    Rules listed in the new rule's ``also_cancel_rules`` are skipped —
+    they're explicitly OCO-linked, the kill chain handles mutual
+    exclusion, so they don't count as conflicting stack. This is what
+    makes legitimate OCO pairs (SL+target) coexist without tripping
+    the cross-type check.
+    """
+    if not symbol and not instrument_token:
+        return []
+    already_linked = set((new_action_config or {}).get("also_cancel_rules") or [])
+
+    stmt = select(MonitorRuleDB).where(
+        MonitorRuleDB.user_id == user_id,
+        MonitorRuleDB.enabled == True,  # noqa: E712
+        MonitorRuleDB.action_type == "place_order",
+    )
+    if symbol:
+        stmt = stmt.where(MonitorRuleDB.symbol == symbol)
+    elif instrument_token:
+        stmt = stmt.where(MonitorRuleDB.instrument_token == instrument_token)
+    result = await session.execute(stmt)
+    existing = list(result.scalars().all())
+
+    # Same position side AND not OCO-linked from the new rule.
+    same_side = [
+        r for r in existing
+        if _derive_position_side(r) == new_side and r.id not in already_linked
+    ]
+    same_class = [r for r in same_side if _classify_exit_type(r) == new_class]
+    diff_class = [
+        r for r in same_side
+        if _classify_exit_type(r) is not None and _classify_exit_type(r) != new_class
+    ]
+
+    if diff_class and not force:
+        details = ", ".join(
+            f"#{r.id} ({_classify_exit_type(r)}: {r.name!r})" for r in diff_class
+        )
+        raise ExitStackingError(
+            f"Cannot stack {new_class} exit on "
+            f"{symbol or instrument_token} {new_side}: existing exit rules "
+            f"of different type would also fire on the same position: {details}. "
+            "Disable them first or pass force=True / --force.",
+            conflicts=[r.id for r in diff_class],
+        )
+
+    # Auto-cancel same-type (replacement) — covers the legitimate
+    # "tighten the trail" workflow: agent calls add-trailing again with
+    # a tighter percent, and the old trail rule is silently superseded.
+    disabled_ids: list[int] = []
+    for r in same_class:
+        r.enabled = False
+        r.updated_at = utc_now()
+        disabled_ids.append(r.id)
+    return disabled_ids
 
 
 async def create_rule(
@@ -29,8 +182,39 @@ async def create_rule(
     strategy_name: str | None = None,
     enabled: bool = True,
     role: str | None = None,
+    force: bool = False,
 ) -> MonitorRuleDB:
-    """Create a new monitor rule."""
+    """Create a new monitor rule.
+
+    Stacking guard: when creating a standalone exit-side rule (no
+    ``strategy_name``), checks for existing enabled exit rules on the
+    same symbol+side. Same exit-type (trail vs trail) auto-cancels the
+    old; different exit-type (trail vs SL) raises ExitStackingError
+    unless ``force=True``. Strategy-template rules bypass the check
+    entirely — a single ORB deployment is allowed to set sl + target +
+    trail + squareoff together by design.
+    """
+    if action_type == "place_order" and not strategy_name and enabled:
+        attrs = {
+            "role": role, "name": name,
+            "trigger_type": trigger_type, "action_config": action_config,
+        }
+        new_class = _classify_exit_type(attrs)
+        new_side = _derive_position_side(attrs)
+        if new_class and new_side:
+            disabled = await _check_exit_stacking(
+                session, user_id, symbol, instrument_token,
+                new_class, new_side, force,
+                new_action_config=action_config,
+            )
+            if disabled:
+                logger.warning(
+                    "Auto-disabled %d existing %s rule(s) %s on %s %s "
+                    "(replaced by new rule %r)",
+                    len(disabled), new_class, disabled,
+                    symbol or instrument_token, new_side, name,
+                )
+
     rule = MonitorRuleDB(
         user_id=user_id,
         name=name,

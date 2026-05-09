@@ -195,22 +195,31 @@ async def api_create_rule(
             label=body.name,
         )
 
+    from monitor.crud import ExitStackingError
     async with get_db_context() as session:
-        rule = await create_rule(
-            session=session,
-            user_id=user.id,
-            name=body.name,
-            trigger_type=body.trigger_type,
-            trigger_config=body.trigger_config,
-            action_type=body.action_type,
-            action_config=body.action_config,
-            symbol=body.symbol,
-            instrument_token=body.instrument_token,
-            linked_trade_id=body.linked_trade_id,
-            linked_order_id=body.linked_order_id,
-            max_fires=body.max_fires,
-            expires_at=_strip_tz(body.expires_at),
-        )
+        try:
+            rule = await create_rule(
+                session=session,
+                user_id=user.id,
+                name=body.name,
+                trigger_type=body.trigger_type,
+                trigger_config=body.trigger_config,
+                action_type=body.action_type,
+                action_config=body.action_config,
+                symbol=body.symbol,
+                instrument_token=body.instrument_token,
+                linked_trade_id=body.linked_trade_id,
+                linked_order_id=body.linked_order_id,
+                max_fires=body.max_fires,
+                expires_at=_strip_tz(body.expires_at),
+                force=body.force,
+            )
+        except ExitStackingError as e:
+            raise HTTPException(status_code=409, detail={
+                "error": "exit_rule_stacking",
+                "message": str(e),
+                "conflicts": e.conflicts,
+            })
         return _serialize_rule(rule)
 
 
@@ -247,59 +256,69 @@ async def api_create_oco(
         force=body.force, label=f"Target @ {body.target}",
     )
 
+    from monitor.crud import ExitStackingError
     async with get_db_context() as session:
-        # Step 1: Create the SL rule
-        sl_rule = await create_rule(
-            session=session,
-            user_id=user.id,
-            name=f"{body.symbol} OCO Stop-Loss @ {body.sl}",
-            trigger_type="price",
-            trigger_config={
-                "condition": sl_condition,
-                "price": body.sl,
-                "reference": "ltp",
-            },
-            action_type="place_order",
-            action_config={
-                "symbol": body.symbol,
-                "transaction_type": exit_side,
-                "quantity": body.qty,
-                "order_type": "MARKET",
-                "product": body.product,
-            },
-            instrument_token=instrument_token,
-            symbol=body.symbol,
-            linked_trade_id=body.linked_trade_id,
-            max_fires=1,
-            expires_at=_strip_tz(body.expires_at),
-        )
+        try:
+            # Step 1: Create the SL rule
+            sl_rule = await create_rule(
+                session=session,
+                user_id=user.id,
+                name=f"{body.symbol} OCO Stop-Loss @ {body.sl}",
+                trigger_type="price",
+                trigger_config={
+                    "condition": sl_condition,
+                    "price": body.sl,
+                    "reference": "ltp",
+                },
+                action_type="place_order",
+                action_config={
+                    "symbol": body.symbol,
+                    "transaction_type": exit_side,
+                    "quantity": body.qty,
+                    "order_type": "MARKET",
+                    "product": body.product,
+                },
+                instrument_token=instrument_token,
+                symbol=body.symbol,
+                linked_trade_id=body.linked_trade_id,
+                max_fires=1,
+                expires_at=_strip_tz(body.expires_at),
+                force=body.force,
+            )
 
-        # Step 2: Create the target rule (cancels SL rule on fire)
-        target_rule = await create_rule(
-            session=session,
-            user_id=user.id,
-            name=f"{body.symbol} OCO Target @ {body.target}",
-            trigger_type="price",
-            trigger_config={
-                "condition": target_condition,
-                "price": body.target,
-                "reference": "ltp",
-            },
-            action_type="place_order",
-            action_config={
-                "symbol": body.symbol,
-                "transaction_type": exit_side,
-                "quantity": body.qty,
-                "order_type": "MARKET",
-                "product": body.product,
-                "also_cancel_rules": [sl_rule.id],
-            },
-            instrument_token=instrument_token,
-            symbol=body.symbol,
-            linked_trade_id=body.linked_trade_id,
-            max_fires=1,
-            expires_at=_strip_tz(body.expires_at),
-        )
+            # Step 2: Create the target rule (cancels SL rule on fire)
+            target_rule = await create_rule(
+                session=session,
+                user_id=user.id,
+                name=f"{body.symbol} OCO Target @ {body.target}",
+                trigger_type="price",
+                trigger_config={
+                    "condition": target_condition,
+                    "price": body.target,
+                    "reference": "ltp",
+                },
+                action_type="place_order",
+                action_config={
+                    "symbol": body.symbol,
+                    "transaction_type": exit_side,
+                    "quantity": body.qty,
+                    "order_type": "MARKET",
+                    "product": body.product,
+                    "also_cancel_rules": [sl_rule.id],
+                },
+                instrument_token=instrument_token,
+                symbol=body.symbol,
+                linked_trade_id=body.linked_trade_id,
+                max_fires=1,
+                expires_at=_strip_tz(body.expires_at),
+                force=body.force,
+            )
+        except ExitStackingError as e:
+            raise HTTPException(status_code=409, detail={
+                "error": "exit_rule_stacking",
+                "message": str(e),
+                "conflicts": e.conflicts,
+            })
 
         # Step 3: Update SL rule action to also cancel target rule
         sl_action = sl_rule.action_config.copy()
