@@ -11,6 +11,7 @@ import { Dialog, DialogTitle, DialogBody, DialogActions } from '../components/ca
 import { Badge } from '../components/catalyst/badge';
 import { Input } from '../components/catalyst/input';
 import { SnapshotChartButton, type DecisionSnapshot } from '../components/scalp/SnapshotChart';
+import { EquitySymbolPicker } from '../components/EquitySymbolPicker';
 
 // Indicator catalogs and per-indicator default param schemas. Used to render
 // dynamic param inputs as the user picks a primary or confirm indicator.
@@ -158,76 +159,8 @@ function IndicatorParams({
   );
 }
 
-// Equity symbol autocomplete used by equity_intraday / equity_swing modes.
-// Reuses /api/monitor/symbols (same backend search the rule builder uses).
-function EquitySymbolPicker({
-  authToken, value, onSelect,
-}: {
-  authToken: string;
-  value: string;
-  onSelect: (symbol: string) => void;
-}) {
-  const [query, setQuery] = useState(value);
-  const [results, setResults] = useState<{ symbol: string; name: string }[]>([]);
-  const [open, setOpen] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => { setQuery(value); }, [value]);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  const search = useCallback(async (term: string) => {
-    if (term.length < 1) { setResults([]); return; }
-    try {
-      const res = await fetch(`/api/monitor/symbols?q=${encodeURIComponent(term)}&limit=8`, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setResults(data.results || []);
-        setOpen(true);
-      }
-    } catch { /* ignore */ }
-  }, [authToken]);
-
-  return (
-    <div ref={wrapRef} className="relative">
-      <Input
-        value={query}
-        placeholder="Search equity symbol (e.g. RELIANCE)"
-        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-          const v = e.target.value;
-          setQuery(v);
-          if (debounceRef.current) clearTimeout(debounceRef.current);
-          debounceRef.current = setTimeout(() => search(v), 250);
-        }}
-        onFocus={() => { if (results.length > 0) setOpen(true); }}
-      />
-      {open && results.length > 0 && (
-        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-lg">
-          {results.map(r => (
-            <button
-              key={r.symbol}
-              type="button"
-              className="w-full text-left px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
-              onClick={() => { setQuery(r.symbol); setOpen(false); onSelect(r.symbol); }}
-            >
-              <div className="font-medium text-zinc-900 dark:text-zinc-100">{r.symbol}</div>
-              <div className="text-xs text-zinc-500">{r.name}</div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+// EquitySymbolPicker now lives in app/components/EquitySymbolPicker.tsx so
+// /backtest can share the exact same UX. Imported at the top of this file.
 
 const SESSION_MODES: { value: string; label: string; description: string }[] = [
   { value: 'options_scalp', label: 'Options Scalp', description: 'ATM CE/PE on index, intraday' },

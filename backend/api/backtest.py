@@ -18,6 +18,11 @@ from backtesting.scalp_equity import (
     run_scalp_equity_backtest,
     ScalpBacktestResult,
 )
+from backtesting.scalp_options import (
+    plan_atm_legs,
+    run_scalp_options_backtest,
+    ScalpOptionsBacktestResult,
+)
 from monitor.scalp_models import ScalpSessionConfig, SessionMode
 from services import backtest_jobs
 
@@ -46,13 +51,17 @@ class FnOBacktestRequest(BaseModel):
 
 
 class ScalpBacktestRequest(BaseModel):
-    """Scalp-style equity backtest request.
+    """Scalp-style backtest request.
 
     Mirrors ScalpSessionConfig so a live session can be pasted in, a
     backtest run, and a "save as session" performed with zero field
-    remapping.
+    remapping. Supports all three modes (equity_intraday, equity_swing,
+    options_scalp). Options mode uses ``underlying``+``expiry``+``lots``
+    instead of ``symbol``+``quantity``.
     """
-    symbol: str
+    # Equity-mode fields. ``symbol`` is also accepted as the underlying
+    # name for options_scalp when ``underlying`` is omitted.
+    symbol: str | None = None
     days: int = 30
     interval: str = "5minute"
     session_mode: str = "equity_intraday"
@@ -71,8 +80,14 @@ class ScalpBacktestRequest(BaseModel):
     squareoff_time: str = "15:15"
     max_trades: int = 20
     cooldown_seconds: int = 60
-    quantity: int
+    # Equity sizing (required for equity_intraday + equity_swing).
+    quantity: int | None = None
     slippage_bps: float = 0.0
+
+    # Options-mode fields. Required when session_mode=options_scalp.
+    underlying: str | None = None
+    expiry: str | None = None
+    lots: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -543,27 +558,199 @@ def _scalp_result_to_dict(r: ScalpBacktestResult) -> dict:
     }
 
 
+def _scalp_options_result_to_dict(r: ScalpOptionsBacktestResult) -> dict:
+    """Serialize an options-scalp backtest result for the frontend.
+
+    Equity-curve uses notional = first leg's entry premium × lots × lot_size,
+    falling back to ₹100k when there are no trades to anchor on. Same shape
+    as the equity scalp result so the UI can share rendering code.
+    """
+    lots = r.config.get("lots", 1) or 1
+    if r.trades:
+        first = r.trades[0]
+        initial = float(first.entry_price) * float(first.quantity) or 100_000
+    else:
+        initial = 100_000.0
+    curve = [round(initial, 2)]
+    for t in r.trades:
+        curve.append(round(curve[-1] + t.pnl, 2))
+
+    return {
+        "symbol": r.underlying,
+        "underlying": r.underlying,
+        "expiry": r.expiry,
+        "session_mode": "options_scalp",
+        "interval": r.interval,
+        "days": r.days,
+        "candle_count": r.candle_count,
+        "session_days": r.session_days,
+        "config": r.config,
+        "trades": [_scalp_trade_to_dict(t) for t in r.trades],
+        "metrics": r.metrics,
+        "metrics_net": r.metrics_net,
+        "charges_total": r.charges_total,
+        "slippage_total": r.slippage_total,
+        "equity_curve": curve,
+        "initial_capital": initial,
+        "diagnostics": {
+            "intra_bar_ambiguity": r.intra_bar_ambiguity,
+            "primary_flips": r.primary_flips,
+            "confirm_blocks": r.confirm_blocks,
+            "cooldown_blocks": r.cooldown_blocks,
+            "max_trades_blocks": r.max_trades_blocks,
+            "squareoff_exits": r.squareoff_exits,
+            "missing_leg_blocks": r.missing_leg_blocks,
+            "no_strike_blocks": r.no_strike_blocks,
+        },
+    }
+
+
+async def _run_options_scalp_sync(
+    body: ScalpBacktestRequest, user: User
+) -> dict:
+    """Sync /scalp endpoint handler for ``session_mode=options_scalp``.
+
+    Two-pass: plan ATM legs from underlying signal, fetch each leg's candles
+    in parallel, then bar-replay. Mirrors ``services/backtest_jobs._run_scalp_options``
+    minus job-progress wiring; kept around as a non-job entry point for parity
+    with the equity ``/scalp`` endpoint while the frontend migrates fully to
+    the jobs API.
+    """
+    underlying = body.underlying or body.symbol
+    if not underlying:
+        raise HTTPException(
+            status_code=400,
+            detail="underlying (or symbol) is required for options_scalp",
+        )
+    if not body.expiry:
+        raise HTTPException(
+            status_code=400, detail="expiry is required for options_scalp",
+        )
+    lots = body.lots or 1
+    if lots <= 0:
+        raise HTTPException(status_code=400, detail="lots must be > 0")
+    if body.interval not in _INTERVAL_TO_TIMEFRAME:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported interval: {body.interval}",
+        )
+
+    from api.cockpit import get_market_data_client
+    try:
+        client = await get_market_data_client(user)
+        ohlcv = await client.get_historical_data(
+            underlying, interval=body.interval, days=body.days,
+        )
+    except Exception as e:
+        logger.error(f"options scalp backtest: fetch underlying failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch underlying: {e}")
+
+    if not ohlcv:
+        raise HTTPException(status_code=404, detail=f"No historical data for {underlying}")
+
+    underlying_candles = [
+        {"timestamp": c.timestamp, "open": c.open, "high": c.high,
+         "low": c.low, "close": c.close, "volume": c.volume}
+        for c in ohlcv
+    ]
+
+    tf = body.indicator_timeframe or _INTERVAL_TO_TIMEFRAME[body.interval]
+    cfg = ScalpSessionConfig(
+        name=f"backtest-{underlying}",
+        user_id=user.id,
+        session_mode="options_scalp",
+        underlying=underlying,
+        expiry=body.expiry,
+        lots=lots,
+        indicator_timeframe=tf,
+        primary_indicator=body.primary_indicator,
+        primary_params=body.primary_params,
+        confirm_indicator=body.confirm_indicator,
+        confirm_params=body.confirm_params,
+        sl_points=body.sl_points,
+        target_points=body.target_points,
+        trail_points=body.trail_points,
+        trail_percent=body.trail_percent,
+        trail_arm_points=body.trail_arm_points,
+        squareoff_time=body.squareoff_time,
+        max_trades=body.max_trades,
+        cooldown_seconds=body.cooldown_seconds,
+    )
+
+    try:
+        plans = await asyncio.to_thread(
+            plan_atm_legs, underlying_candles, cfg, body.interval,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    leg_candles_by_key: dict[str, list[dict]] = {}
+    if plans:
+        unique_keys = {p.instrument_key for p in plans}
+
+        async def _fetch_leg(ik: str) -> tuple[str, list[dict]]:
+            try:
+                leg_ohlcv = await client.get_historical_data(
+                    symbol=underlying, interval=body.interval, days=body.days,
+                    instrument_key=ik,
+                )
+                return ik, [
+                    {"timestamp": c.timestamp, "open": c.open, "high": c.high,
+                     "low": c.low, "close": c.close, "volume": c.volume}
+                    for c in leg_ohlcv
+                ]
+            except Exception as e:
+                logger.warning("options scalp: fetch failed for %s: %s", ik, e)
+                return ik, []
+
+        fetched = await asyncio.gather(*[_fetch_leg(ik) for ik in unique_keys])
+        leg_candles_by_key = {ik: data for ik, data in fetched}
+
+    try:
+        result = await asyncio.to_thread(
+            run_scalp_options_backtest,
+            underlying_candles, leg_candles_by_key, cfg,
+            interval=body.interval,
+            slippage_bps=body.slippage_bps,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return _scalp_options_result_to_dict(result)
+
+
 @router.post("/scalp")
 async def api_run_scalp_backtest(
     body: ScalpBacktestRequest,
     user: User = Depends(get_current_user),
 ):
-    """Run a scalp-style equity backtest using the same state machine as the
-    live scalper. Accepts the same config shape as a ScalpSession so results
-    can be converted directly into a live session."""
+    """Run a scalp-style backtest using the same state machine as the live
+    scalper. Accepts the same config shape as a ScalpSession so results can
+    be converted directly into a live session.
+
+    Dispatches by ``session_mode``:
+      * ``equity_intraday`` / ``equity_swing`` → underlying-only bar replay.
+      * ``options_scalp`` → two-pass: plan ATM legs, fetch each leg's
+        candles, replay underlying signal + premium leg in lockstep.
+    """
+    if body.session_mode == SessionMode.OPTIONS_SCALP.value:
+        return await _run_options_scalp_sync(body, user)
+
     if body.session_mode not in (
         SessionMode.EQUITY_INTRADAY.value, SessionMode.EQUITY_SWING.value,
     ):
         raise HTTPException(
             status_code=400,
-            detail="session_mode must be equity_intraday or equity_swing",
+            detail="session_mode must be equity_intraday, equity_swing, or options_scalp",
         )
     if body.interval not in _INTERVAL_TO_TIMEFRAME:
         raise HTTPException(
             status_code=400,
             detail=f"unsupported interval: {body.interval}",
         )
-    if body.quantity <= 0:
+    if not body.symbol:
+        raise HTTPException(status_code=400, detail="symbol is required for equity scalp")
+    if body.quantity is None or body.quantity <= 0:
         raise HTTPException(status_code=400, detail="quantity must be > 0")
 
     # Historical data is public; use analytics-token-preferring helper.
@@ -724,8 +911,15 @@ async def api_list_backtest_jobs(
 def _job_config_summary(kind: str, config: dict) -> str:
     """One-line label for the run-history list, kind-aware."""
     if kind == "scalp":
+        if config.get("session_mode") == "options_scalp":
+            label = (
+                f"{config.get('underlying', config.get('symbol', '?'))} "
+                f"{config.get('expiry', '?')}"
+            )
+        else:
+            label = config.get("symbol", "?")
         return (
-            f"{config.get('symbol', '?')} · {config.get('interval', '?')} · "
+            f"{label} · {config.get('interval', '?')} · "
             f"{config.get('days', '?')}d · {config.get('primary_indicator', '?')}"
         )
     if kind == "equity":
@@ -772,23 +966,36 @@ async def api_get_backtest_job(
 
 
 @router.delete("/jobs/{job_id}")
-async def api_cancel_backtest_job(
+async def api_delete_backtest_job(
     job_id: int,
     user: User = Depends(get_current_user),
 ):
-    """Soft cancel — sets cancel_requested. The worker exits cleanly on the
-    next progress checkpoint (~200 bars). Already-terminal jobs return 409."""
-    cancelled = await backtest_jobs.cancel_job(job_id, user.id)
-    if not cancelled:
-        # Distinguish missing vs already-terminal so the frontend can decide.
-        job = await backtest_jobs.get_job(job_id, user_id=user.id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="Job not found")
-        raise HTTPException(
-            status_code=409,
-            detail=f"Job already {job.status} — cannot cancel",
-        )
-    return {"job_id": job_id, "cancel_requested": True}
+    """Remove a job from the user's history.
+
+    * Running / queued → soft cancel (sets cancel_requested; worker exits
+      on the next progress checkpoint).
+    * Completed / failed / cancelled → hard-delete the row so it stops
+      cluttering the Recent Runs list.
+
+    The single endpoint handles both because the frontend's "X" button on
+    a history row should mean "remove this," regardless of whether the
+    run is still in flight.
+    """
+    action = await backtest_jobs.delete_job(job_id, user.id)
+    if action is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job_id": job_id, "action": action}
+
+
+@router.delete("/jobs")
+async def api_clear_backtest_history(
+    user: User = Depends(get_current_user),
+):
+    """Bulk-clear every terminal job (completed, failed, cancelled) for the
+    user. Active rows are preserved so clearing history can't abandon a
+    running worker. Returns the count removed."""
+    removed = await backtest_jobs.delete_terminal_jobs(user.id)
+    return {"removed": removed}
 
 
 @router.get("/jobs/{job_id}/stream")

@@ -109,6 +109,56 @@ async def cancel_job(job_id: int, user_id: int) -> bool:
         return True
 
 
+async def delete_job(job_id: int, user_id: int) -> str | None:
+    """Remove a backtest job from history.
+
+    Returns one of:
+    * ``"cancelled"`` — job was running/queued, cancel requested (worker
+      will exit on next checkpoint; row stays so the user sees the
+      cancellation reflected). Identical to ``cancel_job``.
+    * ``"deleted"`` — job was terminal (completed/failed/cancelled) and was
+      hard-deleted from the table.
+    * ``None`` — no matching job for this user.
+
+    The split keeps the cancel path safe (don't yank a row out from under a
+    running worker) while letting users prune stale runs from their list.
+    """
+    async with get_db_context() as session:
+        result = await session.execute(
+            select(BacktestJob).where(
+                BacktestJob.id == job_id,
+                BacktestJob.user_id == user_id,
+            )
+        )
+        job = result.scalar_one_or_none()
+        if job is None:
+            return None
+        if job.status in ("completed", "failed", "cancelled"):
+            await session.delete(job)
+            await session.commit()
+            return "deleted"
+        # Active run — fall back to soft cancel.
+        job.cancel_requested = True
+        await session.commit()
+        return "cancelled"
+
+
+async def delete_terminal_jobs(user_id: int) -> int:
+    """Hard-delete every terminal job for a user. Active rows (queued,
+    running) are preserved so a clear-history click can't accidentally
+    abandon a worker mid-replay. Returns the number of rows removed.
+    """
+    from sqlalchemy import delete as sa_delete
+    async with get_db_context() as session:
+        stmt = sa_delete(BacktestJob).where(
+            BacktestJob.user_id == user_id,
+            BacktestJob.status.in_(("completed", "failed", "cancelled")),
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount or 0
+
+
 async def _update_progress(
     job_id: int,
     *,
@@ -255,6 +305,16 @@ async def _dispatch(
 
 
 async def _run_scalp(job_id: int, user_id: int, config: dict) -> dict | None:
+    """Dispatch a scalp backtest by mode.
+
+    options_scalp goes through ``_run_scalp_options`` (two-pass: plan → fetch
+    legs in parallel → bar-replay). Equity modes stay on the single-pass
+    underlying-only replay.
+    """
+    session_mode = config.get("session_mode", "equity_intraday")
+    if session_mode == "options_scalp":
+        return await _run_scalp_options(job_id, user_id, config)
+
     from api.upstox_oauth import get_user_upstox_token
     from services.upstox_client import UpstoxClient
     from backtesting.scalp_equity import run_scalp_equity_backtest
@@ -264,7 +324,6 @@ async def _run_scalp(job_id: int, user_id: int, config: dict) -> dict | None:
     symbol = config["symbol"]
     interval = config.get("interval", "5minute")
     days = int(config.get("days", 30))
-    session_mode = config.get("session_mode", "equity_intraday")
 
     await _update_progress(job_id, message=f"Fetching {days}d of {interval} candles for {symbol}")
 
@@ -321,6 +380,147 @@ async def _run_scalp(job_id: int, user_id: int, config: dict) -> dict | None:
         await _mark_cancelled(job_id)
         return None
     return _scalp_result_to_dict(result)
+
+
+async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | None:
+    """Options scalp backtest — plan ATM legs from underlying signal, fetch
+    each leg in parallel, then bar-replay underlying + premium legs.
+
+    Mirrors live ``ScalpSessionManager`` options_scalp flow: BUY ATM CE on
+    bullish primary flip, BUY ATM PE on bearish, manage SL/target/trail in
+    premium space, squareoff at cutoff. Underlying drives the signal even
+    while a leg is held — opposite-flip exits use the leg's bar close.
+    """
+    from api.upstox_oauth import get_user_upstox_token
+    from services.upstox_client import UpstoxClient
+    from backtesting.scalp_options import (
+        plan_atm_legs, run_scalp_options_backtest,
+    )
+    from monitor.scalp_models import ScalpSessionConfig
+    from api.backtest import (
+        _scalp_options_result_to_dict, _INTERVAL_TO_TIMEFRAME,
+    )
+
+    underlying = config.get("underlying") or config.get("symbol")
+    if not underlying:
+        raise ValueError("'underlying' is required for options_scalp backtest")
+    expiry = config.get("expiry")
+    if not expiry:
+        raise ValueError("'expiry' is required for options_scalp backtest")
+
+    interval = config.get("interval", "5minute")
+    days = int(config.get("days", 5))
+    lots = int(config.get("lots", 1))
+
+    await _update_progress(
+        job_id, message=f"Fetching {days}d of {interval} candles for {underlying}",
+    )
+
+    token = await get_user_upstox_token(user_id)
+    if not token:
+        raise ValueError("Upstox token not available — please authenticate via Settings")
+
+    client = UpstoxClient(access_token=token, user_id=user_id)
+    ohlcv = await client.get_historical_data(underlying, interval=interval, days=days)
+    if not ohlcv:
+        raise ValueError(f"No historical data for {underlying}")
+
+    underlying_candles = [
+        {"timestamp": c.timestamp, "open": c.open, "high": c.high,
+         "low": c.low, "close": c.close, "volume": c.volume}
+        for c in ohlcv
+    ]
+
+    tf = config.get("indicator_timeframe") or _INTERVAL_TO_TIMEFRAME[interval]
+    cfg = ScalpSessionConfig(
+        name=f"backtest-{underlying}",
+        user_id=user_id,
+        session_mode="options_scalp",
+        underlying=underlying,
+        expiry=expiry,
+        lots=lots,
+        indicator_timeframe=tf,
+        primary_indicator=config.get("primary_indicator", "utbot"),
+        primary_params=config.get("primary_params"),
+        confirm_indicator=config.get("confirm_indicator"),
+        confirm_params=config.get("confirm_params"),
+        sl_points=config.get("sl_points"),
+        target_points=config.get("target_points"),
+        trail_points=config.get("trail_points"),
+        trail_percent=config.get("trail_percent"),
+        trail_arm_points=config.get("trail_arm_points"),
+        squareoff_time=config.get("squareoff_time", "15:15"),
+        max_trades=int(config.get("max_trades", 20)),
+        cooldown_seconds=int(config.get("cooldown_seconds", 60)),
+    )
+
+    # Pass 1 — plan which option legs the replay will need.
+    await _update_progress(job_id, message="Planning ATM legs from underlying signal")
+    plans = await asyncio.to_thread(
+        plan_atm_legs, underlying_candles, cfg, interval,
+    )
+    if not plans:
+        # No flips that pass confirm gate — return empty result so the user
+        # sees diagnostics rather than an error.
+        empty = await asyncio.to_thread(
+            run_scalp_options_backtest,
+            underlying_candles, {}, cfg,
+            interval=interval,
+            slippage_bps=float(config.get("slippage_bps", 0.0)),
+        )
+        return _scalp_options_result_to_dict(empty)
+
+    unique_keys: dict[str, str] = {}  # instrument_key → tradingsymbol
+    for p in plans:
+        unique_keys.setdefault(p.instrument_key, p.tradingsymbol)
+
+    await _update_progress(
+        job_id, total=len(unique_keys), done=0,
+        message=f"Fetching {len(unique_keys)} option legs in parallel",
+    )
+
+    async def _fetch_leg(ik: str) -> tuple[str, list[dict]]:
+        try:
+            leg_ohlcv = await client.get_historical_data(
+                symbol=underlying, interval=interval, days=days,
+                instrument_key=ik,
+            )
+            return ik, [
+                {"timestamp": c.timestamp, "open": c.open, "high": c.high,
+                 "low": c.low, "close": c.close, "volume": c.volume}
+                for c in leg_ohlcv
+            ]
+        except Exception as e:
+            logger.warning("scalp options: fetch failed for %s: %s", ik, e)
+            return ik, []
+
+    fetched = await asyncio.gather(*[_fetch_leg(ik) for ik in unique_keys])
+    leg_candles_by_key = {ik: data for ik, data in fetched}
+
+    if await _check_cancel(job_id):
+        await _mark_cancelled(job_id)
+        return None
+
+    await _update_progress(
+        job_id, total=len(underlying_candles), done=0,
+        message=f"Replaying {len(underlying_candles)} bars across {len(unique_keys)} legs",
+    )
+
+    progress, cancel = _make_callbacks(job_id)
+
+    def _go():
+        return run_scalp_options_backtest(
+            underlying_candles, leg_candles_by_key, cfg,
+            interval=interval,
+            slippage_bps=float(config.get("slippage_bps", 0.0)),
+            progress_cb=progress, cancel_check=cancel,
+        )
+
+    result = await asyncio.to_thread(_go)
+    if await _check_cancel(job_id):
+        await _mark_cancelled(job_id)
+        return None
+    return _scalp_options_result_to_dict(result)
 
 
 async def _run_equity(job_id: int, user_id: int, config: dict) -> dict | None:

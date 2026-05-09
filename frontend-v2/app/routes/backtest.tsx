@@ -4,11 +4,12 @@ import { requirePermission } from '../utils/route-permissions';
 import {
   FlaskConical, Play, Loader2, TrendingUp, TrendingDown,
   BarChart3, Clock, Target, AlertTriangle, Trophy,
-  ArrowUpRight, ArrowDownRight, Minus, Info,
+  ArrowUpRight, ArrowDownRight, Minus, Info, X, Trash2,
 } from 'lucide-react';
 import { Button } from '../components/catalyst/button';
 import { Badge } from '../components/catalyst/badge';
 import { Input } from '../components/catalyst/input';
+import { EquitySymbolPicker } from '../components/EquitySymbolPicker';
 
 interface AuthContext {
   authToken: string;
@@ -463,7 +464,7 @@ export default function BacktestPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Scalp-mode state
-  const [scalpSessionMode, setScalpSessionMode] = useState<'equity_intraday' | 'equity_swing'>('equity_intraday');
+  const [scalpSessionMode, setScalpSessionMode] = useState<'equity_intraday' | 'equity_swing' | 'options_scalp'>('equity_intraday');
   const [scalpPrimary, setScalpPrimary] = useState('utbot');
   const [scalpPrimaryParams, setScalpPrimaryParams] = useState(SCALP_PRIMARY_INDICATORS[0].defaultParams);
   const [scalpConfirm, setScalpConfirm] = useState('');
@@ -477,6 +478,12 @@ export default function BacktestPage() {
   const [scalpMaxTrades, setScalpMaxTrades] = useState<string>('20');
   const [scalpCooldown, setScalpCooldown] = useState<string>('60');
   const [scalpSlippageBps, setScalpSlippageBps] = useState<string>('0');
+  // Options scalp specific state. Mirrors /scalp-sessions field layout so a
+  // backtested config can be saved as a live session without remapping.
+  const [scalpUnderlying, setScalpUnderlying] = useState<string>('NIFTY');
+  const [scalpExpiry, setScalpExpiry] = useState<string>('');
+  const [scalpLots, setScalpLots] = useState<string>('1');
+  const [scalpExpiries, setScalpExpiries] = useState<string[]>([]);
 
   // Results + job state
   const [result, setResult] = useState<BacktestResult | null>(null);
@@ -519,6 +526,27 @@ export default function BacktestPage() {
       }
     })();
   }, [authToken]);
+
+  // Fetch option expiries when underlying changes (options-scalp mode only).
+  // Mirrors /scalp-sessions: same endpoint, default to first expiry on load.
+  useEffect(() => {
+    if (scalpSessionMode !== 'options_scalp' || !scalpUnderlying) return;
+    fetch(`/api/strategies/expiries?underlying=${scalpUnderlying}`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then(r => r.ok ? r.json() : { expiries: [] })
+      .then(d => {
+        const list = d.expiries || [];
+        setScalpExpiries(list);
+        if (list.length && (!scalpExpiry || !list.includes(scalpExpiry))) {
+          setScalpExpiry(list[0]);
+        }
+      })
+      .catch(() => setScalpExpiries([]));
+    // scalpExpiry intentionally excluded — we only want to refetch on
+    // underlying or auth change, not when the user picks a different expiry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scalpUnderlying, scalpSessionMode, authToken]);
 
   // Update params when template changes — seed required params with defaults too
   useEffect(() => {
@@ -575,6 +603,52 @@ export default function BacktestPage() {
   useEffect(() => {
     refreshHistory();
   }, [refreshHistory]);
+
+  // Remove a single history row. Backend semantics: cancels active jobs,
+  // hard-deletes terminal ones — same DELETE endpoint either way. After
+  // the call we refresh and, if the user was viewing that run's result,
+  // clear the results panel so they aren't looking at a deleted run.
+  const deleteHistoryRow = useCallback(async (id: number) => {
+    try {
+      const res = await fetch(`/api/backtest/jobs/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!res.ok) return;
+      if (jobId === id) {
+        setResult(null);
+        setJobId(null);
+        setJobStatus(null);
+      }
+      await refreshHistory();
+    } catch {
+      // Non-critical — user can retry.
+    }
+  }, [authToken, jobId, refreshHistory]);
+
+  // Clear all terminal history rows in one call. Confirms via window.confirm
+  // because it can't be undone — the rows are gone after this. Active jobs
+  // are preserved server-side, so a clear during a running replay won't
+  // wipe the in-flight row.
+  const clearAllHistory = useCallback(async () => {
+    if (!window.confirm('Clear all completed backtest runs from history? Active runs are kept.')) return;
+    try {
+      const res = await fetch('/api/backtest/jobs', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!res.ok) return;
+      // If the currently-viewed result was a terminal job, clear it too.
+      if (result && jobStatus !== 'running' && jobStatus !== 'queued') {
+        setResult(null);
+        setJobId(null);
+        setJobStatus(null);
+      }
+      await refreshHistory();
+    } catch {
+      // Non-critical.
+    }
+  }, [authToken, refreshHistory, result, jobStatus]);
 
   const startJob = useCallback(async (kind: string, name: string, config: any) => {
     closeStream();
@@ -764,8 +838,8 @@ export default function BacktestPage() {
     const toNum = (s: string): number | null =>
       s.trim() === '' ? null : Number(s);
 
+    const isOptions = scalpSessionMode === 'options_scalp';
     const config: Record<string, any> = {
-      symbol,
       days,
       interval,
       session_mode: scalpSessionMode,
@@ -780,11 +854,36 @@ export default function BacktestPage() {
       squareoff_time: scalpSquareoff,
       max_trades: parseInt(scalpMaxTrades) || 20,
       cooldown_seconds: parseInt(scalpCooldown) || 0,
-      quantity: parseInt(scalpQuantity) || 0,
       slippage_bps: parseFloat(scalpSlippageBps) || 0,
     };
 
-    const name = `scalp · ${symbol} · ${interval} · ${days}d · ${scalpPrimary}`;
+    if (isOptions) {
+      // Options-scalp uses underlying/expiry/lots; the engine resolves ATM
+      // dynamically at each flip and fetches the matching CE/PE leg.
+      if (!scalpUnderlying || !scalpExpiry) {
+        setError('Underlying and expiry are required for options scalp');
+        return;
+      }
+      config.underlying = scalpUnderlying;
+      // Backend also reads `symbol` as a fallback for the underlying name —
+      // populate both so result-rendering paths that key off `symbol` keep
+      // working without a frontend code change.
+      config.symbol = scalpUnderlying;
+      config.expiry = scalpExpiry;
+      config.lots = parseInt(scalpLots) || 1;
+    } else {
+      if (!symbol) {
+        setError('Symbol is required for equity scalp');
+        return;
+      }
+      config.symbol = symbol;
+      config.quantity = parseInt(scalpQuantity) || 0;
+    }
+
+    const labelLeft = isOptions
+      ? `${scalpUnderlying} ${scalpExpiry}`
+      : symbol;
+    const name = `scalp · ${labelLeft} · ${interval} · ${days}d · ${scalpPrimary}`;
     await startJob('scalp', name, config);
   };
 
@@ -894,14 +993,14 @@ export default function BacktestPage() {
                   )}
                 </div>
 
-                {/* Symbol (equity only) */}
+                {/* Symbol (equity only) — autocomplete against /api/monitor/symbols */}
                 {!isFnO && (
                   <div>
                     <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Symbol</label>
-                    <Input
-                      type="text"
+                    <EquitySymbolPicker
+                      authToken={authToken}
                       value={symbol}
-                      onChange={e => setSymbol(e.target.value.toUpperCase())}
+                      onSelect={setSymbol}
                       placeholder="e.g. RELIANCE"
                     />
                   </div>
@@ -1049,18 +1148,9 @@ export default function BacktestPage() {
                    re-running. */}
               {mode === 'scalp' && (
               <div className="space-y-4">
-                {/* Symbol */}
-                <div>
-                  <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Symbol</label>
-                  <Input
-                    type="text"
-                    value={symbol}
-                    onChange={e => setSymbol(e.target.value.toUpperCase())}
-                    placeholder="e.g. RELIANCE, HDFCBANK"
-                  />
-                </div>
-
-                {/* Session mode */}
+                {/* Session mode — drives whether we render Symbol (equity) or
+                    Underlying+Expiry (options). Kept above the instrument
+                    fields so toggling the mode visually swaps them in place. */}
                 <div>
                   <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Session Mode</label>
                   <select
@@ -1070,8 +1160,48 @@ export default function BacktestPage() {
                   >
                     <option value="equity_intraday">Intraday (squareoff at cutoff)</option>
                     <option value="equity_swing">Swing / Delivery (hold across days)</option>
+                    <option value="options_scalp">Options Scalp (ATM CE/PE on index)</option>
                   </select>
                 </div>
+
+                {/* Instrument — equity uses Symbol, options uses Underlying + Expiry. */}
+                {scalpSessionMode === 'options_scalp' ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Underlying</label>
+                      <select
+                        className={selectClassName}
+                        value={scalpUnderlying}
+                        onChange={e => { setScalpUnderlying(e.target.value); setScalpExpiry(''); }}
+                      >
+                        {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'].map(u => (
+                          <option key={u} value={u}>{u}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Expiry</label>
+                      <select
+                        className={selectClassName}
+                        value={scalpExpiry}
+                        onChange={e => setScalpExpiry(e.target.value)}
+                      >
+                        {scalpExpiries.length === 0 && <option value="">Loading…</option>}
+                        {scalpExpiries.map(e => <option key={e} value={e}>{e}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Symbol</label>
+                    <EquitySymbolPicker
+                      authToken={authToken}
+                      value={symbol}
+                      onSelect={setSymbol}
+                      placeholder="e.g. RELIANCE, HDFCBANK"
+                    />
+                  </div>
+                )}
 
                 {/* Days */}
                 <div>
@@ -1175,7 +1305,7 @@ export default function BacktestPage() {
                       <Input type="number" value={scalpTrailPoints} onChange={e => setScalpTrailPoints(e.target.value)} placeholder="giveback" />
                     </div>
                   </div>
-                  {scalpSessionMode === 'equity_intraday' && (
+                  {scalpSessionMode !== 'equity_swing' && (
                     <div>
                       <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Squareoff Time (IST)</label>
                       <Input type="text" value={scalpSquareoff} onChange={e => setScalpSquareoff(e.target.value)} placeholder="HH:MM" />
@@ -1187,10 +1317,20 @@ export default function BacktestPage() {
                 <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
                   <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-3">Sizing & Discipline</h3>
                   <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Quantity</label>
-                      <Input type="number" value={scalpQuantity} onChange={e => setScalpQuantity(e.target.value)} min={1} />
-                    </div>
+                    {scalpSessionMode === 'options_scalp' ? (
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                          Lots
+                          <InfoTip text="Each lot = the underlying's standard lot size (NIFTY 25, BANKNIFTY 15, FINNIFTY 25, MIDCPNIFTY 50)." />
+                        </label>
+                        <Input type="number" value={scalpLots} onChange={e => setScalpLots(e.target.value)} min={1} />
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Quantity</label>
+                        <Input type="number" value={scalpQuantity} onChange={e => setScalpQuantity(e.target.value)} min={1} />
+                      </div>
+                    )}
                     <div>
                       <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Max Trades / Day</label>
                       <Input type="number" value={scalpMaxTrades} onChange={e => setScalpMaxTrades(e.target.value)} />
@@ -1214,7 +1354,12 @@ export default function BacktestPage() {
                   color="amber"
                   className="w-full justify-center mt-2"
                   onClick={runScalpBacktest}
-                  disabled={running || !symbol || !scalpQuantity}
+                  disabled={
+                    running
+                    || (scalpSessionMode === 'options_scalp'
+                        ? (!scalpUnderlying || !scalpExpiry || !scalpLots)
+                        : (!symbol || !scalpQuantity))
+                  }
                 >
                   {running ? (
                     <>
@@ -1243,9 +1388,20 @@ export default function BacktestPage() {
                    sticky config sidebar so it's always visible. */}
               {history.length > 0 && (
                 <div className="mt-6 pt-4 border-t border-zinc-200 dark:border-zinc-700">
-                  <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
-                    Recent Runs
-                  </h3>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">
+                      Recent Runs
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={clearAllHistory}
+                      className="text-[10px] uppercase tracking-wide text-zinc-400 hover:text-red-500 dark:hover:text-red-400 flex items-center gap-1 transition-colors"
+                      title="Delete all completed runs"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      Clear
+                    </button>
+                  </div>
                   <div className="space-y-1 max-h-72 overflow-y-auto">
                     {history.map((j: any) => {
                       const isActive = j.id === jobId;
@@ -1254,30 +1410,43 @@ export default function BacktestPage() {
                         j.status === 'failed' ? 'red' :
                         j.status === 'cancelled' ? 'zinc' : 'amber';
                       const ts = j.created_at ? new Date(j.created_at + 'Z') : null;
+                      const isTerminal = ['completed', 'failed', 'cancelled'].includes(j.status);
                       return (
-                        <button
+                        <div
                           key={j.id}
-                          onClick={() => loadHistoricRun(j.id)}
-                          className={`w-full text-left px-2 py-1.5 rounded transition-colors ${
+                          className={`group relative rounded transition-colors ${
                             isActive
                               ? 'bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-500/40'
                               : 'hover:bg-zinc-50 dark:hover:bg-zinc-800/50'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2 text-xs">
-                            <span className="font-medium text-zinc-700 dark:text-zinc-300 truncate">
-                              {j.config_summary || j.name || `${j.kind} #${j.id}`}
-                            </span>
-                            <Badge color={statusColor as any}>{j.status}</Badge>
-                          </div>
-                          <div className="text-[10px] text-zinc-400 mt-0.5">
-                            {ts ? ts.toLocaleString('en-IN', {
-                              timeZone: 'Asia/Kolkata',
-                              month: 'short', day: 'numeric',
-                              hour: '2-digit', minute: '2-digit', hour12: true,
-                            }) : ''}
-                          </div>
-                        </button>
+                          <button
+                            onClick={() => loadHistoricRun(j.id)}
+                            className="w-full text-left px-2 py-1.5 pr-7"
+                          >
+                            <div className="flex items-center justify-between gap-2 text-xs">
+                              <span className="font-medium text-zinc-700 dark:text-zinc-300 truncate">
+                                {j.config_summary || j.name || `${j.kind} #${j.id}`}
+                              </span>
+                              <Badge color={statusColor as any}>{j.status}</Badge>
+                            </div>
+                            <div className="text-[10px] text-zinc-400 mt-0.5">
+                              {ts ? ts.toLocaleString('en-IN', {
+                                timeZone: 'Asia/Kolkata',
+                                month: 'short', day: 'numeric',
+                                hour: '2-digit', minute: '2-digit', hour12: true,
+                              }) : ''}
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); deleteHistoryRow(j.id); }}
+                            className="absolute top-1.5 right-1.5 p-0.5 rounded text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title={isTerminal ? 'Remove from history' : 'Cancel run'}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
