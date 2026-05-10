@@ -19,7 +19,7 @@ import {
   type MouseEventParams,
   type WhitespaceData,
 } from 'lightweight-charts';
-import { Search, Plus, X, Loader2, TrendingUp, TrendingDown, Radio } from 'lucide-react';
+import { Search, Plus, X, Loader2, TrendingUp, TrendingDown, Radio, Activity, Settings as SettingsIcon, RotateCcw } from 'lucide-react';
 import { requirePermission } from '../utils/route-permissions';
 
 interface AuthContext {
@@ -75,6 +75,85 @@ interface IndicatorDef {
   label: string;
   apiName: string;
   kind: 'overlay' | 'pane';
+  params?: Record<string, number>;
+}
+
+interface ParamSpec {
+  key: string;
+  label: string;
+  type: 'int' | 'float';
+  min?: number;
+  max?: number;
+  step?: number;
+  default: number;
+}
+
+// Per-indicator parameter schemas. The "base" key matches the leading
+// portion of apiName before any "_<period>" suffix (so "sma_20" → "sma").
+// `period` is treated specially for SMA/EMA: the chip's apiName is
+// rewritten to `${base}_${period}` so multiple periods coexist as
+// separate chips. Other indicators stay single-instance per chip and
+// just send overrides via the `params` query.
+const INDICATOR_PARAM_SPECS: Record<string, ParamSpec[]> = {
+  sma: [{ key: 'period', label: 'Period', type: 'int', min: 2, max: 500, default: 20 }],
+  ema: [{ key: 'period', label: 'Period', type: 'int', min: 2, max: 500, default: 20 }],
+  bbands: [
+    { key: 'period', label: 'Period', type: 'int', min: 2, max: 200, default: 20 },
+    { key: 'stddev', label: 'Std Dev', type: 'float', min: 0.5, max: 5, step: 0.1, default: 2 },
+  ],
+  rsi: [{ key: 'period', label: 'Period', type: 'int', min: 2, max: 100, default: 14 }],
+  macd: [
+    { key: 'fast', label: 'Fast', type: 'int', min: 2, max: 50, default: 12 },
+    { key: 'slow', label: 'Slow', type: 'int', min: 2, max: 100, default: 26 },
+    { key: 'signal', label: 'Signal', type: 'int', min: 2, max: 50, default: 9 },
+  ],
+  stoch: [
+    { key: 'k', label: '%K', type: 'int', min: 2, max: 50, default: 14 },
+    { key: 'd', label: '%D', type: 'int', min: 1, max: 20, default: 3 },
+    { key: 'smooth', label: 'Smooth', type: 'int', min: 1, max: 20, default: 3 },
+  ],
+  atr: [{ key: 'period', label: 'Period', type: 'int', min: 2, max: 100, default: 14 }],
+  utbot: [
+    { key: 'period', label: 'ATR Period', type: 'int', min: 2, max: 100, default: 10 },
+    { key: 'sensitivity', label: 'Sensitivity', type: 'float', min: 0.1, max: 10, step: 0.1, default: 1 },
+  ],
+  supertrend: [
+    { key: 'period', label: 'Period', type: 'int', min: 2, max: 100, default: 10 },
+    { key: 'multiplier', label: 'Multiplier', type: 'float', min: 0.5, max: 10, step: 0.1, default: 3 },
+  ],
+  halftrend: [
+    { key: 'amplitude', label: 'Amplitude', type: 'int', min: 1, max: 20, default: 2 },
+    { key: 'atr_period', label: 'ATR Period', type: 'int', min: 2, max: 200, default: 100 },
+  ],
+  ssl_hybrid: [{ key: 'period', label: 'Period', type: 'int', min: 2, max: 100, default: 10 }],
+  ema_crossover: [
+    { key: 'fast', label: 'Fast', type: 'int', min: 2, max: 50, default: 9 },
+    { key: 'slow', label: 'Slow', type: 'int', min: 2, max: 100, default: 21 },
+  ],
+  qqe_mod: [
+    { key: 'rsi_period', label: 'RSI Period', type: 'int', min: 2, max: 50, default: 6 },
+    { key: 'smoothing', label: 'Smoothing', type: 'int', min: 1, max: 20, default: 5 },
+  ],
+  renko: [
+    { key: 'brick_size', label: 'Brick Size (0=auto)', type: 'float', min: 0, max: 10000, step: 0.01, default: 0 },
+    { key: 'atr_period', label: 'ATR Period (0=off)', type: 'int', min: 0, max: 200, default: 0 },
+  ],
+};
+
+// Bases whose `period` param is encoded in apiName as "_<period>" suffix.
+const SUFFIX_PERIOD_BASES = new Set(['sma', 'ema']);
+
+function indicatorBase(apiName: string): string {
+  const parts = apiName.split('_');
+  const last = parts[parts.length - 1];
+  if (parts.length > 1 && /^\d+$/.test(last)) {
+    return parts.slice(0, -1).join('_');
+  }
+  return apiName;
+}
+
+function getParamSpec(apiName: string): ParamSpec[] {
+  return INDICATOR_PARAM_SPECS[indicatorBase(apiName)] || [];
 }
 
 const OVERLAY_COLORS = [
@@ -160,13 +239,45 @@ function useDarkMode(): boolean {
 // localStorage-backed UI state. Survives tab close. Versioned so a future
 // breaking change to the shape can invalidate stale entries instead of
 // crashing on load.
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 const STORAGE_KEY = `nf.charts.state.v${STORAGE_VERSION}`;
 
 interface PersistedChartState {
   symbol?: string;
   timeframe?: Timeframe;
-  indicatorKeys?: string[];
+  // Full IndicatorDef array — preserves user-customized params and any
+  // dynamically-renamed apiNames (e.g. SMA period → "sma_30").
+  indicators?: IndicatorDef[];
+  technicalsOpen?: boolean;
+}
+
+interface TechnicalIndicatorEntry {
+  value?: number | null;
+  state?: string;
+  label: string;
+  signal?: number | null;
+  hist?: number | null;
+  upper?: number | null;
+  middle?: number | null;
+  lower?: number | null;
+  pct_b?: number | null;
+  pct?: number | null;
+  k?: number | null;
+  d?: number | null;
+}
+
+interface TechnicalsSnapshot {
+  symbol: string;
+  timeframe: string;
+  price: number;
+  indicators: Record<string, TechnicalIndicatorEntry>;
+  summary: {
+    bullish: number;
+    bearish: number;
+    neutral: number;
+    verdict: 'bullish' | 'bearish' | 'neutral';
+    signals: Record<string, string>;
+  };
 }
 
 function loadPersistedState(): PersistedChartState {
@@ -329,14 +440,154 @@ function SymbolSearch({
   );
 }
 
+function IndicatorChip({
+  ind,
+  onRemove,
+  onUpdate,
+}: {
+  ind: IndicatorDef;
+  onRemove: (key: string) => void;
+  onUpdate: (key: string, params: Record<string, number>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const specs = getParamSpec(ind.apiName);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  // Local draft state so typing doesn't trigger a refetch on every keystroke.
+  const [draft, setDraft] = useState<Record<string, number>>(() => {
+    const d: Record<string, number> = {};
+    for (const s of specs) {
+      d[s.key] = ind.params?.[s.key] ?? s.default;
+    }
+    // SMA/EMA: prefer the period encoded in apiName over the spec default.
+    const base = indicatorBase(ind.apiName);
+    if (SUFFIX_PERIOD_BASES.has(base)) {
+      const tail = ind.apiName.split('_').pop()!;
+      if (/^\d+$/.test(tail)) d.period = parseInt(tail, 10);
+    }
+    return d;
+  });
+
+  // Re-seed draft when the chip itself changes (e.g. SMA period rewrite).
+  useEffect(() => {
+    const d: Record<string, number> = {};
+    for (const s of specs) {
+      d[s.key] = ind.params?.[s.key] ?? s.default;
+    }
+    const base = indicatorBase(ind.apiName);
+    if (SUFFIX_PERIOD_BASES.has(base)) {
+      const tail = ind.apiName.split('_').pop()!;
+      if (/^\d+$/.test(tail)) d.period = parseInt(tail, 10);
+    }
+    setDraft(d);
+  }, [ind.apiName, ind.params, specs]);
+
+  const apply = () => {
+    onUpdate(ind.key, draft);
+    setOpen(false);
+  };
+
+  const reset = () => {
+    const d: Record<string, number> = {};
+    for (const s of specs) d[s.key] = s.default;
+    setDraft(d);
+  };
+
+  return (
+    <span
+      ref={ref}
+      className="relative inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded"
+    >
+      {ind.label}
+      {specs.length > 0 && (
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="hover:text-amber-900 dark:hover:text-amber-200"
+          title="Settings"
+        >
+          <SettingsIcon className="w-3 h-3" />
+        </button>
+      )}
+      <button
+        onClick={() => onRemove(ind.key)}
+        className="hover:text-red-600 dark:hover:text-red-400"
+        title="Remove"
+      >
+        <X className="w-3 h-3" />
+      </button>
+
+      {open && specs.length > 0 && (
+        <div className="absolute z-50 top-full mt-1 right-0 w-64 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-md shadow-lg">
+          <div className="px-3 py-2 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-wider font-bold text-zinc-500">
+              {ind.label} Settings
+            </span>
+            <button
+              onClick={reset}
+              title="Reset to defaults"
+              className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+            >
+              <RotateCcw className="w-3 h-3" />
+            </button>
+          </div>
+          <div className="px-3 py-2 space-y-2">
+            {specs.map((s) => (
+              <label key={s.key} className="flex items-center justify-between gap-2 text-xs">
+                <span className="text-zinc-600 dark:text-zinc-400">{s.label}</span>
+                <input
+                  type="number"
+                  value={draft[s.key]}
+                  min={s.min}
+                  max={s.max}
+                  step={s.step ?? (s.type === 'int' ? 1 : 0.1)}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? 0 : Number(e.target.value);
+                    setDraft((d) => ({ ...d, [s.key]: s.type === 'int' ? Math.round(v) : v }));
+                  }}
+                  className="w-20 px-2 py-1 text-xs tabular-nums bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                />
+              </label>
+            ))}
+          </div>
+          <div className="px-3 py-2 border-t border-zinc-100 dark:border-zinc-800 flex justify-end gap-1">
+            <button
+              onClick={() => setOpen(false)}
+              className="px-2 py-1 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={apply}
+              className="px-2.5 py-1 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded"
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function IndicatorPicker({
   active,
   onAdd,
   onRemove,
+  onUpdate,
 }: {
   active: IndicatorDef[];
   onAdd: (d: IndicatorDef) => void;
   onRemove: (key: string) => void;
+  onUpdate: (key: string, params: Record<string, number>) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -354,19 +605,12 @@ function IndicatorPicker({
   return (
     <div ref={ref} className="relative flex items-center gap-1 flex-wrap">
       {active.map((ind) => (
-        <span
+        <IndicatorChip
           key={ind.key}
-          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded"
-        >
-          {ind.label}
-          <button
-            onClick={() => onRemove(ind.key)}
-            className="hover:text-red-600 dark:hover:text-red-400"
-            title="Remove"
-          >
-            <X className="w-3 h-3" />
-          </button>
-        </span>
+          ind={ind}
+          onRemove={onRemove}
+          onUpdate={onUpdate}
+        />
       ))}
       <button
         onClick={() => setOpen((v) => !v)}
@@ -488,6 +732,196 @@ function makeChart(
   return { chart, ro };
 }
 
+function fmtNum(v: number | null | undefined, digits = 2): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return v.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function stateBadgeClass(state: string | undefined): string {
+  switch (state) {
+    case 'bullish':
+    case 'above':
+      return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300';
+    case 'bearish':
+    case 'below':
+      return 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300';
+    case 'overbought':
+      return 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300';
+    case 'oversold':
+      return 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300';
+    default:
+      return 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400';
+  }
+}
+
+function TechnicalsPanel({
+  symbol,
+  timeframe,
+  authToken,
+  onClose,
+}: {
+  symbol: string;
+  timeframe: Timeframe;
+  authToken: string;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<TechnicalsSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/charts/technicals/${encodeURIComponent(symbol)}?timeframe=${timeframe}`,
+        { headers: { Authorization: `Bearer ${authToken}` } },
+      );
+      if (!res.ok) {
+        let msg = `${res.status}`;
+        try { const b = await res.json(); if (b?.detail) msg = b.detail; } catch { /* ignore */ }
+        throw new Error(msg);
+      }
+      setData(await res.json());
+    } catch (e: any) {
+      setError(e?.message || 'Failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [symbol, timeframe, authToken]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const ind = data?.indicators;
+  const sum = data?.summary;
+
+  return (
+    <div className="w-72 flex-shrink-0 border-l border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 overflow-y-auto">
+      <div className="sticky top-0 bg-zinc-50 dark:bg-zinc-900/50 backdrop-blur border-b border-zinc-200 dark:border-zinc-800 px-3 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Activity className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+          <span className="text-xs font-bold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
+            Technicals
+          </span>
+          <span className="text-[10px] text-zinc-500">{timeframe}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={refresh}
+            title="Refresh"
+            className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500"
+          >
+            <Loader2 className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            onClick={onClose}
+            title="Close"
+            className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="px-3 py-2 text-xs text-red-600 dark:text-red-400">Error: {error}</div>
+      )}
+
+      {sum && (
+        <div className="px-3 py-3 border-b border-zinc-200 dark:border-zinc-800">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Verdict</span>
+            <span className={`px-2 py-0.5 text-[11px] font-bold uppercase rounded ${stateBadgeClass(sum.verdict)}`}>
+              {sum.verdict}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5 text-center">
+            <div className="bg-green-50 dark:bg-green-950/30 rounded px-2 py-1.5">
+              <div className="text-base font-bold text-green-700 dark:text-green-400 tabular-nums">{sum.bullish}</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Bull</div>
+            </div>
+            <div className="bg-zinc-100 dark:bg-zinc-800 rounded px-2 py-1.5">
+              <div className="text-base font-bold text-zinc-600 dark:text-zinc-400 tabular-nums">{sum.neutral}</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Neut</div>
+            </div>
+            <div className="bg-red-50 dark:bg-red-950/30 rounded px-2 py-1.5">
+              <div className="text-base font-bold text-red-700 dark:text-red-400 tabular-nums">{sum.bearish}</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Bear</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ind && (
+        <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+          {/* Momentum */}
+          <Row label={ind.rsi.label} value={fmtNum(ind.rsi.value, 1)} state={ind.rsi.state} />
+          <Row
+            label={ind.macd.label}
+            value={`${fmtNum(ind.macd.value, 2)} / ${fmtNum(ind.macd.signal, 2)}`}
+            sub={`hist ${fmtNum(ind.macd.hist, 2)}`}
+            state={ind.macd.state}
+          />
+          <Row
+            label={ind.stoch.label}
+            value={`%K ${fmtNum(ind.stoch.k, 1)} / %D ${fmtNum(ind.stoch.d, 1)}`}
+            state={ind.stoch.state}
+          />
+
+          {/* Trend */}
+          <Row label={ind.ema_20.label} value={fmtNum(ind.ema_20.value, 2)} state={ind.ema_20.state} />
+          <Row label={ind.ema_50.label} value={fmtNum(ind.ema_50.value, 2)} state={ind.ema_50.state} />
+          <Row label={ind.ema_200.label} value={fmtNum(ind.ema_200.value, 2)} state={ind.ema_200.state} />
+          <Row label={ind.vwap.label} value={fmtNum(ind.vwap.value, 2)} state={ind.vwap.state} />
+
+          {/* Volatility */}
+          <Row
+            label={ind.bbands.label}
+            value={`${fmtNum(ind.bbands.lower, 2)} – ${fmtNum(ind.bbands.upper, 2)}`}
+            sub={ind.bbands.pct_b !== null && ind.bbands.pct_b !== undefined ? `%B ${fmtNum(ind.bbands.pct_b, 2)}` : undefined}
+          />
+          <Row
+            label={ind.atr.label}
+            value={fmtNum(ind.atr.value, 2)}
+            sub={ind.atr.pct !== null && ind.atr.pct !== undefined ? `${fmtNum(ind.atr.pct, 2)}%` : undefined}
+          />
+        </div>
+      )}
+
+      {!data && !error && loading && (
+        <div className="px-3 py-6 text-center text-xs text-zinc-500">Loading…</div>
+      )}
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  sub,
+  state,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  state?: string;
+}) {
+  return (
+    <div className="px-3 py-2 flex items-center justify-between gap-2">
+      <div className="min-w-0">
+        <div className="text-[10px] uppercase tracking-wider font-semibold text-zinc-500">{label}</div>
+        <div className="text-xs font-bold tabular-nums text-zinc-900 dark:text-zinc-100">{value}</div>
+        {sub && <div className="text-[10px] text-zinc-500 tabular-nums">{sub}</div>}
+      </div>
+      {state && state !== 'n/a' && (
+        <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded ${stateBadgeClass(state)}`}>
+          {state}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function ChartsView({ authToken }: { authToken: string }) {
   const isDark = useDarkMode();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -506,13 +940,22 @@ function ChartsView({ authToken }: { authToken: string }) {
     return tf && (TIMEFRAMES as readonly string[]).includes(tf) ? tf : '1D';
   });
   const [candles, setCandles] = useState<Candle[]>([]);
+  // Live quote (LTP + prior-day close) returned alongside candles. Used
+  // to render the header price independent of bucket lag — without this,
+  // higher-TF charts show a stale header price (e.g. 30m's last bucket
+  // can be up to 30 min behind the live tape).
+  const [liveQuote, setLiveQuote] = useState<{
+    ltp: number;
+    prev_close: number | null;
+    net_change: number | null;
+    pct_change: number | null;
+  } | null>(null);
   const [indicatorData, setIndicatorData] = useState<IndicatorResponse | null>(null);
   const [activeIndicators, setActiveIndicators] = useState<IndicatorDef[]>(() => {
-    const keys = persisted.indicatorKeys;
-    if (Array.isArray(keys) && keys.length > 0) {
-      const restored = keys
-        .map((k) => PRESET_INDICATORS.find((i) => i.key === k))
-        .filter((i): i is IndicatorDef => Boolean(i));
+    const stored = persisted.indicators;
+    if (Array.isArray(stored) && stored.length > 0) {
+      const restored = stored
+        .filter((i): i is IndicatorDef => Boolean(i?.key && i?.apiName && i?.kind && i?.label));
       if (restored.length > 0) return restored;
     }
     return [
@@ -526,6 +969,7 @@ function ChartsView({ authToken }: { authToken: string }) {
   const [liveStatus, setLiveStatus] = useState<'off' | 'connecting' | 'open' | 'waiting' | 'reconnecting' | 'error'>('off');
   const [liveBackend, setLiveBackend] = useState<'ws' | 'poll' | null>(null);
   const [lastTickPrice, setLastTickPrice] = useState<number | null>(null);
+  const [technicalsOpen, setTechnicalsOpen] = useState<boolean>(() => Boolean(persisted.technicalsOpen));
 
   const intraday = timeframe === '1m' || timeframe === '5m' || timeframe === '15m' || timeframe === '30m';
 
@@ -544,9 +988,10 @@ function ChartsView({ authToken }: { authToken: string }) {
     savePersistedState({
       symbol,
       timeframe,
-      indicatorKeys: activeIndicators.map((i) => i.key),
+      indicators: activeIndicators,
+      technicalsOpen,
     });
-  }, [symbol, timeframe, activeIndicators]);
+  }, [symbol, timeframe, activeIndicators, technicalsOpen]);
 
   const paneIndicators = useMemo(
     () => activeIndicators.filter((i) => i.kind === 'pane'),
@@ -569,6 +1014,17 @@ function ChartsView({ authToken }: { authToken: string }) {
       }
       const data = await res.json();
       setCandles(data.candles || []);
+      const q = data.quote;
+      if (q && typeof q.ltp === 'number') {
+        setLiveQuote({
+          ltp: q.ltp,
+          prev_close: typeof q.prev_close === 'number' ? q.prev_close : null,
+          net_change: typeof q.net_change === 'number' ? q.net_change : null,
+          pct_change: typeof q.pct_change === 'number' ? q.pct_change : null,
+        });
+      } else {
+        setLiveQuote(null);
+      }
     } catch (e: any) {
       setError(e?.message || 'Failed to load candles');
     }
@@ -581,8 +1037,25 @@ function ChartsView({ authToken }: { authToken: string }) {
     }
     try {
       const names = activeIndicators.map((i) => i.apiName).join(',');
+      const paramMap: Record<string, Record<string, number>> = {};
+      for (const ind of activeIndicators) {
+        if (ind.params && Object.keys(ind.params).length > 0) {
+          // Skip period params already encoded in the apiName suffix —
+          // sending them again is harmless but pollutes the URL.
+          const base = indicatorBase(ind.apiName);
+          const filtered: Record<string, number> = {};
+          for (const [k, v] of Object.entries(ind.params)) {
+            if (k === 'period' && SUFFIX_PERIOD_BASES.has(base)) continue;
+            filtered[k] = v;
+          }
+          if (Object.keys(filtered).length > 0) paramMap[ind.apiName] = filtered;
+        }
+      }
+      const paramsQs = Object.keys(paramMap).length
+        ? `&params=${encodeURIComponent(JSON.stringify(paramMap))}`
+        : '';
       const res = await fetch(
-        `/api/charts/indicators/${encodeURIComponent(symbol)}?timeframe=${timeframe}&indicators=${encodeURIComponent(names)}`,
+        `/api/charts/indicators/${encodeURIComponent(symbol)}?timeframe=${timeframe}&indicators=${encodeURIComponent(names)}${paramsQs}`,
         { headers: { Authorization: `Bearer ${authToken}` } },
       );
       if (!res.ok) throw new Error(`${res.status}`);
@@ -1236,11 +1709,30 @@ function ChartsView({ authToken }: { authToken: string }) {
 
   const lastCandle = candles[candles.length - 1];
   const prevCandle = candles[candles.length - 2];
-  const displayPrice = live && lastTickPrice !== null ? lastTickPrice : lastCandle?.close ?? 0;
-  const priceChange = lastCandle && prevCandle
-    ? (live && lastTickPrice !== null ? lastTickPrice : lastCandle.close) - prevCandle.close
-    : 0;
-  const priceChangePct = prevCandle ? (priceChange / prevCandle.close) * 100 : 0;
+  // Header price priority: live tick > backend quote LTP > last bar close.
+  // Backend quote keeps the displayed price consistent across timeframes
+  // (otherwise lower TFs lead higher TFs by up to one bucket).
+  const displayPrice =
+    live && lastTickPrice !== null
+      ? lastTickPrice
+      : liveQuote?.ltp ?? lastCandle?.close ?? 0;
+  // Day-change reference: prefer Upstox's authoritative `net_change`
+  // (today's move vs prior-day close). Fall back to prev-bar diff on
+  // intraday TFs when the quote payload is missing.
+  let priceChange = 0;
+  let priceChangePct = 0;
+  if (live && lastTickPrice !== null && liveQuote?.prev_close) {
+    priceChange = lastTickPrice - liveQuote.prev_close;
+    priceChangePct = (priceChange / liveQuote.prev_close) * 100;
+  } else if (liveQuote && liveQuote.net_change !== null) {
+    priceChange = liveQuote.net_change;
+    priceChangePct = liveQuote.pct_change ?? (
+      liveQuote.prev_close ? (liveQuote.net_change / liveQuote.prev_close) * 100 : 0
+    );
+  } else if (lastCandle && prevCandle) {
+    priceChange = displayPrice - prevCandle.close;
+    priceChangePct = (priceChange / prevCandle.close) * 100;
+  }
   const isUp = priceChange >= 0;
 
   const addIndicator = (d: IndicatorDef) => {
@@ -1248,6 +1740,25 @@ function ChartsView({ authToken }: { authToken: string }) {
   };
   const removeIndicator = (key: string) => {
     setActiveIndicators((prev) => prev.filter((p) => p.key !== key));
+  };
+  const updateIndicator = (key: string, params: Record<string, number>) => {
+    setActiveIndicators((prev) =>
+      prev.map((ind) => {
+        if (ind.key !== key) return ind;
+        const base = indicatorBase(ind.apiName);
+        const next: IndicatorDef = { ...ind, params: { ...params } };
+        // SMA/EMA encode the period in the apiName so the line color
+        // map and pane lookup stays stable. Rewriting the apiName here
+        // also collapses an active period change into a re-fetch.
+        if (SUFFIX_PERIOD_BASES.has(base) && typeof params.period === 'number') {
+          const p = Math.max(2, Math.round(params.period));
+          next.apiName = `${base}_${p}`;
+          next.key = `${base}_${p}`;
+          next.label = `${base.toUpperCase()} ${p}`;
+        }
+        return next;
+      }),
+    );
   };
 
   return (
@@ -1330,10 +1841,24 @@ function ChartsView({ authToken }: { authToken: string }) {
             : 'LIVE'}
         </button>
 
+        <button
+          onClick={() => setTechnicalsOpen((v) => !v)}
+          title={technicalsOpen ? 'Hide technicals' : 'Show technicals'}
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded transition-colors ${
+            technicalsOpen
+              ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+              : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+          }`}
+        >
+          <Activity className="w-3 h-3" />
+          Technicals
+        </button>
+
         <IndicatorPicker
           active={activeIndicators}
           onAdd={addIndicator}
           onRemove={removeIndicator}
+          onUpdate={updateIndicator}
         />
       </div>
 
@@ -1343,7 +1868,8 @@ function ChartsView({ authToken }: { authToken: string }) {
         </div>
       )}
 
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex min-h-0">
+       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 min-h-[300px] relative">
           <div ref={priceRef} className="absolute inset-0" />
         </div>
@@ -1370,6 +1896,15 @@ function ChartsView({ authToken }: { authToken: string }) {
             </div>
           );
         })}
+       </div>
+        {technicalsOpen && (
+          <TechnicalsPanel
+            symbol={symbol}
+            timeframe={timeframe}
+            authToken={authToken}
+            onClose={() => setTechnicalsOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

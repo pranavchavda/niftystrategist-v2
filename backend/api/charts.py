@@ -180,11 +180,52 @@ async def charts_candles(
     days: Optional[int] = Query(default=None, ge=1, le=3650),
     user: User = Depends(get_current_user),
 ):
-    """Return OHLCV data for a symbol at a given timeframe."""
+    """Return OHLCV data for a symbol at a given timeframe.
+
+    Also returns a `quote` payload (live LTP + prior-day close) so the
+    header price is consistent across timeframes. Without it, lower TFs
+    show fresher prices than higher TFs because each TF's last bar is
+    the most recently *closed* bucket — up to 30 min stale on a 30m
+    chart, but 0–1 min on a 1m chart, and effectively live on 1D
+    (which synthesizes today's bar from the quote).
+    """
     interval, fetch_days = _interval_and_days(timeframe, days)
     try:
         candles = await _fetch_candles(user, symbol, interval, fetch_days)
-        return {"symbol": symbol.upper(), "timeframe": timeframe, "candles": candles}
+        quote_payload: Optional[dict] = None
+        try:
+            client = await cockpit_api.get_market_data_client(user)
+            q = await client.get_quote(symbol.upper())
+            if q and q.get("ltp") is not None:
+                def _f(v):
+                    return float(v) if v is not None else None
+                ltp = float(q["ltp"])
+                # Upstox's `ohlc.close` (returned as `close` here) is the
+                # *current bar's* close, which during/after the session
+                # can equal `ltp` — using it as prior-day close gives a
+                # zero change. The authoritative day-change source is
+                # `net_change`, so derive prev_close from it when
+                # available and fall back to `ohlc.close` otherwise.
+                net_change = _f(q.get("net_change"))
+                pct_change = _f(q.get("pct_change"))
+                prev_close = (ltp - net_change) if net_change is not None else _f(q.get("close"))
+                quote_payload = {
+                    "ltp": ltp,
+                    "prev_close": prev_close,
+                    "net_change": net_change,
+                    "pct_change": pct_change,
+                    "open": _f(q.get("open")),
+                    "high": _f(q.get("high")),
+                    "low": _f(q.get("low")),
+                }
+        except Exception as e:
+            logger.warning(f"charts.candles({symbol}) quote for header failed: {e}")
+        return {
+            "symbol": symbol.upper(),
+            "timeframe": timeframe,
+            "candles": candles,
+            "quote": quote_payload,
+        }
     except Exception as e:
         logger.error(f"charts.candles({symbol}, {timeframe}): {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -201,6 +242,11 @@ async def charts_indicators(
     ),
     timeframe: str = Query(default="1D"),
     days: Optional[int] = Query(default=None, ge=1, le=3650),
+    params: Optional[str] = Query(
+        default=None,
+        description='Optional JSON object mapping indicator name → kwargs. '
+                    'E.g. {"utbot":{"period":12,"sensitivity":2.0},"bbands":{"stddev":2.5}}',
+    ),
     user: User = Depends(get_current_user),
 ):
     """Compute indicator series for a symbol.
@@ -216,15 +262,30 @@ async def charts_indicators(
       - "stoch"     → Stochastic(14,3,3)
       - "atr"       → ATR(14)
       - "utbot"     → UT Bot
+
+    Per-indicator overrides via `params` (e.g. MACD fast/slow/signal,
+    UT Bot sensitivity, Bollinger stddev) take priority over the
+    shorthand suffix.
     """
     names = [n.strip() for n in indicators.split(",") if n.strip()]
     if not names:
         return {"lines": {}, "markers": [], "panes": []}
 
+    parsed_params: dict[str, dict] = {}
+    if params:
+        try:
+            raw = json.loads(params)
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if isinstance(v, dict):
+                        parsed_params[str(k)] = v
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid params JSON: {e}")
+
     interval, fetch_days = _interval_and_days(timeframe, days)
     try:
         candles = await _fetch_candles(user, symbol, interval, fetch_days)
-        return compute_overlays(candles, names=names)
+        return compute_overlays(candles, names=names, params=parsed_params or None)
     except Exception as e:
         logger.error(f"charts.indicators({symbol}, {indicators}): {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -479,6 +540,169 @@ async def charts_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+@router.get("/technicals/{symbol}")
+async def charts_technicals(
+    symbol: str,
+    timeframe: str = Query(default="1D"),
+    days: Optional[int] = Query(default=None, ge=1, le=3650),
+    user: User = Depends(get_current_user),
+):
+    """Latest-bar technical snapshot for the chart's at-a-glance panel.
+
+    Returns price plus current values + state badges for RSI(14),
+    EMA(20/50/200), MACD(12,26,9), Bollinger Bands(20,2), ATR(14),
+    Stochastic(14,3,3), and VWAP. State strings are: bullish | bearish |
+    neutral | overbought | oversold. The summary tally counts the four
+    momentum/trend signals (RSI, MACD, EMA-50 trend, Stoch).
+    """
+    import numpy as np
+    import pandas as pd
+    import ta
+
+    interval, fetch_days = _interval_and_days(timeframe, days)
+    try:
+        candles = await _fetch_candles(user, symbol, interval, fetch_days)
+        if len(candles) < 30:
+            raise HTTPException(status_code=400, detail="Not enough candles for technicals")
+        df = pd.DataFrame(candles).sort_values("time").reset_index(drop=True)
+        close = df["close"].astype(float)
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        last_price = float(close.iloc[-1])
+
+        def _last(s: pd.Series) -> Optional[float]:
+            v = s.iloc[-1]
+            if pd.isna(v):
+                return None
+            return float(v)
+
+        # Trend EMAs — fall back if window > history
+        ema20_s = ta.trend.EMAIndicator(close, window=20).ema_indicator() if len(df) >= 20 else None
+        ema50_s = ta.trend.EMAIndicator(close, window=50).ema_indicator() if len(df) >= 50 else None
+        ema200_s = ta.trend.EMAIndicator(close, window=200).ema_indicator() if len(df) >= 200 else None
+        ema20 = _last(ema20_s) if ema20_s is not None else None
+        ema50 = _last(ema50_s) if ema50_s is not None else None
+        ema200 = _last(ema200_s) if ema200_s is not None else None
+
+        # RSI
+        rsi_s = ta.momentum.RSIIndicator(close, window=14).rsi()
+        rsi = _last(rsi_s)
+        rsi_state = (
+            "overbought" if rsi is not None and rsi >= 70
+            else "oversold" if rsi is not None and rsi <= 30
+            else "bullish" if rsi is not None and rsi > 55
+            else "bearish" if rsi is not None and rsi < 45
+            else "neutral"
+        )
+
+        # MACD
+        macd_obj = ta.trend.MACD(close, window_slow=26, window_fast=12, window_sign=9)
+        macd_v = _last(macd_obj.macd())
+        macd_signal = _last(macd_obj.macd_signal())
+        macd_hist = _last(macd_obj.macd_diff())
+        macd_state = (
+            "neutral" if macd_v is None or macd_signal is None
+            else "bullish" if macd_v > macd_signal
+            else "bearish"
+        )
+
+        # Bollinger Bands
+        bb = ta.volatility.BollingerBands(close, window=20, window_dev=2)
+        bb_upper = _last(bb.bollinger_hband())
+        bb_middle = _last(bb.bollinger_mavg())
+        bb_lower = _last(bb.bollinger_lband())
+        bb_pct_b = None
+        if bb_upper is not None and bb_lower is not None and bb_upper != bb_lower:
+            bb_pct_b = (last_price - bb_lower) / (bb_upper - bb_lower)
+
+        # ATR
+        atr_s = ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range()
+        atr = _last(atr_s)
+        atr_pct = (atr / last_price * 100) if atr and last_price else None
+
+        # Stochastic
+        stoch = ta.momentum.StochasticOscillator(high=high, low=low, close=close, window=14, smooth_window=3)
+        stoch_k = _last(stoch.stoch())
+        stoch_d = _last(stoch.stoch_signal())
+        stoch_state = (
+            "overbought" if stoch_k is not None and stoch_k >= 80
+            else "oversold" if stoch_k is not None and stoch_k <= 20
+            else "bullish" if stoch_k is not None and stoch_d is not None and stoch_k > stoch_d
+            else "bearish" if stoch_k is not None and stoch_d is not None and stoch_k < stoch_d
+            else "neutral"
+        )
+
+        # VWAP — only meaningful with volume. Skip otherwise.
+        vwap = None
+        if "volume" in df.columns and df["volume"].astype(float).sum() > 0:
+            try:
+                vwap = _last(ta.volume.VolumeWeightedAveragePrice(
+                    high=high, low=low, close=close,
+                    volume=df["volume"].astype(float), window=14,
+                ).volume_weighted_average_price())
+            except Exception:
+                vwap = None
+
+        # Price-vs-EMA states
+        def _vs(level: Optional[float]) -> str:
+            if level is None:
+                return "n/a"
+            return "above" if last_price > level else "below"
+
+        # Summary tally — count bullish/bearish among the four core signals.
+        signals = {
+            "rsi": "bullish" if rsi_state in ("bullish", "oversold") else "bearish" if rsi_state in ("bearish", "overbought") else "neutral",
+            "macd": macd_state,
+            "ema50_trend": "bullish" if ema50 is not None and last_price > ema50 else "bearish" if ema50 is not None else "neutral",
+            "stoch": "bullish" if stoch_state in ("bullish", "oversold") else "bearish" if stoch_state in ("bearish", "overbought") else "neutral",
+        }
+        bullish = sum(1 for v in signals.values() if v == "bullish")
+        bearish = sum(1 for v in signals.values() if v == "bearish")
+        neutral = sum(1 for v in signals.values() if v == "neutral")
+        verdict = "bullish" if bullish > bearish + 1 else "bearish" if bearish > bullish + 1 else "neutral"
+
+        return {
+            "symbol": symbol.upper(),
+            "timeframe": timeframe,
+            "price": last_price,
+            "indicators": {
+                "rsi": {"value": rsi, "state": rsi_state, "label": "RSI(14)"},
+                "macd": {
+                    "value": macd_v,
+                    "signal": macd_signal,
+                    "hist": macd_hist,
+                    "state": macd_state,
+                    "label": "MACD(12,26,9)",
+                },
+                "ema_20": {"value": ema20, "state": _vs(ema20), "label": "EMA(20)"},
+                "ema_50": {"value": ema50, "state": _vs(ema50), "label": "EMA(50)"},
+                "ema_200": {"value": ema200, "state": _vs(ema200), "label": "EMA(200)"},
+                "bbands": {
+                    "upper": bb_upper,
+                    "middle": bb_middle,
+                    "lower": bb_lower,
+                    "pct_b": bb_pct_b,
+                    "label": "BB(20,2)",
+                },
+                "atr": {"value": atr, "pct": atr_pct, "label": "ATR(14)"},
+                "stoch": {"k": stoch_k, "d": stoch_d, "state": stoch_state, "label": "Stoch(14,3)"},
+                "vwap": {"value": vwap, "state": _vs(vwap), "label": "VWAP"},
+            },
+            "summary": {
+                "bullish": bullish,
+                "bearish": bearish,
+                "neutral": neutral,
+                "verdict": verdict,
+                "signals": signals,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"charts.technicals({symbol}, {timeframe}): {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/available-indicators")
