@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router';
 import * as Headless from '@headlessui/react';
 import {
   PanelLeftCloseIcon,
@@ -10,17 +11,20 @@ import {
 import TopStrip from './cockpit/TopStrip';
 import MarketPulse from './cockpit/MarketPulse';
 import WatchlistPanel from './cockpit/WatchlistPanel';
-import PriceChart from './cockpit/PriceChart';
 import PositionsTable from './cockpit/PositionsTable';
 import DailyScorecard from './cockpit/DailyScorecard';
 import ScorecardCalendar from './cockpit/ScorecardCalendar';
 import CockpitChat from './cockpit/CockpitChat';
+import PortfolioOverview from './cockpit/PortfolioOverview';
+import AllocationBreakdown from './cockpit/AllocationBreakdown';
+import TradeStatsPanel from './cockpit/TradeStatsPanel';
+import QuickLinks from './cockpit/QuickLinks';
 import { useCockpitData } from '../hooks/useCockpitData';
-import { useChartData } from '../hooks/useChartData';
-import { useChartOverlays } from '../hooks/useChartOverlays';
 import { useScorecards } from '../hooks/useScorecards';
 
 const Dashboard = ({ authToken }) => {
+  const navigate = useNavigate();
+
   // Left panel collapse state
   const [leftCollapsed, setLeftCollapsed] = useState(() => {
     const saved = localStorage.getItem('cockpit-left-collapsed');
@@ -29,16 +33,6 @@ const Dashboard = ({ authToken }) => {
   // Drawer states
   const [showWatchlistDrawer, setShowWatchlistDrawer] = useState(false);
   const [showChatDrawer, setShowChatDrawer] = useState(false);
-
-  // Active symbol + timeframe for chart
-  const [activeSymbol, setActiveSymbol] = useState('NIFTY 50');
-  const [activeTimeframe, setActiveTimeframe] = useState('3M');
-
-  // Indicator overlays (persist toggle state)
-  const [enabledIndicators, setEnabledIndicators] = useState(() => {
-    const saved = localStorage.getItem('cockpit-chart-indicators');
-    return saved ? JSON.parse(saved) : [];
-  });
 
   // Chat context
   const [chatContext, setChatContext] = useState(null);
@@ -52,76 +46,26 @@ const Dashboard = ({ authToken }) => {
   // Live data hooks
   const cockpitData = useCockpitData(authToken, autoRefresh);
   const scorecardsData = useScorecards(authToken, 30);
-  // Map timeframe labels to days + interval for the chart hook
-  const TIMEFRAME_CONFIG = {
-    '1D': { days: 1, interval: '1minute' },
-    '5D': { days: 5, interval: '5minute' },
-    '1W': { days: 7, interval: 'day' },
-    '1M': { days: 30, interval: 'day' },
-    '3M': { days: 90, interval: 'day' },
-    '6M': { days: 180, interval: 'day' },
-    '1Y': { days: 365, interval: 'day' },
-  };
-  const chartConfig = TIMEFRAME_CONFIG[activeTimeframe] || { days: 90, interval: 'day' };
-  const chartResult = useChartData(authToken, activeSymbol, chartConfig.days, chartConfig.interval);
-  const { overlays } = useChartOverlays(
-    authToken,
-    activeSymbol,
-    chartConfig.days,
-    chartConfig.interval,
-    enabledIndicators,
-  );
-
-  // Build live quote for the chart header from cockpit data (indices, holdings, watchlist)
-  const liveQuote = useMemo(() => {
-    // Check indices (NIFTY 50, BANK NIFTY, SENSEX, etc.)
-    const idx = cockpitData.indices.find(i => i.name === activeSymbol);
-    if (idx) return { price: idx.value, change: idx.change, changePct: idx.changePct };
-
-    // Check holdings
-    const holding = cockpitData.holdings.find(h => h.symbol === activeSymbol);
-    if (holding) return { price: holding.ltp, change: holding.dayChange, changePct: holding.dayChangePct };
-
-    // Check positions
-    const position = cockpitData.positions.find(p => p.symbol === activeSymbol);
-    if (position) return { price: position.ltp, change: position.dayChange, changePct: position.dayChangePct };
-
-    // Check watchlists
-    for (const items of Object.values(cockpitData.watchlists)) {
-      const wl = items.find(w => w.symbol === activeSymbol);
-      if (wl) return { price: wl.ltp, change: wl.change, changePct: wl.changePct };
-    }
-
-    return null;
-  }, [activeSymbol, cockpitData.indices, cockpitData.holdings, cockpitData.positions, cockpitData.watchlists]);
 
   // Derive market open status from live data
   const marketOpen = cockpitData.marketStatus?.status === 'open' || cockpitData.marketStatus?.status === 'pre_open';
 
-  // Persist collapse states
+  // Persist collapse / auto-refresh
   useEffect(() => {
     localStorage.setItem('cockpit-left-collapsed', String(leftCollapsed));
   }, [leftCollapsed]);
 
-  // Persist auto-refresh
   useEffect(() => {
     localStorage.setItem('cockpit-auto-refresh', String(autoRefresh));
   }, [autoRefresh]);
 
-  // Persist indicator toggles
-  useEffect(() => {
-    localStorage.setItem('cockpit-chart-indicators', JSON.stringify(enabledIndicators));
-  }, [enabledIndicators]);
-
-  const toggleIndicator = useCallback((name) => {
-    setEnabledIndicators((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
-    );
-  }, []);
-
+  // Symbol click → deep link into /charts. The charts route reads ?symbol=
+  // from the URL on mount and sets it as the active chart symbol.
   const handleSymbolSelect = useCallback((symbol) => {
-    setActiveSymbol(symbol);
-  }, []);
+    if (!symbol) return;
+    setShowWatchlistDrawer(false);
+    navigate(`/charts?symbol=${encodeURIComponent(symbol)}`);
+  }, [navigate]);
 
   const handleAskAI = useCallback((symbol, context) => {
     setChatContext(`[CONTEXT: ${context.type}] About ${symbol}: ${JSON.stringify(context.data)}\n\n`);
@@ -144,10 +88,7 @@ const Dashboard = ({ authToken }) => {
       <div className="flex-1 min-h-0">
         <WatchlistPanel
           watchlists={cockpitData.watchlists}
-          onSymbolSelect={(symbol) => {
-            handleSymbolSelect(symbol);
-            setShowWatchlistDrawer(false);
-          }}
+          onSymbolSelect={handleSymbolSelect}
           onAskAI={handleAskAI}
         />
       </div>
@@ -256,24 +197,26 @@ const Dashboard = ({ authToken }) => {
           )}
         </div>
 
-        {/* CENTER PANEL - Chart + Positions + Scorecard */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
-          {/* Chart Area — fixed vh height, won't grow or shrink */}
-          <div className="h-[50vh] flex-shrink-0 overflow-hidden border-b border-zinc-200/50 dark:border-zinc-800/50">
-            <PriceChart
-              symbol={activeSymbol}
-              data={chartResult.data}
-              activeTimeframe={activeTimeframe}
-              onTimeframeChange={(tf) => setActiveTimeframe(tf)}
-              liveQuote={liveQuote}
-              overlays={overlays}
-              enabledIndicators={enabledIndicators}
-              onToggleIndicator={toggleIndicator}
+        {/* CENTER PANEL - Hub: Overview, Quick links, Stats, Positions */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-y-auto custom-scrollbar">
+          {/* Portfolio Overview Cards */}
+          <PortfolioOverview portfolio={cockpitData.portfolio} funds={cockpitData.funds} />
+
+          {/* Quick Links */}
+          <QuickLinks />
+
+          {/* Allocation + Trade Stats — side by side on lg+, stacked on smaller */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 px-3 py-3 border-b border-zinc-200/60 dark:border-zinc-800/60">
+            <AllocationBreakdown
+              holdings={cockpitData.holdings}
+              positions={cockpitData.positions}
+              onSymbolSelect={handleSymbolSelect}
             />
+            <TradeStatsPanel trades={cockpitData.trades} positions={cockpitData.positions} />
           </div>
 
-          {/* Positions Table — fills remaining space, scrolls internally */}
-          <div className="flex-1 min-h-0 overflow-hidden">
+          {/* Positions / Holdings / Trades / MF — main focus area */}
+          <div className="flex-1 min-h-[420px] border-b border-zinc-200/60 dark:border-zinc-800/60">
             <PositionsTable
               positions={cockpitData.positions}
               holdings={cockpitData.holdings}
@@ -284,8 +227,12 @@ const Dashboard = ({ authToken }) => {
             />
           </div>
 
-          {/* Daily Scorecard (pinned to bottom) */}
-          {cockpitData.scorecard && <div className="flex-shrink-0"><DailyScorecard scorecard={cockpitData.scorecard} /></div>}
+          {/* Daily Scorecard */}
+          {cockpitData.scorecard && (
+            <div className="flex-shrink-0">
+              <DailyScorecard scorecard={cockpitData.scorecard} />
+            </div>
+          )}
 
           {/* Calendar scorecard (past 30d, T+1 realized) */}
           <div className="flex-shrink-0">
