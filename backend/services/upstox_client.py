@@ -194,6 +194,67 @@ class UpstoxClient:
         # Dynamic symbol→instrument_key cache (populated from holdings/positions)
         self._dynamic_symbols: dict[str, str] = {}
 
+    async def _refresh_token_force(self) -> bool:
+        """Force a TOTP refresh and update self.access_token + SDK config.
+
+        Used by ``_call_with_token_retry`` after a 401. Returns True on success.
+        Skips when ``user_id`` is unknown (e.g. shared global client). Relies on
+        ``auto_refresh_upstox_token``'s built-in 30-min cooldown to prevent
+        storms across the process.
+        """
+        if not self.user_id or self.user_id <= 0:
+            return False
+        try:
+            from api.upstox_oauth import get_user_upstox_token
+        except Exception as e:
+            logger.warning("UpstoxClient: cannot import get_user_upstox_token: %r", e)
+            return False
+        try:
+            new_token = await get_user_upstox_token(self.user_id, force_refresh=True)
+        except Exception as e:
+            logger.warning("UpstoxClient: force-refresh raised: %r", e)
+            return False
+        if not new_token:
+            logger.warning("UpstoxClient: force-refresh returned no token for user %d", self.user_id)
+            return False
+        self.access_token = new_token
+        self._configuration.access_token = new_token
+        logger.info("UpstoxClient: token refreshed via TOTP for user %d", self.user_id)
+        return True
+
+    async def _call_with_token_retry(self, call_fn, *args, max_refreshes: int = 1, **kwargs):
+        """Run ``call_fn``; on Upstox 401, force-refresh once and retry.
+
+        ``call_fn`` must build its own ``ApiClient`` from ``self._configuration``
+        each invocation so the refreshed token takes effect on retry. Both sync
+        and async callables are accepted.
+
+        Args:
+            max_refreshes: Hard cap on TOTP refresh attempts per call (default 1).
+
+        Re-raises any non-401 ApiException unchanged. Re-raises the 401 once
+        the refresh budget is exhausted.
+        """
+        import inspect
+        attempts = 0
+        while True:
+            try:
+                if inspect.iscoroutinefunction(call_fn):
+                    return await call_fn(*args, **kwargs)
+                return call_fn(*args, **kwargs)
+            except ApiException as e:
+                if e.status == 401 and attempts < max_refreshes:
+                    attempts += 1
+                    logger.warning(
+                        "UpstoxClient: 401 from Upstox (attempt %d/%d) — forcing TOTP refresh",
+                        attempts, max_refreshes,
+                    )
+                    refreshed = await self._refresh_token_force()
+                    if not refreshed:
+                        raise
+                    continue
+                raise
+
     async def _ensure_valid_token(self) -> None:
         """
         Ensure we have a valid access token.
@@ -499,14 +560,16 @@ class UpstoxClient:
 
         instrument_key = self._get_instrument_key(symbol)
 
-        try:
+        def _do_call():
             api_client = upstox_client.ApiClient(self._configuration)
             quote_api = upstox_client.MarketQuoteApi(api_client)
-
-            response = quote_api.get_full_market_quote(
+            return quote_api.get_full_market_quote(
                 symbol=instrument_key,
                 api_version="v2",
             )
+
+        try:
+            response = await self._call_with_token_retry(_do_call)
 
             # Response key format is "NSE_EQ:SYMBOL" for equity, or
             # "NSE_INDEX:Nifty 50" for indices (the pipe in instrument_key
@@ -622,11 +685,13 @@ class UpstoxClient:
         if not self.access_token:
             return None
 
-        try:
+        def _do_call():
             api_client = upstox_client.ApiClient(self._configuration)
             market_api = upstox_client.MarketHolidaysAndTimingsApi(api_client)
-            response = market_api.get_market_status(exchange="NSE")
+            return market_api.get_market_status(exchange="NSE")
 
+        try:
+            response = await self._call_with_token_retry(_do_call)
             if response and response.data:
                 return {
                     "exchange": getattr(response.data, 'exchange', 'NSE'),
@@ -869,12 +934,18 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured. Cannot fetch portfolio.")
 
-        try:
+        def _do_holdings_call():
             api_client = upstox_client.ApiClient(self._configuration)
             portfolio_api = upstox_client.PortfolioApi(api_client)
+            return portfolio_api.get_holdings(api_version="v2")
 
-            response = portfolio_api.get_holdings(api_version="v2")
+        try:
+            response = await self._call_with_token_retry(_do_holdings_call)
             holdings = response.data if response.data else []
+            # Rebuild api objects for the subsequent positions call (token may
+            # have been refreshed by the retry above).
+            api_client = upstox_client.ApiClient(self._configuration)
+            portfolio_api = upstox_client.PortfolioApi(api_client)
 
             # Fetch today's positions to find delivery sells AND intraday positions.
             # Holdings API returns FULL quantity (pre-settlement). If the user
@@ -1094,9 +1165,12 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
-        api_client = upstox_client.ApiClient(self._configuration)
-        portfolio_api = upstox_client.PortfolioApi(api_client)
-        response = portfolio_api.get_positions(api_version="v2")
+        def _do_call():
+            api_client = upstox_client.ApiClient(self._configuration)
+            portfolio_api = upstox_client.PortfolioApi(api_client)
+            return portfolio_api.get_positions(api_version="v2")
+
+        response = await self._call_with_token_retry(_do_call)
         return response.data or []
 
     async def get_orders(self) -> list[dict]:
@@ -1113,12 +1187,14 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured. Cannot fetch orders.")
 
-        try:
+        def _do_call():
             api_client = upstox_client.ApiClient(self._configuration)
             # Order book is on v2 OrderApi, not OrderApiV3
             order_api = upstox_client.OrderApi(api_client)
+            return order_api.get_order_book(api_version="v2")
 
-            response = order_api.get_order_book(api_version="v2")
+        try:
+            response = await self._call_with_token_retry(_do_call)
             orders_data = response.data if response.data else []
 
             orders = []
@@ -1184,10 +1260,13 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
-        try:
+        def _do_call():
             api_client = upstox_client.ApiClient(self._configuration)
             user_api = upstox_client.UserApi(api_client)
-            response = user_api.get_user_fund_margin(api_version="v2")
+            return user_api.get_user_fund_margin(api_version="v2")
+
+        try:
+            response = await self._call_with_token_retry(_do_call)
 
             result = {}
             if response.data:
@@ -1218,10 +1297,13 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
-        try:
+        def _do_call():
             api_client = upstox_client.ApiClient(self._configuration)
             user_api = upstox_client.UserApi(api_client)
-            response = user_api.get_profile(api_version="v2")
+            return user_api.get_profile(api_version="v2")
+
+        try:
+            response = await self._call_with_token_retry(_do_call)
 
             if not response.data:
                 raise ValueError("No profile data returned.")
