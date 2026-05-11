@@ -120,9 +120,15 @@ async def receive_order_update(request: Request) -> WebhookResponse:
     try:
         async with get_db_context() as db:
             # Map upstox_user_id → local users.id (may be None for unknown users).
+            # NOTE: upstox_user_id is NOT unique in our schema — dev/test users
+            # can share a real user's Upstox id. Order by id ASC so the real
+            # user (lowest id) wins over the dev placeholder (id=999).
             local_user_id = None
             user_row = (await db.execute(
-                select(User).where(User.upstox_user_id == str(upstox_user_id))
+                select(User)
+                .where(User.upstox_user_id == str(upstox_user_id))
+                .order_by(User.id.asc())
+                .limit(1)
             )).scalar_one_or_none()
             if user_row:
                 local_user_id = user_row.id
