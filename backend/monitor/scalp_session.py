@@ -1233,15 +1233,19 @@ class ScalpSessionManager:
         self, user_id, instrument_token, symbol,
         transaction_type, quantity, product, order_type,
     ) -> dict:
-        """Place order directly via Upstox SDK (F&O path)."""
+        """Place order directly via httpx (F&O path).
+
+        Used when the user has no order_node_url configured (fallback). Avoids
+        the upstox-python-sdk because it can hang at the urllib3 layer on the
+        HFT endpoint (2026-05-11 incident). httpx-based client returns in
+        sub-500ms in normal conditions.
+        """
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         client = await self._get_client(user_id)
         try:
-            import upstox_client
-            api_client = upstox_client.ApiClient(client._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-
             is_amo = not client._is_market_open()
-            body = upstox_client.PlaceOrderV3Request(
+            api = AsyncUpstoxOrderApi(client.access_token)
+            r = await api.place_order(
                 quantity=quantity,
                 product=product,
                 validity="DAY",
@@ -1254,12 +1258,14 @@ class ScalpSessionManager:
                 is_amo=is_amo,
                 market_protection=-1,
             )
-            response = order_api.place_order(body)
-            order_ids = response.data.order_ids if response.data else []
-            order_id = order_ids[0] if order_ids else None
-            return {"success": True, "order_id": order_id, "status": "PLACED"}
+            return {
+                "success": r.get("success", False),
+                "order_id": r.get("order_id"),
+                "status": r.get("status", "PLACED"),
+                "message": r.get("message", ""),
+            }
         except Exception as e:
-            logger.error("Scalp order failed (user=%d): %s", user_id, e)
+            logger.error("Scalp order failed (user=%d): %r", user_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def _place_order_via_node(

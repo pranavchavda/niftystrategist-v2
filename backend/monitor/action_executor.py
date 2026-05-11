@@ -292,56 +292,51 @@ class ActionExecutor:
             }
 
     async def _place_order_direct(self, rule: MonitorRule, action: PlaceOrderAction) -> dict:
-        """Place an order directly via UpstoxClient (no order node)."""
+        """Place an order directly via httpx (fallback when no order node URL).
+
+        Migrated off upstox-python-sdk on 2026-05-11 to avoid urllib3 hang
+        on the HFT host. Both F&O (instrument_token supplied) and equity
+        (symbol-only) paths go through AsyncUpstoxOrderApi now.
+        """
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         client = await self._get_client(rule.user_id)
         try:
-            if action.instrument_token:
-                # F&O path: use instrument_token directly via Upstox SDK
-                import upstox_client
-                api_client = upstox_client.ApiClient(client._configuration)
-                order_api = upstox_client.OrderApiV3(api_client)
+            instrument_token = action.instrument_token
+            if not instrument_token:
+                # Equity path: resolve symbol to instrument key. Same lookup
+                # we use in _place_order_via_node so the path is identical.
+                instrument_token = client._get_instrument_key(action.symbol)
 
-                is_amo = not client._is_market_open()
-                body = upstox_client.PlaceOrderV3Request(
-                    quantity=action.quantity,
-                    product=action.product,
-                    validity="DAY",
-                    price=action.price if action.order_type == "LIMIT" else 0,
-                    trigger_price=0,
-                    instrument_token=action.instrument_token,
-                    order_type=action.order_type,
-                    transaction_type=action.transaction_type,
-                    disclosed_quantity=0,
-                    is_amo=is_amo,
-                    market_protection=-1,
-                )
-                response = order_api.place_order(body)
-                order_ids = response.data.order_ids if response.data else []
-                order_id = order_ids[0] if order_ids else None
+            is_amo = not client._is_market_open()
+            api = AsyncUpstoxOrderApi(client.access_token)
+            r = await api.place_order(
+                quantity=action.quantity,
+                product=action.product,
+                validity="DAY",
+                price=action.price if action.order_type == "LIMIT" else 0,
+                trigger_price=0,
+                instrument_token=instrument_token,
+                order_type=action.order_type,
+                transaction_type=action.transaction_type,
+                disclosed_quantity=0,
+                is_amo=is_amo,
+                market_protection=-1,
+            )
+            if r.get("success"):
                 return {
                     "success": True,
-                    "order_id": order_id,
-                    "message": f"F&O order placed: {action.transaction_type} {action.quantity} of {action.symbol}",
-                    "status": "PLACED",
+                    "order_id": r.get("order_id"),
+                    "message": f"Order placed: {action.transaction_type} {action.quantity} of {action.symbol}",
+                    "status": r.get("status", "PLACED"),
                 }
-            else:
-                # Equity path: use client.place_order which resolves symbol internally
-                trade_result = await client.place_order(
-                    symbol=action.symbol,
-                    transaction_type=action.transaction_type,
-                    quantity=action.quantity,
-                    order_type=action.order_type,
-                    product=action.product,
-                    price=action.price if action.price is not None else 0,
-                )
-                return {
-                    "success": trade_result.success,
-                    "order_id": trade_result.order_id,
-                    "message": trade_result.message,
-                    "status": trade_result.status,
-                }
+            return {
+                "success": False,
+                "error": r.get("message"),
+                "status": r.get("status", "REJECTED"),
+                "ambiguous": _looks_like_timeout(r.get("message"), r.get("status")),
+            }
         except Exception as e:
-            logger.error("place_order failed for rule %d: %s", rule.id, e)
+            logger.error("place_order failed for rule %d: %r", rule.id, e, exc_info=True)
             return {
                 "success": False,
                 "error": str(e),

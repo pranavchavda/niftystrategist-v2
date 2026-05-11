@@ -13,10 +13,18 @@ import logging
 import os
 import time
 
-import upstox_client
+import httpx
+import upstox_client  # Still used for the order-book read in _reconcile_by_tag.
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from upstox_client.rest import ApiException
+
+# Direct httpx client replaces SDK for write endpoints (place/modify/cancel/
+# gtt/exit/multi). 2026-05-11: SDK was hanging at the urllib3 layer — orders
+# Upstox processed in 26ms timed out at 40s in the SDK. httpx avoids urllib3.
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from services.upstox_order_api import AsyncUpstoxOrderApi  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("order-node")
@@ -256,18 +264,17 @@ async def place_order(
             message=f"[deduped {now - prior_at:.0f}s] {prior_result.get('message', '')}",
         )
 
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     is_amo = req.is_amo if req.is_amo is not None else not _is_market_open()
 
-    # Upstox tag is capped at ~20 chars and we use it for post-timeout
-    # reconciliation. Fall back to a synthetic tag when the caller didn't
-    # supply a client_request_id so we still have a handle to look up.
+    # Upstox tag limit is 40 chars (UDAPI1119). We use it as the post-timeout
+    # reconciliation handle. Fall back to a synthetic tag when the caller
+    # didn't supply a client_request_id so we still have a lookup key.
     upstox_tag = (req.client_request_id or f"{int(now)}-{req.instrument_token[-6:]}")[:40]
 
     try:
-        body = upstox_client.PlaceOrderV3Request(
+        result_dict = await api.place_order(
             quantity=req.quantity,
             product=req.product,
             validity="DAY",
@@ -281,58 +288,62 @@ async def place_order(
             tag=upstox_tag,
             # -1 = automatic market protection per Upstox guidelines. Without
             # this, bare MARKET orders from API may be rejected (UDAPI1158:
-            # "Market orders are not allowed. Try placing a limit order.").
-            # Ignored for LIMIT/SL order types — safe to pass always.
+            # "Market orders are not allowed"). Ignored for LIMIT/SL types.
             market_protection=-1,
         )
-        response = await _call_sdk(order_api.place_order, body)
-        order_ids = response.data.order_ids if response.data else []
-        order_id = order_ids[0] if order_ids else None
         amo_label = " [AMO]" if is_amo else ""
-        logger.info("Order placed: %s %s %s x%d (id=%s tag=%s)%s",
-                     req.transaction_type, req.symbol, req.order_type, req.quantity, order_id, upstox_tag, amo_label)
+        if result_dict.get("success"):
+            order_id = result_dict.get("order_id")
+            latency = result_dict.get("latency_ms")
+            logger.info(
+                "Order placed: %s %s %s x%d (id=%s tag=%s upstox_latency=%sms)%s",
+                req.transaction_type, req.symbol, req.order_type, req.quantity,
+                order_id, upstox_tag, latency, amo_label,
+            )
+            result = OrderResult(
+                success=True,
+                order_id=order_id,
+                status="PENDING",
+                message=f"Order placed successfully{amo_label} (ID: {order_id})",
+            )
+            _recent_orders[key] = (time.time(), result.model_dump())
+            return result
+        # Definitive REJECTED from Upstox.
+        msg = result_dict.get("message") or "Order rejected"
+        logger.error("Place order failed: %s", msg)
         result = OrderResult(
-            success=True,
-            order_id=order_id,
-            status="PENDING",
-            message=f"Order placed successfully{amo_label} (ID: {order_id})",
+            success=False, status="REJECTED", message=f"Order rejected: {msg}",
         )
         _recent_orders[key] = (time.time(), result.model_dump())
         return result
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        logger.error("Place order failed: %s", msg)
-        result = OrderResult(success=False, status="REJECTED", message=f"Order rejected: {msg}")
-        _recent_orders[key] = (time.time(), result.model_dump())
-        return result
-    except asyncio.TimeoutError:
-        # SDK didn't return — Upstox may still have accepted the order. Scan
-        # the order book for our tag before declaring failure. 2026-05-11:
-        # session 69 NIFTY 23950PE filled despite a 30s proxy timeout; daemon
-        # then left the position naked. Reconcile here so success/failure
-        # reflects reality.
-        msg = f"Upstox SDK call exceeded {_UPSTOX_CALL_TIMEOUT_SEC}s timeout"
-        logger.error("Place order timeout: %s — reconciling by tag=%s", msg, upstox_tag)
-        recovered = await _reconcile_by_tag(api_client, upstox_tag)
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as e:
+        # Transport-level failure — request may have reached Upstox even if
+        # we didn't get a response. Scan the order book for our tag before
+        # declaring failure (2026-05-11 TATACONSUM cascade origin).
+        logger.error("Place order transport error: %r — reconciling by tag=%s", e, upstox_tag)
+        api_client_sdk = _make_client(token)
+        recovered = await _reconcile_by_tag(api_client_sdk, upstox_tag)
         if recovered and recovered.get("order_id"):
             amo_label = " [AMO]" if is_amo else ""
             logger.warning(
-                "Place order: SDK timeout but Upstox accepted (id=%s tag=%s)",
-                recovered["order_id"], upstox_tag,
+                "Place order: transport %s but Upstox accepted (id=%s tag=%s)",
+                type(e).__name__, recovered["order_id"], upstox_tag,
             )
             result = OrderResult(
                 success=True,
                 order_id=recovered["order_id"],
                 status=recovered.get("status") or "PENDING",
-                message=f"Order placed{amo_label} via post-timeout reconcile (ID: {recovered['order_id']})",
+                message=f"Order placed via post-error reconcile (ID: {recovered['order_id']})",
             )
             _recent_orders[key] = (time.time(), result.model_dump())
             return result
-        result = OrderResult(success=False, status="REJECTED", message=f"Order timed out: {msg}")
-        # Don't cache timeouts — let the caller's retry hit Upstox directly
+        result = OrderResult(
+            success=False, status="REJECTED",
+            message=f"Order transport error: {type(e).__name__}: {e}".rstrip(": "),
+        )
+        # Don't cache transport errors — let the caller retry.
         return result
     except Exception as e:
-        # exc_info captures the traceback for empty-str exceptions (httpx, etc.)
         logger.error("Place order error: %r", e, exc_info=True)
         result = OrderResult(
             success=False,
@@ -350,31 +361,27 @@ async def modify_order(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        body = upstox_client.ModifyOrderRequest(
+        r = await api.modify_order(
             order_id=req.order_id,
-            quantity=req.quantity or 0,
-            price=req.price or 0,
-            order_type=req.order_type or "LIMIT",
-            trigger_price=req.trigger_price or 0,
-            validity="DAY",
-            disclosed_quantity=0,
+            quantity=req.quantity,
+            price=req.price,
+            order_type=req.order_type,
+            trigger_price=req.trigger_price,
         )
-        response = await _call_sdk(order_api.modify_order, body)
-        logger.info("Order modified: %s", req.order_id)
-        return OrderResult(
-            success=True,
-            order_id=req.order_id,
-            status="MODIFIED",
-            message=f"Order {req.order_id} modified",
-        )
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"Modify failed: {msg}")
+        if r.get("success"):
+            logger.info("Order modified: %s", req.order_id)
+            return OrderResult(
+                success=True,
+                order_id=req.order_id,
+                status="MODIFIED",
+                message=f"Order {req.order_id} modified",
+            )
+        return OrderResult(success=False, message=f"Modify failed: {r.get('message')}")
     except Exception as e:
+        logger.error("Modify error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"Modify failed: {e}")
 
 
@@ -385,17 +392,16 @@ async def cancel_order(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        response = await _call_sdk(order_api.cancel_order, order_id)
-        logger.info("Order cancelled: %s", order_id)
-        return OrderResult(success=True, order_id=order_id, message=f"Order {order_id} cancelled")
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"Cancel failed: {msg}")
+        r = await api.cancel_order(order_id)
+        if r.get("success"):
+            logger.info("Order cancelled: %s", order_id)
+            return OrderResult(success=True, order_id=order_id, message=f"Order {order_id} cancelled")
+        return OrderResult(success=False, message=f"Cancel failed: {r.get('message')}")
     except Exception as e:
+        logger.error("Cancel error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"Cancel failed: {e}")
 
 
@@ -406,23 +412,16 @@ async def cancel_all_orders(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        # Build kwargs for cancel_multi_order
-        kwargs = {}
-        if req.tag:
-            kwargs["tag"] = req.tag
-        if req.segment:
-            kwargs["segment"] = req.segment
-        response = await _call_sdk(order_api.cancel_multi_order, **kwargs)
-        logger.info("Cancel-all: tag=%s segment=%s", req.tag, req.segment)
-        return OrderResult(success=True, message="All matching orders cancelled")
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"Cancel-all failed: {msg}")
+        r = await api.cancel_multi_order(tag=req.tag, segment=req.segment)
+        if r.get("success"):
+            logger.info("Cancel-all: tag=%s segment=%s", req.tag, req.segment)
+            return OrderResult(success=True, message="All matching orders cancelled")
+        return OrderResult(success=False, message=f"Cancel-all failed: {r.get('message')}")
     except Exception as e:
+        logger.error("Cancel-all error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"Cancel-all failed: {e}")
 
 
@@ -432,17 +431,16 @@ async def exit_all_positions(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        response = await _call_sdk(order_api.exit_positions, cancel_orders=True)
-        logger.info("Exit-all positions executed")
-        return OrderResult(success=True, message="All positions exit orders placed")
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"Exit-all failed: {msg}")
+        r = await api.exit_positions(cancel_orders=True)
+        if r.get("success"):
+            logger.info("Exit-all positions executed")
+            return OrderResult(success=True, message="All positions exit orders placed")
+        return OrderResult(success=False, message=f"Exit-all failed: {r.get('message')}")
     except Exception as e:
+        logger.error("Exit-all error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"Exit-all failed: {e}")
 
 
@@ -454,40 +452,36 @@ async def place_gtt(
 ):
     """Place a single-leg GTT order via the order node proxy."""
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        body = upstox_client.GttPlaceOrderRequest(
+        r = await api.place_gtt_order(
             instrument_token=req.instrument_token,
             transaction_type=req.transaction_type,
             quantity=req.quantity,
             product=req.product,
             type="SINGLE",
-            rules=[upstox_client.GttRule(
-                strategy="ENTRY",
-                trigger_type="BELOW",
-                trigger_price=req.trigger_price,
-            )],
+            rules=[{
+                "strategy": "ENTRY",
+                "trigger_type": "BELOW",
+                "trigger_price": req.trigger_price,
+            }],
         )
-        response = await _call_sdk(order_api.place_gtt_order, body)
-        gtt_ids = response.data.gtt_order_ids if response.data else []
-        gtt_id = gtt_ids[0] if gtt_ids else None
-        logger.info("GTT placed: %s %s x%d trigger=%s (id=%s)",
-                    req.transaction_type, req.instrument_token, req.quantity,
-                    req.trigger_price, gtt_id)
-        return OrderResult(
-            success=True,
-            order_id=str(gtt_id) if gtt_id else None,
-            status="PENDING",
-            message=f"GTT order placed (ID: {gtt_id})",
-        )
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        logger.error("GTT place failed: %s", msg)
-        return OrderResult(success=False, status="REJECTED", message=f"GTT rejected: {msg}")
+        if r.get("success"):
+            gtt_id = r.get("order_id")  # AsyncUpstoxOrderApi maps gtt_order_ids[0] → order_id
+            logger.info("GTT placed: %s %s x%d trigger=%s (id=%s)",
+                        req.transaction_type, req.instrument_token, req.quantity,
+                        req.trigger_price, gtt_id)
+            return OrderResult(
+                success=True,
+                order_id=str(gtt_id) if gtt_id else None,
+                status="PENDING",
+                message=f"GTT order placed (ID: {gtt_id})",
+            )
+        return OrderResult(success=False, status="REJECTED",
+                           message=f"GTT rejected: {r.get('message')}")
     except Exception as e:
-        logger.error("GTT place error: %s", e)
+        logger.error("GTT place error: %r", e, exc_info=True)
         return OrderResult(success=False, status="REJECTED", message=f"GTT failed: {e}")
 
 
@@ -499,27 +493,25 @@ async def modify_gtt(
 ):
     """Modify an existing GTT order's quantity or trigger price."""
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        body = upstox_client.GttModifyOrderRequest(
+        r = await api.modify_gtt_order(
             gtt_order_id=req.gtt_order_id,
             quantity=req.quantity,
             trigger_price=req.trigger_price,
         )
-        response = await _call_sdk(order_api.modify_gtt_order, body)
-        logger.info("GTT modified: %s", req.gtt_order_id)
-        return OrderResult(
-            success=True,
-            order_id=req.gtt_order_id,
-            status="MODIFIED",
-            message=f"GTT {req.gtt_order_id} modified",
-        )
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"GTT modify failed: {msg}")
+        if r.get("success"):
+            logger.info("GTT modified: %s", req.gtt_order_id)
+            return OrderResult(
+                success=True,
+                order_id=req.gtt_order_id,
+                status="MODIFIED",
+                message=f"GTT {req.gtt_order_id} modified",
+            )
+        return OrderResult(success=False, message=f"GTT modify failed: {r.get('message')}")
     except Exception as e:
+        logger.error("GTT modify error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"GTT modify failed: {e}")
 
 
@@ -531,19 +523,17 @@ async def cancel_gtt(
 ):
     """Cancel an existing GTT order."""
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        body = upstox_client.GttCancelOrderRequest(gtt_order_id=gtt_order_id)
-        response = await _call_sdk(order_api.cancel_gtt_order, body)
-        logger.info("GTT cancelled: %s", gtt_order_id)
-        return OrderResult(success=True, order_id=gtt_order_id,
-                           message=f"GTT {gtt_order_id} cancelled")
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"GTT cancel failed: {msg}")
+        r = await api.cancel_gtt_order(gtt_order_id)
+        if r.get("success"):
+            logger.info("GTT cancelled: %s", gtt_order_id)
+            return OrderResult(success=True, order_id=gtt_order_id,
+                               message=f"GTT {gtt_order_id} cancelled")
+        return OrderResult(success=False, message=f"GTT cancel failed: {r.get('message')}")
     except Exception as e:
+        logger.error("GTT cancel error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"GTT cancel failed: {e}")
 
 
@@ -554,42 +544,36 @@ async def list_gtt(
 ):
     """List all GTT orders for the user."""
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     try:
-        response = await _call_sdk(order_api.get_gtt_order_details)
+        r = await api.get_gtt_orders()
+        if not r.get("success"):
+            return OrderResult(success=False, message=f"GTT list failed: {r.get('message')}")
+        # Upstox V3 returns ``data`` as a list or single item depending on count.
+        raw = r.get("raw") or {}
+        items = raw.get("data") or []
+        if not isinstance(items, list):
+            items = [items]
         orders = []
-        if response.data:
-            items = response.data if isinstance(response.data, list) else [response.data]
-            for item in items:
-                order = {}
-                for attr in ("gtt_order_id", "type", "quantity", "product",
-                             "instrument_token", "trading_symbol", "exchange",
-                             "created_at", "expires_at", "status"):
-                    val = getattr(item, attr, None)
-                    if val is not None:
-                        order[attr] = str(val) if attr.endswith("_at") else val
-                item_rules = getattr(item, "rules", None)
-                if item_rules:
-                    order["rules"] = []
-                    for r in (item_rules if isinstance(item_rules, list) else [item_rules]):
-                        if isinstance(r, dict):
-                            order["rules"].append(r)
-                        else:
-                            order["rules"].append({
-                                "strategy": getattr(r, "strategy", None),
-                                "trigger_type": getattr(r, "trigger_type", None),
-                                "trigger_price": getattr(r, "trigger_price", None),
-                                "transaction_type": getattr(r, "transaction_type", None),
-                            })
-                orders.append(order)
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            order: dict = {}
+            for attr in ("gtt_order_id", "type", "quantity", "product",
+                         "instrument_token", "trading_symbol", "exchange",
+                         "created_at", "expires_at", "status"):
+                val = item.get(attr)
+                if val is not None:
+                    order[attr] = str(val) if attr.endswith("_at") else val
+            rules = item.get("rules")
+            if rules:
+                order["rules"] = rules if isinstance(rules, list) else [rules]
+            orders.append(order)
         return OrderResult(success=True, message="GTT orders fetched",
                            data={"orders": orders})
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"GTT list failed: {msg}")
     except Exception as e:
+        logger.error("GTT list error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"GTT list failed: {e}")
 
 
@@ -600,37 +584,37 @@ async def place_multi_order(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api_client = _make_client(token)
-    order_api = upstox_client.OrderApiV3(api_client)
+    api = AsyncUpstoxOrderApi(token)
 
     is_amo = not _is_market_open()
 
     try:
-        order_requests = []
+        order_payloads = []
         for o in req.orders:
-            order_requests.append(upstox_client.PlaceOrderV3Request(
-                quantity=o["quantity"],
-                product=o.get("product", "D"),
-                validity="DAY",
-                price=o.get("price", 0),
-                trigger_price=o.get("trigger_price", 0),
-                instrument_token=o["instrument_token"],
-                order_type=o.get("order_type", "LIMIT"),
-                transaction_type=o["transaction_type"],
-                disclosed_quantity=0,
-                is_amo=is_amo,
-                tag=o.get("tag"),
-                market_protection=-1,
-            ))
-        response = await _call_sdk(order_api.place_multi_order, order_requests)
-        logger.info("Multi-order placed: %d legs", len(order_requests))
-        return OrderResult(
-            success=True,
-            message=f"Multi-order placed ({len(order_requests)} legs)",
-            data={"response": str(response.data) if response.data else None},
-        )
-    except ApiException as e:
-        msg = _parse_api_error(e)
-        return OrderResult(success=False, message=f"Multi-order failed: {msg}")
+            payload = {
+                "quantity": o["quantity"],
+                "product": o.get("product", "D"),
+                "validity": "DAY",
+                "price": o.get("price", 0),
+                "trigger_price": o.get("trigger_price", 0),
+                "instrument_token": o["instrument_token"],
+                "order_type": o.get("order_type", "LIMIT"),
+                "transaction_type": o["transaction_type"],
+                "disclosed_quantity": 0,
+                "is_amo": is_amo,
+                "tag": o.get("tag"),
+                "market_protection": -1,
+            }
+            order_payloads.append(payload)
+        r = await api.place_multi_order(order_payloads)
+        if r.get("success"):
+            logger.info("Multi-order placed: %d legs", len(order_payloads))
+            return OrderResult(
+                success=True,
+                message=f"Multi-order placed ({len(order_payloads)} legs)",
+                data=r.get("data"),
+            )
+        return OrderResult(success=False, message=f"Multi-order failed: {r.get('message')}")
     except Exception as e:
+        logger.error("Multi-order error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"Multi-order failed: {e}")

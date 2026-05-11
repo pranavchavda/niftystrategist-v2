@@ -688,55 +688,36 @@ class UpstoxClient:
         if is_amo is None:
             is_amo = not self._is_market_open()
 
+        # Migrated off upstox-python-sdk on 2026-05-11 to avoid urllib3 hang
+        # on api-hft.upstox.com. AsyncUpstoxOrderApi uses httpx directly.
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-
-            body = upstox_client.PlaceOrderV3Request(
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.place_order(
                 quantity=quantity,
                 product=product,
                 validity="DAY",
                 price=price if order_type == "LIMIT" else 0,
-                trigger_price=0,  # No stop-loss trigger
+                trigger_price=0,
                 instrument_token=instrument_key,
                 order_type=order_type,
                 transaction_type=transaction_type,
-                disclosed_quantity=0,  # Show full quantity (no iceberg)
+                disclosed_quantity=0,
                 is_amo=is_amo,
                 market_protection=-1,
             )
-
-            response = order_api.place_order(body)
-
-            # V3 API returns order_ids (list), not order_id
-            order_ids = response.data.order_ids if response.data else []
-            order_id = order_ids[0] if order_ids else None
-
             amo_label = " [AMO]" if is_amo else ""
-            return TradeResult(
-                success=True,
-                order_id=order_id,
-                status="PENDING",
-                message=f"Order placed successfully{amo_label} (ID: {order_id})",
-            )
-
-        except ApiException as e:
-            # Extract detailed error from response body
-            detail = ""
-            if e.body:
-                try:
-                    import json as _json
-                    body = _json.loads(e.body) if isinstance(e.body, str) else e.body
-                    detail = body.get("message", "") or body.get("errors", "")
-                except Exception:
-                    detail = str(e.body)[:200]
-            msg = f"Order rejected: {e.status} - {e.reason}"
-            if detail:
-                msg += f" ({detail})"
+            if r.get("success"):
+                return TradeResult(
+                    success=True,
+                    order_id=r.get("order_id"),
+                    status="PENDING",
+                    message=f"Order placed successfully{amo_label} (ID: {r.get('order_id')})",
+                )
             return TradeResult(
                 success=False,
                 status="REJECTED",
-                message=msg,
+                message=f"Order rejected: {r.get('message')}",
             )
         except Exception as e:
             return TradeResult(
@@ -1181,27 +1162,15 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured. Cannot cancel order.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-
-            response = order_api.cancel_order(order_id=order_id)
-
-            return {
-                "success": True,
-                "message": f"Order {order_id} cancelled successfully"
-            }
-
-        except ApiException as e:
-            return {
-                "success": False,
-                "message": f"Failed to cancel order: {e.status} - {e.reason}"
-            }
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.cancel_order(order_id)
+            if r.get("success"):
+                return {"success": True, "message": f"Order {order_id} cancelled successfully"}
+            return {"success": False, "message": f"Failed to cancel order: {r.get('message')}"}
         except Exception as e:
-            return {
-                "success": False,
-                "message": f"Failed to cancel order: {e}"
-            }
+            return {"success": False, "message": f"Failed to cancel order: {e}"}
 
     # ── Funds & Margin ──────────────────────────────────────────────
 
@@ -1888,58 +1857,43 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApi(api_client)
-
-            multi_orders = []
+            payloads = []
             for o in orders:
-                req = upstox_client.MultiOrderRequest(
-                    quantity=o["quantity"],
-                    product=o.get("product", "D"),
-                    validity="DAY",
-                    price=o.get("price", 0),
-                    instrument_token=o["instrument_token"],
-                    order_type=o.get("order_type", "LIMIT"),
-                    transaction_type=o["transaction_type"],
-                    disclosed_quantity=0,
-                    trigger_price=0,
-                    is_amo=False,
-                    correlation_id=o.get("correlation_id", ""),
-                    tag=o.get("tag", ""),
-                    slice=o.get("slice", False),
-                )
-                multi_orders.append(req)
-
-            response = order_api.place_multi_order(body=multi_orders)
-
-            order_ids = []
-            if response.data:
-                items = response.data if isinstance(response.data, list) else [response.data]
-                for item in items:
+                payloads.append({
+                    "quantity": o["quantity"],
+                    "product": o.get("product", "D"),
+                    "validity": "DAY",
+                    "price": o.get("price", 0),
+                    "instrument_token": o["instrument_token"],
+                    "order_type": o.get("order_type", "LIMIT"),
+                    "transaction_type": o["transaction_type"],
+                    "disclosed_quantity": 0,
+                    "trigger_price": 0,
+                    "is_amo": False,
+                    "tag": o.get("tag"),
+                    "slice": o.get("slice", False),
+                })
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.place_multi_order(payloads)
+            if r.get("success"):
+                # Multi-order data may be a list of {order_id, ...} or a single dict.
+                raw = r.get("raw") or {}
+                data = raw.get("data") or []
+                if not isinstance(data, list):
+                    data = [data]
+                order_ids = []
+                for item in data:
                     if isinstance(item, dict):
                         oid = item.get("order_id") or item.get("order_ids")
                         order_ids.append(oid)
-                    else:
-                        oid = getattr(item, "order_id", None) or getattr(item, "order_ids", None)
-                        order_ids.append(oid)
-
-            return {
-                "success": True,
-                "order_ids": order_ids,
-                "message": f"Multi-order placed ({len(orders)} legs)",
-            }
-
-        except ApiException as e:
-            detail = ""
-            if e.body:
-                try:
-                    import json as _json
-                    body = _json.loads(e.body) if isinstance(e.body, str) else e.body
-                    detail = body.get("message", "") or body.get("errors", "")
-                except Exception:
-                    detail = str(e.body)[:300]
-            return {"success": False, "message": f"Multi-order failed: {e.status} - {e.reason} ({detail})"}
+                return {
+                    "success": True,
+                    "order_ids": order_ids,
+                    "message": f"Multi-order placed ({len(orders)} legs)",
+                }
+            return {"success": False, "message": f"Multi-order failed: {r.get('message')}"}
         except Exception as e:
             return {"success": False, "message": f"Multi-order failed: {e}"}
 
@@ -1971,38 +1925,24 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-
-            # SDK requires all fields; pass 0 for unchanged numeric fields
-            body = upstox_client.ModifyOrderRequest(
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.modify_order(
                 order_id=order_id,
+                quantity=quantity,
+                price=price,
+                order_type=order_type,
+                trigger_price=trigger_price,
                 validity=validity,
-                quantity=quantity or 0,
-                price=price or 0,
-                order_type=order_type or "LIMIT",
-                disclosed_quantity=0,
-                trigger_price=trigger_price or 0,
             )
-
-            response = order_api.modify_order(body)
-            return {
-                "success": True,
-                "message": f"Order {order_id} modified successfully",
-                "data": response.data if response.data else None,
-            }
-
-        except ApiException as e:
-            detail = ""
-            if e.body:
-                try:
-                    import json as _json
-                    body = _json.loads(e.body) if isinstance(e.body, str) else e.body
-                    detail = body.get("message", "") or body.get("errors", "")
-                except Exception:
-                    detail = str(e.body)[:200]
-            return {"success": False, "message": f"Modify failed: {e.status} - {e.reason} ({detail})"}
+            if r.get("success"):
+                return {
+                    "success": True,
+                    "message": f"Order {order_id} modified successfully",
+                    "data": r.get("data"),
+                }
+            return {"success": False, "message": f"Modify failed: {r.get('message')}"}
         except Exception as e:
             return {"success": False, "message": f"Modify failed: {e}"}
 
@@ -2102,27 +2042,17 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApi(api_client)
-            response = order_api.exit_positions()
-
-            return {
-                "success": True,
-                "message": "All positions exit orders placed",
-                "data": response.data if response.data else None,
-            }
-
-        except ApiException as e:
-            detail = ""
-            if e.body:
-                try:
-                    import json as _json
-                    body = _json.loads(e.body) if isinstance(e.body, str) else e.body
-                    detail = body.get("message", "") or body.get("errors", "")
-                except Exception:
-                    detail = str(e.body)[:200]
-            return {"success": False, "message": f"Exit-all failed: {e.status} - {e.reason} ({detail})"}
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.exit_positions(cancel_orders=True)
+            if r.get("success"):
+                return {
+                    "success": True,
+                    "message": "All positions exit orders placed",
+                    "data": r.get("data"),
+                }
+            return {"success": False, "message": f"Exit-all failed: {r.get('message')}"}
         except Exception as e:
             return {"success": False, "message": f"Exit-all failed: {e}"}
 
@@ -2142,33 +2072,17 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApi(api_client)
-
-            kwargs = {}
-            if tag:
-                kwargs["tag"] = tag
-            if segment:
-                kwargs["segment"] = segment
-            response = order_api.cancel_multi_order(**kwargs)
-
-            return {
-                "success": True,
-                "message": "Multi-cancel request sent",
-                "data": response.data if response.data else None,
-            }
-
-        except ApiException as e:
-            detail = ""
-            if e.body:
-                try:
-                    import json as _json
-                    body = _json.loads(e.body) if isinstance(e.body, str) else e.body
-                    detail = body.get("message", "") or body.get("errors", "")
-                except Exception:
-                    detail = str(e.body)[:200]
-            return {"success": False, "message": f"Multi-cancel failed: {e.status} - {e.reason} ({detail})"}
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.cancel_multi_order(tag=tag, segment=segment)
+            if r.get("success"):
+                return {
+                    "success": True,
+                    "message": "Multi-cancel request sent",
+                    "data": r.get("data"),
+                }
+            return {"success": False, "message": f"Multi-cancel failed: {r.get('message')}"}
         except Exception as e:
             return {"success": False, "message": f"Multi-cancel failed: {e}"}
 
@@ -2382,22 +2296,21 @@ class UpstoxClient:
 
         instrument_key = self._get_instrument_key(symbol)
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-
             gtt_rules = []
             for r in (rules or []):
-                rule = upstox_client.GttRule(
-                    strategy=r.get("strategy", "ENTRY"),
-                    trigger_type=r.get("trigger_type", "BELOW"),
-                    trigger_price=r["trigger_price"],
-                )
+                rule_dict = {
+                    "strategy": r.get("strategy", "ENTRY"),
+                    "trigger_type": r.get("trigger_type", "BELOW"),
+                    "trigger_price": r["trigger_price"],
+                }
                 if r.get("trailing_gap"):
-                    rule.trailing_gap = r["trailing_gap"]
-                gtt_rules.append(rule)
+                    rule_dict["trailing_gap"] = r["trailing_gap"]
+                gtt_rules.append(rule_dict)
 
-            body = upstox_client.GttPlaceOrderRequest(
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.place_gtt_order(
                 type=gtt_type,
                 quantity=quantity,
                 product=product,
@@ -2405,35 +2318,15 @@ class UpstoxClient:
                 transaction_type=transaction_type,
                 rules=gtt_rules,
             )
-
-            response = order_api.place_gtt_order(body)
-
-            gtt_id = None
-            if response.data:
-                # SDK returns gtt_order_ids (list)
-                ids = getattr(response.data, "gtt_order_ids", None)
-                if ids and isinstance(ids, list):
-                    gtt_id = ids[0]
-                elif isinstance(response.data, dict):
-                    ids = response.data.get("gtt_order_ids", [])
-                    gtt_id = ids[0] if ids else response.data.get("gtt_order_id")
-
-            return {
-                "success": True,
-                "gtt_order_id": gtt_id,
-                "message": f"GTT order placed (ID: {gtt_id})",
-            }
-
-        except ApiException as e:
-            detail = ""
-            if e.body:
-                try:
-                    import json as _json
-                    body_data = _json.loads(e.body) if isinstance(e.body, str) else e.body
-                    detail = body_data.get("message", "") or body_data.get("errors", "")
-                except Exception:
-                    detail = str(e.body)[:200]
-            return {"success": False, "message": f"GTT order failed: {e.status} - {e.reason} ({detail})"}
+            if r.get("success"):
+                # AsyncUpstoxOrderApi maps gtt_order_ids[0] → order_id
+                gtt_id = r.get("order_id") or (r.get("gtt_order_ids") or [None])[0]
+                return {
+                    "success": True,
+                    "gtt_order_id": gtt_id,
+                    "message": f"GTT order placed (ID: {gtt_id})",
+                }
+            return {"success": False, "message": f"GTT order failed: {r.get('message')}"}
         except Exception as e:
             return {"success": False, "message": f"GTT order failed: {e}"}
 
@@ -2461,10 +2354,8 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-
             # Fetch existing GTT order to fill in required fields that weren't provided
             existing = None
             if quantity is None or not rules:
@@ -2474,46 +2365,31 @@ class UpstoxClient:
                 except Exception:
                     pass
 
-            kwargs = {"gtt_order_id": gtt_order_id}
-            kwargs["type"] = gtt_type or (existing.get("type") if existing else "SINGLE")
-            kwargs["quantity"] = quantity if quantity is not None else (existing.get("quantity", 1) if existing else 1)
-
             if not rules and existing and existing.get("rules"):
-                # Use existing rules as base (required by SDK)
                 rules = existing["rules"]
 
+            gtt_rules = None
             if rules:
                 gtt_rules = []
                 for r in rules:
-                    trigger_type = r.get("trigger_type") or "BELOW"
-                    rule = upstox_client.GttRule(
-                        strategy=r.get("strategy", "ENTRY"),
-                        trigger_type=trigger_type,
-                        trigger_price=r["trigger_price"],
-                    )
+                    rule_dict = {
+                        "strategy": r.get("strategy", "ENTRY"),
+                        "trigger_type": r.get("trigger_type") or "BELOW",
+                        "trigger_price": r["trigger_price"],
+                    }
                     if r.get("trailing_gap"):
-                        rule.trailing_gap = r["trailing_gap"]
-                    gtt_rules.append(rule)
-                kwargs["rules"] = gtt_rules
+                        rule_dict["trailing_gap"] = r["trailing_gap"]
+                    gtt_rules.append(rule_dict)
 
-            body = upstox_client.GttModifyOrderRequest(**kwargs)
-            response = order_api.modify_gtt_order(body)
-
-            return {
-                "success": True,
-                "message": f"GTT order {gtt_order_id} modified successfully",
-            }
-
-        except ApiException as e:
-            detail = ""
-            if e.body:
-                try:
-                    import json as _json
-                    body_data = _json.loads(e.body) if isinstance(e.body, str) else e.body
-                    detail = body_data.get("message", "") or body_data.get("errors", "")
-                except Exception:
-                    detail = str(e.body)[:200]
-            return {"success": False, "message": f"GTT modify failed: {e.status} - {e.reason} ({detail})"}
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.modify_gtt_order(
+                gtt_order_id=gtt_order_id,
+                quantity=quantity if quantity is not None else (existing.get("quantity", 1) if existing else 1),
+                rules=gtt_rules,
+            )
+            if r.get("success"):
+                return {"success": True, "message": f"GTT order {gtt_order_id} modified successfully"}
+            return {"success": False, "message": f"GTT modify failed: {r.get('message')}"}
         except Exception as e:
             return {"success": False, "message": f"GTT modify failed: {e}"}
 
@@ -2528,20 +2404,13 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-
-            body = upstox_client.GttCancelOrderRequest(gtt_order_id=gtt_order_id)
-            response = order_api.cancel_gtt_order(body)
-
-            return {
-                "success": True,
-                "message": f"GTT order {gtt_order_id} cancelled",
-            }
-
-        except ApiException as e:
-            return {"success": False, "message": f"GTT cancel failed: {e.status} - {e.reason}"}
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.cancel_gtt_order(gtt_order_id)
+            if r.get("success"):
+                return {"success": True, "message": f"GTT order {gtt_order_id} cancelled"}
+            return {"success": False, "message": f"GTT cancel failed: {r.get('message')}"}
         except Exception as e:
             return {"success": False, "message": f"GTT cancel failed: {e}"}
 
@@ -2553,54 +2422,39 @@ class UpstoxClient:
         if not self.access_token:
             raise ValueError("No Upstox access token configured.")
 
+        from services.upstox_order_api import AsyncUpstoxOrderApi
         try:
-            api_client = upstox_client.ApiClient(self._configuration)
-            order_api = upstox_client.OrderApiV3(api_client)
-            response = order_api.get_gtt_order_details()
-
+            api = AsyncUpstoxOrderApi(self.access_token)
+            r = await api.get_gtt_orders()
+            if not r.get("success"):
+                raise ValueError(f"Failed to fetch GTT orders: {r.get('message')}")
+            raw = r.get("raw") or {}
+            items = raw.get("data") or []
+            if not isinstance(items, list):
+                items = [items]
             orders = []
-            if response.data:
-                items = response.data if isinstance(response.data, list) else [response.data]
-                for item in items:
-                    if isinstance(item, dict):
-                        orders.append(item)
-                    else:
-                        order = {}
-                        for attr in ("gtt_order_id", "type", "quantity", "product",
-                                     "instrument_token", "trading_symbol", "exchange",
-                                     "created_at", "expires_at"):
-                            val = getattr(item, attr, None)
-                            if val is not None:
-                                order[attr] = str(val) if attr.endswith("_at") else val
-                        # Extract rules (transaction_type is per-rule, not top-level)
-                        item_rules = getattr(item, "rules", None)
-                        if item_rules:
-                            order["rules"] = []
-                            for r in (item_rules if isinstance(item_rules, list) else [item_rules]):
-                                if isinstance(r, dict):
-                                    order["rules"].append(r)
-                                else:
-                                    order["rules"].append({
-                                        "strategy": getattr(r, "strategy", None),
-                                        "trigger_type": getattr(r, "trigger_type", None),
-                                        "trigger_price": getattr(r, "trigger_price", None),
-                                        "transaction_type": getattr(r, "transaction_type", None),
-                                        "status": getattr(r, "status", None),
-                                        "trailing_gap": getattr(r, "trailing_gap", None),
-                                        "order_id": getattr(r, "order_id", None),
-                                    })
-                            # Hoist transaction_type from first rule for convenience
-                            if order["rules"] and order["rules"][0].get("transaction_type"):
-                                order["transaction_type"] = order["rules"][0]["transaction_type"]
-                            # Derive overall status from rules
-                            statuses = [r.get("status") for r in order["rules"] if r.get("status")]
-                            if statuses:
-                                order["status"] = statuses[0]
-                        orders.append(order)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                order: dict = {}
+                for attr in ("gtt_order_id", "type", "quantity", "product",
+                             "instrument_token", "trading_symbol", "exchange",
+                             "created_at", "expires_at"):
+                    val = item.get(attr)
+                    if val is not None:
+                        order[attr] = str(val) if attr.endswith("_at") else val
+                rules = item.get("rules")
+                if rules:
+                    order["rules"] = rules if isinstance(rules, list) else [rules]
+                    if order["rules"] and order["rules"][0].get("transaction_type"):
+                        order["transaction_type"] = order["rules"][0]["transaction_type"]
+                    statuses = [rr.get("status") for rr in order["rules"] if rr.get("status")]
+                    if statuses:
+                        order["status"] = statuses[0]
+                orders.append(order)
             return orders
-
-        except ApiException as e:
-            raise ValueError(f"Failed to fetch GTT orders: {e.status} - {e.reason}")
+        except ValueError:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to fetch GTT orders: {e}")
 

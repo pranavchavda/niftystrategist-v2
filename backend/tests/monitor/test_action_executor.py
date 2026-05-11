@@ -76,8 +76,11 @@ def _make_mock_client(place_order_return=None, cancel_order_return=None):
 
 @pytest.mark.asyncio
 async def test_execute_place_order_success():
-    """Calling execute with a place_order action calls client.place_order with correct params."""
-    mock_client = _make_mock_client()
+    """place_order success path goes through AsyncUpstoxOrderApi (httpx) — 2026-05-11 SDK migration."""
+    mock_client = AsyncMock()
+    mock_client._is_market_open = MagicMock(return_value=True)
+    mock_client.access_token = "test-token"
+    mock_client._get_instrument_key = MagicMock(return_value="NSE_EQ|INE002A01018")
     get_client = AsyncMock(return_value=mock_client)
     executor = ActionExecutor(get_client=get_client)
 
@@ -85,30 +88,40 @@ async def test_execute_place_order_success():
     result = _fired_result()
     session = AsyncMock()
 
-    with patch("monitor.action_executor.crud") as mock_crud:
+    # AsyncUpstoxOrderApi is constructed lazily inside _place_order_direct;
+    # patch it where it's imported.
+    mock_api = AsyncMock()
+    mock_api.place_order = AsyncMock(return_value={
+        "success": True, "order_id": "ORD123", "status": "PENDING",
+        "message": "OK", "latency_ms": 12,
+    })
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
         mock_crud.record_fire = AsyncMock()
         mock_crud.disable_rule = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
         action_result = await executor.execute(rule, result, {"ltp": 105.0}, session)
 
     assert action_result["success"] is True
     assert action_result["order_id"] == "ORD123"
-    mock_client.place_order.assert_awaited_once_with(
-        symbol="RELIANCE",
-        transaction_type="BUY",
-        quantity=10,
-        order_type="MARKET",
-        product="I",
-        price=0,
-    )
+    mock_api.place_order.assert_awaited_once()
+    call_kwargs = mock_api.place_order.await_args.kwargs
+    assert call_kwargs["transaction_type"] == "BUY"
+    assert call_kwargs["quantity"] == 10
+    assert call_kwargs["order_type"] == "MARKET"
+    assert call_kwargs["product"] == "I"
 
 
 # ── Test: place_order failure (exception) ─────────────────────────────
 
 @pytest.mark.asyncio
 async def test_execute_place_order_failure():
-    """When client.place_order raises, action_result has error info and doesn't crash."""
+    """When AsyncUpstoxOrderApi raises, action_result has error info and doesn't crash."""
     mock_client = AsyncMock()
-    mock_client.place_order.side_effect = Exception("Upstox API timeout")
+    mock_client._is_market_open = MagicMock(return_value=True)
+    mock_client.access_token = "test-token"
+    mock_client._get_instrument_key = MagicMock(return_value="NSE_EQ|INE002A01018")
     get_client = AsyncMock(return_value=mock_client)
     executor = ActionExecutor(get_client=get_client)
 
@@ -116,9 +129,14 @@ async def test_execute_place_order_failure():
     result = _fired_result()
     session = AsyncMock()
 
-    with patch("monitor.action_executor.crud") as mock_crud:
+    mock_api = AsyncMock()
+    mock_api.place_order = AsyncMock(side_effect=Exception("Upstox API timeout"))
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
         mock_crud.record_fire = AsyncMock()
         mock_crud.disable_rule = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
         action_result = await executor.execute(rule, result, {"ltp": 105.0}, session)
 
     assert action_result["success"] is False
