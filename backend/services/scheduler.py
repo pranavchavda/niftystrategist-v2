@@ -760,27 +760,77 @@ class WorkflowScheduler:
         except Exception as e:
             logger.error("Awakening reconcile failed: %s", e)
 
+    # Catch-up window: if the most-recent prior cron fire for an awakening
+    # was within this many seconds of the first time we register the job in
+    # this process, fire it once now instead of waiting for tomorrow.
+    # 2026-05-11: a deploy restart at 04:14:50 UTC re-added awakening_36
+    # at 04:15:00.754, just past its 04:15:00 (09:45 IST) fire instant.
+    # APScheduler pushed next_run_time to tomorrow and the scan never ran.
+    AWAKENING_CATCH_UP_WINDOW_SEC = 600
+
     def _add_awakening_job(self, schedule):
         """Add a CronTrigger job for an awakening schedule.
 
         Uses timezone='Asia/Kolkata' directly so the user's IST times fire
         correctly regardless of server timezone (dev=EDT, prod=UTC, etc.).
+
+        Catch-up: when this is the first time we've registered the job in
+        the current process (fresh boot or first add after disable), check
+        whether the most recent cron fire occurred in the last
+        AWAKENING_CATCH_UP_WINDOW_SEC and, if so, queue a one-shot fire at
+        that past instant. APScheduler's misfire_grace_time then runs it
+        immediately. Subsequent reconcile calls hit ``existed_before=True``
+        so they don't re-trigger catch-up.
         """
         from zoneinfo import ZoneInfo
+        from datetime import datetime, timedelta
 
         job_id = f"awakening_{schedule.id}"
-
-        if self.scheduler.get_job(job_id):
+        existed_before = self.scheduler.get_job(job_id) is not None
+        if existed_before:
             self.scheduler.remove_job(job_id)
 
         day_of_week = "mon-fri" if schedule.weekdays_only else "*"
+        ist = ZoneInfo("Asia/Kolkata")
 
         trigger = CronTrigger(
             hour=schedule.cron_hour,
             minute=schedule.cron_minute,
             day_of_week=day_of_week,
-            timezone=ZoneInfo("Asia/Kolkata"),
+            timezone=ist,
         )
+
+        # Catch-up scan only on first registration this process.
+        catch_up_kwargs: dict = {}
+        if not existed_before:
+            now_ist = datetime.now(ist)
+            window = timedelta(seconds=self.AWAKENING_CATCH_UP_WINDOW_SEC)
+            search_from = now_ist - window
+            # Walk forward from the start of the window to find the most
+            # recent fire ≤ now. CronTrigger.get_next_fire_time(prev, now)
+            # returns the next fire strictly after ``prev`` (or after ``now``
+            # when prev is None). Iterate until we step past the present.
+            prior_fire = None
+            candidate = trigger.get_next_fire_time(None, search_from)
+            while candidate is not None and candidate <= now_ist:
+                prior_fire = candidate
+                candidate = trigger.get_next_fire_time(
+                    prior_fire, prior_fire + timedelta(seconds=1)
+                )
+            if prior_fire is not None:
+                age_sec = (now_ist - prior_fire).total_seconds()
+                logger.warning(
+                    "Awakening %d ('%s'): missed fire at %s (%.0fs ago) — scheduling catch-up",
+                    schedule.id, schedule.name, prior_fire.isoformat(), age_sec,
+                )
+                catch_up_kwargs["next_run_time"] = prior_fire
+                # Grace must cover the age + a small buffer for the scheduler
+                # tick latency, otherwise APScheduler marks the run as misfired
+                # and skips it.
+                catch_up_kwargs["misfire_grace_time"] = (
+                    self.AWAKENING_CATCH_UP_WINDOW_SEC + 60
+                )
+                catch_up_kwargs["coalesce"] = True
 
         self.scheduler.add_job(
             func=self._execute_awakening_job,
@@ -789,6 +839,7 @@ class WorkflowScheduler:
             args=[schedule.id, schedule.user_id],
             name=f"Awakening: {schedule.name} for user {schedule.user_id} ({schedule.cron_hour:02d}:{schedule.cron_minute:02d} IST)",
             replace_existing=True,
+            **catch_up_kwargs,
         )
 
         logger.info(

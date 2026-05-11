@@ -202,6 +202,24 @@ class ScalpSessionManager:
             if s.is_holding and s.id not in new_ids
         ]
 
+        # Sessions that appeared this cycle (new or re-enabled) and carry a
+        # HOLDING state in the DB. ``reconcile_on_startup`` only runs at
+        # daemon start, so without this a stale HOLDING that survives a
+        # disable→re-enable (e.g. exit order timed out, daemon couldn't
+        # confirm the fill) would resurface and the daemon would manage
+        # trail/SL on a position that doesn't exist. 2026-05-11 session 64:
+        # 04:10 exit ReadTimeout left HOLDING_PE in DB; user re-enabled and
+        # daemon armed trail on an empty position. Reconcile against broker
+        # on first appearance: if broker shows the position, keep HOLDING and
+        # resubscribe; if flat, reset to IDLE before any tick runs.
+        reenable_reconcile: list[ScalpSession] = []
+        for sessions in new_sessions.values():
+            for s in sessions:
+                if s.id in existing:
+                    continue
+                if s.is_holding:
+                    reenable_reconcile.append(s)
+
         self._sessions = new_sessions
         self._underlying_map = new_underlying_map
         self._premium_map = new_premium_map
@@ -217,6 +235,40 @@ class ScalpSessionManager:
                 s.id,
             )
             await self._exit_position(s, "exit_disabled", s.runtime.last_premium_ltp)
+
+        # Reconcile new/re-enabled HOLDING sessions against actual broker state.
+        for s in reenable_reconcile:
+            try:
+                exists = await self._broker_position_exists(s)
+            except Exception as e:
+                logger.error(
+                    "Session %d: re-enable reconcile failed: %s", s.id, e, exc_info=True
+                )
+                continue
+            if exists is False:
+                logger.warning(
+                    "Session %d: re-enabled with stale HOLDING (%s) but broker is flat — resetting to IDLE",
+                    s.id, s.runtime.current_instrument_token,
+                )
+                await self._log_event(s, "reconcile", trigger_snapshot={
+                    "expected_instrument": s.runtime.current_instrument_token,
+                    "expected_state": s.runtime.state.value,
+                    "reason": "re_enable_no_position",
+                })
+                # Drop the premium_map entry we may have added for the stale instrument.
+                if s.runtime.current_instrument_token:
+                    self._premium_map.pop(
+                        f"{s.user_id}:{s.runtime.current_instrument_token}", None
+                    )
+                self._reset_runtime_to_idle(s)
+                await self._persist_state(s)
+            elif exists is True:
+                logger.info(
+                    "Session %d: re-enabled — broker position confirmed, resubscribing",
+                    s.id,
+                )
+                await self._subscribe_instrument(s.user_id, s.runtime.current_instrument_token)
+            # exists is None → API error; leave as-is, next poll will retry.
 
         # Handle API-requested pending actions.
         for session, action in pending_actions:
@@ -1200,6 +1252,7 @@ class ScalpSessionManager:
                 transaction_type=transaction_type,
                 disclosed_quantity=0,
                 is_amo=is_amo,
+                market_protection=-1,
             )
             response = order_api.place_order(body)
             order_ids = response.data.order_ids if response.data else []
@@ -1230,7 +1283,8 @@ class ScalpSessionManager:
         token = client.access_token
         proxy = OrderNodeProxy(node_url, token)
         # Same truncation the node applies — needed to match what the broker stored.
-        upstox_tag = (client_request_id or "")[:20] or None
+        # Upstox V3 tag limit is 40 chars (UDAPI1119).
+        upstox_tag = (client_request_id or "")[:40] or None
         try:
             result = await proxy.place_order(
                 symbol=symbol,

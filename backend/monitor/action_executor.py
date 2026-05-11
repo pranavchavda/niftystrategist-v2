@@ -22,6 +22,27 @@ from monitor.rule_evaluator import RuleResult
 logger = logging.getLogger(__name__)
 
 
+# Substrings that mean "the SDK didn't get a definitive response from Upstox,
+# the order's status is unknown." Used by the place_order paths to flag
+# ``ambiguous=True`` so the daemon's revert path skips the fire_count rewind.
+# httpx and the order-node surface these as either an exception class name
+# (ReadTimeout, ConnectTimeout) or a node-formatted message ("Order timed out:
+# Upstox SDK call exceeded 40s timeout").
+_TIMEOUT_TOKENS = (
+    "timed out",
+    "timeout",
+    "ReadTimeout",
+    "ConnectTimeout",
+    "ConnectError",
+)
+
+
+def _looks_like_timeout(message: str | None, status: str | None) -> bool:
+    """Best-effort classifier — distinguishes 'unknown-outcome' from 'rejected'."""
+    blob = f"{message or ''} {status or ''}"
+    return any(tok in blob for tok in _TIMEOUT_TOKENS)
+
+
 class ActionExecutor:
     """Executes actions from fired rules.
 
@@ -134,6 +155,29 @@ class ActionExecutor:
         if self._paper_mode:
             logger.info("[PAPER] Placing order for rule %d: %s", rule.id, action)
 
+        # Pre-fire idempotency scan: if a prior fire of this rule already has
+        # a live order at the broker (any status that could still fill), don't
+        # send a new one. Closes the window where the SDK times out, the daemon
+        # treats it as failure and reverts fire_count, then re-fires while the
+        # original request is still queued at Upstox. 2026-05-11 TATACONSUM:
+        # rule 2741 fired 13× this way, ending with 3 actual buy fills for a
+        # max_fires=1 rule. One extra Upstox API call per fire (~200-500ms).
+        if not self._paper_mode:
+            prior = await self._find_prior_fire_order(rule)
+            if prior is not None:
+                logger.warning(
+                    "Rule %d: pre-fire scan found prior order %s (status=%s tag=%s) — "
+                    "skipping new placement",
+                    rule.id, prior.get("order_id"), prior.get("status"), prior.get("tag"),
+                )
+                return {
+                    "success": True,
+                    "order_id": prior.get("order_id"),
+                    "status": prior.get("status") or "PLACED",
+                    "message": f"Skipped — prior fire already at broker (id={prior.get('order_id')})",
+                    "deduped_from_prior_fire": True,
+                }
+
         # Check if this user has an order node configured
         node_url = None
         if self._get_order_node_url:
@@ -144,6 +188,52 @@ class ActionExecutor:
 
         # Direct path (no order node)
         return await self._place_order_direct(rule, action)
+
+    async def _find_prior_fire_order(self, rule: MonitorRule) -> dict | None:
+        """Scan today's broker order book for an order tagged with the exact
+        ``rule:<id>:fire:<fire_count>`` we're about to use.
+
+        Matches the *current* fire_count specifically — not any prior fire.
+        Rationale: with ``max_fires > 1`` each fire gets a distinct number
+        (1, 2, 3...), so finding ``fire:1`` should not block placing
+        ``fire:2``. The bug we guard against is fire_count being reverted
+        after a timeout, then re-firing with the same number while the
+        original request is still queued at Upstox (2026-05-11 TATACONSUM).
+
+        Returns ``{"order_id", "status", "tag"}`` if a live order with the
+        exact tag exists, else None. Live = anything except rejected/cancelled.
+        Errors are swallowed so a transient API failure doesn't block fires.
+        """
+        try:
+            import asyncio
+            import upstox_client
+            # Same truncation the node applies (Upstox V3 tag limit is 40 chars).
+            expected_tag = f"rule:{rule.id}:fire:{rule.fire_count}"[:40]
+            client = await self._get_client(rule.user_id)
+            api = upstox_client.OrderApi(upstox_client.ApiClient(client._configuration))
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(api.get_order_book, api_version="2"),
+                timeout=10,
+            )
+            for o in (resp.data or []):
+                tag = getattr(o, "tag", None) or ""
+                if tag != expected_tag:
+                    continue
+                status = (getattr(o, "status", None) or "").lower()
+                # Live statuses Upstox uses: open, pending, trigger pending,
+                # validation pending, after market order req received, modified,
+                # complete. Dead statuses: rejected, cancelled.
+                if status in ("rejected", "cancelled", "cancel"):
+                    continue
+                return {
+                    "order_id": getattr(o, "order_id", None),
+                    "status": getattr(o, "status", None),
+                    "tag": tag,
+                }
+            return None
+        except Exception as e:
+            logger.warning("Pre-fire idempotency scan failed for rule %d: %r", rule.id, e)
+            return None
 
     async def _place_order_via_node(self, rule: MonitorRule, action: PlaceOrderAction, node_url: str) -> dict:
         """Place an order through the user's order node proxy."""
@@ -176,15 +266,30 @@ class ActionExecutor:
                 product=action.product,
                 client_request_id=client_request_id,
             )
+            # Timeouts are ambiguous: the order may have reached Upstox even
+            # though the SDK didn't return in time. Flag so the daemon's
+            # revert path keeps fire_count incremented rather than rearming
+            # the rule for another fire on the next tick.
+            ambiguous = (
+                not result.success
+                and _looks_like_timeout(result.message, result.status)
+            )
             return {
                 "success": result.success,
                 "order_id": result.order_id,
                 "message": result.message,
                 "status": result.status,
+                "ambiguous": ambiguous,
             }
         except Exception as e:
             logger.error("place_order via node failed for rule %d: %s", rule.id, e)
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                # httpx ReadTimeout / ConnectError on the transport itself is
+                # also ambiguous — the request may have reached Upstox.
+                "ambiguous": _looks_like_timeout(str(e), ""),
+            }
 
     async def _place_order_direct(self, rule: MonitorRule, action: PlaceOrderAction) -> dict:
         """Place an order directly via UpstoxClient (no order node)."""
@@ -208,6 +313,7 @@ class ActionExecutor:
                     transaction_type=action.transaction_type,
                     disclosed_quantity=0,
                     is_amo=is_amo,
+                    market_protection=-1,
                 )
                 response = order_api.place_order(body)
                 order_ids = response.data.order_ids if response.data else []
@@ -236,7 +342,11 @@ class ActionExecutor:
                 }
         except Exception as e:
             logger.error("place_order failed for rule %d: %s", rule.id, e)
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "ambiguous": _looks_like_timeout(str(e), ""),
+            }
 
     async def _execute_cancel_order(self, rule: MonitorRule, config: dict) -> dict:
         """Cancel an order, routing through the user's order node if configured."""

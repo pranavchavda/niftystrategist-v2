@@ -137,6 +137,12 @@ class MonitorDaemon:
         # Manual token overrides (for testing / CLI fallback).
         # These take precedence over DB-loaded tokens.
         self._manual_tokens: dict[int, str] = {}
+        # Per-rule asyncio locks held while an order placement is in flight.
+        # Prevents two concurrent ticks from both calling place_order for the
+        # same rule while the first call is still pending at Upstox. Origin:
+        # 2026-05-11 TATACONSUM incident — a 40s SDK call was repeatedly
+        # interrupted by 30s polls, each firing place_order on the same rule.
+        self._rule_inflight_locks: dict[int, asyncio.Lock] = {}
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -697,51 +703,105 @@ class MonitorDaemon:
 
         On failed place_order: revert the optimistic state changes that the
         in-memory tick handler applied (fire_count bump, max_fires-driven
-        disable, kill/activate chain). Without revert, a failed entry order
-        could leave the position un-protected by SL/target/squareoff (which
-        the kill chain would have wiped) and the rule prematurely disabled.
+        disable, kill/activate chain) — but ONLY for true rejections. SDK
+        timeouts are ``ambiguous`` (action_executor flags them): the order
+        may have reached Upstox and be filling, so reverting would let the
+        rule fire again while orders are in flight (2026-05-11 TATACONSUM
+        triple-fill). On ambiguous timeouts we keep fire_count incremented;
+        manual re-enable is required if Upstox truly never got the order.
+
         Origin: 2026-05-08 FINCABLES — long trail rule's exit timed out;
         fire_count and also_cancel_rules ran anyway, leaving the position
         dangling. See project_exit_rule_stacking_bug.md.
         """
-        try:
-            async with get_db_context() as db_session:
-                action_result = await self._action_executor.execute(
-                    rule, result, trigger_snapshot, db_session
-                )
-
-                order_failed = (
-                    result.action_type == "place_order"
-                    and isinstance(action_result, dict)
-                    and not action_result.get("success", False)
-                )
-
-                if order_failed:
-                    await self._revert_failed_fire(
-                        rule, result, chain_affected, db_session, action_result
-                    )
-                else:
-                    # Persist kill/activate chain state (enabled, fire_count)
-                    # so DB stays in sync with in-memory daemon state.
-                    if chain_affected:
-                        for r in chain_affected:
-                            try:
-                                await crud.sync_rule_fire_state(
-                                    session=db_session,
-                                    rule_id=r.id,
-                                    fire_count=r.fire_count,
-                                    enabled=r.enabled,
-                                )
-                            except Exception as e:
-                                logger.error(
-                                    "Failed to sync chain rule %d state: %s",
-                                    r.id, e,
-                                )
-        except Exception as e:
-            logger.error(
-                "Background execute_and_record failed for rule %d: %s",
-                rule.id, e, exc_info=True,
+        # Per-rule in-flight lock: a second tick arriving while the first
+        # tick's place_order is still pending at Upstox skips immediately
+        # instead of submitting a parallel request. This is belt to the
+        # action_executor's pre-fire idempotency scan suspenders — the lock
+        # blocks duplicates on this same daemon process; the scan catches
+        # duplicates that already reached the broker.
+        lock = self._rule_inflight_locks.setdefault(rule.id, asyncio.Lock())
+        if lock.locked():
+            logger.warning(
+                "Rule %d: prior place_order still in flight — skipping this tick",
+                rule.id,
             )
+            return
+        async with lock:
+            try:
+                async with get_db_context() as db_session:
+                    action_result = await self._action_executor.execute(
+                        rule, result, trigger_snapshot, db_session
+                    )
+
+                    order_failed = (
+                        result.action_type == "place_order"
+                        and isinstance(action_result, dict)
+                        and not action_result.get("success", False)
+                    )
+                    ambiguous = bool(
+                        isinstance(action_result, dict)
+                        and action_result.get("ambiguous")
+                    )
+
+                    if order_failed and not ambiguous:
+                        await self._revert_failed_fire(
+                            rule, result, chain_affected, db_session, action_result
+                        )
+                    elif order_failed and ambiguous:
+                        # Don't revert — the order may have made it to Upstox
+                        # and be filling right now. Log loudly so it's visible
+                        # in incident review. Daemon's next poll will not
+                        # re-fire this rule because fire_count stays put.
+                        err_msg = (
+                            action_result.get("error")
+                            or action_result.get("message")
+                            or ""
+                        )[:200]
+                        logger.error(
+                            "Rule %d (%s) order AMBIGUOUS (timeout) — keeping "
+                            "fire_count=%d, NOT rearming. err=%s",
+                            rule.id, rule.name, rule.fire_count, err_msg,
+                        )
+                        # Persist chain state — even on ambiguous outcome the
+                        # also_cancel_rules / also_enable_rules should stand,
+                        # since the order may have filled.
+                        if chain_affected:
+                            for r in chain_affected:
+                                try:
+                                    await crud.sync_rule_fire_state(
+                                        session=db_session,
+                                        rule_id=r.id,
+                                        fire_count=r.fire_count,
+                                        enabled=r.enabled,
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        "Failed to sync chain rule %d state: %s",
+                                        r.id, e,
+                                    )
+                    else:
+                        # Persist kill/activate chain state (enabled, fire_count)
+                        # so DB stays in sync with in-memory daemon state.
+                        if chain_affected:
+                            for r in chain_affected:
+                                try:
+                                    await crud.sync_rule_fire_state(
+                                        session=db_session,
+                                        rule_id=r.id,
+                                        fire_count=r.fire_count,
+                                        enabled=r.enabled,
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        "Failed to sync chain rule %d state: %s",
+                                        r.id, e,
+                                    )
+            except Exception as e:
+                logger.error(
+                    "Background execute_and_record failed for rule %d: %s",
+                    rule.id, e, exc_info=True,
+                )
 
     async def _revert_failed_fire(
         self,

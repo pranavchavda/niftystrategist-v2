@@ -703,6 +703,7 @@ class UpstoxClient:
                 transaction_type=transaction_type,
                 disclosed_quantity=0,  # Show full quantity (no iceberg)
                 is_amo=is_amo,
+                market_protection=-1,
             )
 
             response = order_api.place_order(body)

@@ -220,7 +220,7 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2025.2
 tzlocal==5.3.1
-upstox-python-sdk==2.19.0
+upstox-python-sdk==2.26.0
 upstox-totp==1.0.8
 uritemplate==4.2.0
 urllib3==2.5.0

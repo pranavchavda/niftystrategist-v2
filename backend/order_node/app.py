@@ -264,7 +264,7 @@ async def place_order(
     # Upstox tag is capped at ~20 chars and we use it for post-timeout
     # reconciliation. Fall back to a synthetic tag when the caller didn't
     # supply a client_request_id so we still have a handle to look up.
-    upstox_tag = (req.client_request_id or f"{int(now)}-{req.instrument_token[-6:]}")[:20]
+    upstox_tag = (req.client_request_id or f"{int(now)}-{req.instrument_token[-6:]}")[:40]
 
     try:
         body = upstox_client.PlaceOrderV3Request(
@@ -279,6 +279,11 @@ async def place_order(
             disclosed_quantity=0,
             is_amo=is_amo,
             tag=upstox_tag,
+            # -1 = automatic market protection per Upstox guidelines. Without
+            # this, bare MARKET orders from API may be rejected (UDAPI1158:
+            # "Market orders are not allowed. Try placing a limit order.").
+            # Ignored for LIMIT/SL order types — safe to pass always.
+            market_protection=-1,
         )
         response = await _call_sdk(order_api.place_order, body)
         order_ids = response.data.order_ids if response.data else []
@@ -614,8 +619,8 @@ async def place_multi_order(
                 transaction_type=o["transaction_type"],
                 disclosed_quantity=0,
                 is_amo=is_amo,
-                correlation_id=o.get("correlation_id"),
                 tag=o.get("tag"),
+                market_protection=-1,
             ))
         response = await _call_sdk(order_api.place_multi_order, order_requests)
         logger.info("Multi-order placed: %d legs", len(order_requests))
