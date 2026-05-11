@@ -4,7 +4,7 @@ import { requirePermission } from '../utils/route-permissions';
 import {
   Flame, Plus, Trash2, Loader2, Power, PowerOff, ChevronDown, ChevronUp,
   AlertTriangle, X, TrendingUp, TrendingDown, CircleDot, Square, Clock,
-  Activity, Pencil,
+  Activity, Pencil, Copy,
 } from 'lucide-react';
 import { Button } from '../components/catalyst/button';
 import { Dialog, DialogTitle, DialogBody, DialogActions } from '../components/catalyst/dialog';
@@ -462,6 +462,38 @@ export default function ScalpSessionsRoute() {
     setEditingSession(s);
   };
 
+  const cloneSession = (s: ScalpSession) => {
+    const primary = s.primary_indicator || 'utbot';
+    setEditingSession(null);
+    const mode = s.session_mode || 'options_scalp';
+    setFormData({
+      name: `${s.name} (copy)`,
+      session_mode: mode,
+      underlying: s.underlying || '',
+      // Clear expiry on clone — original may be stale; useEffect picks first live one.
+      expiry: mode === 'options_scalp' ? '' : (s.expiry || ''),
+      lots: s.lots ?? 1,
+      quantity: s.quantity ?? '',
+      indicator_timeframe: s.indicator_timeframe,
+      utbot_period: s.utbot_period,
+      utbot_sensitivity: s.utbot_sensitivity,
+      primary_indicator: primary,
+      primary_params: s.primary_params || { ...(PARAM_DEFAULTS[primary] || {}) },
+      confirm_indicator: s.confirm_indicator || '',
+      confirm_params: s.confirm_params || {},
+      sl_points: s.sl_points ?? '',
+      target_points: s.target_points ?? '',
+      trail_percent: s.trail_percent ?? '',
+      trail_points: s.trail_points ?? '',
+      trail_arm_points: s.trail_arm_points ?? '',
+      squareoff_time: s.squareoff_time,
+      active_windows: s.active_windows ?? [],
+      max_trades: s.max_trades,
+      cooldown_seconds: s.cooldown_seconds,
+    });
+    setShowCreate(true);
+  };
+
   const handleSave = async () => {
     if (!editingSession) return;
     setSavingEdit(true);
@@ -732,6 +764,9 @@ export default function ScalpSessionsRoute() {
                     )}
                     <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); openEdit(s); }} title="Edit settings">
                       <Pencil className="w-4 h-4 text-zinc-400 hover:text-blue-500" />
+                    </Button>
+                    <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); cloneSession(s); }} title="Clone session">
+                      <Copy className="w-4 h-4 text-zinc-400 hover:text-indigo-500" />
                     </Button>
                     <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); toggleEnabled(s.id, s.enabled); }} title={s.enabled ? 'Disable' : 'Enable'}>
                       {s.enabled ? <Power className="w-4 h-4 text-green-500" /> : <PowerOff className="w-4 h-4 text-zinc-400" />}
