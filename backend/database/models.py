@@ -734,6 +734,46 @@ class MonitorLog(Base):
     )
 
 
+class UpstoxWebhookEvent(Base):
+    """Raw Upstox order-update webhook payload.
+
+    Phase 1: store every event Upstox pushes to us, no state updates yet.
+    Phase 2+: webhook_processor reads from here to update monitor_logs /
+    scalp_session_logs and resolve ambiguous SDK timeouts.
+
+    See docs/plans/2026-05-11-upstox-webhook-design.md for design + phasing.
+    """
+    __tablename__ = "upstox_webhook_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # user_id is nullable because webhooks may arrive before we've finished
+    # mapping upstox_user_id → users.id (or for an unrecognized upstox_user_id).
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    upstox_user_id = Column(String(100), nullable=False)
+    update_type = Column(String(32), nullable=False)  # 'order' | 'gtt_order'
+    order_id = Column(String(64), nullable=True)
+    gtt_order_id = Column(String(64), nullable=True)
+    status = Column(String(64), nullable=False)
+    tag = Column(String(64), nullable=True)
+    instrument_key = Column(String(64), nullable=True)
+    trading_symbol = Column(String(64), nullable=True)
+    transaction_type = Column(String(8), nullable=True)
+    quantity = Column(Integer, nullable=True)
+    filled_quantity = Column(Integer, nullable=True)
+    pending_quantity = Column(Integer, nullable=True)
+    average_price = Column(Float, nullable=True)
+    price = Column(Float, nullable=True)
+    trigger_price = Column(Float, nullable=True)
+    order_timestamp = Column(DateTime, nullable=True)
+    exchange_timestamp = Column(DateTime, nullable=True)
+    status_message = Column(Text, nullable=True)
+    raw_payload = Column(JSON, nullable=False)
+    received_at = Column(DateTime, default=utc_now, nullable=False)
+    processed_at = Column(DateTime, nullable=True)
+    processed_outcome = Column(String(32), nullable=True)
+    processed_error = Column(Text, nullable=True)
+
+
 # ==============================================================================
 # Scalp Session Models
 # ==============================================================================

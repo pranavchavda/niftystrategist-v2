@@ -898,6 +898,11 @@ app.include_router(workflow_actions_router)
 from api.awakenings import router as awakenings_router
 app.include_router(awakenings_router, prefix="/api/awakenings", tags=["awakenings"])
 
+# Include Upstox order webhook receiver (Phase 1: passive observability).
+# Public endpoint — Upstox docs require no-auth. See docs/plans/2026-05-11-upstox-webhook-design.md.
+from api.upstox_webhooks import router as upstox_webhooks_router
+app.include_router(upstox_webhooks_router)
+
 # Passkey (WebAuthn) authentication routes
 from routes.passkey_routes import router as passkey_router
 app.include_router(passkey_router)
