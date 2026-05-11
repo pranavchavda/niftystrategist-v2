@@ -179,7 +179,23 @@ async def receive_order_update(request: Request) -> WebhookResponse:
                 "Upstox webhook: stored event id=%d (user=%s status=%s order_id=%s tag=%s)",
                 event.id, local_user_id, status, order_id, payload.get("tag"),
             )
-            return WebhookResponse(ok=True, event_id=event.id, outcome="stored")
+            event_id = event.id
+            # Phase 2: best-effort inline backfill — apply to monitor_logs /
+            # scalp_session_logs. Failures don't change the 200 response;
+            # the event row stays for periodic-poll retry later.
+            try:
+                from services.webhook_processor import process_event_and_mark
+                outcome = await process_event_and_mark(db, event)
+                logger.info(
+                    "Upstox webhook: event id=%d processed → %s",
+                    event_id, outcome,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Upstox webhook: backfill processor failed for event %d: %r",
+                    event_id, e,
+                )
+            return WebhookResponse(ok=True, event_id=event_id, outcome="stored")
     except Exception as e:
         # Catch-all — Upstox shouldn't retry-spam on our internal bugs.
         # Log loudly so we notice in journalctl, but still return 200.
