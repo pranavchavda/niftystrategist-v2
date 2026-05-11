@@ -66,7 +66,7 @@ class OrderNodeProxy:
         is_amo: bool | None = None,
         client_request_id: str | None = None,
     ) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.node_url}/orders/place",
                 headers=self._headers(),
@@ -85,7 +85,7 @@ class OrderNodeProxy:
         return _parse_response(resp)
 
     async def cancel_order(self, order_id: str) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.delete(
                 f"{self.node_url}/orders/{order_id}",
                 headers=self._headers(),
@@ -100,7 +100,7 @@ class OrderNodeProxy:
         order_type: str | None = None,
         trigger_price: float | None = None,
     ) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.node_url}/orders/modify",
                 headers=self._headers(),
@@ -115,7 +115,7 @@ class OrderNodeProxy:
         return _parse_response(resp)
 
     async def cancel_multi_order(self, tag: str | None = None, segment: str | None = None) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.node_url}/orders/cancel-all",
                 headers=self._headers(),
@@ -124,7 +124,7 @@ class OrderNodeProxy:
         return _parse_response(resp)
 
     async def exit_all_positions(self) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.node_url}/orders/exit-all",
                 headers=self._headers(),
@@ -132,7 +132,7 @@ class OrderNodeProxy:
         return _parse_response(resp)
 
     async def place_multi_order(self, orders: list[dict]) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.node_url}/orders/place-multi",
                 headers=self._headers(),
@@ -154,7 +154,7 @@ class OrderNodeProxy:
         order_type: str = "LIMIT",
         product: str = "D",
     ) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.node_url}/gtt/place",
                 headers=self._headers(),
@@ -177,7 +177,7 @@ class OrderNodeProxy:
         price: float | None = None,
         trigger_price: float | None = None,
     ) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.node_url}/gtt/modify",
                 headers=self._headers(),
@@ -191,7 +191,7 @@ class OrderNodeProxy:
         return _parse_response(resp)
 
     async def cancel_gtt_order(self, gtt_order_id: str) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.delete(
                 f"{self.node_url}/gtt/{gtt_order_id}",
                 headers=self._headers(),
@@ -199,7 +199,7 @@ class OrderNodeProxy:
         return _parse_response(resp)
 
     async def get_gtt_orders(self) -> ProxyResult:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(
                 f"{self.node_url}/gtt/list",
                 headers=self._headers(),
@@ -233,7 +233,7 @@ class OrderNodeClient:
         is_amo: bool | None = None,
         client_request_id: str | None = None,
     ) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{self.node_url}/orders/place",
                 headers=self._headers(),
@@ -252,7 +252,7 @@ class OrderNodeClient:
         return _parse_response(resp)
 
     def cancel_order(self, order_id: str) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.delete(
                 f"{self.node_url}/orders/{order_id}",
                 headers=self._headers(),
@@ -267,7 +267,7 @@ class OrderNodeClient:
         order_type: str | None = None,
         trigger_price: float | None = None,
     ) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{self.node_url}/orders/modify",
                 headers=self._headers(),
@@ -282,7 +282,7 @@ class OrderNodeClient:
         return _parse_response(resp)
 
     def cancel_multi_order(self, tag: str | None = None, segment: str | None = None) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{self.node_url}/orders/cancel-all",
                 headers=self._headers(),
@@ -291,7 +291,7 @@ class OrderNodeClient:
         return _parse_response(resp)
 
     def exit_all_positions(self) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{self.node_url}/orders/exit-all",
                 headers=self._headers(),
@@ -299,7 +299,7 @@ class OrderNodeClient:
         return _parse_response(resp)
 
     def place_multi_order(self, orders: list[dict]) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{self.node_url}/orders/place-multi",
                 headers=self._headers(),
@@ -321,7 +321,7 @@ class OrderNodeClient:
         order_type: str = "LIMIT",
         product: str = "D",
     ) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{self.node_url}/gtt/place",
                 headers=self._headers(),
@@ -344,7 +344,7 @@ class OrderNodeClient:
         price: float | None = None,
         trigger_price: float | None = None,
     ) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{self.node_url}/gtt/modify",
                 headers=self._headers(),
@@ -358,7 +358,7 @@ class OrderNodeClient:
         return _parse_response(resp)
 
     def cancel_gtt_order(self, gtt_order_id: str) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.delete(
                 f"{self.node_url}/gtt/{gtt_order_id}",
                 headers=self._headers(),
@@ -366,7 +366,7 @@ class OrderNodeClient:
         return _parse_response(resp)
 
     def get_gtt_orders(self) -> ProxyResult:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.get(
                 f"{self.node_url}/gtt/list",
                 headers=self._headers(),

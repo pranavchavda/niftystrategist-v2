@@ -1214,11 +1214,23 @@ class ScalpSessionManager:
         transaction_type, quantity, product, order_type,
         client_request_id: str | None = None,
     ) -> dict:
-        """Place order through user's order node proxy."""
+        """Place order through user's order node proxy.
+
+        If the proxy call raises (httpx timeout, connection error, etc.) we
+        attempt a daemon-side reconciliation by scanning the user's order book
+        for our tag. Reading the order book isn't a SEBI-restricted mutating
+        operation, so it's safe to do directly from the daemon's IP. 2026-05-11:
+        session 69 lost ₹1.2k because a 30s ReadTimeout left a filled position
+        naked — the proxy now has 60s and the node reconciles internally on
+        SDK timeout, but this is the belt-and-suspenders for transport-level
+        failures the node never sees.
+        """
         from services.order_node_proxy import OrderNodeProxy
         client = await self._get_client(user_id)
         token = client.access_token
         proxy = OrderNodeProxy(node_url, token)
+        # Same truncation the node applies — needed to match what the broker stored.
+        upstox_tag = (client_request_id or "")[:20] or None
         try:
             result = await proxy.place_order(
                 symbol=symbol,
@@ -1240,8 +1252,46 @@ class ScalpSessionManager:
             # tell us the class. 2026-05-08: previously logged "%s" with str(e)
             # which is empty for many connection errors.
             logger.error("Scalp order via node failed (user=%d): %r", user_id, e, exc_info=True)
+            if upstox_tag:
+                recovered = await self._reconcile_order_by_tag(user_id, upstox_tag)
+                if recovered and recovered.get("order_id"):
+                    logger.warning(
+                        "Scalp order: proxy raised %s but Upstox accepted (user=%d order_id=%s tag=%s)",
+                        type(e).__name__, user_id, recovered["order_id"], upstox_tag,
+                    )
+                    return {
+                        "success": True,
+                        "order_id": recovered["order_id"],
+                        "message": f"recovered via tag={upstox_tag}: {type(e).__name__}",
+                    }
             err_msg = f"{type(e).__name__}: {e}".rstrip(": ")
             return {"success": False, "error": err_msg}
+
+    async def _reconcile_order_by_tag(self, user_id: int, tag: str) -> dict | None:
+        """Scan today's order book for an order matching the given tag.
+
+        Returns ``{"order_id": ..., "status": ...}`` on a match, None otherwise.
+        Errors are swallowed — caller treats None as "no match, declare failure".
+        """
+        try:
+            import upstox_client
+            client = await self._get_client(user_id)
+            api_client = upstox_client.ApiClient(client._configuration)
+            order_api = upstox_client.OrderApi(api_client)
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(order_api.get_order_book, api_version="2"),
+                timeout=10,
+            )
+            for o in (resp.data or []):
+                if getattr(o, "tag", None) == tag:
+                    return {
+                        "order_id": getattr(o, "order_id", None),
+                        "status": getattr(o, "status", None) or "PLACED",
+                    }
+            return None
+        except Exception as e:
+            logger.warning("Reconcile-by-tag failed (user=%d tag=%s): %r", user_id, tag, e)
+            return None
 
     # ── Subscription helpers ─────────────────────────────────────────
 

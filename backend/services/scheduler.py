@@ -700,10 +700,17 @@ class WorkflowScheduler:
         Idempotent — `_add_awakening_job` uses `replace_existing=True` and
         job_id is keyed on schedule.id, so repeated calls are safe. Used at
         startup and by the 60s reconcile job below.
+
+        Returns the list of enabled schedule ids. 2026-05-11: prior version
+        had `return [...]` inside `try` with `finally: break`. Python's
+        `break` in a `finally` overrides the pending return, so the function
+        always fell through to `return []`. The reconcile job then deleted
+        every scheduled awakening as "stale" each minute — Morning Scan never
+        fired today.
         """
         from database.models import UserAwakeningSchedule
-        from services.awakening_scheduler import ist_to_utc
 
+        enabled_ids: list[int] = []
         async for session in self.get_db_session():
             try:
                 result = await session.execute(
@@ -716,14 +723,12 @@ class WorkflowScheduler:
                 for schedule in schedules:
                     self._add_awakening_job(schedule)
 
-                logger.info("Loaded %d enabled awakening schedules", len(schedules))
-                return [s.id for s in schedules]
+                enabled_ids = [s.id for s in schedules]
+                logger.info("Loaded %d enabled awakening schedules", len(enabled_ids))
             except Exception as e:
                 logger.error("Failed to load awakening schedules: %s", e)
-                return []
-            finally:
-                break
-        return []
+            break
+        return enabled_ids
 
     async def _reconcile_awakening_schedules(self):
         """Periodic reconcile: pick up DB-direct schedule changes.

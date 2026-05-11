@@ -87,6 +87,39 @@ async def _call_sdk(fn, *args, **kwargs):
     )
 
 
+# Budget for the order-book lookup we run after a place-order timeout to figure
+# out whether Upstox actually received the order. Kept short so a stuck Upstox
+# API doesn't keep the request hanging past the proxy's 60s timeout.
+_RECONCILE_TIMEOUT_SEC = 10
+
+
+async def _reconcile_by_tag(api_client, tag: str) -> dict | None:
+    """Scan today's order book for an order with the given tag.
+
+    Used after a place-order SDK timeout — Upstox may have accepted the order
+    despite the SDK not returning. Returns a minimal dict ({order_id, status})
+    on a match, None otherwise. Swallowed errors so callers always get a
+    decision instead of a second-order exception.
+    """
+    try:
+        order_api = upstox_client.OrderApi(api_client)
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(order_api.get_order_book, api_version="2"),
+            timeout=_RECONCILE_TIMEOUT_SEC,
+        )
+        orders = resp.data or []
+        for o in orders:
+            if getattr(o, "tag", None) == tag:
+                return {
+                    "order_id": getattr(o, "order_id", None),
+                    "status": getattr(o, "status", None) or "PLACED",
+                }
+        return None
+    except Exception as e:
+        logger.warning("Reconcile-by-tag failed for %s: %r", tag, e)
+        return None
+
+
 def _is_market_open() -> bool:
     """Check if NSE is currently open (simple time-based heuristic)."""
     from datetime import datetime, timezone, timedelta
@@ -228,6 +261,11 @@ async def place_order(
 
     is_amo = req.is_amo if req.is_amo is not None else not _is_market_open()
 
+    # Upstox tag is capped at ~20 chars and we use it for post-timeout
+    # reconciliation. Fall back to a synthetic tag when the caller didn't
+    # supply a client_request_id so we still have a handle to look up.
+    upstox_tag = (req.client_request_id or f"{int(now)}-{req.instrument_token[-6:]}")[:20]
+
     try:
         body = upstox_client.PlaceOrderV3Request(
             quantity=req.quantity,
@@ -240,13 +278,14 @@ async def place_order(
             transaction_type=req.transaction_type,
             disclosed_quantity=0,
             is_amo=is_amo,
+            tag=upstox_tag,
         )
         response = await _call_sdk(order_api.place_order, body)
         order_ids = response.data.order_ids if response.data else []
         order_id = order_ids[0] if order_ids else None
         amo_label = " [AMO]" if is_amo else ""
-        logger.info("Order placed: %s %s %s x%d (id=%s)%s",
-                     req.transaction_type, req.symbol, req.order_type, req.quantity, order_id, amo_label)
+        logger.info("Order placed: %s %s %s x%d (id=%s tag=%s)%s",
+                     req.transaction_type, req.symbol, req.order_type, req.quantity, order_id, upstox_tag, amo_label)
         result = OrderResult(
             success=True,
             order_id=order_id,
@@ -262,8 +301,28 @@ async def place_order(
         _recent_orders[key] = (time.time(), result.model_dump())
         return result
     except asyncio.TimeoutError:
+        # SDK didn't return — Upstox may still have accepted the order. Scan
+        # the order book for our tag before declaring failure. 2026-05-11:
+        # session 69 NIFTY 23950PE filled despite a 30s proxy timeout; daemon
+        # then left the position naked. Reconcile here so success/failure
+        # reflects reality.
         msg = f"Upstox SDK call exceeded {_UPSTOX_CALL_TIMEOUT_SEC}s timeout"
-        logger.error("Place order timeout: %s", msg)
+        logger.error("Place order timeout: %s — reconciling by tag=%s", msg, upstox_tag)
+        recovered = await _reconcile_by_tag(api_client, upstox_tag)
+        if recovered and recovered.get("order_id"):
+            amo_label = " [AMO]" if is_amo else ""
+            logger.warning(
+                "Place order: SDK timeout but Upstox accepted (id=%s tag=%s)",
+                recovered["order_id"], upstox_tag,
+            )
+            result = OrderResult(
+                success=True,
+                order_id=recovered["order_id"],
+                status=recovered.get("status") or "PENDING",
+                message=f"Order placed{amo_label} via post-timeout reconcile (ID: {recovered['order_id']})",
+            )
+            _recent_orders[key] = (time.time(), result.model_dump())
+            return result
         result = OrderResult(success=False, status="REJECTED", message=f"Order timed out: {msg}")
         # Don't cache timeouts — let the caller's retry hit Upstox directly
         return result
