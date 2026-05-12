@@ -22,14 +22,20 @@ rsync -avz \
     backend/services/order_node_proxy.py ${REMOTE_USER}@${NANODE_IP}:${REMOTE_DIR}/services/
 rsync -avz \
     backend/services/upstox_client.py ${REMOTE_USER}@${NANODE_IP}:${REMOTE_DIR}/services/
+# httpx-based order API client (replaces SDK writes — fixes urllib3 hang).
+# Added 2026-05-11 after order placement was migrated off upstox-python-sdk.
+rsync -avz \
+    backend/services/upstox_order_api.py ${REMOTE_USER}@${NANODE_IP}:${REMOTE_DIR}/services/
 rsync -avz \
     backend/services/__init__.py ${REMOTE_USER}@${NANODE_IP}:${REMOTE_DIR}/services/
 
 # Sync requirements (minimal — just what the order node needs)
+# SDK 2.26.0+ required for market_protection field on PlaceOrderV3Request
+# (bumped 2026-05-11 alongside the httpx order-write migration).
 cat > /tmp/order-node-requirements.txt << 'EOF'
 fastapi>=0.115.0
 uvicorn>=0.32.0
-upstox-python-sdk>=2.19.0
+upstox-python-sdk>=2.26.0
 httpx>=0.27.0
 pydantic>=2.10.0
 EOF

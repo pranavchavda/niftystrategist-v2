@@ -21,6 +21,24 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 
+def _crontrigger_equiv(a, b) -> bool:
+    """Return True if two CronTriggers fire on the same schedule.
+
+    APScheduler doesn't override ``__eq__``, and field internals are private,
+    so we compare the stringified expression + timezone. Used by the awakening
+    reconcile loop to skip remove+re-add when the DB row hasn't changed,
+    avoiding 60s churn that briefly empties the job store every minute.
+    """
+    if type(a) is not type(b):
+        return False
+    try:
+        if str(getattr(a, "timezone", None)) != str(getattr(b, "timezone", None)):
+            return False
+        return [str(f) for f in a.fields] == [str(f) for f in b.fields]
+    except Exception:
+        return False
+
+
 class WorkflowScheduler:
     """
     Manages scheduled workflow executions using APScheduler.
@@ -786,9 +804,8 @@ class WorkflowScheduler:
         from datetime import datetime, timedelta
 
         job_id = f"awakening_{schedule.id}"
-        existed_before = self.scheduler.get_job(job_id) is not None
-        if existed_before:
-            self.scheduler.remove_job(job_id)
+        existing_job = self.scheduler.get_job(job_id)
+        existed_before = existing_job is not None
 
         day_of_week = "mon-fri" if schedule.weekdays_only else "*"
         ist = ZoneInfo("Asia/Kolkata")
@@ -799,6 +816,12 @@ class WorkflowScheduler:
             day_of_week=day_of_week,
             timezone=ist,
         )
+
+        # No-op on reconcile when the trigger is unchanged. Otherwise the 60s
+        # reconcile loop would remove + re-add every job every minute (no
+        # catch-up runs on reconcile, so the rebuild is pure churn). 2026-05-12.
+        if existed_before and _crontrigger_equiv(existing_job.trigger, trigger):
+            return
 
         # Catch-up scan only on first registration this process.
         catch_up_kwargs: dict = {}
