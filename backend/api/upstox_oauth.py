@@ -732,12 +732,34 @@ async def auto_refresh_upstox_token(user_id: int, force: bool = False) -> Option
     3. Calls _totp_get_token via run_in_executor (sync library)
     4. On success: stores new encrypted token + expiry in DB
     5. On failure: records last_failed_at for cooldown
+
+    Concurrency: a per-user asyncio lock serialises TOTP attempts within
+    the process.  Callers that arrive while another refresh is running wait
+    for it to finish, then return whatever token now sits in the DB — the
+    in-progress run has already produced (or verified) the freshest token,
+    so kicking off another TOTP login would just invalidate it (Upstox
+    invalidates prior tokens whenever a new TOTP login succeeds).
     """
-    # Per-user lock prevents concurrent TOTP attempts in the same process
     lock = _totp_refresh_locks.setdefault(user_id, asyncio.Lock())
+
     if lock.locked():
-        logger.info("TOTP auto-refresh: already in progress for user %d, skipping", user_id)
-        return None
+        logger.info(
+            "TOTP auto-refresh: waiting on in-progress refresh for user %d",
+            user_id,
+        )
+        async with lock:
+            pass  # wait for the in-progress refresh to finish
+        # Re-read DB and return whatever token is now stored. The other
+        # refresh either rotated it or confirmed the existing token was
+        # still fresh — either way, this is the right value to use.
+        async with get_db_session() as session:
+            result = await session.execute(
+                select(DBUser).where(DBUser.id == user_id)
+            )
+            db_user = result.scalar_one_or_none()
+            if db_user and db_user.upstox_access_token:
+                return decrypt_token(db_user.upstox_access_token)
+            return None
 
     async with lock:
         return await _auto_refresh_upstox_token_inner(user_id, force=force)

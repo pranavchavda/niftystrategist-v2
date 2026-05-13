@@ -42,41 +42,45 @@ _live_clients: dict[int, UpstoxClient] = {}
 async def _get_client_for_user(user: User, force_refresh: bool = False) -> UpstoxClient:
     """Resolve the Upstox client for a user.
 
-    Uses get_user_upstox_token() which handles decryption + expiry check +
-    TOTP auto-refresh.  Caches the live client so the dynamic symbol map
-    (populated by get_portfolio) persists across endpoints within a session.
+    Uses ``get_user_upstox_token()`` on every call to read the current DB
+    token (decrypt + expiry check + TOTP refresh when actually expired).
+    Caches the ``UpstoxClient`` instance to preserve its ``_dynamic_symbols``
+    map across endpoints — but always re-checks the cached client's access
+    token against the latest DB value and swaps it in place if another
+    caller rotated the token.  This avoids the stale-cache 401 storm where
+    a proactive/daemon refresh leaves the in-memory cached client bound to
+    a now-invalidated token (Upstox invalidates prior tokens whenever a new
+    TOTP login succeeds — see [[project_totp_race_condition]]).
 
     Args:
-        force_refresh: If True, invalidate cached client and force a TOTP
-                       refresh. Used for 401 recovery after Upstox daily reset.
+        force_refresh: If True, force a TOTP refresh regardless of DB
+                       expiry.  Used only by ``_with_401_retry`` after a
+                       confirmed 401 from Upstox.
     """
     if _db_manager is None:
         return _get_upstox_client()
 
-    # Invalidate cache if force-refreshing (e.g. after 401)
-    if force_refresh:
-        _live_clients.pop(user.id, None)
-
-    # Return cached live client if we have one
-    if user.id in _live_clients:
-        return _live_clients[user.id]
-
-    # Use the canonical token resolver (decrypt + expiry + TOTP refresh)
     access_token = await get_user_upstox_token(user.id, force_refresh=force_refresh)
+    if not access_token:
+        logger.warning(f"Cockpit: no valid token for user {user.id}, using default client")
+        return _get_upstox_client()
 
-    if access_token:
-        logger.info(f"Cockpit: live client for user {user.id}")
-        client = UpstoxClient(
-            access_token=access_token,
-            paper_trading=False,
-            user_id=user.id,
-        )
-        _live_clients[user.id] = client
-        return client
+    cached = _live_clients.get(user.id)
+    if cached is not None:
+        if cached.access_token != access_token:
+            cached.access_token = access_token
+            cached._configuration.access_token = access_token
+            logger.info(f"Cockpit: rotated cached client token for user {user.id}")
+        return cached
 
-    # No valid token — try the shared default client as fallback
-    logger.warning(f"Cockpit: no valid token for user {user.id}, using default client")
-    return _get_upstox_client()
+    logger.info(f"Cockpit: live client for user {user.id}")
+    client = UpstoxClient(
+        access_token=access_token,
+        paper_trading=False,
+        user_id=user.id,
+    )
+    _live_clients[user.id] = client
+    return client
 
 
 def invalidate_client_cache(user_id: int) -> None:

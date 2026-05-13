@@ -255,3 +255,83 @@ async def test_auto_refresh_exception_sets_cooldown():
     assert token is None
     assert db_user.upstox_totp_last_failed_at is not None
     mock_session.commit.assert_awaited_once()
+
+
+# ── Test: lock-await returns current DB token instead of None ─────────
+
+
+@pytest.mark.asyncio
+async def test_auto_refresh_lock_busy_waits_and_returns_db_token():
+    """When the per-user lock is held by another caller, the second caller
+    waits for the in-progress refresh to finish, then returns whatever
+    token is now in the DB (rather than returning None, which previously
+    caused the caller to re-raise a 401 and kick off ANOTHER TOTP login —
+    a token-invalidation cascade)."""
+    import asyncio as _asyncio
+
+    from api.upstox_oauth import _totp_refresh_locks, auto_refresh_upstox_token
+
+    user_id = 12345
+    lock = _asyncio.Lock()
+    _totp_refresh_locks[user_id] = lock
+    await lock.acquire()
+
+    db_user = _make_db_user(
+        id=user_id,
+        upstox_access_token="enc-already-refreshed-token",
+    )
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = db_user
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    async def _release_after_delay():
+        await _asyncio.sleep(0.05)
+        lock.release()
+
+    with patch("api.upstox_oauth.get_db_session") as mock_get_db, \
+         patch("api.upstox_oauth.decrypt_token", side_effect=lambda x: f"dec-{x}"):
+        mock_get_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_get_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        _asyncio.create_task(_release_after_delay())
+        token = await auto_refresh_upstox_token(user_id)
+
+    assert token == "dec-enc-already-refreshed-token"
+    _totp_refresh_locks.pop(user_id, None)
+
+
+@pytest.mark.asyncio
+async def test_auto_refresh_lock_busy_returns_none_when_db_empty():
+    """If the in-progress refresh failed and the DB has no token, the
+    waiter still returns None (no token to use)."""
+    import asyncio as _asyncio
+
+    from api.upstox_oauth import _totp_refresh_locks, auto_refresh_upstox_token
+
+    user_id = 54321
+    lock = _asyncio.Lock()
+    _totp_refresh_locks[user_id] = lock
+    await lock.acquire()
+
+    db_user = _make_db_user(id=user_id, upstox_access_token=None)
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = db_user
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    async def _release_after_delay():
+        await _asyncio.sleep(0.05)
+        lock.release()
+
+    with patch("api.upstox_oauth.get_db_session") as mock_get_db:
+        mock_get_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_get_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        _asyncio.create_task(_release_after_delay())
+        token = await auto_refresh_upstox_token(user_id)
+
+    assert token is None
+    _totp_refresh_locks.pop(user_id, None)
