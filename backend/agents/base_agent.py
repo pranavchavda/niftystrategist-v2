@@ -111,7 +111,8 @@ class IntelligentBaseAgent(ABC, Generic[DepsT, OutputT]):
             'deps_type': deps_type,
             'output_type': output_type,
             'instructions': self._get_system_prompt(),  # Static base instructions
-            'retries': config.max_retries,
+            'tool_retries': config.max_retries,
+            'output_retries': config.max_retries,
             'history_processors': self._get_history_processors(),  # Context window management
             'model_settings': self.model_settings,  # Reasoning settings etc. must be on Agent
         }
