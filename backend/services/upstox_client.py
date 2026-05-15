@@ -2760,30 +2760,42 @@ class UpstoxClient:
 
         if payload.get("status") != "success":
             raise ValueError(f"Upstox v2 {path} unexpected response: {payload}")
-        return payload.get("data") or {}
+        # Some endpoints return a list at the top level (e.g. fundamentals/ratios,
+        # shareholding, corporate-actions, competitors). Preserve the list shape;
+        # only fall back to {} when the data key is missing/None.
+        data = payload.get("data")
+        return data if data is not None else {}
 
     # ───── Market Information (F&O analytics) ─────
+
+    @staticmethod
+    def _default_market_date() -> str:
+        """Most recent likely-data date (yesterday IST). Upstox returns T+1 data."""
+        from datetime import datetime, timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return (datetime.now(ist) - timedelta(days=1)).strftime("%Y-%m-%d")
 
     async def get_pcr(
         self,
         instrument_key: str,
         expiry: str,
         date: str | None = None,
-        bucket_interval: int | None = None,
+        bucket_interval: int | None = 60,
     ) -> dict:
-        """Put-Call Ratio + optional intraday series for an F&O underlying.
+        """Put-Call Ratio + intraday series for an F&O underlying.
 
         Args:
             instrument_key: Underlying instrument_key (e.g. ``NSE_INDEX|Nifty 50``).
             expiry: Expiry date YYYY-MM-DD.
-            date: Snapshot date YYYY-MM-DD (default: today).
-            bucket_interval: Minutes per intraday bucket; omit for single snapshot.
+            date: Snapshot date YYYY-MM-DD (default: yesterday IST).
+            bucket_interval: Minutes per intraday bucket (default 60). Required by Upstox.
         """
-        params = {"instrument_key": instrument_key, "expiry": expiry}
-        if date:
-            params["date"] = date
-        if bucket_interval:
-            params["bucket_interval"] = bucket_interval
+        params = {
+            "instrument_key": instrument_key,
+            "expiry": expiry,
+            "date": date or self._default_market_date(),
+            "bucket_interval": bucket_interval if bucket_interval is not None else 60,
+        }
         return await self._v2_get("/v2/market/pcr", params)
 
     async def get_max_pain(
@@ -2791,14 +2803,15 @@ class UpstoxClient:
         instrument_key: str,
         expiry: str,
         date: str | None = None,
-        bucket_interval: int | None = None,
+        bucket_interval: int | None = 60,
     ) -> dict:
-        """Max-Pain strike + optional intraday drift series."""
-        params = {"instrument_key": instrument_key, "expiry": expiry}
-        if date:
-            params["date"] = date
-        if bucket_interval:
-            params["bucket_interval"] = bucket_interval
+        """Max-Pain strike + intraday drift series."""
+        params = {
+            "instrument_key": instrument_key,
+            "expiry": expiry,
+            "date": date or self._default_market_date(),
+            "bucket_interval": bucket_interval if bucket_interval is not None else 60,
+        }
         return await self._v2_get("/v2/market/max-pain", params)
 
     async def get_oi(
@@ -2808,9 +2821,11 @@ class UpstoxClient:
         date: str | None = None,
     ) -> dict:
         """Per-strike OI snapshot (calls + puts) for an F&O underlying."""
-        params = {"instrument_key": instrument_key, "expiry": expiry}
-        if date:
-            params["date"] = date
+        params = {
+            "instrument_key": instrument_key,
+            "expiry": expiry,
+            "date": date or self._default_market_date(),
+        }
         return await self._v2_get("/v2/market/oi", params)
 
     async def get_change_oi(
@@ -2818,14 +2833,15 @@ class UpstoxClient:
         instrument_key: str,
         expiry: str,
         date: str | None = None,
-        interval: int | None = None,
+        interval: int | None = 1,
     ) -> dict:
         """Per-strike net OI change over ``interval`` days."""
-        params = {"instrument_key": instrument_key, "expiry": expiry}
-        if date:
-            params["date"] = date
-        if interval:
-            params["interval"] = interval
+        params = {
+            "instrument_key": instrument_key,
+            "expiry": expiry,
+            "date": date or self._default_market_date(),
+            "interval": interval if interval is not None else 1,
+        }
         return await self._v2_get("/v2/market/change-oi", params)
 
     async def get_fii_activity(
@@ -2902,6 +2918,14 @@ class UpstoxClient:
         """Dividends, bonuses, splits, rights with effective dates."""
         return await self._v2_get(f"/v2/fundamentals/{isin}/corporate-actions")
 
-    async def get_competitors(self, isin: str) -> dict:
-        """Peer companies with instrument_key + sector market cap."""
-        return await self._v2_get(f"/v2/fundamentals/{isin}/competitors")
+    async def get_competitors(self, instrument_key: str) -> list:
+        """Peer companies with instrument_key + sector market cap.
+
+        Unlike the other fundamentals endpoints, this one takes the full
+        ``instrument_key`` (e.g. ``NSE_EQ|INE002A01018``) as a URL-encoded
+        path segment, not the bare ISIN.
+        """
+        from urllib.parse import quote
+        return await self._v2_get(
+            f"/v2/fundamentals/{quote(instrument_key, safe='')}/competitors"
+        )

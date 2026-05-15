@@ -20,7 +20,7 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from base import format_inr, init_market_data_client, print_error, print_json, run_async  # noqa: E402
-from services.instruments_cache import get_isin, get_company_name  # noqa: E402
+from services.instruments_cache import get_isin, get_instrument_key, get_company_name  # noqa: E402
 
 
 def _resolve_isin(symbol: str) -> tuple[str, str]:
@@ -59,16 +59,14 @@ def show_profile(symbol: str, as_json: bool = False):
     print(f"🏢 {name} ({symbol.upper()}) — ISIN {isin}\n")
     sector = data.get("sector") or "n/a"
     print(f"  Sector: {sector}")
-    smc = data.get("sector_market_cap") or {}
-    if smc:
-        inr = smc.get("inr_cr")
-        usd_bn = smc.get("usd_bn")
-        if inr is not None:
-            print(f"  Sector mkt cap: ₹{inr:,.0f} cr"
-                  + (f" (US$ {usd_bn:.1f} bn)" if usd_bn else ""))
-    desc = data.get("business_description") or data.get("description") or ""
+    smc_inr = data.get("sector_market_cap_inr") or {}
+    smc_usd = data.get("sector_market_cap_usd") or {}
+    if smc_inr.get("formatted"):
+        suffix = f" (US$ {smc_usd.get('formatted')})" if smc_usd.get("formatted") else ""
+        print(f"  Sector mkt cap: ₹{smc_inr['formatted']}{suffix}")
+    desc = data.get("company_profile") or data.get("business_description") or ""
     if desc:
-        print(f"\n  {desc.strip()[:500]}")
+        print(f"\n  {desc.strip()[:600]}")
 
 
 def show_ratios(symbol: str, as_json: bool = False):
@@ -84,25 +82,22 @@ def show_ratios(symbol: str, as_json: bool = False):
         return
 
     print(f"📊 Key Ratios: {name} ({symbol.upper()})\n")
-    # Schema varies; try common shapes
-    ratios = data.get("ratios") or data.get("key_ratios") or []
-    if isinstance(ratios, dict):
-        ratios = [{"name": k, **(v if isinstance(v, dict) else {"value": v})}
-                  for k, v in ratios.items()]
+    # Endpoint returns a list of {name, company_value, sector_value}.
+    # Values are strings ("19.21" or "4.39%") — print as-is.
+    ratios = data if isinstance(data, list) else (data.get("ratios") or data.get("key_ratios") or [])
     if not ratios:
-        # Fallback: pretty-print whatever's there
         print_json(data)
         return
 
-    print(f"  {'Ratio':<14} {'Company':>10} {'Sector':>10}")
-    print("  " + "-" * 38)
+    print(f"  {'Ratio':<14} {'Company':>12} {'Sector':>12}")
+    print("  " + "-" * 42)
     for r in ratios:
         rname = r.get("name") or r.get("ratio") or "?"
-        company = r.get("value") or r.get("company_value") or r.get("company")
-        sector = r.get("sector_value") or r.get("sector") or r.get("sector_benchmark")
-        cv = f"{float(company):.2f}" if isinstance(company, (int, float)) else (str(company) if company is not None else "n/a")
-        sv = f"{float(sector):.2f}" if isinstance(sector, (int, float)) else (str(sector) if sector is not None else "n/a")
-        print(f"  {rname:<14} {cv:>10} {sv:>10}")
+        cv = r.get("company_value") if r.get("company_value") is not None else r.get("value")
+        sv = r.get("sector_value") if r.get("sector_value") is not None else r.get("sector")
+        cv_s = str(cv) if cv is not None else "n/a"
+        sv_s = str(sv) if sv is not None else "n/a"
+        print(f"  {rname:<14} {cv_s:>12} {sv_s:>12}")
 
 
 def show_shareholding(symbol: str, as_json: bool = False):
@@ -118,35 +113,39 @@ def show_shareholding(symbol: str, as_json: bool = False):
         return
 
     print(f"📊 Shareholding: {name} ({symbol.upper()})\n")
-    holdings = data.get("share_holdings") or data.get("history") or data
-    if not isinstance(holdings, dict):
+    # Endpoint returns a list of {category, history: [{value, period}]}
+    series_list = data if isinstance(data, list) else (data.get("share_holdings") or [])
+    if not series_list:
         print_json(data)
         return
 
-    categories = ["promoters", "fii", "mutual_funds", "other_dii", "retail_and_other"]
-    # Gather all periods across categories
-    periods: set[str] = set()
+    by_category = {row.get("category"): row.get("history") or [] for row in series_list}
+    categories = list(by_category.keys())
+
+    # Gather periods (preserve any chronological order the API returns)
+    period_order: list[str] = []
+    seen: set = set()
     for cat in categories:
-        series = holdings.get(cat) or []
-        for row in series:
+        for row in by_category[cat]:
             p = row.get("period")
-            if p:
-                periods.add(p)
-    periods_sorted = sorted(periods, reverse=True)[:6]  # last 6 quarters
+            if p and p not in seen:
+                seen.add(p)
+                period_order.append(p)
+    periods_to_show = period_order[:6]
 
-    if not periods_sorted:
+    if not periods_to_show:
         print_json(data)
         return
 
-    print(f"  {'Quarter':<10}" + "".join(f" {c[:10]:>10}" for c in categories))
-    print("  " + "-" * (10 + 11 * len(categories)))
-    for p in periods_sorted:
+    col_w = 12
+    print(f"  {'Period':<10}" + "".join(f" {c[:col_w]:>{col_w}}" for c in categories))
+    print("  " + "-" * (10 + (col_w + 1) * len(categories)))
+    for p in periods_to_show:
         row_vals = []
         for cat in categories:
-            series = holdings.get(cat) or []
-            match = next((r for r in series if r.get("period") == p), None)
+            match = next((r for r in by_category[cat] if r.get("period") == p), None)
             v = (match or {}).get("value")
-            row_vals.append(f"{float(v):>10.2f}" if v is not None else f"{'n/a':>10}")
+            row_vals.append(f"{float(v):>{col_w}.2f}" if v is not None else f"{'n/a':>{col_w}}")
         print(f"  {p:<10}" + " ".join(row_vals))
 
 
@@ -165,23 +164,28 @@ def show_income(symbol: str, type_: str = "consolidated",
         print_json({"symbol": symbol.upper(), "isin": isin, **data})
         return
 
-    print(f"📊 Income Statement ({period}, {type_}): {name} ({symbol.upper()})\n")
-    cats = data.get("income_statement") or data.get("history") or data
-    if not isinstance(cats, dict):
+    units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
+    print(f"📊 Income Statement ({period}, {type_}, units: {units}): {name} ({symbol.upper()})\n")
+    # Endpoint returns dict with `income_statement` as list of {category, history: [...]}
+    cats_list = data.get("income_statement") if isinstance(data, dict) else []
+    if not cats_list:
         print_json(data)
         return
 
+    by_category = {row.get("category"): row.get("history") or [] for row in cats_list}
     for cat_name in ("revenue", "operating_profit", "net_profit", "eps"):
-        series = cats.get(cat_name)
+        series = by_category.get(cat_name)
         if not series:
             continue
         print(f"\n  {cat_name.replace('_', ' ').title()}:")
-        for row in series[-5:]:
+        # API returns most-recent-first; show 5 most recent in that order
+        for row in series[:5]:
             p = row.get("period") or "?"
             v = row.get("value")
             chg = row.get("change")
-            v_str = f"₹{float(v):,.0f} cr" if v is not None else "n/a"
-            print(f"    {p:<12} {v_str:>20} {_pct(chg):>10}")
+            v_str = f"₹{float(v):,.0f}" if v is not None else "n/a"
+            chg_str = str(chg) if chg else "n/a"
+            print(f"    {p:<12} {v_str:>16} {chg_str:>10}")
 
 
 def show_balance_sheet(symbol: str, type_: str = "consolidated",
@@ -197,19 +201,21 @@ def show_balance_sheet(symbol: str, type_: str = "consolidated",
         print_json({"symbol": symbol.upper(), "isin": isin, **data})
         return
 
-    print(f"📊 Balance Sheet ({type_}): {name} ({symbol.upper()})\n")
-    hist = data.get("history") or data.get("balance_sheet") or []
+    units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
+    print(f"📊 Balance Sheet ({type_}, units: {units}): {name} ({symbol.upper()})\n")
+    hist = data.get("history") if isinstance(data, dict) else []
     if not hist:
         print_json(data)
         return
-    print(f"  {'Period':<12} {'Total Assets':>18} {'Total Liabilities':>20}")
-    for row in hist[-5:]:
+    print(f"  {'Period':<12} {'Total Assets':>16} {'Total Liabilities':>20}")
+    # API returns most-recent-first; show 5 most recent
+    for row in hist[:5]:
         p = row.get("period") or "?"
         ta = row.get("total_asset") or row.get("total_assets")
         tl = row.get("total_liability") or row.get("total_liabilities")
-        ta_s = f"₹{float(ta):,.0f} cr" if ta is not None else "n/a"
-        tl_s = f"₹{float(tl):,.0f} cr" if tl is not None else "n/a"
-        print(f"  {p:<12} {ta_s:>18} {tl_s:>20}")
+        ta_s = f"₹{float(ta):,.0f}" if ta is not None else "n/a"
+        tl_s = f"₹{float(tl):,.0f}" if tl is not None else "n/a"
+        print(f"  {p:<12} {ta_s:>16} {tl_s:>20}")
 
 
 def show_cash_flow(symbol: str, type_: str = "consolidated",
@@ -225,22 +231,25 @@ def show_cash_flow(symbol: str, type_: str = "consolidated",
         print_json({"symbol": symbol.upper(), "isin": isin, **data})
         return
 
-    print(f"💵 Cash Flow ({type_}): {name} ({symbol.upper()})\n")
-    cats = data.get("cash_flow") or data
-    if not isinstance(cats, dict):
+    units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
+    print(f"💵 Cash Flow ({type_}, units: {units}): {name} ({symbol.upper()})\n")
+    cats_list = data.get("cash_flow") if isinstance(data, dict) else []
+    if not cats_list:
         print_json(data)
         return
+    by_category = {row.get("category"): row.get("history") or [] for row in cats_list}
     for cat in ("operating", "investing", "financing"):
-        series = cats.get(cat)
+        series = by_category.get(cat)
         if not series:
             continue
         print(f"\n  {cat.title()}:")
-        for row in series[-5:]:
+        for row in series[:5]:
             p = row.get("period") or "?"
             v = row.get("value")
             chg = row.get("change")
-            v_str = f"₹{float(v):,.0f} cr" if v is not None else "n/a"
-            print(f"    {p:<12} {v_str:>20} {_pct(chg):>10}")
+            v_str = f"₹{float(v):,.0f}" if v is not None else "n/a"
+            chg_str = str(chg) if chg else "n/a"
+            print(f"    {p:<12} {v_str:>16} {chg_str:>10}")
 
 
 def show_corporate_actions(symbol: str, as_json: bool = False):
@@ -256,14 +265,7 @@ def show_corporate_actions(symbol: str, as_json: bool = False):
         return
 
     print(f"📅 Corporate Actions: {name} ({symbol.upper()})\n")
-    actions = data.get("corporate_actions") or data.get("actions") or data
-    if not isinstance(actions, list):
-        # Try as dict-of-lists keyed by action type
-        if isinstance(actions, dict):
-            actions = [a for v in actions.values() if isinstance(v, list) for a in v]
-        else:
-            print_json(data)
-            return
+    actions = data if isinstance(data, list) else (data.get("corporate_actions") or [])
     if not actions:
         print("  (no recent or upcoming corporate actions)")
         return
@@ -281,34 +283,46 @@ def show_corporate_actions(symbol: str, as_json: bool = False):
                 suffix = f" {amt}"
         elif ratio:
             suffix = f" ratio {ratio}"
-        print(f"  {exd:<12} {nm}{suffix}")
+        print(f"  {exd:<14} {nm}{suffix}")
+        # Pull ex-date out of event_details if not in top level
+        details = a.get("event_details") or []
+        for d in details:
+            if d.get("name") == "Details" and d.get("value"):
+                print(f"                 {d['value']}")
+                break
 
 
 def show_competitors(symbol: str, as_json: bool = False):
-    isin, name = _resolve_isin(symbol)
+    # Competitors endpoint takes instrument_key (NSE_EQ|ISIN), not ISIN alone.
+    inst_key = get_instrument_key(symbol)
+    if not inst_key or not inst_key.startswith("NSE_EQ|"):
+        print_error(f"No NSE equity instrument_key for '{symbol}'")
+    name = get_company_name(symbol) or symbol.upper()
     client = init_market_data_client()
     try:
-        data = run_async(client.get_competitors(isin))
+        data = run_async(client.get_competitors(inst_key))
     except Exception as e:
         print_error(f"Competitors fetch failed: {e}")
 
+    peers = data if isinstance(data, list) else (data.get("competitors") or data.get("peers") or [])
+
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "instrument_key": inst_key, "competitors": peers})
         return
 
     print(f"🤝 Competitors: {name} ({symbol.upper()})\n")
-    peers = data.get("competitors") or data.get("peers") or []
     if not peers:
-        print_json(data)
+        print("  (no peer data available)")
         return
-    print(f"  {'Name':<32} {'Sector':<24} {'Mkt Cap (₹ cr)':>16}")
+    print(f"  {'Sector':<22} {'Mkt Cap (₹ cr)':>16}  Instrument Key")
+    print("  " + "-" * 70)
     for p in peers[:20]:
-        pname = (p.get("name") or "?")[:32]
-        psec = (p.get("sector") or "?")[:24]
-        smc = p.get("sector_market_cap") or {}
-        inr = smc.get("inr_cr") if isinstance(smc, dict) else None
+        psec = (p.get("sector") or "?")[:22]
+        smc = p.get("sector_market_cap_inr") or {}
+        inr = smc.get("value") if isinstance(smc, dict) else None
         cap_s = f"{float(inr):,.0f}" if inr is not None else "n/a"
-        print(f"  {pname:<32} {psec:<24} {cap_s:>16}")
+        ikey = p.get("instrument_key") or "?"
+        print(f"  {psec:<22} {cap_s:>16}  {ikey}")
 
 
 def main():

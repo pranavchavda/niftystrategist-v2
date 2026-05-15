@@ -1748,32 +1748,32 @@ Common:
     p_pcr = sub.add_parser("pcr", help="Put-Call Ratio for an F&O underlying")
     p_pcr.add_argument("symbol", help=_sym_help)
     p_pcr.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
-    p_pcr.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_pcr.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: yesterday IST — Upstox data is T+1)")
     p_pcr.add_argument("--bucket", type=int, dest="bucket_interval",
-                       help="Minutes per intraday bucket (omit for single snapshot)")
+                       help="Minutes per intraday bucket (default: 60)")
     p_pcr.add_argument("--json", action="store_true", help="Output as JSON")
 
     # max-pain
-    p_mp = sub.add_parser("max-pain", help="Max-Pain strike + optional intraday drift")
+    p_mp = sub.add_parser("max-pain", help="Max-Pain strike + intraday drift")
     p_mp.add_argument("symbol", help=_sym_help)
     p_mp.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
-    p_mp.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_mp.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: yesterday IST)")
     p_mp.add_argument("--bucket", type=int, dest="bucket_interval",
-                      help="Minutes per intraday bucket (omit for single snapshot)")
+                      help="Minutes per intraday bucket (default: 60)")
     p_mp.add_argument("--json", action="store_true", help="Output as JSON")
 
     # oi
     p_oi = sub.add_parser("oi", help="Per-strike Open Interest snapshot")
     p_oi.add_argument("symbol", help=_sym_help)
     p_oi.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
-    p_oi.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_oi.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: yesterday IST)")
     p_oi.add_argument("--json", action="store_true", help="Output as JSON")
 
     # change-oi
     p_chg = sub.add_parser("change-oi", help="Per-strike net OI change over interval")
     p_chg.add_argument("symbol", help=_sym_help)
     p_chg.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
-    p_chg.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_chg.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: yesterday IST)")
     p_chg.add_argument("--interval", type=int, help="Lookback interval in days (default: 1)")
     p_chg.add_argument("--json", action="store_true", help="Output as JSON")
 
