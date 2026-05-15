@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""Fundamentals data for NSE equities — profile, ratios, statements, corporate actions.
+
+All endpoints key off ISIN, which is derived from the instruments cache. Pass
+the symbol as you'd type it for any other CLI (RELIANCE, TCS, HDFCBANK, etc.).
+
+Use for:
+  - Morning scan candidate vetting (ratios vs sector, recent earnings posture)
+  - Ex-date gating (don't enter a swing the day before ex-dividend)
+  - Peer comparison (competitors → comparable instrument_keys)
+  - Chart overlay data (key ratios, shareholding trend)
+"""
+
+import argparse
+import sys
+import os
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import format_inr, init_market_data_client, print_error, print_json, run_async  # noqa: E402
+from services.instruments_cache import get_isin, get_instrument_key, get_company_name  # noqa: E402
+
+
+def _resolve_isin(symbol: str) -> tuple[str, str]:
+    """Resolve a user-typed symbol to (ISIN, company_name). Errors if not found."""
+    isin = get_isin(symbol)
+    if not isin:
+        print_error(
+            f"No ISIN for '{symbol}'. Fundamentals are available for NSE equities only "
+            f"(not indices, ETFs without an ISIN, or F&O contracts)."
+        )
+    return isin, get_company_name(symbol) or symbol.upper()
+
+
+def _pct(val) -> str:
+    """Format a percentage-shaped value, tolerating None."""
+    if val is None:
+        return "n/a"
+    try:
+        return f"{float(val):+.2f}%"
+    except (TypeError, ValueError):
+        return str(val)
+
+
+def show_profile(symbol: str, as_json: bool = False):
+    isin, name = _resolve_isin(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_company_profile(isin))
+    except Exception as e:
+        print_error(f"Profile fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
+        return
+
+    print(f"🏢 {name} ({symbol.upper()}) — ISIN {isin}\n")
+    sector = data.get("sector") or "n/a"
+    print(f"  Sector: {sector}")
+    smc_inr = data.get("sector_market_cap_inr") or {}
+    smc_usd = data.get("sector_market_cap_usd") or {}
+    if smc_inr.get("formatted"):
+        suffix = f" (US$ {smc_usd.get('formatted')})" if smc_usd.get("formatted") else ""
+        print(f"  Sector mkt cap: ₹{smc_inr['formatted']}{suffix}")
+    desc = data.get("company_profile") or data.get("business_description") or ""
+    if desc:
+        print(f"\n  {desc.strip()[:600]}")
+
+
+def show_ratios(symbol: str, as_json: bool = False):
+    isin, name = _resolve_isin(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_key_ratios(isin))
+    except Exception as e:
+        print_error(f"Ratios fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
+        return
+
+    print(f"📊 Key Ratios: {name} ({symbol.upper()})\n")
+    # Endpoint returns a list of {name, company_value, sector_value}.
+    # Values are strings ("19.21" or "4.39%") — print as-is.
+    ratios = data if isinstance(data, list) else (data.get("ratios") or data.get("key_ratios") or [])
+    if not ratios:
+        print("  (no ratios data available — typically the case for ETFs / non-equity instruments)")
+        return
+
+    print(f"  {'Ratio':<14} {'Company':>12} {'Sector':>12}")
+    print("  " + "-" * 42)
+    for r in ratios:
+        rname = r.get("name") or r.get("ratio") or "?"
+        cv = r.get("company_value") if r.get("company_value") is not None else r.get("value")
+        sv = r.get("sector_value") if r.get("sector_value") is not None else r.get("sector")
+        cv_s = str(cv) if cv is not None else "n/a"
+        sv_s = str(sv) if sv is not None else "n/a"
+        print(f"  {rname:<14} {cv_s:>12} {sv_s:>12}")
+
+
+def show_shareholding(symbol: str, as_json: bool = False):
+    isin, name = _resolve_isin(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_shareholding(isin))
+    except Exception as e:
+        print_error(f"Shareholding fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
+        return
+
+    print(f"📊 Shareholding: {name} ({symbol.upper()})\n")
+    # Endpoint returns a list of {category, history: [{value, period}]}
+    series_list = data if isinstance(data, list) else (data.get("share_holdings") or [])
+    if not series_list:
+        print_json(data)
+        return
+
+    by_category = {row.get("category"): row.get("history") or [] for row in series_list}
+    categories = list(by_category.keys())
+
+    # Gather periods (preserve any chronological order the API returns)
+    period_order: list[str] = []
+    seen: set = set()
+    for cat in categories:
+        for row in by_category[cat]:
+            p = row.get("period")
+            if p and p not in seen:
+                seen.add(p)
+                period_order.append(p)
+    periods_to_show = period_order[:6]
+
+    if not periods_to_show:
+        print_json(data)
+        return
+
+    col_w = 12
+    print(f"  {'Period':<10}" + "".join(f" {c[:col_w]:>{col_w}}" for c in categories))
+    print("  " + "-" * (10 + (col_w + 1) * len(categories)))
+    for p in periods_to_show:
+        row_vals = []
+        for cat in categories:
+            match = next((r for r in by_category[cat] if r.get("period") == p), None)
+            v = (match or {}).get("value")
+            row_vals.append(f"{float(v):>{col_w}.2f}" if v is not None else f"{'n/a':>{col_w}}")
+        print(f"  {p:<10}" + " ".join(row_vals))
+
+
+def show_income(symbol: str, type_: str = "consolidated",
+                quarterly: bool = False, full_statement: bool = False,
+                as_json: bool = False):
+    isin, name = _resolve_isin(symbol)
+    client = init_market_data_client()
+    period = "quarterly" if quarterly else "yearly"
+    try:
+        data = run_async(client.get_income_statement(isin, type_, period, full_statement))
+    except Exception as e:
+        print_error(f"Income statement fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
+        return
+
+    units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
+    print(f"📊 Income Statement ({period}, {type_}, units: {units}): {name} ({symbol.upper()})\n")
+    # Endpoint returns dict with `income_statement` as list of {category, history: [...]}
+    cats_list = data.get("income_statement") if isinstance(data, dict) else []
+    if not cats_list:
+        print_json(data)
+        return
+
+    by_category = {row.get("category"): row.get("history") or [] for row in cats_list}
+    for cat_name in ("revenue", "operating_profit", "net_profit", "eps"):
+        series = by_category.get(cat_name)
+        if not series:
+            continue
+        print(f"\n  {cat_name.replace('_', ' ').title()}:")
+        # API returns most-recent-first; show 5 most recent in that order
+        for row in series[:5]:
+            p = row.get("period") or "?"
+            v = row.get("value")
+            chg = row.get("change")
+            v_str = f"₹{float(v):,.0f}" if v is not None else "n/a"
+            chg_str = str(chg) if chg else "n/a"
+            print(f"    {p:<12} {v_str:>16} {chg_str:>10}")
+
+
+def show_balance_sheet(symbol: str, type_: str = "consolidated",
+                       full_statement: bool = False, as_json: bool = False):
+    isin, name = _resolve_isin(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_balance_sheet(isin, type_, full_statement))
+    except Exception as e:
+        print_error(f"Balance sheet fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
+        return
+
+    units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
+    print(f"📊 Balance Sheet ({type_}, units: {units}): {name} ({symbol.upper()})\n")
+    hist = data.get("history") if isinstance(data, dict) else []
+    if not hist:
+        print_json(data)
+        return
+    print(f"  {'Period':<12} {'Total Assets':>16} {'Total Liabilities':>20}")
+    # API returns most-recent-first; show 5 most recent
+    for row in hist[:5]:
+        p = row.get("period") or "?"
+        ta = row.get("total_asset") or row.get("total_assets")
+        tl = row.get("total_liability") or row.get("total_liabilities")
+        ta_s = f"₹{float(ta):,.0f}" if ta is not None else "n/a"
+        tl_s = f"₹{float(tl):,.0f}" if tl is not None else "n/a"
+        print(f"  {p:<12} {ta_s:>16} {tl_s:>20}")
+
+
+def show_cash_flow(symbol: str, type_: str = "consolidated",
+                   full_statement: bool = False, as_json: bool = False):
+    isin, name = _resolve_isin(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_cash_flow(isin, type_, full_statement))
+    except Exception as e:
+        print_error(f"Cash flow fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
+        return
+
+    units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
+    print(f"💵 Cash Flow ({type_}, units: {units}): {name} ({symbol.upper()})\n")
+    cats_list = data.get("cash_flow") if isinstance(data, dict) else []
+    if not cats_list:
+        print_json(data)
+        return
+    by_category = {row.get("category"): row.get("history") or [] for row in cats_list}
+    for cat in ("operating", "investing", "financing"):
+        series = by_category.get(cat)
+        if not series:
+            continue
+        print(f"\n  {cat.title()}:")
+        for row in series[:5]:
+            p = row.get("period") or "?"
+            v = row.get("value")
+            chg = row.get("change")
+            v_str = f"₹{float(v):,.0f}" if v is not None else "n/a"
+            chg_str = str(chg) if chg else "n/a"
+            print(f"    {p:<12} {v_str:>16} {chg_str:>10}")
+
+
+def show_corporate_actions(symbol: str, as_json: bool = False):
+    isin, name = _resolve_isin(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_corporate_actions(isin))
+    except Exception as e:
+        print_error(f"Corporate actions fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
+        return
+
+    print(f"📅 Corporate Actions: {name} ({symbol.upper()})\n")
+    actions = data if isinstance(data, list) else (data.get("corporate_actions") or [])
+    if not actions:
+        print("  (no recent or upcoming corporate actions)")
+        return
+
+    for a in actions[:20]:
+        nm = a.get("name") or a.get("action") or "?"
+        exd = a.get("expiry_date") or a.get("ex_date") or a.get("date") or "?"
+        amt = a.get("amount")
+        ratio = a.get("ratio")
+        suffix = ""
+        if amt:  # skip when 0 / None — bonuses/splits use ratio instead
+            try:
+                suffix = f" ₹{float(amt):.2f}"
+            except (TypeError, ValueError):
+                suffix = f" {amt}"
+        elif ratio:
+            suffix = f" ratio {ratio}"
+        print(f"  {exd:<14} {nm}{suffix}")
+        # Pull ex-date out of event_details if not in top level
+        details = a.get("event_details") or []
+        for d in details:
+            if d.get("name") == "Details" and d.get("value"):
+                print(f"                 {d['value']}")
+                break
+
+
+def show_competitors(symbol: str, as_json: bool = False):
+    # Competitors endpoint takes instrument_key (NSE_EQ|ISIN), not ISIN alone.
+    inst_key = get_instrument_key(symbol)
+    if not inst_key or not inst_key.startswith("NSE_EQ|"):
+        print_error(f"No NSE equity instrument_key for '{symbol}'")
+    name = get_company_name(symbol) or symbol.upper()
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_competitors(inst_key))
+    except Exception as e:
+        print_error(f"Competitors fetch failed: {e}")
+
+    peers = data if isinstance(data, list) else (data.get("competitors") or data.get("peers") or [])
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "instrument_key": inst_key, "competitors": peers})
+        return
+
+    print(f"🤝 Competitors: {name} ({symbol.upper()})\n")
+    if not peers:
+        print("  (no peer data available)")
+        return
+    print(f"  {'Sector':<22} {'Mkt Cap (₹ cr)':>16}  Instrument Key")
+    print("  " + "-" * 70)
+    for p in peers[:20]:
+        psec = (p.get("sector") or "?")[:22]
+        smc = p.get("sector_market_cap_inr") or {}
+        inr = smc.get("value") if isinstance(smc, dict) else None
+        cap_s = f"{float(inr):,.0f}" if inr is not None else "n/a"
+        ikey = p.get("instrument_key") or "?"
+        print(f"  {psec:<22} {cap_s:>16}  {ikey}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-fundamentals",
+        description="Fundamentals data for NSE equities (ISIN-keyed via Upstox)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-fundamentals profile RELIANCE              Company profile + sector market cap
+  nf-fundamentals ratios RELIANCE               P/E, P/B, ROE, ROCE vs sector
+  nf-fundamentals shareholding RELIANCE         Promoter / FII / MF % quarterly trend
+  nf-fundamentals income TCS                    Yearly P&L: revenue, profit, EPS
+  nf-fundamentals income TCS --quarterly        Quarterly cut
+  nf-fundamentals balance-sheet INFY            Total assets/liabilities history
+  nf-fundamentals cash-flow INFY                Operating/investing/financing CFs
+  nf-fundamentals corp-actions HDFCBANK         Upcoming dividends, splits, bonuses
+  nf-fundamentals competitors RELIANCE          Peer companies + market caps
+
+All commands accept --json for structured output.
+""",
+    )
+    sub = parser.add_subparsers(dest="command", help="Command")
+
+    common_type = ("--type", {"default": "consolidated",
+                              "choices": ["consolidated", "standalone"],
+                              "help": "Statement type (default: consolidated)"})
+
+    for cmd, help_str, extra in [
+        ("profile", "Company profile + sector market cap", []),
+        ("ratios", "Key valuation/profitability ratios vs sector", []),
+        ("shareholding", "Quarterly shareholding by category", []),
+        ("corp-actions", "Dividends, splits, bonuses, rights with ex-dates", []),
+        ("competitors", "Peer companies with instrument_keys", []),
+    ]:
+        p = sub.add_parser(cmd, help=help_str)
+        p.add_argument("symbol", help="NSE equity symbol (e.g. RELIANCE, TCS)")
+        p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # income (extra flags)
+    p_inc = sub.add_parser("income", help="P&L: revenue, operating profit, net profit, EPS")
+    p_inc.add_argument("symbol", help="NSE equity symbol")
+    p_inc.add_argument(common_type[0], **common_type[1])
+    p_inc.add_argument("--quarterly", action="store_true", help="Quarterly cut (default: yearly)")
+    p_inc.add_argument("--full", action="store_true", help="Full statement with line items")
+    p_inc.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # balance-sheet
+    p_bs = sub.add_parser("balance-sheet", help="Historical balance sheet")
+    p_bs.add_argument("symbol", help="NSE equity symbol")
+    p_bs.add_argument(common_type[0], **common_type[1])
+    p_bs.add_argument("--full", action="store_true", help="Full statement with line items")
+    p_bs.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # cash-flow
+    p_cf = sub.add_parser("cash-flow", help="Cash flow by Operating/Investing/Financing")
+    p_cf.add_argument("symbol", help="NSE equity symbol")
+    p_cf.add_argument(common_type[0], **common_type[1])
+    p_cf.add_argument("--full", action="store_true", help="Full statement with line items")
+    p_cf.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "profile":
+        show_profile(args.symbol, args.json)
+    elif args.command == "ratios":
+        show_ratios(args.symbol, args.json)
+    elif args.command == "shareholding":
+        show_shareholding(args.symbol, args.json)
+    elif args.command == "income":
+        show_income(args.symbol, args.type, args.quarterly, args.full, args.json)
+    elif args.command == "balance-sheet":
+        show_balance_sheet(args.symbol, args.type, args.full, args.json)
+    elif args.command == "cash-flow":
+        show_cash_flow(args.symbol, args.type, args.full, args.json)
+    elif args.command == "corp-actions":
+        show_corporate_actions(args.symbol, args.json)
+    elif args.command == "competitors":
+        show_competitors(args.symbol, args.json)
+
+
+if __name__ == "__main__":
+    main()

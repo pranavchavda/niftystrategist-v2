@@ -479,6 +479,18 @@ def get_company_name(symbol: str) -> str | None:
     return _symbol_to_name.get(symbol.upper())
 
 
+def get_isin(symbol: str) -> str | None:
+    """Return the ISIN for an NSE equity symbol, or None.
+
+    Upstox NSE_EQ instrument_keys are formatted ``NSE_EQ|<ISIN>``, so we derive
+    the ISIN by splitting. Indices/F&O don't have ISINs and return None.
+    """
+    key = get_instrument_key(symbol)
+    if not key or not key.startswith("NSE_EQ|"):
+        return None
+    return key.split("|", 1)[1]
+
+
 def is_nifty50(symbol: str) -> bool:
     """Return True if symbol is a Nifty 50 constituent."""
     return symbol.upper() in NIFTY_50_SYMBOLS
