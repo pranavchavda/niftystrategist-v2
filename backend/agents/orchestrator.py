@@ -1511,6 +1511,13 @@ Use `--json` for structured output. Use `--help` for any tool's full syntax.
 - `python cli-tools/nf-morning-scan [--universe nifty50|nifty100|nifty500] [--top N] [--min-score N] [--news] [--json]` — Morning momentum scan: ranks stocks by gap, relative strength vs Nifty, RVOL-T (volume by time-of-day), RSI, VWAP. Defaults to Nifty 500 universe. Best run 9:20-9:30 IST. Outputs top trade candidates with setups (ORB breakout, VWAP pullback, momentum continuation). Use --news to include market news context via Perplexity. Use --universe nifty50 for faster scans.
 - `python cli-tools/nf-morning-scan --debug SYMBOL` — Debug all indicators for a single stock
 
+**Morning Scan workflow (recommended for swing/positional candidates):**
+After `nf-morning-scan --news` returns the top candidates, vet each one with fundamentals before recommending:
+  1. `nf-fundamentals ratios SYMBOL` — is it expensive/cheap vs sector?
+  2. `nf-fundamentals income SYMBOL --quarterly` — most recent quarter healthy (revenue/profit growth)?
+  3. `nf-fundamentals corp-actions SYMBOL` — any ex-dividend/split/bonus in the trade window that affects the setup?
+This gives you `candidates + news + fundamentals` per name — much higher-confidence recommendations than scan-output alone. Skip fundamentals for pure intraday/scalp setups (technicals dominate sub-hour).
+
 **Technical Analysis:**
 - `python cli-tools/nf-analyze SYMBOL [--interval 15minute|30minute|day] [--json]` — Full analysis
 - `python cli-tools/nf-analyze SYMBOL1 SYMBOL2 --compare [--json]` — Compare signals
@@ -1585,7 +1592,24 @@ NOTE: GTT orders are broker-native and persist until triggered or cancelled. Use
 - `python cli-tools/nf-options spread SYMBOL --expiry YYYY-MM-DD --legs BUY:STRIKE:CE SELL:STRIKE:CE [--lots N] [--product D|I] [--dry-run] [--json]` — Multi-leg spread/basket order (Strategy Builder). Supports bull call, bear put, bull put, bear call, iron condor, straddle. Shows payoff analysis (max profit/loss, breakevens, risk/reward), margin estimate, and charges. Places all legs as a single basket via multi-order API for spread margin benefit. Use --dry-run to preview.
   Example: `nf-options spread SHREECEM --expiry 2026-04-28 --legs BUY:24250:CE SELL:25000:CE --lots 1 --dry-run`
 - `python cli-tools/nf-options fno-symbols [--json]` — List all ~200 F&O-eligible stock symbols
+
+**F&O analytics (positioning signals, no order placement — pure decision-support):**
+- `python cli-tools/nf-options pcr SYMBOL --expiry YYYY-MM-DD [--date YYYY-MM-DD] [--bucket MINS] [--json]` — Put-Call Ratio. PCR > 1.3 = bearish positioning, < 0.7 = bullish. Use `--bucket 15` for 15-min intraday series.
+- `python cli-tools/nf-options max-pain SYMBOL --expiry YYYY-MM-DD [--date YYYY-MM-DD] [--bucket MINS] [--json]` — Max-Pain strike (option writers' break-even). Spot drifts toward max-pain near expiry. Wide spot↔max-pain gap = trend in progress.
+- `python cli-tools/nf-options oi SYMBOL --expiry YYYY-MM-DD [--date YYYY-MM-DD] [--json]` — Per-strike OI snapshot. Highest Call OI = resistance, highest Put OI = support.
+- `python cli-tools/nf-options change-oi SYMBOL --expiry YYYY-MM-DD [--interval N] [--json]` — Net OI change over N days. Call writing + Put unwinding = bearish flow; opposite = bullish. The single most actionable F&O positioning signal.
 NOTE: Stock options have monthly expiry (last Thursday) and physical delivery on expiry. Index options have weekly expiry and cash settlement.
+
+**Fundamentals (NSE equities — for candidate vetting, swing decisions, ex-date gating):**
+- `python cli-tools/nf-fundamentals profile SYMBOL [--json]` — Company profile + sector + sector market cap
+- `python cli-tools/nf-fundamentals ratios SYMBOL [--json]` — P/E, P/B, ROE, ROCE, EV/EBITDA, **with sector benchmark** (instantly tells you if a stock is rich/cheap vs peers)
+- `python cli-tools/nf-fundamentals shareholding SYMBOL [--json]` — Quarterly promoter/FII/MF/retail %. Rising FII = positive flow; falling promoter = risk.
+- `python cli-tools/nf-fundamentals income SYMBOL [--quarterly] [--full] [--json]` — Revenue/profit/EPS history with % change. Use `--quarterly` for recent earnings posture.
+- `python cli-tools/nf-fundamentals balance-sheet SYMBOL [--full] [--json]` — Total assets/liabilities
+- `python cli-tools/nf-fundamentals cash-flow SYMBOL [--full] [--json]` — Operating/investing/financing cash flows
+- `python cli-tools/nf-fundamentals corp-actions SYMBOL [--json]` — **Dividends, splits, bonuses with ex-dates** — critical for swing entry timing (don't open positions day-before-ex without accounting for the drop)
+- `python cli-tools/nf-fundamentals competitors SYMBOL [--json]` — Peer companies for relative comparison
+NOTE: Fundamentals are ISIN-keyed via the instruments cache. Indices and ETFs return no data. For Morning Scan candidates: pair `ratios` + recent `income --quarterly` + `corp-actions` alongside news to vet quality before recommending a trade.
 
 **Watchlist:**
 - `python cli-tools/nf-watchlist [--json]` — View watchlist with live prices

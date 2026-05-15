@@ -715,6 +715,185 @@ def show_live_chain(symbol: str, expiry: str, as_json: bool = False):
         )
 
 
+def _resolve_underlying_key(symbol: str) -> str:
+    """Resolve an F&O underlying symbol to its instrument_key.
+
+    Handles indices (NIFTY → ``NSE_INDEX|Nifty 50``) and F&O-eligible stocks
+    (RELIANCE → ``NSE_EQ|INE...``) uniformly.
+    """
+    from services.instruments_cache import (
+        ensure_loaded, get_index_key, get_instrument_key,
+    )
+    ensure_loaded()
+    sym = symbol.upper()
+    idx = get_index_key(sym)
+    if idx:
+        return idx
+    eq = get_instrument_key(sym)
+    if eq:
+        return eq
+    print_error(f"Cannot resolve underlying instrument for '{symbol}'")
+
+
+def show_pcr(symbol: str, expiry: str, date: str = None,
+             bucket_interval: int = None, as_json: bool = False):
+    """Put-Call Ratio with optional intraday series."""
+    inst_key = _resolve_underlying_key(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_pcr(inst_key, expiry, date, bucket_interval))
+    except Exception as e:
+        print_error(f"PCR fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "expiry": expiry, **data})
+        return
+
+    pcr = data.get("pcr")
+    spot = data.get("spot_closing_price")
+    insights = data.get("insights") or []
+    print(f"📊 Put-Call Ratio: {symbol.upper()} (expiry {expiry})\n")
+    print(f"  PCR:  {pcr:.3f}" if pcr is not None else "  PCR:  n/a")
+    if spot is not None:
+        print(f"  Spot: {format_inr(spot)}")
+    pcr_hint = ""
+    if pcr is not None:
+        pcr_hint = "  ← bearish positioning" if pcr > 1.3 else ("  ← bullish positioning" if pcr < 0.7 else "  ← neutral")
+    print(f"  Read:{pcr_hint}")
+    if insights:
+        print(f"\n  Intraday ({len(insights)} buckets):")
+        print(f"  {'Time':<10} {'PCR':>8} {'Spot':>12}")
+        for row in insights[-10:]:
+            t = row.get("time", "")
+            p = row.get("pcr") or 0
+            s = row.get("spot_price") or 0
+            print(f"  {t:<10} {p:>8.3f} {format_inr(s):>12}")
+
+
+def show_max_pain(symbol: str, expiry: str, date: str = None,
+                  bucket_interval: int = None, as_json: bool = False):
+    """Max-Pain strike with optional intraday drift."""
+    inst_key = _resolve_underlying_key(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_max_pain(inst_key, expiry, date, bucket_interval))
+    except Exception as e:
+        print_error(f"Max-pain fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "expiry": expiry, **data})
+        return
+
+    mp = data.get("max_pain")
+    spot = data.get("spot_closing_price")
+    insights = data.get("insights") or []
+    print(f"📊 Max Pain: {symbol.upper()} (expiry {expiry})\n")
+    print(f"  Max Pain: {mp:.0f}" if mp is not None else "  Max Pain: n/a")
+    if spot is not None:
+        print(f"  Spot:     {format_inr(spot)}")
+        if mp is not None:
+            diff = spot - mp
+            pct = (diff / mp * 100) if mp else 0
+            arrow = "▲" if diff > 0 else "▼" if diff < 0 else "→"
+            print(f"  Gap:      {arrow} {abs(diff):.1f} ({pct:+.2f}%)")
+    if insights:
+        print(f"\n  Intraday drift ({len(insights)} buckets):")
+        print(f"  {'Time':<10} {'Max Pain':>10} {'Spot':>12}")
+        for row in insights[-10:]:
+            t = row.get("time", "")
+            m = row.get("max_pain") or 0
+            s = row.get("spot_price") or 0
+            print(f"  {t:<10} {m:>10.0f} {format_inr(s):>12}")
+
+
+def show_oi(symbol: str, expiry: str, date: str = None, as_json: bool = False):
+    """Per-strike Open Interest snapshot."""
+    inst_key = _resolve_underlying_key(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_oi(inst_key, expiry, date))
+    except Exception as e:
+        print_error(f"OI fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "expiry": expiry, **data})
+        return
+
+    tot_calls = data.get("total_calls") or 0
+    tot_puts = data.get("total_puts") or 0
+    spot = data.get("spot_closing_price")
+    rows = data.get("call_put_oi_data_list") or []
+
+    print(f"📊 Open Interest: {symbol.upper()} (expiry {expiry})\n")
+    print(f"  Total Call OI: {tot_calls:>14,.0f}")
+    print(f"  Total Put OI:  {tot_puts:>14,.0f}")
+    pcr_oi = (tot_puts / tot_calls) if tot_calls else 0
+    print(f"  PCR (OI):      {pcr_oi:>14.3f}")
+    if spot is not None:
+        print(f"  Spot:          {format_inr(spot):>14}")
+
+    if rows:
+        rows.sort(key=lambda r: r.get("strike") or 0)
+        # Show 5 ITM + 5 OTM around spot
+        if spot:
+            idx = min(range(len(rows)), key=lambda i: abs((rows[i].get("strike") or 0) - spot))
+            window = rows[max(0, idx-5):idx+6]
+        else:
+            window = rows[:11]
+        print(f"\n  {'Call OI':>14} {'Strike':>10} {'Put OI':>14}")
+        for r in window:
+            strike = r.get("strike") or 0
+            c_oi = r.get("call_oi") or 0
+            p_oi = r.get("put_oi") or 0
+            marker = " ←" if spot and abs(strike - spot) < (rows[1].get("strike", 0) - rows[0].get("strike", 0)) / 2 else ""
+            print(f"  {c_oi:>14,.0f} {strike:>10.0f} {p_oi:>14,.0f}{marker}")
+
+
+def show_change_oi(symbol: str, expiry: str, date: str = None,
+                   interval: int = None, as_json: bool = False):
+    """Per-strike net OI change over interval."""
+    inst_key = _resolve_underlying_key(symbol)
+    client = init_market_data_client()
+    try:
+        data = run_async(client.get_change_oi(inst_key, expiry, date, interval))
+    except Exception as e:
+        print_error(f"Change-OI fetch failed: {e}")
+
+    if as_json:
+        print_json({"symbol": symbol.upper(), "expiry": expiry, **data})
+        return
+
+    tot_call_chg = data.get("total_call_change_oi") or 0
+    tot_put_chg = data.get("total_put_change_oi") or 0
+    rows = data.get("call_put_oi_data_list") or []
+
+    print(f"📊 Change in OI: {symbol.upper()} (expiry {expiry})\n")
+    print(f"  Net Call ΔOI: {tot_call_chg:>+14,.0f}")
+    print(f"  Net Put ΔOI:  {tot_put_chg:>+14,.0f}")
+    flow_hint = ""
+    if tot_call_chg > 0 and tot_put_chg < 0:
+        flow_hint = "  → Call writing + Put unwinding (bearish)"
+    elif tot_call_chg < 0 and tot_put_chg > 0:
+        flow_hint = "  → Call unwinding + Put writing (bullish)"
+    elif tot_call_chg > 0 and tot_put_chg > 0:
+        flow_hint = "  → Both sides building (high volatility expected)"
+    elif tot_call_chg < 0 and tot_put_chg < 0:
+        flow_hint = "  → Both sides unwinding (positions closing)"
+    if flow_hint:
+        print(f"\n {flow_hint}")
+
+    if rows:
+        # Top 10 strikes by absolute change magnitude
+        rows.sort(key=lambda r: abs((r.get("call_change_oi") or 0) + (r.get("put_change_oi") or 0)), reverse=True)
+        print(f"\n  Top 10 strikes by ΔOI magnitude:")
+        print(f"  {'Call ΔOI':>14} {'Strike':>10} {'Put ΔOI':>14}")
+        for r in rows[:10]:
+            strike = r.get("strike") or 0
+            c_chg = r.get("call_change_oi") or 0
+            p_chg = r.get("put_change_oi") or 0
+            print(f"  {c_chg:>+14,.0f} {strike:>10.0f} {p_chg:>+14,.0f}")
+
+
 def _parse_option_tradingsymbol(tradingsymbol: str) -> dict | None:
     """Parse an option tradingsymbol like BANKNIFTY26MAR48000CE into components.
 
@@ -1460,6 +1639,13 @@ Spreads / Strategy Builder (multi-leg basket orders):
   nf-options spread NIFTY --expiry 2026-04-03 --legs BUY:23000:CE BUY:23000:PE --lots 1  (Straddle)
   nf-options spread NIFTY --expiry 2026-04-03 --legs SELL:23200:CE BUY:23400:CE SELL:22800:PE BUY:22600:PE  (Iron Condor)
 
+F&O analytics (positioning signals):
+  nf-options pcr NIFTY --expiry 2026-03-27                           Put-Call Ratio
+  nf-options pcr BANKNIFTY --expiry 2026-03-27 --bucket 15           PCR with 15-min intraday series
+  nf-options max-pain NIFTY --expiry 2026-03-27                      Max-Pain strike
+  nf-options oi NIFTY --expiry 2026-03-27                            Per-strike OI snapshot
+  nf-options change-oi NIFTY --expiry 2026-03-27 --interval 1        Net OI shift (1-day)
+
 Common:
   nf-options charges BANKNIFTY 2026-03-12 48000 CE 1 --side BUY     Charges estimate
   nf-options positions                            Show all F&O positions
@@ -1558,6 +1744,39 @@ Common:
     p_fno = sub.add_parser("fno-symbols", help="List all F&O-eligible stock symbols")
     p_fno.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # pcr — Put-Call Ratio
+    p_pcr = sub.add_parser("pcr", help="Put-Call Ratio for an F&O underlying")
+    p_pcr.add_argument("symbol", help=_sym_help)
+    p_pcr.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
+    p_pcr.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_pcr.add_argument("--bucket", type=int, dest="bucket_interval",
+                       help="Minutes per intraday bucket (omit for single snapshot)")
+    p_pcr.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # max-pain
+    p_mp = sub.add_parser("max-pain", help="Max-Pain strike + optional intraday drift")
+    p_mp.add_argument("symbol", help=_sym_help)
+    p_mp.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
+    p_mp.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_mp.add_argument("--bucket", type=int, dest="bucket_interval",
+                      help="Minutes per intraday bucket (omit for single snapshot)")
+    p_mp.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # oi
+    p_oi = sub.add_parser("oi", help="Per-strike Open Interest snapshot")
+    p_oi.add_argument("symbol", help=_sym_help)
+    p_oi.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
+    p_oi.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_oi.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # change-oi
+    p_chg = sub.add_parser("change-oi", help="Per-strike net OI change over interval")
+    p_chg.add_argument("symbol", help=_sym_help)
+    p_chg.add_argument("--expiry", required=True, help="Expiry date (YYYY-MM-DD)")
+    p_chg.add_argument("--date", help="Snapshot date YYYY-MM-DD (default: today)")
+    p_chg.add_argument("--interval", type=int, help="Lookback interval in days (default: 1)")
+    p_chg.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1635,6 +1854,14 @@ Common:
         )
     elif args.command == "fno-symbols":
         show_fno_symbols(as_json=args.json)
+    elif args.command == "pcr":
+        show_pcr(args.symbol, args.expiry, args.date, args.bucket_interval, args.json)
+    elif args.command == "max-pain":
+        show_max_pain(args.symbol, args.expiry, args.date, args.bucket_interval, args.json)
+    elif args.command == "oi":
+        show_oi(args.symbol, args.expiry, args.date, args.json)
+    elif args.command == "change-oi":
+        show_change_oi(args.symbol, args.expiry, args.date, args.interval, args.json)
 
 
 if __name__ == "__main__":

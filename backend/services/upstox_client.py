@@ -2723,3 +2723,185 @@ class UpstoxClient:
                 "pnl_pct": round(pnl_pct, 2),
             })
         return holdings
+
+    async def _v2_get(self, path: str, params: dict | None = None, timeout: float = 15.0) -> dict:
+        """GET an Upstox v2 endpoint and return the parsed ``data`` payload.
+
+        Centralizes auth header construction, error handling, and the
+        ``status: success`` envelope check used across the new market-information
+        and fundamentals endpoints. The SDK doesn't expose bindings for these
+        yet, so we hit the REST API directly with the same bearer token the SDK
+        uses.
+        """
+        import httpx
+
+        await self._ensure_valid_token()
+        if not self.access_token:
+            raise ValueError("No Upstox access token configured.")
+
+        url = f"https://api.upstox.com{path}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as http:
+                resp = await http.get(url, headers=headers, params=params or {})
+            resp.raise_for_status()
+            payload = resp.json()
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:300] if e.response is not None else ""
+            raise ValueError(
+                f"Upstox v2 GET {path} failed: {e.response.status_code} {body}"
+            )
+        except Exception as e:
+            raise ValueError(f"Upstox v2 GET {path} failed: {e}")
+
+        if payload.get("status") != "success":
+            raise ValueError(f"Upstox v2 {path} unexpected response: {payload}")
+        return payload.get("data") or {}
+
+    # ───── Market Information (F&O analytics) ─────
+
+    async def get_pcr(
+        self,
+        instrument_key: str,
+        expiry: str,
+        date: str | None = None,
+        bucket_interval: int | None = None,
+    ) -> dict:
+        """Put-Call Ratio + optional intraday series for an F&O underlying.
+
+        Args:
+            instrument_key: Underlying instrument_key (e.g. ``NSE_INDEX|Nifty 50``).
+            expiry: Expiry date YYYY-MM-DD.
+            date: Snapshot date YYYY-MM-DD (default: today).
+            bucket_interval: Minutes per intraday bucket; omit for single snapshot.
+        """
+        params = {"instrument_key": instrument_key, "expiry": expiry}
+        if date:
+            params["date"] = date
+        if bucket_interval:
+            params["bucket_interval"] = bucket_interval
+        return await self._v2_get("/v2/market/pcr", params)
+
+    async def get_max_pain(
+        self,
+        instrument_key: str,
+        expiry: str,
+        date: str | None = None,
+        bucket_interval: int | None = None,
+    ) -> dict:
+        """Max-Pain strike + optional intraday drift series."""
+        params = {"instrument_key": instrument_key, "expiry": expiry}
+        if date:
+            params["date"] = date
+        if bucket_interval:
+            params["bucket_interval"] = bucket_interval
+        return await self._v2_get("/v2/market/max-pain", params)
+
+    async def get_oi(
+        self,
+        instrument_key: str,
+        expiry: str,
+        date: str | None = None,
+    ) -> dict:
+        """Per-strike OI snapshot (calls + puts) for an F&O underlying."""
+        params = {"instrument_key": instrument_key, "expiry": expiry}
+        if date:
+            params["date"] = date
+        return await self._v2_get("/v2/market/oi", params)
+
+    async def get_change_oi(
+        self,
+        instrument_key: str,
+        expiry: str,
+        date: str | None = None,
+        interval: int | None = None,
+    ) -> dict:
+        """Per-strike net OI change over ``interval`` days."""
+        params = {"instrument_key": instrument_key, "expiry": expiry}
+        if date:
+            params["date"] = date
+        if interval:
+            params["interval"] = interval
+        return await self._v2_get("/v2/market/change-oi", params)
+
+    async def get_fii_activity(
+        self,
+        data_type: str = "NSE_FO|INDEX_FUTURES",
+        interval: str | None = None,
+        from_date: str | None = None,
+    ) -> dict:
+        """Foreign Institutional Investor activity by segment + interval."""
+        params: dict = {"data_type": data_type}
+        if interval:
+            params["interval"] = interval
+        if from_date:
+            params["from"] = from_date
+        return await self._v2_get("/v2/market/fii", params)
+
+    async def get_dii_activity(
+        self,
+        data_type: str = "NSE_EQ|CASH",
+        interval: str | None = None,
+        from_date: str | None = None,
+    ) -> dict:
+        """Domestic Institutional Investor activity (NSE cash only)."""
+        params: dict = {"data_type": data_type}
+        if interval:
+            params["interval"] = interval
+        if from_date:
+            params["from"] = from_date
+        return await self._v2_get("/v2/market/dii", params)
+
+    # ───── Fundamentals (ISIN-keyed) ─────
+
+    async def get_company_profile(self, isin: str) -> dict:
+        """Company profile: sector, business description, sector market cap."""
+        return await self._v2_get(f"/v2/fundamentals/{isin}/profile")
+
+    async def get_key_ratios(self, isin: str) -> dict:
+        """Valuation/profitability ratios with sector benchmark."""
+        return await self._v2_get(f"/v2/fundamentals/{isin}/key-ratios")
+
+    async def get_shareholding(self, isin: str) -> dict:
+        """Quarterly shareholding by category."""
+        return await self._v2_get(f"/v2/fundamentals/{isin}/share-holdings")
+
+    async def get_income_statement(
+        self, isin: str, type_: str = "consolidated",
+        time_period: str = "yearly", full_statement: bool = False,
+    ) -> dict:
+        """Revenue / operating profit / net profit history."""
+        params = {"type": type_, "time_period": time_period}
+        if full_statement:
+            params["fs"] = "true"
+        return await self._v2_get(f"/v2/fundamentals/{isin}/income-statement", params)
+
+    async def get_balance_sheet(
+        self, isin: str, type_: str = "consolidated", full_statement: bool = False,
+    ) -> dict:
+        """Total assets/liabilities history; full line items via ``fs=true``."""
+        params: dict = {"type": type_}
+        if full_statement:
+            params["fs"] = "true"
+        return await self._v2_get(f"/v2/fundamentals/{isin}/balance-sheet", params)
+
+    async def get_cash_flow(
+        self, isin: str, type_: str = "consolidated", full_statement: bool = False,
+    ) -> dict:
+        """Operating/investing/financing cash flow history."""
+        params: dict = {"type": type_}
+        if full_statement:
+            params["fs"] = "true"
+        return await self._v2_get(f"/v2/fundamentals/{isin}/cash-flow", params)
+
+    async def get_corporate_actions(self, isin: str) -> dict:
+        """Dividends, bonuses, splits, rights with effective dates."""
+        return await self._v2_get(f"/v2/fundamentals/{isin}/corporate-actions")
+
+    async def get_competitors(self, isin: str) -> dict:
+        """Peer companies with instrument_key + sector market cap."""
+        return await self._v2_get(f"/v2/fundamentals/{isin}/competitors")
