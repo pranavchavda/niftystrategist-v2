@@ -72,7 +72,7 @@ async def create_schedule(
     prompt: str,
     enabled: bool = True,
     weekdays_only: bool = True,
-    timeout_seconds: int = 600,
+    timeout_seconds: int = 1200,
     model_override: Optional[str] = None,
 ) -> UserAwakeningSchedule:
     """Create a new awakening schedule."""
@@ -205,7 +205,7 @@ async def seed_default_schedules(session: AsyncSession, user_id: int) -> List[Us
             cron_minute=d["cron_minute"],
             weekdays_only=True,
             prompt=d["prompt"],
-            timeout_seconds=600,
+            timeout_seconds=1200,
         )
         session.add(schedule)
         created.append(schedule)

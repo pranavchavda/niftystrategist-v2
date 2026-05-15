@@ -26,7 +26,7 @@ class ScheduleCreate(BaseModel):
     prompt: str = Field(..., min_length=1)
     enabled: bool = True
     weekdays_only: bool = True
-    timeout_seconds: int = Field(600, ge=60, le=1800)
+    timeout_seconds: int = Field(1200, ge=60, le=1800)
     model_override: Optional[str] = None
 
 

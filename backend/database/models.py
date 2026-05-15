@@ -1079,7 +1079,7 @@ class UserAwakeningSchedule(Base):
     prompt = Column(Text, nullable=False)
 
     # Execution config
-    timeout_seconds = Column(Integer, default=600, nullable=False)
+    timeout_seconds = Column(Integer, default=1200, nullable=False)
     model_override = Column(String(100), nullable=True)
 
     # Tracking
