@@ -124,10 +124,16 @@ async def api_deploy_strategy(
 
     is_fno = getattr(template, "category", "equity") == "fno"
 
-    # Coerce numeric-looking param values (frontend sends strings from inputs)
+    # Coerce numeric-looking param values (frontend sends strings from inputs).
+    # Also lowercase any `timeframe` value — `IndicatorTrigger.timeframe` is a
+    # Literal["1m","5m","15m","30m","1h","1d"] and frontend dropdowns have
+    # shipped "1M"/"5M" before, producing rules that ValidationError on every
+    # tick and silently never fire (2026-05-15 Ashok utbot-scalp-options).
     coerced_params = {}
     for k, v in body.params.items():
-        if isinstance(v, str) and v.replace(".", "", 1).replace("-", "", 1).isdigit():
+        if k == "timeframe" and isinstance(v, str):
+            coerced_params[k] = v.lower()
+        elif isinstance(v, str) and v.replace(".", "", 1).replace("-", "", 1).isdigit():
             try:
                 coerced_params[k] = int(v) if "." not in v else float(v)
             except ValueError:
