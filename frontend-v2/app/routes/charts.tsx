@@ -19,7 +19,7 @@ import {
   type MouseEventParams,
   type WhitespaceData,
 } from 'lightweight-charts';
-import { Search, Plus, X, Loader2, TrendingUp, TrendingDown, Radio, Activity, Settings as SettingsIcon, RotateCcw } from 'lucide-react';
+import { Search, Plus, X, Loader2, TrendingUp, TrendingDown, Radio, Activity, Building2, Calendar, Settings as SettingsIcon, RotateCcw } from 'lucide-react';
 import { requirePermission } from '../utils/route-permissions';
 
 interface AuthContext {
@@ -249,6 +249,7 @@ interface PersistedChartState {
   // dynamically-renamed apiNames (e.g. SMA period → "sma_30").
   indicators?: IndicatorDef[];
   technicalsOpen?: boolean;
+  fundamentalsOpen?: boolean;
 }
 
 interface TechnicalIndicatorEntry {
@@ -895,6 +896,319 @@ function TechnicalsPanel({
   );
 }
 
+// ─── Fundamentals panel ───────────────────────────────────────────────────
+// Aggregates profile / ratios / shareholding / latest-quarter income /
+// upcoming corporate actions into a compact sidebar. Equity-only — for
+// indices, ETFs, or unknown symbols the backend returns
+// {available: false, ...} and we render an empty-state.
+
+interface FundamentalsRatio {
+  name: string;
+  company_value: string | null;
+  sector_value: string | null;
+}
+
+interface FundamentalsShareholding {
+  latest_period: string | null;
+  latest: number | null;
+  prev: number | null;
+  delta: number | null;
+}
+
+interface FundamentalsQuarterValue {
+  period: string | null;
+  value: number | null;
+  change: string | null;
+}
+
+interface FundamentalsAction {
+  name: string | null;
+  expiry_date: string | null;
+  days_until: number | null;
+  amount: number | null;
+  ratio: string | null;
+  details: string | null;
+}
+
+interface FundamentalsPayload {
+  symbol: string;
+  available: boolean;
+  reason?: string;
+  message?: string;
+  isin?: string;
+  name?: string;
+  sector?: string | null;
+  sector_market_cap_inr_formatted?: string | null;
+  ratios?: FundamentalsRatio[];
+  shareholding?: {
+    promoter?: FundamentalsShareholding | null;
+    fii?: FundamentalsShareholding | null;
+    mutual_funds?: FundamentalsShareholding | null;
+  };
+  latest_quarter?: Record<string, FundamentalsQuarterValue | undefined>;
+  income_units?: string;
+  upcoming_action?: FundamentalsAction | null;
+  recent_actions?: FundamentalsAction[];
+}
+
+// Heuristic: for each ratio, is company better-than-sector or worse?
+// Higher is better for ROA/ROE/ROCE/Quick Ratio; lower is better for
+// P/E, P/B, EV/EBITDA (cheaper valuation). Unknown → neutral.
+const RATIO_HIGHER_IS_BETTER: Record<string, boolean> = {
+  ROA: true,
+  ROE: true,
+  ROCE: true,
+  'Quick Ratio': true,
+  'P/E': false,
+  'P/B': false,
+  'EV/EBITDA': false,
+};
+
+function parseRatioValue(v: string | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace('%', '').trim();
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function FundamentalsPanel({
+  symbol,
+  authToken,
+  onClose,
+}: {
+  symbol: string;
+  authToken: string;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<FundamentalsPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/charts/fundamentals/${encodeURIComponent(symbol)}`,
+        { headers: { Authorization: `Bearer ${authToken}` } },
+      );
+      if (!res.ok) {
+        let msg = `${res.status}`;
+        try { const b = await res.json(); if (b?.detail) msg = b.detail; } catch { /* ignore */ }
+        throw new Error(msg);
+      }
+      setData(await res.json());
+    } catch (e: any) {
+      setError(e?.message || 'Failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [symbol, authToken]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  return (
+    <div className="w-72 flex-shrink-0 border-l border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 overflow-y-auto">
+      <div className="sticky top-0 bg-zinc-50 dark:bg-zinc-900/50 backdrop-blur border-b border-zinc-200 dark:border-zinc-800 px-3 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Building2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span className="text-xs font-bold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
+            Fundamentals
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={refresh} title="Refresh" className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500">
+            <Loader2 className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button onClick={onClose} title="Close" className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="px-3 py-2 text-xs text-red-600 dark:text-red-400">Error: {error}</div>
+      )}
+
+      {data && !data.available && (
+        <div className="px-3 py-4 text-xs text-zinc-500">
+          {data.message || 'No fundamentals data available for this instrument.'}
+        </div>
+      )}
+
+      {data && data.available && (
+        <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+          {/* Sector + market cap */}
+          {(data.sector || data.sector_market_cap_inr_formatted) && (
+            <div className="px-3 py-2 text-[11px]">
+              {data.sector && (
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 uppercase tracking-wider text-[9px]">Sector</span>
+                  <span className="font-semibold text-zinc-700 dark:text-zinc-300">{data.sector}</span>
+                </div>
+              )}
+              {data.sector_market_cap_inr_formatted && (
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-zinc-500 uppercase tracking-wider text-[9px]">Sector mcap</span>
+                  <span className="font-mono text-zinc-600 dark:text-zinc-400">₹{data.sector_market_cap_inr_formatted}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Ratios with sector benchmark */}
+          {data.ratios && data.ratios.length > 0 && (
+            <div className="px-3 py-2">
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">Key Ratios vs Sector</div>
+              <div className="space-y-1">
+                {data.ratios.map((r) => {
+                  const cv = parseRatioValue(r.company_value);
+                  const sv = parseRatioValue(r.sector_value);
+                  let verdict: 'better' | 'worse' | 'neutral' = 'neutral';
+                  if (cv !== null && sv !== null && RATIO_HIGHER_IS_BETTER[r.name] !== undefined) {
+                    const higherBetter = RATIO_HIGHER_IS_BETTER[r.name];
+                    verdict = (cv > sv) === higherBetter ? 'better' : 'worse';
+                  }
+                  const colorCls = verdict === 'better'
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : verdict === 'worse'
+                      ? 'text-red-600 dark:text-red-400'
+                      : 'text-zinc-600 dark:text-zinc-400';
+                  return (
+                    <div key={r.name} className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-500 font-medium">{r.name}</span>
+                      <div className="flex items-center gap-1.5 tabular-nums">
+                        <span className={`font-bold ${colorCls}`}>{r.company_value ?? 'n/a'}</span>
+                        <span className="text-zinc-400 dark:text-zinc-600">vs</span>
+                        <span className="text-zinc-500">{r.sector_value ?? 'n/a'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Latest quarter */}
+          {data.latest_quarter && Object.keys(data.latest_quarter).length > 0 && (
+            <div className="px-3 py-2">
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">
+                Latest Quarter
+                {(() => {
+                  const period = Object.values(data.latest_quarter).find(Boolean)?.period;
+                  return period ? <span className="ml-1 normal-case font-normal">({period})</span> : null;
+                })()}
+              </div>
+              <div className="space-y-1 text-[11px]">
+                {(['revenue', 'operating_profit', 'net_profit'] as const).map((cat) => {
+                  const q = data.latest_quarter?.[cat];
+                  if (!q || q.value === null || q.value === undefined) return null;
+                  const chgPositive = q.change && /^\+/.test(q.change);
+                  const chgNegative = q.change && /^-/.test(q.change);
+                  return (
+                    <div key={cat} className="flex items-center justify-between">
+                      <span className="text-zinc-500 capitalize">{cat.replace('_', ' ')}</span>
+                      <div className="flex items-center gap-1.5 tabular-nums">
+                        <span className="font-mono text-zinc-700 dark:text-zinc-300">₹{q.value.toLocaleString('en-IN')}</span>
+                        {q.change && (
+                          <span className={`text-[10px] font-semibold ${
+                            chgPositive ? 'text-emerald-600 dark:text-emerald-400'
+                              : chgNegative ? 'text-red-600 dark:text-red-400'
+                                : 'text-zinc-500'
+                          }`}>
+                            {q.change}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {data.income_units && (
+                <div className="text-[9px] text-zinc-400 dark:text-zinc-600 mt-1 text-right">in {data.income_units}</div>
+              )}
+            </div>
+          )}
+
+          {/* Shareholding deltas */}
+          {data.shareholding && (
+            <div className="px-3 py-2">
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">Shareholding QoQ</div>
+              <div className="space-y-1 text-[11px]">
+                {(['promoter', 'fii', 'mutual_funds'] as const).map((cat) => {
+                  const sh = data.shareholding?.[cat];
+                  if (!sh || sh.latest === null) return null;
+                  const delta = sh.delta;
+                  const trendCls = delta === null || Math.abs(delta) < 0.01
+                    ? 'text-zinc-500'
+                    : delta > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400';
+                  const label = cat === 'mutual_funds' ? 'MF' : cat.toUpperCase();
+                  return (
+                    <div key={cat} className="flex items-center justify-between">
+                      <span className="text-zinc-500">{label}</span>
+                      <div className="flex items-center gap-1.5 tabular-nums">
+                        <span className="font-mono text-zinc-700 dark:text-zinc-300">{sh.latest.toFixed(2)}%</span>
+                        {delta !== null && (
+                          <span className={`text-[10px] font-semibold ${trendCls}`}>
+                            {delta > 0 ? '+' : ''}{delta.toFixed(2)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Upcoming corporate action badge */}
+          {data.upcoming_action && (
+            <div className="px-3 py-2 bg-amber-50 dark:bg-amber-950/20">
+              <div className="flex items-start gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                      {data.upcoming_action.name}
+                    </span>
+                    <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400 tabular-nums">
+                      in {data.upcoming_action.days_until}d
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-zinc-600 dark:text-zinc-400 mt-0.5">
+                    {data.upcoming_action.expiry_date}
+                    {data.upcoming_action.amount ? ` · ₹${data.upcoming_action.amount}` : ''}
+                    {data.upcoming_action.ratio ? ` · ratio ${data.upcoming_action.ratio}` : ''}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Recent actions (collapsed list, only if no upcoming badge already showing) */}
+          {!data.upcoming_action && data.recent_actions && data.recent_actions.length > 0 && (
+            <div className="px-3 py-2">
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">Recent Actions</div>
+              <div className="space-y-1 text-[10px]">
+                {data.recent_actions.slice(0, 3).map((a, i) => (
+                  <div key={i} className="flex items-center justify-between gap-1.5">
+                    <span className="text-zinc-600 dark:text-zinc-400 truncate">{a.name}</span>
+                    <span className="text-zinc-500 tabular-nums flex-shrink-0">{a.expiry_date}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!data && !error && loading && (
+        <div className="px-3 py-6 text-center text-xs text-zinc-500">Loading…</div>
+      )}
+    </div>
+  );
+}
+
 function Row({
   label,
   value,
@@ -970,6 +1284,7 @@ function ChartsView({ authToken }: { authToken: string }) {
   const [liveBackend, setLiveBackend] = useState<'ws' | 'poll' | null>(null);
   const [lastTickPrice, setLastTickPrice] = useState<number | null>(null);
   const [technicalsOpen, setTechnicalsOpen] = useState<boolean>(() => Boolean(persisted.technicalsOpen));
+  const [fundamentalsOpen, setFundamentalsOpen] = useState<boolean>(() => Boolean(persisted.fundamentalsOpen));
 
   const intraday = timeframe === '1m' || timeframe === '5m' || timeframe === '15m' || timeframe === '30m';
 
@@ -990,8 +1305,9 @@ function ChartsView({ authToken }: { authToken: string }) {
       timeframe,
       indicators: activeIndicators,
       technicalsOpen,
+      fundamentalsOpen,
     });
-  }, [symbol, timeframe, activeIndicators, technicalsOpen]);
+  }, [symbol, timeframe, activeIndicators, technicalsOpen, fundamentalsOpen]);
 
   const paneIndicators = useMemo(
     () => activeIndicators.filter((i) => i.kind === 'pane'),
@@ -1854,6 +2170,19 @@ function ChartsView({ authToken }: { authToken: string }) {
           Technicals
         </button>
 
+        <button
+          onClick={() => setFundamentalsOpen((v) => !v)}
+          title={fundamentalsOpen ? 'Hide fundamentals' : 'Show fundamentals'}
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded transition-colors ${
+            fundamentalsOpen
+              ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+              : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+          }`}
+        >
+          <Building2 className="w-3 h-3" />
+          Fundamentals
+        </button>
+
         <IndicatorPicker
           active={activeIndicators}
           onAdd={addIndicator}
@@ -1903,6 +2232,13 @@ function ChartsView({ authToken }: { authToken: string }) {
             timeframe={timeframe}
             authToken={authToken}
             onClose={() => setTechnicalsOpen(false)}
+          />
+        )}
+        {fundamentalsOpen && (
+          <FundamentalsPanel
+            symbol={symbol}
+            authToken={authToken}
+            onClose={() => setFundamentalsOpen(false)}
           />
         )}
       </div>
