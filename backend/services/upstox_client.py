@@ -2844,32 +2844,44 @@ class UpstoxClient:
         }
         return await self._v2_get("/v2/market/change-oi", params)
 
+    @staticmethod
+    def _default_fii_dii_from() -> str:
+        """30 days back from yesterday IST — gives a sensible default lookback window."""
+        from datetime import datetime, timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return (datetime.now(ist) - timedelta(days=31)).strftime("%Y-%m-%d")
+
     async def get_fii_activity(
         self,
         data_type: str = "NSE_FO|INDEX_FUTURES",
-        interval: str | None = None,
+        interval: str = "1D",
         from_date: str | None = None,
     ) -> dict:
-        """Foreign Institutional Investor activity by segment + interval."""
-        params: dict = {"data_type": data_type}
-        if interval:
-            params["interval"] = interval
-        if from_date:
-            params["from"] = from_date
+        """Foreign Institutional Investor activity by segment + interval.
+
+        ``data_type`` options: NSE_FO|INDEX_FUTURES, NSE_FO|STOCK_FUTURES,
+        NSE_FO|INDEX_OPTIONS, NSE_FO|STOCK_OPTIONS, NSE_EQ|CASH.
+        Both ``interval`` and ``from_date`` are required by the API.
+        """
+        params: dict = {
+            "data_type": data_type,
+            "interval": interval or "1D",
+            "from": from_date or self._default_fii_dii_from(),
+        }
         return await self._v2_get("/v2/market/fii", params)
 
     async def get_dii_activity(
         self,
         data_type: str = "NSE_EQ|CASH",
-        interval: str | None = None,
+        interval: str = "1D",
         from_date: str | None = None,
     ) -> dict:
         """Domestic Institutional Investor activity (NSE cash only)."""
-        params: dict = {"data_type": data_type}
-        if interval:
-            params["interval"] = interval
-        if from_date:
-            params["from"] = from_date
+        params: dict = {
+            "data_type": data_type,
+            "interval": interval or "1D",
+            "from": from_date or self._default_fii_dii_from(),
+        }
         return await self._v2_get("/v2/market/dii", params)
 
     # ───── Fundamentals (ISIN-keyed) ─────

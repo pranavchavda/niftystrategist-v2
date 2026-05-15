@@ -53,7 +53,7 @@ def show_profile(symbol: str, as_json: bool = False):
         print_error(f"Profile fetch failed: {e}")
 
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
         return
 
     print(f"🏢 {name} ({symbol.upper()}) — ISIN {isin}\n")
@@ -78,7 +78,7 @@ def show_ratios(symbol: str, as_json: bool = False):
         print_error(f"Ratios fetch failed: {e}")
 
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
         return
 
     print(f"📊 Key Ratios: {name} ({symbol.upper()})\n")
@@ -86,7 +86,7 @@ def show_ratios(symbol: str, as_json: bool = False):
     # Values are strings ("19.21" or "4.39%") — print as-is.
     ratios = data if isinstance(data, list) else (data.get("ratios") or data.get("key_ratios") or [])
     if not ratios:
-        print_json(data)
+        print("  (no ratios data available — typically the case for ETFs / non-equity instruments)")
         return
 
     print(f"  {'Ratio':<14} {'Company':>12} {'Sector':>12}")
@@ -109,7 +109,7 @@ def show_shareholding(symbol: str, as_json: bool = False):
         print_error(f"Shareholding fetch failed: {e}")
 
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
         return
 
     print(f"📊 Shareholding: {name} ({symbol.upper()})\n")
@@ -161,7 +161,7 @@ def show_income(symbol: str, type_: str = "consolidated",
         print_error(f"Income statement fetch failed: {e}")
 
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
         return
 
     units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
@@ -198,7 +198,7 @@ def show_balance_sheet(symbol: str, type_: str = "consolidated",
         print_error(f"Balance sheet fetch failed: {e}")
 
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
         return
 
     units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
@@ -228,7 +228,7 @@ def show_cash_flow(symbol: str, type_: str = "consolidated",
         print_error(f"Cash flow fetch failed: {e}")
 
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
         return
 
     units = data.get("units_in", "crore") if isinstance(data, dict) else "crore"
@@ -261,7 +261,7 @@ def show_corporate_actions(symbol: str, as_json: bool = False):
         print_error(f"Corporate actions fetch failed: {e}")
 
     if as_json:
-        print_json({"symbol": symbol.upper(), "isin": isin, **data})
+        print_json({"symbol": symbol.upper(), "isin": isin, "data": data} if isinstance(data, list) else {"symbol": symbol.upper(), "isin": isin, **data})
         return
 
     print(f"📅 Corporate Actions: {name} ({symbol.upper()})\n")
@@ -276,7 +276,7 @@ def show_corporate_actions(symbol: str, as_json: bool = False):
         amt = a.get("amount")
         ratio = a.get("ratio")
         suffix = ""
-        if amt is not None:
+        if amt:  # skip when 0 / None — bonuses/splits use ratio instead
             try:
                 suffix = f" ₹{float(amt):.2f}"
             except (TypeError, ValueError):

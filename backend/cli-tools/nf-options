@@ -833,19 +833,26 @@ def show_oi(symbol: str, expiry: str, date: str = None, as_json: bool = False):
         print(f"  Spot:          {format_inr(spot):>14}")
 
     if rows:
-        rows.sort(key=lambda r: r.get("strike") or 0)
-        # Show 5 ITM + 5 OTM around spot
+        def _strike(r):
+            return r.get("strike_price") or r.get("strike") or 0
+        rows.sort(key=_strike)
+        # Drop sentinel strikes (some rows come back with strike_price=0)
+        rows = [r for r in rows if _strike(r) > 0]
+        if not rows:
+            return
         if spot:
-            idx = min(range(len(rows)), key=lambda i: abs((rows[i].get("strike") or 0) - spot))
+            idx = min(range(len(rows)), key=lambda i: abs(_strike(rows[i]) - spot))
             window = rows[max(0, idx-5):idx+6]
         else:
             window = rows[:11]
+        # Strike step (for ATM marker tolerance)
+        step = (_strike(rows[1]) - _strike(rows[0])) if len(rows) >= 2 else 50
         print(f"\n  {'Call OI':>14} {'Strike':>10} {'Put OI':>14}")
         for r in window:
-            strike = r.get("strike") or 0
+            strike = _strike(r)
             c_oi = r.get("call_oi") or 0
             p_oi = r.get("put_oi") or 0
-            marker = " ←" if spot and abs(strike - spot) < (rows[1].get("strike", 0) - rows[0].get("strike", 0)) / 2 else ""
+            marker = " ←ATM" if spot and abs(strike - spot) < step / 2 else ""
             print(f"  {c_oi:>14,.0f} {strike:>10.0f} {p_oi:>14,.0f}{marker}")
 
 
@@ -883,12 +890,14 @@ def show_change_oi(symbol: str, expiry: str, date: str = None,
         print(f"\n {flow_hint}")
 
     if rows:
+        # Drop sentinel strikes
+        rows = [r for r in rows if (r.get("strike_price") or r.get("strike") or 0) > 0]
         # Top 10 strikes by absolute change magnitude
-        rows.sort(key=lambda r: abs((r.get("call_change_oi") or 0) + (r.get("put_change_oi") or 0)), reverse=True)
+        rows.sort(key=lambda r: abs((r.get("call_change_oi") or 0)) + abs((r.get("put_change_oi") or 0)), reverse=True)
         print(f"\n  Top 10 strikes by ΔOI magnitude:")
         print(f"  {'Call ΔOI':>14} {'Strike':>10} {'Put ΔOI':>14}")
         for r in rows[:10]:
-            strike = r.get("strike") or 0
+            strike = r.get("strike_price") or r.get("strike") or 0
             c_chg = r.get("call_change_oi") or 0
             p_chg = r.get("put_change_oi") or 0
             print(f"  {c_chg:>+14,.0f} {strike:>10.0f} {p_chg:>+14,.0f}")
