@@ -1006,8 +1006,8 @@ export default function ScalpSessionsRoute() {
                 <select value={formData.indicator_timeframe} disabled={lockInstrument} onChange={e => setFormData((p: any) => ({ ...p, indicator_timeframe: e.target.value }))}
                   className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                   {(formData.session_mode === 'equity_swing'
-                    ? ['15m', '1h', '1d']
-                    : ['1m', '3m', '5m', '15m']
+                    ? ['15m', '30m', '1h', '1d']
+                    : ['1m', '3m', '5m', '15m', '30m']
                   ).map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
