@@ -32,6 +32,8 @@ from services.instruments_cache import (
     search_indices,
     get_instrument_key,
     get_index_key,
+    get_isin,
+    get_company_name,
 )
 
 # Reuse cockpit's per-user Upstox client resolver so token handling
@@ -727,4 +729,166 @@ async def charts_available_indicators():
             {"name": "renko", "label": "Renko Trend", "kind": "pane", "parameterized": False},
         ],
         "known": sorted(OVERLAY_COMPUTERS.keys()),
+    }
+
+
+def _shareholding_trend(history: list[dict]) -> dict | None:
+    """Pull the latest two quarters from a shareholding history list.
+
+    The API returns rows in most-recent-first order. Returns
+    ``{latest_period, latest, prev, delta}`` or None if data is insufficient.
+    """
+    if not history or len(history) < 1:
+        return None
+    latest = history[0]
+    prev = history[1] if len(history) >= 2 else None
+    try:
+        latest_v = float(latest.get("value"))
+    except (TypeError, ValueError):
+        return None
+    prev_v = None
+    if prev is not None:
+        try:
+            prev_v = float(prev.get("value"))
+        except (TypeError, ValueError):
+            prev_v = None
+    return {
+        "latest_period": latest.get("period"),
+        "latest": latest_v,
+        "prev": prev_v,
+        "delta": (latest_v - prev_v) if prev_v is not None else None,
+    }
+
+
+@router.get("/fundamentals/{symbol}")
+async def charts_fundamentals(
+    symbol: str,
+    user: User = Depends(get_current_user),
+):
+    """Aggregate fundamentals snapshot for the chart's right-side panel.
+
+    Concurrently fetches profile / key-ratios / shareholding / latest
+    quarterly income / corporate actions and shapes the result for a
+    compact UI. Returns ``available=False`` (200, not 4xx) when the
+    instrument is an index / ETF / unknown so the panel can render an
+    "n/a" state without an error toast.
+    """
+    isin = get_isin(symbol)
+    if not isin:
+        return {
+            "symbol": symbol.upper(),
+            "available": False,
+            "reason": "no_isin",
+            "message": "Fundamentals are NSE-equity only (indices, ETFs, F&O contracts have no ISIN).",
+        }
+
+    try:
+        client = await cockpit_api.get_market_data_client(user)
+    except Exception as e:
+        logger.error(f"charts.fundamentals: client init failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upstox client unavailable: {e}")
+
+    inst_key = get_instrument_key(symbol)
+    name = get_company_name(symbol) or symbol.upper()
+
+    async def _safe(coro):
+        """Return None on failure so one bad endpoint doesn't kill the panel."""
+        try:
+            return await coro
+        except Exception as e:
+            logger.info(f"charts.fundamentals({symbol}) partial-fail: {e}")
+            return None
+
+    # Fan out — competitors omitted from the chart panel (not visually useful in a sidebar).
+    profile_d, ratios_d, sh_d, income_d, actions_d = await asyncio.gather(
+        _safe(client.get_company_profile(isin)),
+        _safe(client.get_key_ratios(isin)),
+        _safe(client.get_shareholding(isin)),
+        _safe(client.get_income_statement(isin, time_period="quarterly")),
+        _safe(client.get_corporate_actions(isin)),
+    )
+
+    # ── Profile (sector only — business description is too long for sidebar) ──
+    sector = (profile_d or {}).get("sector") if isinstance(profile_d, dict) else None
+    smc_inr = (profile_d or {}).get("sector_market_cap_inr") if isinstance(profile_d, dict) else None
+    sector_cap_formatted = (smc_inr or {}).get("formatted") if isinstance(smc_inr, dict) else None
+
+    # ── Ratios (list of {name, company_value, sector_value}) ──
+    ratios = ratios_d if isinstance(ratios_d, list) else []
+
+    # ── Shareholding: pluck FII + promoter trend ──
+    sh_list = sh_d if isinstance(sh_d, list) else []
+    sh_by_cat = {row.get("category"): row.get("history") or [] for row in sh_list}
+    shareholding = {
+        "promoter": _shareholding_trend(sh_by_cat.get("promoters", [])),
+        "fii": _shareholding_trend(sh_by_cat.get("fii", [])),
+        "mutual_funds": _shareholding_trend(sh_by_cat.get("mutual_funds", [])),
+    }
+
+    # ── Income: most recent quarter for revenue + net profit ──
+    income_categories = []
+    if isinstance(income_d, dict):
+        income_categories = income_d.get("income_statement") or []
+    income_by_cat = {row.get("category"): row.get("history") or [] for row in income_categories}
+    latest_quarter = {}
+    for cat in ("revenue", "operating_profit", "net_profit"):
+        series = income_by_cat.get(cat) or []
+        if series:
+            row = series[0]  # most recent
+            latest_quarter[cat] = {
+                "period": row.get("period"),
+                "value": row.get("value"),
+                "change": row.get("change"),
+            }
+    income_units = income_d.get("units_in") if isinstance(income_d, dict) else "crore"
+
+    # ── Corporate actions: upcoming + recent (next 90 days window for badge) ──
+    actions_list = actions_d if isinstance(actions_d, list) else []
+    parsed_actions = []
+    now_dt = datetime.utcnow()
+    for a in actions_list[:20]:
+        ex_str = a.get("expiry_date") or ""
+        try:
+            ex_dt = datetime.strptime(ex_str, "%d %b %Y") if ex_str else None
+        except ValueError:
+            ex_dt = None
+        days_until = (ex_dt - now_dt).days if ex_dt else None
+        parsed_actions.append({
+            "name": a.get("name"),
+            "expiry_date": ex_str,
+            "days_until": days_until,
+            "amount": a.get("amount"),
+            "ratio": a.get("ratio"),
+            "details": next(
+                (d.get("value") for d in (a.get("event_details") or [])
+                 if d.get("name") == "Details"),
+                None,
+            ),
+        })
+    # Closest upcoming action within 30 days (for the chart badge)
+    upcoming = next(
+        (
+            a for a in sorted(
+                (x for x in parsed_actions if x["days_until"] is not None and x["days_until"] >= 0),
+                key=lambda x: x["days_until"],
+            )
+            if a["days_until"] <= 30
+        ),
+        None,
+    )
+
+    return {
+        "symbol": symbol.upper(),
+        "isin": isin,
+        "instrument_key": inst_key,
+        "name": name,
+        "available": True,
+        "sector": sector,
+        "sector_market_cap_inr_formatted": sector_cap_formatted,
+        "ratios": ratios,
+        "shareholding": shareholding,
+        "latest_quarter": latest_quarter,
+        "income_units": income_units,
+        "upcoming_action": upcoming,
+        "recent_actions": parsed_actions[:5],
     }
