@@ -1139,8 +1139,14 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 except Exception as e:
                     logger.error(f"Error getting cache stats: {e}")
 
+            # When capabilities-v2 is enabled, MemoryCapability +
+            # RecentThreadsCapability own the memory/threads sections. Guard the
+            # legacy inline blocks below so they don't double-inject.
+            from agents.capabilities import capabilities_v2_enabled
+            _cap_v2 = capabilities_v2_enabled()
+
             # Inject memories if available
-            if ctx.deps.user_memories:
+            if not _cap_v2 and ctx.deps.user_memories:
                 memories_section = "\n\n## REMEMBERED INFORMATION\n\n"
                 memories_section += "From previous conversations, I remember:\n"
                 for i, memory in enumerate(ctx.deps.user_memories, 1):
@@ -1149,6 +1155,25 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                     "\nUse this information to provide personalized assistance.\n"
                 )
                 sections.append(memories_section)
+
+            # Memory capture nudge — agent-driven mid-conversation memory writes.
+            # Daily cron extractor still runs on prod, but in-flight context
+            # produces higher-quality facts than post-hoc batch extraction.
+            # `remember` dedups at 0.92 cosine, so duplicate writes are safe.
+            _mem_user = ctx.deps.state.user_id if ctx.deps.state else None
+            if _mem_user and _mem_user != "anonymous":
+                sections.append(
+                    "\n\n## MEMORY CAPTURE\n\n"
+                    "If the latest user message reveals a durable trading preference, risk rule, "
+                    "or instruction not already covered by your remembered information, call "
+                    "`remember()` once before responding. Categories: `risk_tolerance`, "
+                    "`position_sizing`, `sector_preference`, `trading_style`, `avoid_list`, "
+                    "`past_learnings`, `schedule`, `experience_level`, `communication`. "
+                    "Skip ephemeral/transactional content (current task state, live market data, "
+                    "one-off requests, casual chat) — that is never a memory. "
+                    "Duplicates are auto-deduped (0.92 cosine), so err toward saving when "
+                    "uncertain about durability.\n"
+                )
 
             # Inject Trading Mode status dynamically
             if ctx.deps.trading_mode == "live":
@@ -1320,8 +1345,10 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 thread_section += "\nUse these when calling tools that require thread or user context (e.g. `schedule_followup`).\n"
                 sections.append(thread_section)
 
-            # Inject recent thread titles for cross-thread awareness
-            try:
+            # Inject recent thread titles for cross-thread awareness.
+            # Skipped when capabilities-v2 owns this via RecentThreadsCapability.
+            if not _cap_v2:
+              try:
                 from sqlalchemy import select
                 from database.session import AsyncSessionLocal
                 from database.models import Conversation as ConvModel
@@ -1358,21 +1385,24 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                             age = ""
                         thread_section += f"- \"{t_title}\" ({age})\n"
                     sections.append(thread_section)
-            except Exception as e:
+              except Exception as e:
                 logger.debug(f"Thread titles injection failed (non-fatal): {e}")
 
             # Date/time is the LAST section — placed at the bottom of the system
             # prompt so it's closest to the conversation history and doesn't get
             # lost in the middle (needle-in-haystack attention issue).
-            utc_now = datetime.now(ZoneInfo("UTC"))
-            ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
+            # Skipped when capabilities-v2 owns this via DateTimeCapability,
+            # which is registered last so the section still lands at the bottom.
+            if not _cap_v2:
+                utc_now = datetime.now(ZoneInfo("UTC"))
+                ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
 
-            date_section = "\n\n## ⏰ CURRENT DATE & TIME\n\n"
-            date_section += f"**Right now it is: {ist_now.strftime('%I:%M %p IST')}** on {ist_now.strftime('%A, %B %d, %Y')}\n"
-            date_section += f"**ISO:** {ist_now.isoformat()}\n"
-            date_section += "\nNSE market hours: 9:15 AM – 3:30 PM IST. Broker auto-square-off: 3:15–3:25 PM IST.\n"
-            date_section += "DO NOT place exit/square-off orders before 3:00 PM unless a stop-loss is hit.\n"
-            sections.append(date_section)
+                date_section = "\n\n## ⏰ CURRENT DATE & TIME\n\n"
+                date_section += f"**Right now it is: {ist_now.strftime('%I:%M %p IST')}** on {ist_now.strftime('%A, %B %d, %Y')}\n"
+                date_section += f"**ISO:** {ist_now.isoformat()}\n"
+                date_section += "\nNSE market hours: 9:15 AM – 3:30 PM IST. Broker auto-square-off: 3:15–3:25 PM IST.\n"
+                date_section += "DO NOT place exit/square-off orders before 3:00 PM unless a stop-loss is hit.\n"
+                sections.append(date_section)
 
             return "".join(sections)
 
@@ -1440,7 +1470,38 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 
             return args
 
-        return [hooks]
+        caps: list = [hooks]
+
+        # Capabilities-v2 (env-gated, default off). When enabled, the
+        # context-injection capabilities own the memory/recent-threads system
+        # prompt sections — the legacy inline blocks in
+        # `_register_dynamic_instructions()` self-skip via the same flag.
+        from agents.capabilities import capabilities_v2_enabled
+        if capabilities_v2_enabled():
+            from agents.capabilities import (
+                MemoryCapability, RecentThreadsCapability, DateTimeCapability,
+            )
+            from pydantic_ai.capabilities import ReinjectSystemPrompt
+
+            # Instruction-emitting capabilities concatenate in list order, AFTER
+            # the inline `@agent.instructions` function. DateTimeCapability is
+            # registered LAST so the date/time section stays at the bottom of
+            # the prompt — the legacy "date/time is the LAST section" invariant.
+            caps.append(MemoryCapability())
+            caps.append(RecentThreadsCapability())
+            caps.append(DateTimeCapability())
+            # ReinjectSystemPrompt re-emits the system prompt deeper in long
+            # conversations (combats needle-in-haystack attention drift). It is
+            # not an instruction-emitting capability, so its list position
+            # doesn't affect prompt section order.
+            # RISK: the awakening replay path (`workflow_engine._load_thread_messages`)
+            # rebuilds message history — verify it doesn't already carry the
+            # system prompt before enabling this on prod, or the `is_awakening`
+            # mandate block could be injected twice. Safe while the flag is off.
+            caps.append(ReinjectSystemPrompt())
+            logger.info("[capabilities-v2] enabled: Memory + RecentThreads + DateTime + ReinjectSystemPrompt")
+
+        return caps
 
     def _get_system_prompt(self) -> str:
         """
@@ -4320,6 +4381,234 @@ The note has been permanently removed from your second brain."""
             )
 
             return f"✓ Rendered UI surface '{title or surface_id}' with {len(components)} component(s). The interactive UI is now displayed in the chat."
+
+        @self.agent.tool
+        async def remember(
+            ctx: RunContext[OrchestratorDeps],
+            content: str,
+            category: str = "past_learnings",
+        ) -> str:  # pyright: ignore[reportUnusedFunction]
+            """
+            Save a new long-term memory deliberately.
+
+            Use this when the user explicitly asks you to remember something, or
+            when you decide a non-obvious trading preference, risk rule, or
+            instruction is worth keeping for future conversations. Memories
+            persist across threads and are auto-injected into the system prompt
+            when semantically relevant to a future user message.
+
+            Background memory extraction also runs automatically — only call
+            this for high-value facts you want to capture immediately.
+
+            Do NOT use this for live-queryable state (holdings, positions,
+            funds, quotes, indicator values) — that is fetched fresh via the
+            nf-* tools and must never be stored.
+
+            Args:
+                content: One self-contained sentence describing the trading
+                    preference, risk rule, or instruction to remember.
+                category: One of risk_tolerance, position_sizing,
+                    sector_preference, trading_style, avoid_list,
+                    past_learnings, schedule, experience_level, communication
+                    (default: past_learnings).
+
+            Returns:
+                Confirmation with the saved memory ID, or a note that an
+                existing duplicate was reused (>92% cosine similarity).
+            """
+            try:
+                from database.session import AsyncSessionLocal
+                from database.operations import MemoryOps
+                from memory.embedding_service import get_embedding_service
+
+                user_id = ctx.deps.state.user_id
+                if not user_id or user_id == "anonymous":
+                    return "Error: Cannot save memory without an authenticated user."
+
+                fact = (content or "").strip()
+                if not fact:
+                    return "Error: content is empty."
+
+                emb = await get_embedding_service().get_embedding(fact)
+
+                async with AsyncSessionLocal() as db:
+                    memory, is_duplicate = await MemoryOps.add_memory(
+                        session=db,
+                        conversation_id=ctx.deps.state.thread_id,
+                        user_id=user_id,
+                        fact=fact,
+                        category=category,
+                        confidence=1.0,
+                        embedding=emb.embedding,
+                    )
+
+                if is_duplicate:
+                    logger.info(f"remember: duplicate matched memory #{memory.id}")
+                    return (
+                        f"Existing memory #{memory.id} already covers this "
+                        f"(>92% similar) — skipped duplicate."
+                    )
+                logger.info(f"remember: saved memory #{memory.id} ({category})")
+                return f"Saved memory #{memory.id} (category: {category})."
+
+            except Exception as e:
+                logger.error(f"remember failed: {e}", exc_info=True)
+                return f"Error saving memory: {str(e)}"
+
+        @self.agent.tool
+        async def recall(
+            ctx: RunContext[OrchestratorDeps],
+            query: str,
+            sources: Optional[List[str]] = None,
+            limit: int = 5,
+        ) -> str:  # pyright: ignore[reportUnusedFunction]
+            """
+            Search across memories, personal notes, and past conversation
+            threads in a single call.
+
+            Use this when the user references something from earlier
+            ("remember that…", "what did we discuss about…", "find that note
+            on…"), or when you need historical context before answering.
+            Sources can be narrowed when only one type of recall is needed.
+
+            Args:
+                query: Natural-language search query.
+                sources: Subset of ["memories", "notes", "threads"].
+                    Default: all three.
+                limit: Max results per source (default: 5).
+
+            Returns:
+                Markdown-formatted results grouped by source. Each result
+                shows similarity score, identifier, and a truncated content
+                preview (~160 chars). To read the full body of a thread hit,
+                use execute_bash:
+                  `python cli-tools/nf-threads read <conversation_id>`
+                Returns "No results found" if nothing matches in any source.
+            """
+            user_id = ctx.deps.state.user_id
+            if not user_id or user_id == "anonymous":
+                return "Error: Cannot recall without an authenticated user."
+
+            q = (query or "").strip()
+            if not q:
+                return "Error: query is empty."
+
+            valid = {"memories", "notes", "threads"}
+            selected = [s for s in (sources or list(valid)) if s in valid]
+            if not selected:
+                return f"Error: sources must be a subset of {sorted(valid)}."
+
+            async def _search_memories():
+                try:
+                    from database.session import AsyncSessionLocal
+                    from database.operations import MemoryOps
+                    from memory.embedding_service import get_embedding_service
+
+                    emb = await get_embedding_service().get_embedding(q)
+                    async with AsyncSessionLocal() as db:
+                        return await MemoryOps.search_memories_semantic(
+                            session=db,
+                            user_id=user_id,
+                            embedding=emb.embedding,
+                            limit=limit,
+                            similarity_threshold=0.5,
+                        )
+                except Exception as e:
+                    logger.error(f"recall(memories) failed: {e}")
+                    return e
+
+            async def _search_notes():
+                try:
+                    from database.session import AsyncSessionLocal
+                    from database.notes_operations import NotesOperations
+
+                    async with AsyncSessionLocal() as db:
+                        return await NotesOperations.search_notes_semantic(
+                            db, user_id, q, limit=limit
+                        )
+                except Exception as e:
+                    logger.error(f"recall(notes) failed: {e}")
+                    return e
+
+            async def _search_threads():
+                try:
+                    from services.thread_embedder import search_threads
+
+                    return await search_threads(
+                        user_id=user_id,
+                        query=q,
+                        limit=limit,
+                        min_similarity=0.25,
+                    )
+                except Exception as e:
+                    logger.error(f"recall(threads) failed: {e}")
+                    return e
+
+            tasks = []
+            order = []
+            if "memories" in selected:
+                tasks.append(_search_memories())
+                order.append("memories")
+            if "notes" in selected:
+                tasks.append(_search_notes())
+                order.append("notes")
+            if "threads" in selected:
+                tasks.append(_search_threads())
+                order.append("threads")
+
+            results = await asyncio.gather(*tasks, return_exceptions=False)
+            by_source = dict(zip(order, results))
+
+            sections: List[str] = []
+
+            if "memories" in by_source:
+                r = by_source["memories"]
+                if isinstance(r, Exception):
+                    sections.append(f"## Memories\n(error: {r})")
+                elif r:
+                    lines = ["## Memories"]
+                    for mem, score in r:
+                        cat = mem.category or "fact"
+                        fact = (mem.fact or "").replace("\n", " ")
+                        lines.append(f"- [{score:.0%}] #{mem.id} ({cat}): {fact}")
+                    sections.append("\n".join(lines))
+
+            if "notes" in by_source:
+                r = by_source["notes"]
+                if isinstance(r, Exception):
+                    sections.append(f"## Notes\n(error: {r})")
+                elif r:
+                    lines = ["## Notes"]
+                    for n in r:
+                        sim = n.get("similarity") or 0.0
+                        preview = (n.get("content") or "")[:160].replace("\n", " ")
+                        lines.append(
+                            f"- [{sim:.0%}] #{n['id']} \"{n.get('title', '')}\" — {preview}"
+                        )
+                    sections.append("\n".join(lines))
+
+            if "threads" in by_source:
+                r = by_source["threads"]
+                if isinstance(r, Exception):
+                    sections.append(f"## Past Threads\n(error: {r})")
+                elif r:
+                    lines = ["## Past Threads"]
+                    for t in r:
+                        sim = t.get("similarity") or 0.0
+                        preview = (t.get("turn_content") or "").replace("\n", " ")[:160]
+                        lines.append(
+                            f"- [{sim:.0%}] {t['conversation_id']} \"{t.get('title', '')}\" — {preview}"
+                        )
+                    lines.append(
+                        "_Preview only — full thread: "
+                        "`execute_bash('python cli-tools/nf-threads read <conversation_id>')`_"
+                    )
+                    sections.append("\n".join(lines))
+
+            if not sections:
+                return f'No results found for: "{q}" (searched: {", ".join(selected)})'
+
+            return "\n\n".join(sections)
 
     def register_agent(self, name: str, agent: Any):
         """

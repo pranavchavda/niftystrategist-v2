@@ -67,6 +67,7 @@ class DailyMemoryExtractor:
             "memories_rejected": 0,
             "memories_updated": 0,
             "memories_consolidated": 0,
+            "memories_used_bumped": 0,
             "errors": 0,
         }
 
@@ -136,6 +137,7 @@ class DailyMemoryExtractor:
             "rejected": 0,
             "updated": 0,
             "consolidated": 0,
+            "used_bumped": 0,
             "error": None,
         }
 
@@ -163,11 +165,53 @@ class DailyMemoryExtractor:
                 )
                 return result
 
+            # Pull existing memories for this user so the extractor can mark
+            # which ones were actually used. Cap at 60 to keep prompt size
+            # sane; rank by most-recently-useful first.
+            existing_rows = (await session.execute(
+                text("""
+                    SELECT id, fact, category
+                    FROM memories
+                    WHERE user_id = :uid
+                    ORDER BY COALESCE(last_used_at, last_accessed) DESC NULLS LAST,
+                             access_count DESC
+                    LIMIT 60
+                """),
+                {"uid": user_email},
+            )).fetchall()
+            existing_memories = [
+                {"id": r[0], "fact": r[1], "category": r[2]}
+                for r in existing_rows
+            ]
+
             # Extract via LLM
             extraction = await self.memory_extractor.extract_memories(
                 conversation_history=conversation_history,
                 conversation_id=conversation.id,
+                existing_memories=existing_memories,
             )
+
+            # Bump used_count + last_used_at for memories the extractor
+            # confirmed shaped an assistant response in this conversation.
+            if extraction.used_memory_ids:
+                valid_ids = {m["id"] for m in existing_memories}
+                used_ids = [mid for mid in extraction.used_memory_ids if mid in valid_ids]
+                if used_ids:
+                    used_at = conversation.updated_at or datetime.now(timezone.utc).replace(tzinfo=None)
+                    await session.execute(
+                        text("""
+                            UPDATE memories
+                            SET used_count = used_count + 1,
+                                last_used_at = GREATEST(COALESCE(last_used_at, :ts), :ts)
+                            WHERE id = ANY(:ids)
+                        """),
+                        {"ids": used_ids, "ts": used_at},
+                    )
+                    await session.commit()
+                    result["used_bumped"] = len(used_ids)
+                    logger.info(
+                        "  Bumped used_count for %d memories: %s", len(used_ids), used_ids
+                    )
 
             # Process each extracted memory through quality judge
             for mem in extraction.memories:
@@ -303,6 +347,7 @@ class DailyMemoryExtractor:
                     self.stats["memories_rejected"] += res["rejected"]
                     self.stats["memories_updated"] += res["updated"]
                     self.stats["memories_consolidated"] += res["consolidated"]
+                    self.stats["memories_used_bumped"] += res["used_bumped"]
 
                 # Rate limit
                 if not self.dry_run and i < len(conversations):

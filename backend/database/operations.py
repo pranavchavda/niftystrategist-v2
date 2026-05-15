@@ -644,7 +644,8 @@ class MemoryOps:
             candidate_category=category or "unknown",
             candidate_embedding=embedding,
             existing_memories=existing_memories,
-            user_context=user_context
+            user_context=user_context,
+            user_id=user_id,
         )
 
         logger.info(

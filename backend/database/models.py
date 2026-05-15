@@ -316,12 +316,19 @@ class Memory(Base):
     last_accessed = Column(DateTime, default=utc_now, nullable=False)
     access_count = Column(Integer, default=0)
 
+    # Real-use signal: bumped by the daily extraction job when the memory
+    # extractor reports this memory actually shaped an assistant reply.
+    # Distinct from access_count (which counts retrieval/injection).
+    used_count = Column(Integer, default=0, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+
     # Relationship
     conversation = relationship("Conversation", back_populates="memories")
 
     __table_args__ = (
         Index('idx_user_category', 'user_id', 'category'),
         Index('idx_user_accessed', 'user_id', 'last_accessed'),
+        Index('idx_user_last_used', 'user_id', 'last_used_at'),
     )
 
 
