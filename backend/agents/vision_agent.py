@@ -54,7 +54,7 @@ class VisionAgent(IntelligentBaseAgent[VisionDeps, str]):
         config = AgentConfig(
             name="vision",
             description="Vision analysis specialist for images, charts, and documents",
-            model_name="x-ai/grok-4.1-fast",
+            model_name="x-ai/grok-4.3",
             use_openrouter=True,
             temperature=0.7
         )
@@ -66,7 +66,7 @@ class VisionAgent(IntelligentBaseAgent[VisionDeps, str]):
             output_type=str
         )
 
-        logger.info("[VisionAgent] Initialized with x-ai/grok-4.1-fast")
+        logger.info("[VisionAgent] Initialized with x-ai/grok-4.3")
 
     def _get_system_prompt(self) -> str:
         """System prompt for vision agent"""

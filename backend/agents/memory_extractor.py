@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Default model for memory extraction - cheap, fast, good at JSON
 # Override with MEMORY_EXTRACTION_MODEL env var
-DEFAULT_MEMORY_MODEL = "x-ai/grok-4.1-fast"
+DEFAULT_MEMORY_MODEL = "x-ai/grok-4.3"
 
 
 class ExtractedMemory(BaseModel):

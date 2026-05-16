@@ -209,10 +209,10 @@ ORCHESTRATOR_MODELS: dict[str, ModelInfo] = {
         "intelligence": "frontier",
         "recommended_for": ["Complex analysis", "Deep reasoning", "Research tasks"],
     },
-    "grok-4.1-fast": {
-        "id": "grok-4.1-fast",
-        "name": "Grok 4.1 Fast",
-        "slug": "x-ai/grok-4.1-fast",
+    "grok-4.3": {
+        "id": "grok-4.3",
+        "name": "Grok 4.3",
+        "slug": "x-ai/grok-4.3",
         "provider": ModelProvider.OPENROUTER,
         "description": "Ultra-fast with massive 2M context window",
         "context_window": 2_000_000,

@@ -134,8 +134,8 @@ Return ONLY valid JSON, no markdown formatting or explanation."""
             model = "google/gemini-2.5-flash"
             logger.info(f"Summarizing conversation with Gemini 2.5 Flash ({len(messages)} messages)")
         else:
-            # Default: Grok 4.1 Fast (50% lower hallucination, 2M context, $0.20/$0.50)
-            model = "x-ai/grok-4.1-fast"
+            # Default: Grok 4.3 (2M context, $0.20/$0.50)
+            model = "x-ai/grok-4.3"
             logger.info(f"Summarizing conversation with Grok 4.1 Fast ({len(messages)} messages)")
 
         async with httpx.AsyncClient() as client:
