@@ -125,6 +125,20 @@ def test_ema_crossover_parity_short_window():
     _check_parity("ema_crossover", candles, {"fast": 9, "slow": 21})
 
 
+def test_ema_crossover_parity_legacy_keys():
+    # Legacy ema_fast/ema_slow spelling must work and stay engine↔series
+    # consistent — and equal the canonical fast/slow result.
+    candles = _uptrend(40)
+    _check_parity("ema_crossover", candles, {"ema_fast": 9, "ema_slow": 21})
+    legacy = compute_indicator_series(
+        "ema_crossover", candles, {"ema_fast": 9, "ema_slow": 21}
+    )
+    canonical = compute_indicator_series(
+        "ema_crossover", candles, {"fast": 9, "slow": 21}
+    )
+    assert legacy == canonical
+
+
 def test_volume_spike_parity():
     candles = _uptrend(30)
     # Bump volume on the last few bars to get a real spike

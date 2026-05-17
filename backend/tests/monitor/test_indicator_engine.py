@@ -61,6 +61,23 @@ class TestIndicatorEngine:
         result = compute_indicator("ema_crossover", candles, {"fast": 12, "slow": 26})
         assert result is not None
 
+    def test_ema_crossover_accepts_legacy_ema_fast_ema_slow_keys(self):
+        """Legacy ``ema_fast``/``ema_slow`` keys must be honoured, not ignored.
+
+        Some stored scalp configs use this older spelling — before the fix
+        the indicator silently fell back to defaults, so a user's intended
+        periods never took effect."""
+        from monitor.indicator_engine import compute_indicator
+        prices = [100 + i * 0.5 for i in range(40)]
+        candles = _make_candles(prices)
+        canonical = compute_indicator("ema_crossover", candles, {"fast": 5, "slow": 13})
+        legacy = compute_indicator("ema_crossover", candles, {"ema_fast": 5, "ema_slow": 13})
+        assert legacy is not None
+        assert legacy == canonical
+        # And distinct from a different period pair — proving params apply.
+        other = compute_indicator("ema_crossover", candles, {"ema_fast": 9, "ema_slow": 26})
+        assert legacy != other
+
 
 class TestUTBot:
     def test_utbot_uptrend_returns_long(self):
