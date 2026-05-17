@@ -101,6 +101,8 @@ const TEMPLATE_DISPLAY_NAMES: Record<string, string> = {
   'strangle': 'Strangle',
   'bull-call-spread': 'Bull Call Spread',
   'bear-put-spread': 'Bear Put Spread',
+  'bear-call-spread': 'Bear Call Spread',
+  'bull-put-spread': 'Bull Put Spread',
   'iron-condor': 'Iron Condor',
   'ema-cross-long': 'EMA Cross Long',
   'ema-cross-short': 'EMA Cross Short',

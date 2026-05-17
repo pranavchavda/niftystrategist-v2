@@ -115,6 +115,8 @@ def _register_all() -> None:
     from strategies.strangle import StrangleTemplate
     from strategies.bull_call_spread import BullCallSpreadTemplate
     from strategies.bear_put_spread import BearPutSpreadTemplate
+    from strategies.bear_call_spread import BearCallSpreadTemplate
+    from strategies.bull_put_spread import BullPutSpreadTemplate
     from strategies.iron_condor import IronCondorTemplate
     from strategies.ema_cross import EMACrossLongTemplate, EMACrossShortTemplate, EMACrossPairTemplate
     from strategies.ema_stochastic_scalper import EMAStochasticScalperTemplate
@@ -132,7 +134,8 @@ def _register_all() -> None:
         ORBTemplate, BreakoutTemplate, MeanReversionTemplate,
         VWAPBounceTemplate, ScalpTemplate,
         StraddleTemplate, StrangleTemplate, BullCallSpreadTemplate,
-        BearPutSpreadTemplate, IronCondorTemplate,
+        BearPutSpreadTemplate, BearCallSpreadTemplate, BullPutSpreadTemplate,
+        IronCondorTemplate,
         EMACrossLongTemplate, EMACrossShortTemplate, EMACrossPairTemplate,
         EMAStochasticScalperTemplate,
         RenkoTemplate,
