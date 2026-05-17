@@ -1515,3 +1515,114 @@ class TestEntrySideGate:
                 await mgr._process_underlying_tick(session, 24350.0)
                 mock_enter.assert_called_once()
                 assert mock_enter.call_args[0][1] == expect_dir
+
+
+# ── Short-direction premium exits (equity_intraday HOLDING_SHORT) ─────
+
+
+class TestShortPremiumExits:
+    """_process_premium_tick must invert SL/target/trail for a short.
+
+    For HOLDING_SHORT the position profits when price FALLS: SL sits above
+    entry, target below, trail rides the lowest price. Before the fix the
+    handler was pure long logic and these never fired correctly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_short_sl_exit_above_entry(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_SHORT,
+            entry_price=200.0,
+            current_instrument_token="NSE_EQ|X",
+        )
+        session.config.sl_points = 30.0  # short SL = 200 + 30 = 230
+        with patch.object(mgr, "_exit_position", new_callable=AsyncMock) as mock_exit:
+            await mgr._process_premium_tick(session, 235.0)  # 235 >= 230
+            mock_exit.assert_called_once_with(session, "exit_sl", 235.0)
+
+    @pytest.mark.asyncio
+    async def test_short_no_sl_exit_when_in_profit(self):
+        """Regression: a short dropping into profit must NOT trigger exit_sl.
+
+        Old long-only code computed sl = entry - sl_points and fired on
+        ltp <= sl — so a profitable short (price down) wrongly exited."""
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_SHORT,
+            entry_price=200.0,
+            current_instrument_token="NSE_EQ|X",
+        )
+        session.config.sl_points = 30.0
+        session.config.target_points = None
+        session.config.trail_percent = None
+        with patch.object(mgr, "_exit_position", new_callable=AsyncMock) as mock_exit:
+            await mgr._process_premium_tick(session, 165.0)  # in profit for a short
+            mock_exit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_short_target_exit_below_entry(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_SHORT,
+            entry_price=200.0,
+            current_instrument_token="NSE_EQ|X",
+        )
+        session.config.target_points = 50.0  # short target = 200 - 50 = 150
+        with patch.object(mgr, "_exit_position", new_callable=AsyncMock) as mock_exit:
+            await mgr._process_premium_tick(session, 145.0)  # 145 <= 150
+            mock_exit.assert_called_once_with(session, "exit_target", 145.0)
+
+    @pytest.mark.asyncio
+    async def test_short_trail_exit_on_bounce_up(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_SHORT,
+            entry_price=200.0,
+            highest_premium=120.0,   # trail anchor = lowest price seen
+            trail_armed=True,
+            current_instrument_token="NSE_EQ|X",
+        )
+        session.config.sl_points = None
+        session.config.target_points = None
+        session.config.trail_percent = 10.0  # level = 120 * 1.10 = 132
+        with patch.object(mgr, "_exit_position", new_callable=AsyncMock) as mock_exit:
+            await mgr._process_premium_tick(session, 135.0)  # 135 >= 132
+            mock_exit.assert_called_once_with(session, "exit_trail", 135.0)
+
+    @pytest.mark.asyncio
+    async def test_short_trail_anchor_tracks_down(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_SHORT,
+            entry_price=200.0,
+            highest_premium=130.0,
+            trail_armed=True,
+            current_instrument_token="NSE_EQ|X",
+        )
+        session.config.sl_points = None
+        session.config.target_points = None
+        session.config.trail_points = 20.0  # level = anchor + 20
+        with patch.object(mgr, "_exit_position", new_callable=AsyncMock) as mock_exit:
+            # 125 is a new low → anchor moves to 125, trail level = 145, no exit.
+            await mgr._process_premium_tick(session, 125.0)
+            assert session.runtime.highest_premium == 125.0
+            mock_exit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_short_trail_arms_on_favorable_drop(self):
+        mgr = _make_manager()
+        session = _make_session(
+            state=ScalpState.HOLDING_SHORT,
+            entry_price=200.0,
+            current_instrument_token="NSE_EQ|X",
+        )
+        session.config.sl_points = None
+        session.config.target_points = None
+        session.config.trail_points = 15.0
+        session.config.trail_arm_points = 10.0  # arms once 10 pts in profit
+        with patch.object(mgr, "_exit_position", new_callable=AsyncMock) as mock_exit:
+            await mgr._process_premium_tick(session, 188.0)  # 188 <= 200 - 10
+            assert session.runtime.trail_armed is True
+            assert session.runtime.highest_premium == 188.0
+            mock_exit.assert_not_called()
