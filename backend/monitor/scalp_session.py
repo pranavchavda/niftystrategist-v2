@@ -555,37 +555,67 @@ class ScalpSessionManager:
                 logger.error("Session %d: entry_price backfill failed: %s", session.id, e)
             return
 
+        # Direction-aware SL/target/trail. Options scalp (HOLDING_CE/PE) is
+        # always LONG the option contract, so only an equity HOLDING_SHORT
+        # inverts: profit comes from the price falling, SL sits ABOVE entry,
+        # target BELOW. Before this branch _process_premium_tick was pure
+        # long logic — equity shorts had inverted SL/target/trail that never
+        # fired correctly (only reversal-flip + squareoff exited a short).
+        is_short = rt.state == ScalpState.HOLDING_SHORT
+
         # Check SL first — armed trail must not override SL.
         if cfg.sl_points is not None:
-            sl_level = rt.entry_price - cfg.sl_points
-            if ltp <= sl_level:
+            if is_short:
+                sl_level = rt.entry_price + cfg.sl_points
+                sl_hit = ltp >= sl_level
+            else:
+                sl_level = rt.entry_price - cfg.sl_points
+                sl_hit = ltp <= sl_level
+            if sl_hit:
                 await self._exit_position(session, "exit_sl", ltp)
                 return
 
         # Check target.
         if cfg.target_points is not None:
-            target_level = rt.entry_price + cfg.target_points
-            if ltp >= target_level:
+            if is_short:
+                target_level = rt.entry_price - cfg.target_points
+                tgt_hit = ltp <= target_level
+            else:
+                target_level = rt.entry_price + cfg.target_points
+                tgt_hit = ltp >= target_level
+            if tgt_hit:
                 await self._exit_position(session, "exit_target", ltp)
                 return
 
-        # Trail arming. trail_arm_points=None means arm immediately at
-        # any uptick past entry (pre-027 behavior). trail_arm_points=N
-        # waits until the position is +N points in profit.
+        # Trail arming. trail_arm_points=None means arm immediately at any
+        # favorable tick past entry (pre-027 behavior). trail_arm_points=N
+        # waits until the position is +N points in profit — "favorable"
+        # means price up for a long, price down for a short.
         trail_configured = cfg.trail_points is not None or cfg.trail_percent is not None
         if trail_configured and not rt.trail_armed:
             arm_threshold = cfg.trail_arm_points or 0
-            if ltp >= rt.entry_price + arm_threshold:
+            if is_short:
+                armed = ltp <= rt.entry_price - arm_threshold
+            else:
+                armed = ltp >= rt.entry_price + arm_threshold
+            if armed:
                 rt.trail_armed = True
                 rt.highest_premium = ltp
                 logger.info(
-                    "Session %d: trail armed @ %.2f (entry=%.2f, +%.2f pts)",
-                    session.id, ltp, rt.entry_price, ltp - rt.entry_price,
+                    "Session %d: trail armed @ %.2f (entry=%.2f, %+.2f pts)",
+                    session.id, ltp, rt.entry_price,
+                    (rt.entry_price - ltp) if is_short else (ltp - rt.entry_price),
                 )
 
-        # Track highest only after arming.
+        # Track the favorable extreme after arming. rt.highest_premium is
+        # the trail anchor — the best price seen since arming: the HIGHEST
+        # for a long, the LOWEST for a short. Field name kept for DB compat.
         if rt.trail_armed:
-            if rt.highest_premium is None or ltp > rt.highest_premium:
+            if rt.highest_premium is None:
+                rt.highest_premium = ltp
+            elif is_short and ltp < rt.highest_premium:
+                rt.highest_premium = ltp
+            elif not is_short and ltp > rt.highest_premium:
                 rt.highest_premium = ltp
 
         # Trail check — only fires when armed.
@@ -593,12 +623,20 @@ class ScalpSessionManager:
             trail_level: float | None = None
             if cfg.trail_points is not None:
                 # Absolute points trail — preferred when both are set.
-                trail_level = rt.highest_premium - cfg.trail_points
+                trail_level = (
+                    rt.highest_premium + cfg.trail_points if is_short
+                    else rt.highest_premium - cfg.trail_points
+                )
             elif cfg.trail_percent is not None:
-                trail_level = rt.highest_premium * (1 - cfg.trail_percent / 100)
-            if trail_level is not None and ltp <= trail_level:
-                await self._exit_position(session, "exit_trail", ltp)
-                return
+                trail_level = (
+                    rt.highest_premium * (1 + cfg.trail_percent / 100) if is_short
+                    else rt.highest_premium * (1 - cfg.trail_percent / 100)
+                )
+            if trail_level is not None:
+                trail_hit = ltp >= trail_level if is_short else ltp <= trail_level
+                if trail_hit:
+                    await self._exit_position(session, "exit_trail", ltp)
+                    return
 
     async def check_time_squareoff(self) -> None:
         """Check all HOLDING sessions for time-based squareoff."""
