@@ -1732,6 +1732,8 @@ A signal session places orders continuously without per-trade confirmation, so t
   - Strangle: `nf-strategy deploy strangle --underlying NIFTY --expiry 2026-03-27 --call-strike 25500 --put-strike 24500 --lots 1 --json`
   - Bull Call Spread: `nf-strategy deploy bull-call-spread --underlying NIFTY --expiry 2026-03-27 --buy-strike 25000 --sell-strike 25500 --lots 1 --json`
   - Bear Put Spread: `nf-strategy deploy bear-put-spread --underlying NIFTY --expiry 2026-03-27 --buy-strike 25000 --sell-strike 24500 --lots 1 --json`
+  - Bear Call Spread (credit/"earn first", bearish-sideways): `nf-strategy deploy bear-call-spread --underlying NIFTY --expiry 2026-03-27 --sell-strike 25000 --buy-strike 25300 --lots 1 --json` (buy-strike must be HIGHER than sell-strike)
+  - Bull Put Spread (credit/"earn first", bullish-sideways): `nf-strategy deploy bull-put-spread --underlying NIFTY --expiry 2026-03-27 --sell-strike 25000 --buy-strike 24700 --lots 1 --json` (buy-strike must be LOWER than sell-strike)
   - Iron Condor: `nf-strategy deploy iron-condor --underlying NIFTY --expiry 2026-03-27 --call-sell-strike 25500 --call-buy-strike 25700 --put-sell-strike 24500 --put-buy-strike 24300 --lots 1 --json`
   - Use `--dry-run` to preview rules without creating them
 - `python cli-tools/nf-strategy status --json` — Show all deployed strategies and their rules

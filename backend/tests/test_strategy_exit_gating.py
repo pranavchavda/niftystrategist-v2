@@ -277,6 +277,16 @@ class TestSpreadGating:
             "bear_put_spread",
             {"buy_strike": 23500, "sell_strike": 23000},
         ),
+        (
+            "bear-call-spread",
+            "bear_call_spread",
+            {"sell_strike": 23000, "buy_strike": 23500},
+        ),
+        (
+            "bull-put-spread",
+            "bull_put_spread",
+            {"sell_strike": 23000, "buy_strike": 22500},
+        ),
     ])
     def test_exits_disabled_and_activated(self, template_name, module, extra_params):
         with patch(f"strategies.{module}.resolve_option_instrument", return_value=FAKE_FNO_INST):

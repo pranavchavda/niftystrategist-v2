@@ -324,6 +324,8 @@ const STRATEGY_TOOLTIPS: Record<string, string> = {
   strangle: 'Strangle: Like a straddle but with DIFFERENT strikes (OTM). Cheaper than straddle, needs a bigger move to profit if long. Wider profit zone if short.',
   'bull-call-spread': 'Bull Call Spread: Buy a lower-strike Call, sell a higher-strike Call. Profits when price rises moderately. Capped profit but also capped risk (net debit).',
   'bear-put-spread': 'Bear Put Spread: Buy a higher-strike Put, sell a lower-strike Put. Profits when price falls moderately. Defined risk, defined reward.',
+  'bear-call-spread': 'Bear Call Spread: Sell a lower-strike Call, buy a higher-strike Call. You collect a net credit upfront ("earn first") and keep it if price stays below the sold strike. Bearish/sideways. Defined risk, defined reward.',
+  'bull-put-spread': 'Bull Put Spread: Sell a higher-strike Put, buy a lower-strike Put. You collect a net credit upfront ("earn first") and keep it if price stays above the sold strike. Bullish/sideways. Defined risk, defined reward.',
   'iron-condor': 'Iron Condor: Sell both a call spread and a put spread simultaneously. Profits when price stays in a range. 4 legs, defined risk on both sides. The "bread and butter" of premium sellers.',
   'ema-stochastic-scalper': 'EMA-Stochastic Scalper: Bilateral Bank Nifty options scalping. Uses RSI oversold/overbought as entry trigger (proxy for Stochastic) with trend confirmation. Buys CE on dips, PE on rallies. 15-pt target, 10-pt SL, up to 5 trades per direction.',
   'ema-cross-long': 'EMA Cross Long: Buys when a fast EMA crosses above a slow EMA, signaling bullish momentum. Simple trend-following entry.',
