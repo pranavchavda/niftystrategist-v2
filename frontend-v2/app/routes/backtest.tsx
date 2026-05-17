@@ -237,7 +237,11 @@ function formatINR(value: number): string {
 
 function formatDateTime(iso: string): string {
   if (!iso) return '--';
-  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+  // Backend emits trade times as explicit-offset IST ISO (…+05:30). Only
+  // legacy/naive strings lack a tz marker — those are IST wall-clock, so
+  // tag them as IST rather than the old (wrong) assumption of UTC.
+  const hasTz = /([zZ]|[+-]\d{2}:?\d{2})$/.test(iso.trim());
+  const d = new Date(hasTz ? iso : iso.trim() + '+05:30');
   return d.toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
     month: 'short',
