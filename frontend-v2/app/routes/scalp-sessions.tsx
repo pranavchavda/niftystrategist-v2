@@ -199,6 +199,7 @@ interface ScalpSession {
   confirm_params?: Record<string, number> | null;
   squareoff_time: string;
   active_windows: { start: string; end: string }[] | null;
+  entry_side?: string;
   state: string;
   current_option_type: string | null;
   current_strike: number | null;
@@ -276,6 +277,7 @@ export default function ScalpSessionsRoute() {
     trail_arm_points: '',
     squareoff_time: '15:15',
     active_windows: [] as { start: string; end: string }[],
+    entry_side: 'both',
     max_trades: 20,
     cooldown_seconds: 60,
   });
@@ -456,6 +458,7 @@ export default function ScalpSessionsRoute() {
       trail_arm_points: s.trail_arm_points ?? '',
       squareoff_time: s.squareoff_time,
       active_windows: s.active_windows ?? [],
+      entry_side: s.entry_side ?? 'both',
       max_trades: s.max_trades,
       cooldown_seconds: s.cooldown_seconds,
     });
@@ -488,6 +491,7 @@ export default function ScalpSessionsRoute() {
       trail_arm_points: s.trail_arm_points ?? '',
       squareoff_time: s.squareoff_time,
       active_windows: s.active_windows ?? [],
+      entry_side: s.entry_side ?? 'both',
       max_trades: s.max_trades,
       cooldown_seconds: s.cooldown_seconds,
     });
@@ -512,6 +516,7 @@ export default function ScalpSessionsRoute() {
           const cleaned = (formData.active_windows || []).filter((w: any) => w && w.start && w.end);
           return cleaned.length === 0 ? null : cleaned;
         })(),
+        entry_side: formData.entry_side || 'both',
         max_trades: Number(formData.max_trades),
         cooldown_seconds: Number(formData.cooldown_seconds),
         primary_indicator: formData.primary_indicator,
@@ -669,7 +674,7 @@ export default function ScalpSessionsRoute() {
               <p className="text-sm text-zinc-500">Stateful indicator-driven trading — options scalp, equity intraday, equity swing</p>
             </div>
           </div>
-          <Button onClick={() => { setFormData({ name: '', session_mode: 'options_scalp', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, quantity: '', indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', active_windows: [], max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
+          <Button onClick={() => { setFormData({ name: '', session_mode: 'options_scalp', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, quantity: '', indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:15', active_windows: [], entry_side: 'both', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
             <Plus className="w-4 h-4" /> New Session
           </Button>
         </div>
@@ -747,6 +752,9 @@ export default function ScalpSessionsRoute() {
                         <span>Trail: {s.trail_percent}%{s.trail_arm_points ? ` arm +${s.trail_arm_points}` : ''}</span>
                       ) : null}
                       <span>Trades: {s.trade_count}/{s.max_trades}</span>
+                      {s.entry_side && s.entry_side !== 'both' && (
+                        <span className="capitalize">{s.entry_side} only</span>
+                      )}
                     </div>
                     {s.state !== 'IDLE' && s.current_strike && (
                       <div className="text-xs text-zinc-600 dark:text-zinc-400 mt-1 flex items-center gap-2">
@@ -941,6 +949,9 @@ export default function ScalpSessionsRoute() {
                     quantity: '',
                     // Swing uses 1d by default; intraday/options 1m.
                     indicator_timeframe: next === 'equity_swing' ? '1d' : '1m',
+                    // Swing can't short — drop a stale 'short' selection.
+                    entry_side: next === 'equity_swing' && p.entry_side === 'short'
+                      ? 'both' : p.entry_side,
                   }));
                 }}
                 className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
@@ -1017,6 +1028,29 @@ export default function ScalpSessionsRoute() {
                   <Input value={formData.squareoff_time} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData((p: any) => ({ ...p, squareoff_time: e.target.value }))} />
                 </div>
               )}
+            </div>
+            {/* Direction gate — which signal flips may open a position */}
+            <div>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Direction</label>
+              <select
+                value={formData.entry_side || 'both'}
+                onChange={e => setFormData((p: any) => ({ ...p, entry_side: e.target.value }))}
+                className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm">
+                <option value="both">Both — enter on bullish or bearish signals</option>
+                <option value="long">
+                  {formData.session_mode === 'options_scalp'
+                    ? 'Long only (CE) — enter on bullish signals'
+                    : 'Long only — enter on bullish signals'}
+                </option>
+                {formData.session_mode !== 'equity_swing' && (
+                  <option value="short">
+                    {formData.session_mode === 'options_scalp'
+                      ? 'Short only (PE) — enter on bearish signals'
+                      : 'Short only — enter on bearish signals'}
+                  </option>
+                )}
+              </select>
+              <p className="text-xs text-zinc-500 mt-1">Limits which signal flips open a new position. A held position still exits on a reversal regardless of this setting.</p>
             </div>
             {formData.session_mode !== 'equity_swing' && (
               <div className="rounded-lg border border-zinc-200 dark:border-zinc-700 p-3">

@@ -427,9 +427,25 @@ class ScalpSessionManager:
 
         rt = session.runtime
         mode = session.config.session_mode
+        entry_side = (cfg.entry_side or "both").lower()
 
         if rt.state == ScalpState.IDLE:
-            if bullish_flip and self._confirm_agrees(session, candles, 1):
+            # Direction gate: skip entries the session's entry_side excludes.
+            # Checked before _confirm_agrees so blocked flips don't trigger
+            # confirm-indicator compute. Editing entry_side mid-position has
+            # no immediate effect — a held position runs its course via the
+            # normal exit machinery; only future entries see the new gate.
+            if bullish_flip and entry_side == "short":
+                logger.info(
+                    "[scalp-trace] session=%d bullish flip blocked by entry_side=short",
+                    session.id,
+                )
+            elif bearish_flip and entry_side == "long":
+                logger.info(
+                    "[scalp-trace] session=%d bearish flip blocked by entry_side=long",
+                    session.id,
+                )
+            elif bullish_flip and self._confirm_agrees(session, candles, 1):
                 direction = self._bullish_direction(mode)
                 if direction:
                     await self._try_enter(session, direction, ltp)

@@ -52,6 +52,7 @@ def db_to_session(row: ScalpSessionDB) -> ScalpSession:
         trail_arm_points=row.trail_arm_points,
         squareoff_time=row.squareoff_time,
         active_windows=getattr(row, "active_windows", None),
+        entry_side=getattr(row, "entry_side", None) or "both",
         max_trades=row.max_trades,
         cooldown_seconds=row.cooldown_seconds,
         pending_action=row.pending_action,

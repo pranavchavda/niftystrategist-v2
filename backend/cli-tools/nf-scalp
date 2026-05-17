@@ -57,6 +57,7 @@ def _session_to_dict(row) -> dict:
         "trail_points": row.trail_points,
         "trail_arm_points": row.trail_arm_points,
         "squareoff_time": row.squareoff_time,
+        "entry_side": getattr(row, "entry_side", None) or "both",
         "max_trades": row.max_trades,
         "cooldown_seconds": row.cooldown_seconds,
         "state": row.state,
@@ -181,9 +182,12 @@ def cmd_create(args):
         "confirm_indicator": getattr(args, "confirm", None),
         "confirm_params": confirm_params,
         "squareoff_time": args.squareoff,
+        "entry_side": getattr(args, "side", "both"),
         "max_trades": args.max_trades,
         "cooldown_seconds": args.cooldown,
     }
+    if kwargs["entry_side"] == "short" and mode == SessionMode.EQUITY_SWING.value:
+        print_error("--side short is not valid for equity_swing (no shorting in delivery)")
     if args.sl_points is not None:
         kwargs["sl_points"] = args.sl_points
     if args.target_points is not None:
@@ -231,6 +235,7 @@ def cmd_create(args):
         if args.trail_arm_points is not None:
             print(f"  Trail arms:   +{args.trail_arm_points} pts profit")
         print(f"  Squareoff:    {args.squareoff} IST")
+        print(f"  Direction:    {getattr(args, 'side', 'both')}")
         print(f"  Max trades:   {args.max_trades}")
         print(f"  Cooldown:     {args.cooldown}s")
 
@@ -318,6 +323,7 @@ def cmd_status(args):
     if row.trail_arm_points is not None:
         print(f"  Trail arms:   +{row.trail_arm_points} pts profit")
     print(f"  Squareoff:    {row.squareoff_time} IST")
+    print(f"  Direction:    {getattr(row, 'entry_side', None) or 'both'}")
     print(f"  Max trades:   {row.max_trades}")
     print(f"  Cooldown:     {row.cooldown_seconds}s")
     print(f"  Created:      {_fmt_ist(row.created_at)}")
@@ -577,6 +583,11 @@ Examples:
                           help="JSON params for the confirm indicator.")
     p_create.add_argument("--squareoff", default="15:15",
                           help="Auto squareoff time in HH:MM IST (default: 15:15)")
+    p_create.add_argument("--side", default="both",
+                          choices=["both", "long", "short"],
+                          help="Direction gate: both (default), long (bullish "
+                               "flips only — CE/equity LONG), short (bearish "
+                               "flips only — PE/equity SHORT)")
     p_create.add_argument("--max-trades", type=int, default=20,
                           help="Max trades per session day (default: 20)")
     p_create.add_argument("--cooldown", type=int, default=60,

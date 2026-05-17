@@ -41,6 +41,7 @@ class CreateSessionRequest(BaseModel):
     trail_arm_points: Optional[float] = None
     squareoff_time: str = "15:15"
     active_windows: Optional[list[dict]] = None
+    entry_side: str = "both"
     max_trades: int = 20
     cooldown_seconds: int = 60
     primary_indicator: Optional[str] = None
@@ -67,6 +68,7 @@ class UpdateSessionRequest(BaseModel):
     trail_arm_points: Optional[float] = None
     squareoff_time: Optional[str] = None
     active_windows: Optional[list[dict]] = None
+    entry_side: Optional[str] = None
     max_trades: Optional[int] = None
     cooldown_seconds: Optional[int] = None
     enabled: Optional[bool] = None
@@ -117,6 +119,30 @@ def _validate_active_windows(windows: list[dict] | None) -> list[dict] | None:
     return cleaned
 
 
+_VALID_ENTRY_SIDES = {"both", "long", "short"}
+
+
+def _validate_entry_side(entry_side: str | None, session_mode: str) -> str:
+    """Validate entry_side against the session mode. Returns the lowercased value.
+
+    'short' is rejected for equity_swing — delivery has no SLBM, so a
+    swing session can never open a short and the gate would silently
+    starve it of all entries.
+    """
+    side = (entry_side or "both").lower()
+    if side not in _VALID_ENTRY_SIDES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entry_side must be one of {sorted(_VALID_ENTRY_SIDES)} (got {entry_side!r})",
+        )
+    if side == "short" and session_mode == SessionMode.EQUITY_SWING.value:
+        raise HTTPException(
+            status_code=400,
+            detail="entry_side='short' is not valid for equity_swing (no shorting in delivery)",
+        )
+    return side
+
+
 def _iso_utc(dt: datetime | None) -> str | None:
     """ISO-format a naive UTC datetime with an explicit +00:00 suffix so that
     browsers parse it as UTC instead of local time. All DB datetimes here are
@@ -156,6 +182,7 @@ def _serialize_session(row) -> dict:
         "pending_action": row.pending_action,
         "squareoff_time": row.squareoff_time,
         "active_windows": row.active_windows,
+        "entry_side": getattr(row, "entry_side", None) or "both",
         "max_trades": row.max_trades,
         "cooldown_seconds": row.cooldown_seconds,
         # Runtime state
@@ -288,6 +315,7 @@ async def api_create_session(
             trail_arm_points=body.trail_arm_points,
             squareoff_time=body.squareoff_time,
             active_windows=_validate_active_windows(body.active_windows),
+            entry_side=_validate_entry_side(body.entry_side, body.session_mode),
             max_trades=body.max_trades,
             cooldown_seconds=body.cooldown_seconds,
         )
@@ -402,6 +430,9 @@ async def api_update_session(
             updates["squareoff_time"] = body.squareoff_time
         if body.active_windows is not None:
             updates["active_windows"] = _validate_active_windows(body.active_windows)
+        if body.entry_side is not None:
+            # Validate against the effective mode (incoming change or current).
+            updates["entry_side"] = _validate_entry_side(body.entry_side, effective_mode)
         if body.max_trades is not None:
             updates["max_trades"] = body.max_trades
         if body.cooldown_seconds is not None:

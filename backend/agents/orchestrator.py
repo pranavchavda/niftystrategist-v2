@@ -1707,6 +1707,7 @@ Create a session (the `--primary`, `--primary-params`, `--confirm` flags are opt
 - Options scalp: `python cli-tools/nf-scalp create --mode options_scalp --name "..." --underlying NIFTY --expiry YYYY-MM-DD --lots 1 [--primary utbot|halftrend|ssl_hybrid|ema_crossover|supertrend|renko] [--primary-params '{"period":10,"sensitivity":1.0}'] [--confirm qqe_mod|macd|...] [--confirm-params '{...}'] [--sl-points 25] [--target-points 40] [--trail-points 15] [--trail-arm-points 10] [--max-trades 3] [--timeframe 1m|5m|...] [--json]`
 - Equity intraday: `python cli-tools/nf-scalp create --mode equity_intraday --name "..." --underlying RELIANCE --quantity 10 [--sl-points 30] [--target-points 50] [--trail-points 10] [--trail-arm-points 15] [--timeframe 5m] [--json]`
 - Equity swing: `python cli-tools/nf-scalp create --mode equity_swing --name "..." --underlying RELIANCE --quantity 5 [--primary halftrend] [--sl-points 100] [--target-points 300] [--timeframe 1d] [--json]`
+- `--side both|long|short` (default `both`) gates entry direction: `long` enters only on bullish signal flips (CE / equity LONG), `short` only on bearish flips (PE / equity SHORT). Held positions still exit on a reversal regardless. `short` is rejected for equity_swing (no shorting in delivery).
 
 Manage:
 - `python cli-tools/nf-scalp enable|disable|delete SESSION_ID [--json]` — disable-while-holding automatically places a SELL/cover order before disabling (see `exit_disabled` event)
