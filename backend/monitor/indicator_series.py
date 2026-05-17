@@ -160,8 +160,13 @@ def _series_ema_crossover(df: pd.DataFrame, params: dict) -> list[float | None]:
     n = len(df)
     if n < 3:
         return [None] * n
-    fast = int(params.get("fast", 12))
-    slow = int(params.get("slow", 26))
+    # Accept both the canonical "fast"/"slow" keys and the legacy
+    # "ema_fast"/"ema_slow" spelling. Some stored scalp configs (and older
+    # UI versions) wrote the latter — without this they were silently
+    # ignored and the indicator ran on defaults. Defaults are 9/21 to match
+    # the rest of the system (frontend PARAM_DEFAULTS, chart overlays).
+    fast = int(params.get("fast", params.get("ema_fast", 9)))
+    slow = int(params.get("slow", params.get("ema_slow", 21)))
     if n < slow:
         return [None] * n
     ema_fast = ta.trend.EMAIndicator(df["close"], window=fast).ema_indicator()

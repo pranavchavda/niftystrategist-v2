@@ -39,8 +39,10 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
                 val = macd.macd().iloc[-1]
             return None if pd.isna(val) else float(val)
         elif indicator == "ema_crossover":
-            fast = params.get("fast", 12)
-            slow = params.get("slow", 26)
+            # Accept both "fast"/"slow" and legacy "ema_fast"/"ema_slow"
+            # keys; defaults 9/21 match indicator_series + the frontend.
+            fast = params.get("fast", params.get("ema_fast", 9))
+            slow = params.get("slow", params.get("ema_slow", 21))
             if len(df) < slow:
                 return None
             ema_fast = ta.trend.EMAIndicator(df["close"], window=fast).ema_indicator().iloc[-1]
