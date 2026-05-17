@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -176,14 +177,37 @@ def _build_rules_for_day(
         return []
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _ist_iso(dt) -> str | None:
+    """Serialize a trade timestamp as an explicit-offset IST ISO-8601 string.
+
+    Backtest candles come from Upstox in IST (``+05:30``). The rule engine
+    strips tz to naive IST wall-clock; the scalp engine keeps it tz-aware.
+    Both are normalized here to ``YYYY-MM-DDTHH:MM:SS+05:30`` so the frontend
+    never has to guess the timezone — `str(dt)` previously emitted a bare
+    naive string that the UI mis-parsed as UTC (shifting every time +5:30).
+    """
+    if dt is None:
+        return None
+    if not isinstance(dt, datetime):
+        return str(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_IST)   # backtest naive datetimes are IST
+    else:
+        dt = dt.astimezone(_IST)
+    return dt.isoformat()
+
+
 def _trade_to_dict(t) -> dict:
     return {
         "symbol": t.symbol,
         "side": t.side,
         "entry_price": t.entry_price,
-        "entry_time": str(t.entry_time),
+        "entry_time": _ist_iso(t.entry_time),
         "exit_price": t.exit_price,
-        "exit_time": str(t.exit_time),
+        "exit_time": _ist_iso(t.exit_time),
         "quantity": t.quantity,
         "pnl": t.pnl,
         "pnl_pct": t.pnl_pct,
@@ -355,8 +379,8 @@ def _leg_trade_to_dict(lt: LegTrade) -> dict:
         "quantity": lt.quantity,
         "entry_price": lt.entry_price,
         "exit_price": lt.exit_price,
-        "entry_time": str(lt.entry_time),
-        "exit_time": str(lt.exit_time),
+        "entry_time": _ist_iso(lt.entry_time),
+        "exit_time": _ist_iso(lt.exit_time),
         "exit_reason": lt.exit_reason,
         "gross_pnl": lt.gross_pnl,
         "charges": lt.charges,
@@ -511,9 +535,9 @@ def _scalp_trade_to_dict(t) -> dict:
         "symbol": t.symbol,
         "side": t.side,
         "entry_price": t.entry_price,
-        "entry_time": str(t.entry_time),
+        "entry_time": _ist_iso(t.entry_time),
         "exit_price": t.exit_price,
-        "exit_time": str(t.exit_time),
+        "exit_time": _ist_iso(t.exit_time),
         "quantity": t.quantity,
         "pnl": t.pnl,
         "pnl_pct": t.pnl_pct,
