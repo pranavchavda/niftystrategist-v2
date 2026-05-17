@@ -831,6 +831,11 @@ class ScalpSessionDB(Base):
     # existing positions still managed (SL/target/trail/squareoff).
     active_windows = Column(JSON, nullable=True)
 
+    # Direction gate: 'both' (default) enters on bullish AND bearish signal
+    # flips; 'long' only on bullish (CE / equity LONG); 'short' only on
+    # bearish (PE / equity SHORT). Exits on reversal are unaffected.
+    entry_side = Column(String(5), default="both", nullable=False)
+
     # API-to-daemon signal. Set by web process to request an exit+disable
     # or exit+delete of a HOLDING session; daemon clears after handling.
     pending_action = Column(String(20), nullable=True)

@@ -1442,3 +1442,76 @@ class TestActiveWindows:
         # Bad entry skipped, valid one still works.
         assert _in_active_window(windows, now_ist=self._ist(14, 0)) is True
         assert _in_active_window(windows, now_ist=self._ist(11, 0)) is False
+
+
+# ── Direction gate (entry_side) ──────────────────────────────────────
+
+
+class TestEntrySideGate:
+    """entry_side='both'|'long'|'short' gates which signal flips open a position.
+
+    The gate lives in _process_underlying_tick, not _try_enter — so these
+    drive the full tick path with a mocked candle buffer + indicator.
+    """
+
+    def _prime(self, mgr, session, primary_val: float, prev_val: float):
+        """Mock the buffer/indicator so a candle close yields a known flip."""
+        buf = MagicMock()
+        buf.add_tick.return_value = {"close": 100.0}   # truthy → candle closed
+        buf.get_completed_candles.return_value = [{}, {}, {}]
+        mgr._candle_buffers[str(session.id)] = buf
+        mgr._primary_values[str(session.id)] = prev_val
+
+    @pytest.mark.asyncio
+    async def test_long_only_blocks_bearish_flip(self):
+        mgr = _make_manager()
+        session = _make_session()
+        session.config.entry_side = "long"
+        self._prime(mgr, session, primary_val=-1.0, prev_val=1.0)  # bearish flip
+
+        with patch("monitor.scalp_session.compute_indicator", return_value=-1.0), \
+             patch.object(mgr, "_try_enter", new_callable=AsyncMock) as mock_enter:
+            await mgr._process_underlying_tick(session, 24350.0)
+            mock_enter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_short_only_blocks_bullish_flip(self):
+        mgr = _make_manager()
+        session = _make_session()
+        session.config.entry_side = "short"
+        self._prime(mgr, session, primary_val=1.0, prev_val=-1.0)  # bullish flip
+
+        with patch("monitor.scalp_session.compute_indicator", return_value=1.0), \
+             patch.object(mgr, "_try_enter", new_callable=AsyncMock) as mock_enter:
+            await mgr._process_underlying_tick(session, 24350.0)
+            mock_enter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_long_only_allows_bullish_flip(self):
+        mgr = _make_manager()
+        session = _make_session()
+        session.config.entry_side = "long"
+        self._prime(mgr, session, primary_val=1.0, prev_val=-1.0)  # bullish flip
+
+        with patch("monitor.scalp_session.compute_indicator", return_value=1.0), \
+             patch.object(mgr, "_try_enter", new_callable=AsyncMock) as mock_enter:
+            await mgr._process_underlying_tick(session, 24350.0)
+            mock_enter.assert_called_once()
+            assert mock_enter.call_args[0][1] == "CE"
+
+    @pytest.mark.asyncio
+    async def test_both_allows_either_flip(self):
+        for primary_val, prev_val, expect_dir in (
+            (1.0, -1.0, "CE"),   # bullish
+            (-1.0, 1.0, "PE"),   # bearish
+        ):
+            mgr = _make_manager()
+            session = _make_session()
+            session.config.entry_side = "both"
+            self._prime(mgr, session, primary_val, prev_val)
+
+            with patch("monitor.scalp_session.compute_indicator", return_value=primary_val), \
+                 patch.object(mgr, "_try_enter", new_callable=AsyncMock) as mock_enter:
+                await mgr._process_underlying_tick(session, 24350.0)
+                mock_enter.assert_called_once()
+                assert mock_enter.call_args[0][1] == expect_dir

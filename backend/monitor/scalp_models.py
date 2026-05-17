@@ -79,6 +79,12 @@ class ScalpSessionConfig(BaseModel):
     # Existing positions are always managed regardless of windows.
     active_windows: list[dict[str, str]] | None = None
 
+    # Direction gate for new entries. "both" (default) enters on bullish
+    # AND bearish signal flips; "long" only on bullish flips (CE / equity
+    # LONG); "short" only on bearish flips (PE / equity SHORT). Reversal
+    # exits on a held position are NOT affected by this setting.
+    entry_side: str = "both"
+
     max_trades: int = 20
     cooldown_seconds: int = 60
 
