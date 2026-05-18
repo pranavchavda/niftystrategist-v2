@@ -58,7 +58,7 @@ const PARAM_TOOLTIPS: Record<string, string> = {
   risk_percent: 'Max % of capital risked per trade.',
   rr_ratio: 'Reward-to-Risk ratio. Target = risk x RR.',
   trail_percent: 'Trailing stop distance as % from peak.',
-  squareoff_time: 'Auto-close time (HH:MM). Usually 15:15.',
+  squareoff_time: 'Auto-close time (HH:MM). Usually 15:14.',
   entry_time: 'Entry time (HH:MM). Common: 09:20.',
   product: '"I" = Intraday, "D" = Delivery.',
   side: '"both", "long" (buy only), or "short" (sell only).',

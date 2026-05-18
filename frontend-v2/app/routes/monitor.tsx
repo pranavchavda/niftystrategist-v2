@@ -526,7 +526,7 @@ export default function MonitorRoute() {
     const defaults: Record<string, Record<string, any>> = {
       price: { condition: 'gte', price: 0, reference: 'ltp' },
       indicator: { indicator: 'rsi', timeframe: '15m', params: { period: 14 }, condition: 'gte', value: 70 },
-      time: { time: '15:15', timezone: 'Asia/Kolkata' },
+      time: { time: '15:14', timezone: 'Asia/Kolkata' },
       order_status: { order_id: '', expected_status: 'complete' },
     };
     setFormData(prev => ({
@@ -1601,7 +1601,7 @@ function CreateRuleWizard({
                 <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">Time (IST)</label>
                 <Input
                   type="time"
-                  value={formData.trigger_config.time || '15:15'}
+                  value={formData.trigger_config.time || '15:14'}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateTC('time', e.target.value)}
                   className="text-sm"
                 />

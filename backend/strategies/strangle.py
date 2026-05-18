@@ -22,7 +22,7 @@ class StrangleTemplate(StrategyTemplate):
     optional_params = {
         "direction": "sell",
         "product": "D",
-        "squareoff_time": "15:15",
+        "squareoff_time": "15:14",
         "sl_percent": 30,
         "entry_time": "09:20",
     }
