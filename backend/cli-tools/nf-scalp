@@ -581,8 +581,8 @@ Examples:
                                "with the primary flip before entry fires.")
     p_create.add_argument("--confirm-params", default=None,
                           help="JSON params for the confirm indicator.")
-    p_create.add_argument("--squareoff", default="15:15",
-                          help="Auto squareoff time in HH:MM IST (default: 15:15)")
+    p_create.add_argument("--squareoff", default="15:14",
+                          help="Auto squareoff time in HH:MM IST (default: 15:14)")
     p_create.add_argument("--side", default="both",
                           choices=["both", "long", "short"],
                           help="Direction gate: both (default), long (bullish "

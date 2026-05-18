@@ -22,7 +22,7 @@ class BreakoutTemplate(StrategyTemplate):
         "rr_ratio": 2.0,
         "product": "I",
         "trail_percent": 1.5,
-        "squareoff_time": "15:15",
+        "squareoff_time": "15:14",
         "target": None,  # Auto-calculated from R:R if not provided
     }
 

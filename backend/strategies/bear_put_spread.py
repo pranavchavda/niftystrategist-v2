@@ -22,7 +22,7 @@ class BearPutSpreadTemplate(StrategyTemplate):
     required_params = ["underlying", "expiry", "buy_strike", "sell_strike", "lots"]
     optional_params = {
         "product": "D",
-        "squareoff_time": "15:15",
+        "squareoff_time": "15:14",
         "entry_time": "09:20",
     }
 

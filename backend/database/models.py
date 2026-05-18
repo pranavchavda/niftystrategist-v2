@@ -824,7 +824,7 @@ class ScalpSessionDB(Base):
     trail_percent = Column(Float, nullable=True)
     trail_points = Column(Float, nullable=True)
     trail_arm_points = Column(Float, nullable=True)
-    squareoff_time = Column(String(5), default="15:15", nullable=False)
+    squareoff_time = Column(String(5), default="15:14", nullable=False)
 
     # Optional list of {"start": "HH:MM", "end": "HH:MM"} IST windows. NULL =
     # always active. When set, daemon blocks new entries outside any window;
