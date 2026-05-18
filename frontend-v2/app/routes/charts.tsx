@@ -1314,6 +1314,14 @@ function ChartsView({ authToken }: { authToken: string }) {
     [activeIndicators],
   );
 
+  // Indices (NIFTY, BANKNIFTY, ...) have no traded volume — Upstox returns 0
+  // for every bar. Hide the volume pane rather than show a flat-zero histogram.
+  // Default-show until candles load to avoid a flicker.
+  const hasVolume = useMemo(
+    () => candles.length === 0 || candles.some((c) => (c.volume || 0) > 0),
+    [candles],
+  );
+
   const fetchCandles = useCallback(async () => {
     try {
       const res = await fetch(
@@ -1423,10 +1431,21 @@ function ChartsView({ authToken }: { authToken: string }) {
   // Re-initialized whenever candle history reloads (symbol/timeframe change).
   const liveBarRef = useRef<Candle | null>(null);
 
+  // Tracks whether fitContent() has run for the current symbol/timeframe.
+  // Live refreshes replace `candles` wholesale — without this guard each new
+  // closed bar re-fits and snaps the user's zoom/pan back to the full range.
+  const fitDoneRef = useRef(false);
+  useEffect(() => {
+    fitDoneRef.current = false;
+  }, [symbol, timeframe]);
+
   useEffect(() => {
     const priceContainer = priceRef.current;
     const volContainer = volumeRef.current;
     if (!priceContainer || !volContainer) return;
+
+    // Chart instances are being (re)built — the next candle render must fit.
+    fitDoneRef.current = false;
 
     if (priceChartRef.current) {
       try { priceChartRef.current.remove(); } catch { /* ignore */ }
@@ -1546,7 +1565,13 @@ function ChartsView({ authToken }: { authToken: string }) {
     });
     volSeries.setData(volData);
 
-    chart.timeScale().fitContent();
+    // Fit only on the first render for this symbol/timeframe. Live refreshes
+    // swap `candles` on every closed bar — re-fitting then would discard the
+    // user's current zoom/pan.
+    if (!fitDoneRef.current) {
+      chart.timeScale().fitContent();
+      fitDoneRef.current = true;
+    }
 
     // Seed live-bar state from the last historical candle so ticks
     // extend/replace it smoothly.
@@ -2203,7 +2228,10 @@ function ChartsView({ authToken }: { authToken: string }) {
           <div ref={priceRef} className="absolute inset-0" />
         </div>
 
-        <div className="h-20 border-t border-zinc-200 dark:border-zinc-800 relative flex-shrink-0">
+        {/* volumeRef stays mounted so the chart instance survives an
+            index↔stock switch; the wrapper just collapses when there's
+            no volume data (indices). */}
+        <div className={`h-20 border-t border-zinc-200 dark:border-zinc-800 relative flex-shrink-0${hasVolume ? '' : ' hidden'}`}>
           <div ref={volumeRef} className="absolute inset-0" />
           <div className="absolute top-1 left-2 text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 pointer-events-none">
             Volume
