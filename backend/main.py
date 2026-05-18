@@ -2275,6 +2275,16 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
         # Get or create conversation state based on thread_id
         if thread_id in conversation_states:
             state = conversation_states[thread_id]
+            # Refresh identity on the cached state: a state first created during
+            # an unauthenticated request keeps user_id="anonymous" forever, which
+            # breaks recall/remember/thread tools once the user authenticates.
+            # Only overwrite when we have a real user (never clobber back to anon).
+            if user and state.user_id != user.email:
+                logger.info(
+                    f"[State] Refreshing cached state user_id "
+                    f"'{state.user_id}' -> '{user.email}' for thread {thread_id}"
+                )
+                state.user_id = user.email
         else:
             state = ConversationState(
                 thread_id=thread_id,
