@@ -6,7 +6,7 @@ Creates rules for:
 3. Stop-loss for whichever entry fires
 4. Target based on R:R ratio
 5. Trailing stop after entry
-6. Auto square-off at 15:15 IST
+6. Per-side auto square-off (SELL for long, BUY to cover short), gated by entry
 
 Exit rules (SL, target, trailing) start DISABLED and are activated only when
 their corresponding entry rule fires via the `activates_roles` mechanism.
@@ -81,8 +81,8 @@ class ORBTemplate(StrategyTemplate):
             target_long = compute_target(range_high, sl_long, rr)
 
             # Long entry — activates its exit rules; kills opposite side if bidirectional
-            entry_long_activates = ["sl_long", "target_long", "trailing_long"]
-            entry_long_kills = ["entry_short", "sl_short", "target_short", "trailing_short"] if bidirectional else []
+            entry_long_activates = ["sl_long", "target_long", "trailing_long", "squareoff_long"]
+            entry_long_kills = ["entry_short", "sl_short", "target_short", "trailing_short", "squareoff_short"] if bidirectional else []
 
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Long Entry > {range_high}",
@@ -109,10 +109,10 @@ class ORBTemplate(StrategyTemplate):
                 },
                 role="sl_long",
                 enabled=not bidirectional,
-                kills_roles=["target_long", "trailing_long", "squareoff"],
+                kills_roles=["target_long", "trailing_long", "squareoff_long"],
             ))
             # Long target
-            target_long_kills = ["sl_long", "trailing_long", "squareoff"]
+            target_long_kills = ["sl_long", "trailing_long", "squareoff_long"]
             target_long_activates = ["entry_short"] if enable_reversal and bidirectional else []
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Long Target @ {target_long}",
@@ -143,7 +143,22 @@ class ORBTemplate(StrategyTemplate):
                 },
                 role="trailing_long",
                 enabled=not bidirectional,
-                kills_roles=["sl_long", "target_long", "squareoff"],
+                kills_roles=["sl_long", "target_long", "squareoff_long"],
+            ))
+            # Long auto square-off — SELL to flatten the long. Gated by entry
+            # so it can't open a rogue short if the long entry never fired.
+            rules.append(RuleSpec(
+                name=f"{symbol} ORB Long Square-Off @ {squareoff}",
+                trigger_type="time",
+                trigger_config={"at": squareoff, "on_days": ["mon", "tue", "wed", "thu", "fri"], "market_only": True},
+                action_type="place_order",
+                action_config={
+                    "symbol": symbol, "transaction_type": "SELL",
+                    "quantity": qty_long, "order_type": "MARKET", "product": product,
+                },
+                role="squareoff_long",
+                enabled=not bidirectional,
+                kills_roles=["sl_long", "target_long", "trailing_long"],
             ))
 
         if side in ("short", "both"):
@@ -152,8 +167,8 @@ class ORBTemplate(StrategyTemplate):
             target_short = compute_target(range_low, sl_short, rr)
 
             # Short entry — activates its exit rules; kills opposite side if bidirectional
-            entry_short_activates = ["sl_short", "target_short", "trailing_short"]
-            entry_short_kills = ["entry_long", "sl_long", "target_long", "trailing_long"] if bidirectional else []
+            entry_short_activates = ["sl_short", "target_short", "trailing_short", "squareoff_short"]
+            entry_short_kills = ["entry_long", "sl_long", "target_long", "trailing_long", "squareoff_long"] if bidirectional else []
 
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Short Entry < {range_low}",
@@ -180,10 +195,10 @@ class ORBTemplate(StrategyTemplate):
                 },
                 role="sl_short",
                 enabled=not bidirectional,
-                kills_roles=["target_short", "trailing_short", "squareoff"],
+                kills_roles=["target_short", "trailing_short", "squareoff_short"],
             ))
             # Short target
-            target_short_kills = ["sl_short", "trailing_short", "squareoff"]
+            target_short_kills = ["sl_short", "trailing_short", "squareoff_short"]
             target_short_activates = ["entry_long"] if enable_reversal and bidirectional else []
             rules.append(RuleSpec(
                 name=f"{symbol} ORB Short Target @ {target_short}",
@@ -214,26 +229,23 @@ class ORBTemplate(StrategyTemplate):
                 },
                 role="trailing_short",
                 enabled=not bidirectional,
-                kills_roles=["sl_short", "target_short", "squareoff"],
+                kills_roles=["sl_short", "target_short", "squareoff_short"],
             ))
-
-        # Auto square-off (covers both sides) — always enabled as safety net
-        max_qty = max(
-            compute_quantity(capital, risk_pct, range_high, range_low, product=product) if side in ("long", "both") else 0,
-            compute_quantity(capital, risk_pct, range_low, range_high, product=product) if side in ("short", "both") else 0,
-        )
-        rules.append(RuleSpec(
-            name=f"{symbol} ORB Auto Square-Off @ {squareoff}",
-            trigger_type="time",
-            trigger_config={"at": squareoff, "on_days": ["mon", "tue", "wed", "thu", "fri"], "market_only": True},
-            action_type="place_order",
-            action_config={
-                "symbol": symbol, "transaction_type": "SELL",
-                "quantity": max_qty, "order_type": "MARKET", "product": product,
-            },
-            role="squareoff",
-            kills_roles=["sl_long", "target_long", "trailing_long", "sl_short", "target_short", "trailing_short"],
-        ))
+            # Short auto square-off — BUY to cover the short. Gated by entry
+            # so it can't open a rogue long if the short entry never fired.
+            rules.append(RuleSpec(
+                name=f"{symbol} ORB Short Square-Off @ {squareoff}",
+                trigger_type="time",
+                trigger_config={"at": squareoff, "on_days": ["mon", "tue", "wed", "thu", "fri"], "market_only": True},
+                action_type="place_order",
+                action_config={
+                    "symbol": symbol, "transaction_type": "BUY",
+                    "quantity": qty_short, "order_type": "MARKET", "product": product,
+                },
+                role="squareoff_short",
+                enabled=not bidirectional,
+                kills_roles=["sl_short", "target_short", "trailing_short"],
+            ))
 
         plan.rules = rules
         return plan
