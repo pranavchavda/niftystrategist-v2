@@ -567,7 +567,15 @@ class MonitorDaemon:
                 if rule.trigger_type != "time":
                     continue
                 ctx = EvalContext(now=now_ist)
-                await self._evaluate_and_execute(rule, ctx)
+                try:
+                    await self._evaluate_and_execute(rule, ctx)
+                except Exception:
+                    # A single malformed rule must never crash the daemon's
+                    # poll loop — that silently kills every other rule.
+                    logger.exception(
+                        "Time rule %s (%s) raised during evaluation — skipping",
+                        rule.id, rule.name,
+                    )
 
     # ── Evaluation + execution ────────────────────────────────────────
 

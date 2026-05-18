@@ -23,13 +23,19 @@ class TimeTrigger(BaseModel):
     @field_validator("at")
     @classmethod
     def validate_time_format(cls, v: str) -> str:
+        # Accept HH:MM or HH:MM:SS — some callers (and the awakening
+        # scheduler) emit a seconds component. Normalize to HH:MM since
+        # time triggers only resolve to the minute.
         parts = v.split(":")
-        if len(parts) != 2:
+        if len(parts) not in (2, 3):
             raise ValueError(f"Time must be HH:MM, got: {v}")
-        h, m = int(parts[0]), int(parts[1])
+        try:
+            h, m = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError(f"Time must be HH:MM, got: {v}")
         if not (0 <= h <= 23 and 0 <= m <= 59):
             raise ValueError(f"Invalid time: {v}")
-        return v
+        return f"{h:02d}:{m:02d}"
 
 
 class IndicatorTrigger(BaseModel):
