@@ -31,6 +31,7 @@ import {
   ScrollText,
   Flame,
   CandlestickChart,
+  Radar,
 } from "lucide-react";
 import { ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
 import { hasPermission, PERMISSIONS } from "../utils/permissions";
@@ -547,6 +548,18 @@ export default function Sidebar({
                   <CandlestickChart className="w-4 h-4" />
                 </NavLink>
                 <NavLink
+                  to="/hero-scanner"
+                  title="Hero Scanner"
+                  className={({ isActive }) =>
+                    `p-2 rounded-lg transition-colors ${isActive
+                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`
+                  }
+                >
+                  <Radar className="w-4 h-4" />
+                </NavLink>
+                <NavLink
                   to="/mandates"
                   title="Mandates"
                   className={({ isActive }) =>
@@ -864,6 +877,10 @@ export default function Sidebar({
                 <DropdownItem href="/charts">
                   <CandlestickChart data-slot="icon" />
                   <DropdownLabel>Charts</DropdownLabel>
+                </DropdownItem>
+                <DropdownItem href="/hero-scanner">
+                  <Radar data-slot="icon" />
+                  <DropdownLabel>Hero Scanner</DropdownLabel>
                 </DropdownItem>
                 <DropdownItem href="/mandates">
                   <ScrollText data-slot="icon" />

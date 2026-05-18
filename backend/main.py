@@ -835,7 +835,7 @@ if logfire_enabled:
     instrument_app(app)
 
 # Import and configure conversation router with database
-from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit, monitor as monitor_api, strategies as strategies_api, backtest as backtest_api, scalp as scalp_api, charts as charts_api
+from api import conversations, dashboard, memories, tools, runs, upstox_oauth, cockpit, monitor as monitor_api, strategies as strategies_api, backtest as backtest_api, scalp as scalp_api, charts as charts_api, hero_scanner as hero_scanner_api
 from routes import admin_docs, uploads, admin, auth_routes, mcp_servers, scratchpad, voice, notes
 # Set the database manager in the conversations, memories, runs, auth_routes, and cockpit modules
 conversations._db_manager = db_manager
@@ -886,6 +886,8 @@ app.include_router(scalp_api.router, prefix="/api/scalp", tags=["scalp"])
 app.include_router(strategies_api.router)
 # Include Backtest router
 app.include_router(backtest_api.router)
+# Include Hero Scanner router (UI wrapper around nf-morning-scan)
+app.include_router(hero_scanner_api.router)
 # Include Workflow automation router
 from routes import workflows as workflows_routes
 app.include_router(workflows_routes.router)

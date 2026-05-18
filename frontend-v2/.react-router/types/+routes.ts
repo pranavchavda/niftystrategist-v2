@@ -73,6 +73,9 @@ type Pages = {
   "/charts": {
     params: {};
   };
+  "/hero-scanner": {
+    params: {};
+  };
   "/mandates": {
     params: {};
   };
@@ -102,7 +105,7 @@ type Pages = {
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/login" | "/reset-password" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/charts" | "/mandates" | "/scalp-sessions" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/" | "/login" | "/reset-password" | "/help" | "/public/notes/:publicId" | "/auth/upstox/callback" | "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/charts" | "/hero-scanner" | "/mandates" | "/scalp-sessions" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/_index.tsx": {
     id: "routes/_index";
@@ -130,7 +133,7 @@ type RouteFiles = {
   };
   "./routes/_auth.tsx": {
     id: "routes/_auth";
-    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/charts" | "/mandates" | "/scalp-sessions" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
+    page: "/chat/:threadId" | "/dashboard" | "/memory" | "/notes" | "/notes/:noteId" | "/tasks" | "/settings" | "/settings/mcp" | "/automations" | "/monitor" | "/strategies" | "/backtest" | "/charts" | "/hero-scanner" | "/mandates" | "/scalp-sessions" | "/history" | "/user" | "/user/profile" | "/admin/docs" | "/admin/users" | "/admin/models";
   };
   "./routes/chat.$threadId.tsx": {
     id: "routes/chat.$threadId";
@@ -183,6 +186,10 @@ type RouteFiles = {
   "./routes/charts.tsx": {
     id: "routes/charts";
     page: "/charts";
+  };
+  "./routes/hero-scanner.tsx": {
+    id: "routes/hero-scanner";
+    page: "/hero-scanner";
   };
   "./routes/mandates.tsx": {
     id: "routes/mandates";

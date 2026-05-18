@@ -20,6 +20,7 @@ import {
   ShieldCheckIcon,
   FireIcon,
   PresentationChartLineIcon,
+  ViewfinderCircleIcon,
 } from '@heroicons/react/24/outline';
 import ChatInput from '../components/ChatInput';
 const ChatInputAny = ChatInput as any;
@@ -43,6 +44,14 @@ const sections = [
     icon: PresentationChartLineIcon,
     href: '/charts',
     permission: 'dashboard.access',
+  },
+  {
+    title: 'Hero Scanner',
+    description:
+      'Morning momentum scan — gap, relative strength, and volume leaders.',
+    icon: ViewfinderCircleIcon,
+    href: '/hero-scanner',
+    permission: 'settings.access',
   },
   {
     title: 'Chat History',

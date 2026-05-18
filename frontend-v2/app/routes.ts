@@ -56,6 +56,9 @@ export default [
     // TradingView-style charts (MVP)
     route('charts', './routes/charts.tsx'),
 
+    // Hero Scanner (morning momentum scan UI)
+    route('hero-scanner', './routes/hero-scanner.tsx'),
+
     // Mandates (recurring awakenings + trading mandate)
     route('mandates', './routes/mandates.tsx'),
 

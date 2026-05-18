@@ -614,7 +614,7 @@ async def run_scan(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: News context via Perplexity Sonar API
+# Phase 3: News context via Perplexity Agent API (pro-search preset)
 # ---------------------------------------------------------------------------
 
 def _get_perplexity_key() -> str | None:
@@ -622,46 +622,56 @@ def _get_perplexity_key() -> str | None:
     return os.environ.get("PERPLEXITY_API_KEY") or os.environ.get("PPLX_API_KEY")
 
 
-def _sonar_query(
-    api_key: str,
-    system_prompt: str,
-    user_prompt: str,
-    recency: str = "day",
-) -> dict | None:
-    """Make a single Sonar API call. Returns {content, citations} or None.
+def _agent_query(api_key: str, prompt: str) -> dict | None:
+    """Query the Perplexity Agent API with the `pro-search` preset.
 
-    `recency` is passed as Perplexity's `search_recency_filter`
-    ("hour"|"day"|"week"|"month"|"year"). Default "day" for morning-scan — we
-    only want last-24h news for pre-market context.
+    pro-search (gpt-5.1 + built-in web_search, up to 3 tool calls) replaces the
+    old `sonar` chat-completions call. The preset's own instructions enforce a
+    tool-call-then-answer workflow, so the model can't bail with a "couldn't
+    verify sources" non-answer — the failure mode the strict hand-written
+    system prompt used to trigger on the weaker `sonar` model.
+
+    Returns {content, citations} or None on failure. Inline `[web:N]` source
+    markers are rewritten to `[N]`, mapping to the citations list (id order).
     """
     try:
-        payload = {
-            "model": "sonar",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-        if recency:
-            payload["search_recency_filter"] = recency
         response = requests.post(
-            "https://api.perplexity.ai/chat/completions",
+            "https://api.perplexity.ai/v1/agent",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json=payload,
-            timeout=20,
+            json={"preset": "pro-search", "input": prompt},
+            timeout=90,
         )
         response.raise_for_status()
         result = response.json()
+
         content = ""
-        citations = []
-        if "choices" in result and result["choices"]:
-            content = result["choices"][0].get("message", {}).get("content", "")
-        if "citations" in result:
-            citations = result["citations"]
-        return {"content": content, "citations": citations}
+        # id -> url, collected from search_results blocks in the output array.
+        sources: dict[int, str] = {}
+        for item in result.get("output", []):
+            itype = item.get("type")
+            if itype == "message":
+                for part in item.get("content", []):
+                    if part.get("type") in ("output_text", "text"):
+                        content += part.get("text", "")
+            elif itype == "search_results":
+                for res in item.get("results", []):
+                    rid = res.get("id")
+                    url = res.get("url")
+                    if rid is not None and url:
+                        try:
+                            sources[int(rid)] = url
+                        except (TypeError, ValueError):
+                            pass
+
+        # Rewrite `[web:6]` -> `[6]` so markers read cleanly in the terminal.
+        import re as _re
+        content = _re.sub(r"\[web:(\d+)\]", r"[\1]", content)
+
+        citations = [sources[k] for k in sorted(sources)]
+        return {"content": content.strip(), "citations": citations}
     except Exception:
         return None
 
@@ -670,7 +680,7 @@ def fetch_news_context(
     nifty_pct: float,
     verbose: bool = False,
 ) -> dict | None:
-    """Query Perplexity Sonar for a market-overview briefing (macro/mood).
+    """Query the Perplexity Agent API for a market-overview briefing.
 
     Per-candidate news is handled by ``fetch_upstox_news_for_candidates``
     (free, batched) — Perplexity here is macro context only.
@@ -684,35 +694,29 @@ def fetch_news_context(
         return None
 
     if verbose:
-        print("Phase 3: Fetching market overview context...", file=sys.stderr)
+        print("Phase 3: Fetching market overview context (pro-search)...", file=sys.stderr)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
-    system_prompt = (
-        "You are a professional financial analyst with expertise in Indian stock markets. "
-        "Your task is to provide comprehensive, factual financial news updates and market context. "
-        "Focus on accuracy, relevance, and factual grounding. Do NOT provide investment recommendations, "
-        "trade advice, or allocation suggestions — report what is happening, not what the reader should do. "
-        f"Today is {today_str}. "
-        "CRITICAL: Only cite sources published within the last 24 hours. "
-        "State the publication date of every news item you reference (YYYY-MM-DD). "
-        "If you cannot confirm a source's date is recent, mark it 'date not confirmed' "
-        "and de-prioritize it. Never pad with year-old or generic material."
-    )
-
     market_dir = "up" if nifty_pct > 0 else "down" if nifty_pct < 0 else "flat"
-    market_prompt = f"""Provide a comprehensive market update for Indian stock markets (NSE/BSE) today ({today_str}).
-Nifty 50 is currently {market_dir} {abs(nifty_pct):.1f}%.
 
-Please include:
-1. Recent relevant news items with their potential market impact (HIGH/MEDIUM/LOW) — include publication date for each
-2. Overall market sentiment (BULLISH/BEARISH/NEUTRAL) and analysis
+    # All framing lives in `input` — the pro-search preset supplies its own
+    # tool-workflow + citation instructions, so we don't override them.
+    prompt = f"""You are briefing an Indian-markets day trader before the session. \
+Today is {today_str}. The Nifty 50 is currently {market_dir} {abs(nifty_pct):.1f}%.
+
+Search the web for news from the last 24 hours and write a concise, factual \
+market briefing for NSE/BSE covering:
+1. The most relevant recent news items and their likely market impact (HIGH/MEDIUM/LOW)
+2. Overall market sentiment (BULLISH / BEARISH / NEUTRAL) with brief reasoning
 3. Key market drivers and risks
 4. Sector themes driving today's action
-5. Global cues (US markets, Asia, crude oil, dollar/rupee)
+5. Global cues (US markets, Asia, crude oil, USD/INR)
 
-Focus only on developments from the last 24 hours. Exclude anything older. Do NOT include investment recommendations, trade advice, buy/sell calls, or allocation suggestions — this briefing is factual context only."""
+Prioritise developments from the last 24 hours. Report what is happening — \
+do NOT give investment recommendations, trade advice, or buy/sell calls. \
+This is factual context only. Cite every claim."""
 
-    market_result = _sonar_query(api_key, system_prompt, market_prompt)
+    market_result = _agent_query(api_key, prompt)
 
     if verbose:
         print("  Market overview fetched.", file=sys.stderr)
