@@ -20,6 +20,7 @@ CLI tools for stock market data and trading operations. Run from `backend/` dire
 | `nf-strategy` | Deploy strategy templates (algo trading) | Yes | `python cli-tools/nf-strategy deploy breakout --symbol RELIANCE --capital 50000 --entry 2450 --sl 2430 --json` |
 | `nf-backtest` | Backtest strategies against historical data | Yes | `python cli-tools/nf-backtest --strategy breakout --symbol RELIANCE --days 30 --entry-pct 1.0 --sl-pct 1.5 --json` |
 | `nf-mandate` | View/set/clear trading mandate for awakenings | No | `python cli-tools/nf-mandate show --json` |
+| `nf-regime` | Classify the day as trending / range-bound / mixed | Yes | `python cli-tools/nf-regime --json` |
 
 All tools support `--json` for structured output and `--help` for usage info.
 
@@ -370,3 +371,56 @@ python cli-tools/nf-mandate clear                                   # Remove man
 - Mandate defines risk boundaries for autonomous awakenings
 - Merges with existing mandate (update, don't replace)
 - Requires `NF_USER_ID` env var
+
+---
+
+### nf-regime
+
+Market Regime Detector — classifies the current trading day as **trending**,
+**range-bound**, or **mixed**, and recommends which strategy families fit.
+Needs at least 3 five-minute candles to produce a result; the trend-quality
+regression uses the first hour of trade, so the classification is most
+reliable from ~10:15 IST onward. Designed to gate the morning awakening's
+strategy choice.
+
+```
+python cli-tools/nf-regime [--json] [--tier1-count N] [--sector-leaders N] [--verbose]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-regime                          # Human-readable report
+python cli-tools/nf-regime --json                   # Machine-readable
+python cli-tools/nf-regime --tier1-count 3 --json    # Feed in morning-scan tier-1 count
+python cli-tools/nf-regime --sector-leaders 2 --json # Feed in count of leading sectors
+```
+
+**How it works:** scores up to 9 signals, averages them into a composite, and
+maps the composite to a regime:
+
+| Signal | Source |
+|--------|--------|
+| Day range % | Nifty 5-min candles (today) |
+| Trend quality (slope + R²) | Linear regression on first-hour closes |
+| Oscillation (midpoint crossings) | Nifty 5-min candles |
+| VIX level | Live `INDIAVIX` quote |
+| Tier-1 candidate count | `--tier1-count` (from `nf-morning-scan`) |
+| Net move % | Nifty open → current |
+| Sector breadth | `--sector-leaders` (optional) |
+| PCR (Put-Call Ratio) | NIFTY options — `nf-options pcr` (best-effort) |
+| Change-in-OI flow | NIFTY options — `nf-options change-oi` (best-effort) |
+
+- Composite `> 0.3` → **trending** (recommends orb, breakout, momentum)
+- Composite `< -0.15` → **range-bound** (recommends mean-reversion, iron-condor, vwap-bounce, scalp)
+- Otherwise → **mixed** (conservative: tier-1 ORB + theta)
+
+**Notes:**
+- `--tier1-count` / `--sector-leaders` are manual inputs — the tool does not
+  run `nf-morning-scan` itself; the caller passes the counts.
+- PCR and change-in-OI are fetched best-effort from NIFTY options (nearest
+  expiry); if that data is unavailable the regime is computed from the rest.
+- Live data only — there is no historical/backtest (`--date`) mode.
+- VIX falls back to a neutral `20.0` if the live quote is unavailable.
+- Always exits `0` on a successful classification (the regime is in stdout);
+  non-zero is reserved for genuine failures.
+- Requires `NF_ACCESS_TOKEN` (or `UPSTOX_ACCESS_TOKEN`); shells out to `nf-quote`.
