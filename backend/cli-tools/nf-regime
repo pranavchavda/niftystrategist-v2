@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""
+Market Regime Detector — classifies the day as TRENDING, RANGE-BOUND, or MIXED.
+
+Uses Nifty 5-min candles, VIX, morning scan output, and sector breadth to
+determine which strategies are appropriate for the current market conditions.
+
+Usage:
+  nf-regime [--json] [--tier1-count N] [--sector-leaders N] [--verbose]
+
+Output (--json):
+  {
+    "regime": "range_bound" | "trending" | "mixed",
+    "confidence": 0.0-1.0,
+    "signals": {...},
+    "recommended": ["mean_reversion", "iron_condor", ...],
+    "avoid": ["orb", "breakout", ...],
+    "narrative": "Human-readable explanation"
+  }
+
+Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
+"""
+
+import argparse
+import json
+import os
+import sys
+import subprocess
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+CLI_DIR = Path(__file__).parent
+
+def _extract_json(stdout: str):
+    """Parse JSON from CLI stdout, skipping any leading doc-header lines."""
+    lines = stdout.strip().split("\n")
+    json_start = 0
+    for i, line in enumerate(lines):
+        if line.strip().startswith("[") or line.strip().startswith("{"):
+            json_start = i
+            break
+    return json.loads("\n".join(lines[json_start:]))
+
+
+def run_quote(symbol: str, extra_args: list = None) -> dict:
+    """Run nf-quote and return parsed JSON."""
+    cmd = [sys.executable, str(CLI_DIR / "nf-quote"), symbol, "--json"]
+    if extra_args:
+        cmd.extend(extra_args)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return _extract_json(result.stdout)
+
+
+def run_options(subcmd: str, *args: str) -> dict:
+    """Run an nf-options subcommand with --json and return parsed JSON."""
+    cmd = [sys.executable, str(CLI_DIR / "nf-options"), subcmd, *args, "--json"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
+    return _extract_json(result.stdout)
+
+
+def fetch_options_flow(verbose: bool = False) -> dict | None:
+    """Best-effort fetch of NIFTY options-flow signals (PCR + change-in-OI).
+
+    Returns {"pcr": float, "call_change_oi": float, "put_change_oi": float,
+    "expiry": str} or None if anything fails — the regime is still computed
+    from price action alone when options data is unavailable.
+    """
+    try:
+        exp_data = run_options("expiries", "NIFTY")
+        expiries = exp_data.get("expiries") or []
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+        # First expiry on or after today (list is sorted ascending).
+        expiry = next((e for e in expiries if e >= today), None)
+        if not expiry:
+            if verbose:
+                print("  options-flow: no valid NIFTY expiry found", file=sys.stderr)
+            return None
+
+        pcr_data = run_options("pcr", "NIFTY", "--expiry", expiry)
+        coi_data = run_options("change-oi", "NIFTY", "--expiry", expiry)
+
+        pcr = pcr_data.get("pcr")
+        call_chg = coi_data.get("total_call_change_oi")
+        put_chg = coi_data.get("total_put_change_oi")
+        if pcr is None and call_chg is None and put_chg is None:
+            return None
+
+        flow = {
+            "expiry": expiry,
+            "pcr": pcr,
+            "call_change_oi": call_chg,
+            "put_change_oi": put_chg,
+        }
+        if verbose:
+            print(f"  options-flow: expiry={expiry} pcr={pcr} "
+                  f"call_chg={call_chg} put_chg={put_chg}", file=sys.stderr)
+        return flow
+    except Exception as e:
+        if verbose:
+            print(f"  options-flow: skipped ({e})", file=sys.stderr)
+        return None
+
+def compute_regime(candles: list, vix: float, tier1_count: int = 0, sector_leaders: int = 0,
+                   options_flow: dict | None = None) -> dict:
+    """Analyze candles to determine market regime."""
+    if not candles or len(candles) < 3:
+        return {
+            "regime": "unknown",
+            "confidence": 0.0,
+            "signals": {},
+            "recommended": [],
+            "avoid": [],
+            "narrative": "Insufficient data for regime detection."
+        }
+
+    first_candle = candles[0]
+    all_highs = [c["high"] for c in candles]
+    all_lows = [c["low"] for c in candles]
+    day_high = max(all_highs)
+    day_low = min(all_lows)
+    day_open = first_candle["open"]
+    current = candles[-1]["close"]
+
+    # --- Signal 1: Day Range ---
+    day_range_pct = ((day_high - day_low) / day_open) * 100
+
+    # --- Signal 2: Trend Quality (linear regression on closes) ---
+    first_hour_end = min(len(candles), 12)
+    closes = [c["close"] for c in candles[:first_hour_end]]
+    n = len(closes)
+    if n > 1:
+        x_avg = (n - 1) / 2
+        y_avg = sum(closes) / n
+        num = sum((i - x_avg) * (c - y_avg) for i, c in enumerate(closes))
+        den = sum((i - x_avg) ** 2 for i in range(n))
+        slope = num / den if den != 0 else 0
+        y_pred = [slope * i + (y_avg - slope * x_avg) for i in range(n)]
+        ss_res = sum((c - p) ** 2 for c, p in zip(closes, y_pred))
+        ss_tot = sum((c - y_avg) ** 2 for c in closes)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+    else:
+        slope = 0
+        r_squared = 0
+
+    net_move_pct = ((current - day_open) / day_open) * 100
+
+    # --- Signal 3: Oscillation (midpoint crossings) ---
+    mid = (day_high + day_low) / 2
+    crossings = 0
+    above = None
+    for c in candles:
+        is_above = c["close"] > mid
+        if above is not None and is_above != above:
+            crossings += 1
+        above = is_above
+
+    # --- Individual Signals ---
+    signals = {}
+
+    # Range
+    if day_range_pct >= 0.8:
+        range_score, range_label = 1.0, "wide"
+    elif day_range_pct >= 0.5:
+        range_score, range_label = 0.3, "moderate"
+    elif day_range_pct >= 0.3:
+        range_score, range_label = -0.3, "narrow"
+    else:
+        range_score, range_label = -1.0, "compressed"
+    signals["day_range"] = {"value": round(day_range_pct, 2), "score": round(range_score, 2), "label": range_label}
+
+    # Trend
+    if abs(slope) > 5 and r_squared > 0.5:
+        trend_score, trend_label = 1.0, "strong_trend"
+    elif abs(slope) > 2 and r_squared > 0.3:
+        trend_score, trend_label = 0.5, "weak_trend"
+    elif r_squared > 0.1:
+        trend_score, trend_label = -0.3, "noisy"
+    else:
+        trend_score, trend_label = -1.0, "sideways"
+    signals["trend"] = {"slope": round(slope, 2), "r_squared": round(r_squared, 2), "score": round(trend_score, 2), "label": trend_label}
+
+    # Oscillation
+    if crossings > len(candles) * 0.25:
+        osc_score, osc_label = -1.0, "frequent_crossing"
+    elif crossings > len(candles) * 0.12:
+        osc_score, osc_label = -0.5, "moderate_crossing"
+    elif crossings > len(candles) * 0.05:
+        osc_score, osc_label = 0.0, "occasional_crossing"
+    else:
+        osc_score, osc_label = 0.5, "directional"
+    signals["oscillation"] = {"crossings": crossings, "candle_count": len(candles), "score": round(osc_score, 2), "label": osc_label}
+
+    # VIX
+    if vix > 20:
+        vix_score, vix_label = -0.7, "elevated"
+    elif vix > 18:
+        vix_score, vix_label = -0.4, "above_normal"
+    elif vix > 14:
+        vix_score, vix_label = 0.0, "normal"
+    elif vix > 11:
+        vix_score, vix_label = 0.3, "low"
+    else:
+        vix_score, vix_label = 0.7, "complacent"
+    signals["vix"] = {"value": round(vix, 2), "score": round(vix_score, 2), "label": vix_label}
+
+    # Tier-1 candidates
+    if tier1_count >= 2:
+        t1_score, t1_label = 1.0, "strong"
+    elif tier1_count == 1:
+        t1_score, t1_label = 0.5, "single"
+    else:
+        t1_score, t1_label = -0.5, "none"
+    signals["tier1_candidates"] = {"count": tier1_count, "score": round(t1_score, 2), "label": t1_label}
+
+    # Sector breadth
+    if sector_leaders > 0:
+        if sector_leaders <= 2:
+            sector_score, sector_label = 0.5, "concentrated"
+        elif sector_leaders <= 4:
+            sector_score, sector_label = 0.0, "moderate"
+        else:
+            sector_score, sector_label = -0.5, "scattered"
+        signals["sector_breadth"] = {"leaders": sector_leaders, "score": round(sector_score, 2), "label": sector_label}
+
+    # Net move
+    if abs(net_move_pct) > 0.6:
+        move_score, move_label = 1.0, "directional"
+    elif abs(net_move_pct) > 0.3:
+        move_score, move_label = 0.3, "slight_move"
+    else:
+        move_score, move_label = -0.5, "flat"
+    signals["net_move"] = {"value": round(net_move_pct, 2), "score": round(move_score, 2), "label": move_label}
+
+    # --- Options-flow signals (best-effort; skipped if data unavailable) ---
+    if options_flow:
+        # PCR — Put-Call Ratio. Balanced positioning lets a trend run;
+        # stretched positioning (very high/low) flags reversal/range risk.
+        pcr = options_flow.get("pcr")
+        if pcr is not None:
+            if pcr >= 1.5 or pcr <= 0.5:
+                pcr_score, pcr_label = -0.6, "stretched"
+            elif pcr >= 1.3 or pcr <= 0.7:
+                pcr_score, pcr_label = -0.3, "leaning"
+            elif 0.85 <= pcr <= 1.15:
+                pcr_score, pcr_label = 0.3, "balanced"
+            else:
+                pcr_score, pcr_label = 0.0, "moderate"
+            signals["pcr"] = {"value": round(pcr, 3), "score": round(pcr_score, 2), "label": pcr_label}
+
+        # Change-in-OI flow — one-sided OI building/unwinding is directional
+        # (trend-friendly); both sides unwinding is low-conviction (range).
+        call_chg = options_flow.get("call_change_oi")
+        put_chg = options_flow.get("put_change_oi")
+        if call_chg is not None and put_chg is not None:
+            if call_chg > 0 and put_chg < 0:
+                oi_score, oi_label = 0.5, "call_writing_put_unwind"
+            elif call_chg < 0 and put_chg > 0:
+                oi_score, oi_label = 0.5, "call_unwind_put_writing"
+            elif call_chg > 0 and put_chg > 0:
+                oi_score, oi_label = 0.2, "both_building"
+            elif call_chg < 0 and put_chg < 0:
+                oi_score, oi_label = -0.5, "both_unwinding"
+            else:
+                oi_score, oi_label = 0.0, "flat"
+            signals["oi_flow"] = {
+                "call_change_oi": call_chg,
+                "put_change_oi": put_chg,
+                "score": round(oi_score, 2),
+                "label": oi_label,
+            }
+
+    # --- Aggregate ---
+    all_scores = [s["score"] for s in signals.values()]
+    composite = sum(all_scores) / len(all_scores)
+
+    if composite > 0.3:
+        regime = "trending"
+        confidence = min(1.0, (composite + 0.2) * 0.8)
+        recommended = ["orb", "breakout", "momentum_continuation", "trend_following"]
+        avoid = ["mean_reversion", "iron_condor", "short_strangle"]
+    elif composite < -0.15:
+        regime = "range_bound"
+        confidence = min(1.0, abs(composite) * 0.9)
+        recommended = ["mean_reversion", "vwap_bounce", "iron_condor", "short_strangle", "scalp"]
+        avoid = ["orb_long", "orb_short", "breakout", "momentum_continuation"]
+    else:
+        regime = "mixed"
+        confidence = 0.5 + (abs(composite) * 0.3)
+        recommended = ["orb_tier1_only", "vwap_bounce", "scalp"]
+        avoid = ["aggressive_orb", "iron_condor"]
+
+    direction = "up" if net_move_pct > 0 else "down" if net_move_pct < 0 else "sideways"
+    options_note = ""
+    if "pcr" in signals or "oi_flow" in signals:
+        parts = []
+        if "pcr" in signals:
+            parts.append(f"PCR {signals['pcr']['value']} ({signals['pcr']['label']})")
+        if "oi_flow" in signals:
+            parts.append(f"OI flow: {signals['oi_flow']['label']}")
+        options_note = f"Options \u2014 {'; '.join(parts)}. "
+    narrative = (
+        f"Nifty is {direction} {abs(net_move_pct):.2f}% with a {day_range_pct:.2f}% range. "
+        f"VIX at {vix:.1f} ({vix_label}). "
+        f"Trend quality: {trend_label} (R\u00b2={r_squared:.2f}). "
+        f"Midpoint crossed {crossings}x in {len(candles)} candles ({osc_label}). "
+        f"Tier-1 candidates: {tier1_count} ({t1_label}). "
+        f"{options_note}"
+        f"Regime: {regime.upper()} (confidence: {confidence:.0%}). "
+        f"Recommended: {', '.join(recommended)}. Avoid: {', '.join(avoid)}."
+    )
+
+    return {
+        "regime": regime,
+        "confidence": round(confidence, 2),
+        "composite_score": round(composite, 2),
+        "signals": signals,
+        "recommended": recommended,
+        "avoid": avoid,
+        "narrative": narrative,
+        "metadata": {
+            "day_open": day_open,
+            "current": current,
+            "net_move_pct": round(net_move_pct, 2),
+            "day_range_pct": round(day_range_pct, 2),
+            "candles_analyzed": len(candles),
+            "timestamp": datetime.now(IST).isoformat()
+        }
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-regime",
+        description="Market Regime Detector — classify the day as trending, "
+                    "range-bound, or mixed.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-regime                           Human-readable regime report
+  nf-regime --json                    Machine-readable output
+  nf-regime --tier1-count 3 --json    Feed in nf-morning-scan tier-1 count
+  nf-regime --sector-leaders 2        Feed in count of leading sectors
+
+Scores up to 9 signals — Nifty 5-min price action (range, trend R², oscillation,
+net move), live VIX, scan-derived tier-1 / sector-breadth inputs, and NIFTY
+options flow (PCR + change-in-OI) — averages them into a composite and maps it:
+  composite > 0.3   -> trending    (orb, breakout, momentum)
+  composite < -0.15 -> range_bound (mean-reversion, iron-condor, vwap-bounce)
+  otherwise         -> mixed       (conservative: tier-1 ORB + theta)
+
+Notes:
+  - --tier1-count / --sector-leaders are manual inputs; this tool does NOT run
+    nf-morning-scan itself — pass the counts from a prior scan.
+  - Options-flow signals (PCR, change-in-OI) are best-effort: if the NIFTY
+    options data is unavailable the regime is computed from the rest.
+  - Live data only — there is no historical/backtest (--date) mode.
+  - Needs >=3 five-min candles; the trend regression uses the first hour, so
+    the result is most reliable from ~10:15 IST onward.
+  - Exits 0 on any successful classification; non-zero only on real failure.
+
+Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
+""",
+    )
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--tier1-count", type=int, default=0, help="Tier-1 candidate count from nf-morning-scan")
+    parser.add_argument("--sector-leaders", type=int, default=0, help="Number of leading sectors")
+    parser.add_argument("--verbose", action="store_true", help="Verbose output")
+    args = parser.parse_args()
+
+    try:
+        nifty_data = run_quote("NIFTY", ["--historical", "--interval", "5minute", "--days", "1"])
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to fetch Nifty data: {e}"}))
+        sys.exit(1)
+
+    try:
+        # nf-quote resolves the VIX index as "INDIAVIX" (no space) and returns
+        # {"quotes": [{"ltp": ...}], "errors": ...}.
+        vix_data = run_quote("INDIAVIX")
+        vix = None
+        if isinstance(vix_data, dict):
+            quotes = vix_data.get("quotes") or []
+            if quotes:
+                vix = quotes[0].get("ltp") or quotes[0].get("last_price")
+            else:
+                vix = vix_data.get("ltp") or vix_data.get("last_price")
+        elif isinstance(vix_data, list) and vix_data:
+            vix = vix_data[0].get("ltp") or vix_data[0].get("last_price")
+        if vix is None:
+            vix = 20.0
+    except Exception:
+        vix = 20.0
+
+    # Best-effort NIFTY options flow (PCR + change-in-OI). None on any failure.
+    options_flow = fetch_options_flow(verbose=args.verbose)
+
+    result = compute_regime(nifty_data, vix, args.tier1_count, args.sector_leaders,
+                            options_flow=options_flow)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"\n{'='*60}")
+        print(f"\U0001f4ca MARKET REGIME DETECTOR — {result['metadata']['timestamp']}")
+        print(f"{'='*60}")
+        print(f"Regime:      {result['regime'].upper()}")
+        print(f"Confidence:  {result['confidence']:.0%}")
+        print(f"Composite:   {result['composite_score']:.2f}")
+        print(f"\n\U0001f4c8 Signals:")
+        for name, sig in result['signals'].items():
+            print(f"  {name:<18} score={sig['score']:+.2f}  [{sig['label']}]")
+        print(f"\n\u2705 Recommended: {', '.join(result['recommended'])}")
+        print(f"\u274c Avoid:       {', '.join(result['avoid'])}")
+        print(f"\n\U0001f4dd {result['narrative']}")
+        print(f"{'='*60}\n")
+
+    # Exit 0 on any successful classification — the regime is in stdout.
+    # Non-zero is reserved for genuine failures (e.g. data fetch above) so the
+    # orchestrator's execute_bash doesn't misread a range-bound day as an error.
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

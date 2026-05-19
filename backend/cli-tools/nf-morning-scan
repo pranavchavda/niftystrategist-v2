@@ -387,6 +387,123 @@ def phase2_score(
 
 
 # ---------------------------------------------------------------------------
+# Phase 2.5: TimesFM forecast confluence (on-demand, top deep-analyzed only)
+# ---------------------------------------------------------------------------
+
+def _candidate_bias(c: dict) -> str:
+    """Directional bias of a scan candidate from gap, relative strength and
+    intraday move. Returns 'bullish', 'bearish' or 'neutral'."""
+    votes = 0
+    for v in (c.get("gap_pct", 0) or 0,
+              c.get("rel_strength", 0) or 0,
+              c.get("quote", {}).get("pct_change", 0) or 0):
+        if v > 0:
+            votes += 1
+        elif v < 0:
+            votes -= 1
+    if votes >= 1:
+        return "bullish"
+    if votes <= -1:
+        return "bearish"
+    return "neutral"
+
+
+def _forecast_confluence_score(bias: str, fc: dict) -> int:
+    """Score a TimesFM forecast against the candidate's intraday bias.
+
+      +2  strong agreement (forecast confidence >= 0.6)
+      +1  weak agreement
+       0  neutral forecast or neutral bias
+      -1  forecast contradicts the intraday bias
+
+    Deliberately capped at +2 / -1: the forecast is a 5-day-horizon signal,
+    so agreement with an intraday setup is weak (but not worthless) evidence.
+    """
+    signal = (fc.get("signal") or "neutral").lower()
+    if signal == "neutral" or bias == "neutral":
+        return 0
+    if signal == bias:
+        return 2 if (fc.get("confidence") or 0) >= 0.6 else 1
+    return -1
+
+
+def apply_forecast_confluence(candidates: list[dict], verbose: bool = False) -> None:
+    """Run live TimesFM forecasts on the given candidates and fold the result
+    into each candidate's score as a soft confluence factor.
+
+    Mutates each candidate in place: adds `forecast` and `forecast_score`, and
+    bumps `total_score` by the confluence score. On any failure the candidates
+    are left untouched so the scan still produces output.
+    """
+    if not candidates:
+        return
+
+    symbols = [c["symbol"] for c in candidates]
+    nf_forecast = os.path.join(_CLI_TOOLS_DIR, "nf-forecast")
+
+    if verbose:
+        print(f"Phase 2.5: TimesFM forecast confluence on {len(symbols)} candidates...",
+              file=sys.stderr)
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, nf_forecast, "--json", "--horizon", "5", *symbols],
+            capture_output=True,
+            text=True,
+            timeout=120,  # cold model load + first compile can take ~60-90s on prod
+            env={**os.environ},
+            cwd=_backend_dir,
+        )
+    except subprocess.TimeoutExpired:
+        print("  Warning: forecast timed out — skipping confluence", file=sys.stderr)
+        return
+    except Exception as e:
+        print(f"  Warning: forecast failed ({e}) — skipping confluence", file=sys.stderr)
+        return
+
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip()
+        print(f"  Warning: nf-forecast exited {proc.returncode} ({err[:160]}) — "
+              "skipping confluence", file=sys.stderr)
+        return
+
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        print("  Warning: could not parse forecast output — skipping confluence",
+              file=sys.stderr)
+        return
+
+    # forecast_single prints a dict, forecast_multiple prints a list — normalise.
+    if isinstance(data, dict):
+        data = [data]
+    by_symbol = {f.get("symbol"): f for f in data if isinstance(f, dict)}
+
+    for c in candidates:
+        fc = by_symbol.get(c["symbol"])
+        if not fc or fc.get("signal") == "error":
+            c["forecast"] = None
+            c["forecast_score"] = 0
+            continue
+        bias = _candidate_bias(c)
+        fscore = _forecast_confluence_score(bias, fc)
+        c["forecast"] = {
+            "signal": fc.get("signal"),
+            "predicted_change_pct": fc.get("predicted_change_pct"),
+            "confidence": fc.get("confidence"),
+            "horizon_days": fc.get("forecast_horizon"),
+            "bias": bias,
+        }
+        c["forecast_score"] = fscore
+        c["total_score"] = c.get("total_score", 0) + fscore
+        if verbose:
+            pc = fc.get("predicted_change_pct") or 0
+            cf = fc.get("confidence") or 0
+            print(f"  {c['symbol']:<12} bias:{bias:<8} forecast:{fc.get('signal'):<8} "
+                  f"({pc:+.1f}% conf:{cf:.2f})  -> {fscore:+d}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Opening range detection
 # ---------------------------------------------------------------------------
 
@@ -474,6 +591,7 @@ async def run_scan(
     verbose: bool = False,
     debug_symbol: str | None = None,
     universe_name: str = "nifty500",
+    forecast: bool = False,
 ) -> list[dict]:
     """Run the full morning scan."""
     client = init_market_data_client()
@@ -579,6 +697,11 @@ async def run_scan(
         batch = top_candidates[i:i + batch_size]
         results = await asyncio.gather(*[analyze_candidate(c) for c in batch])
         analyzed.extend(results)
+
+    # Phase 2.5: TimesFM forecast confluence on the deep-analyzed candidates.
+    # Runs live (~1-2s/symbol) only on this small set, never the full universe.
+    if forecast:
+        apply_forecast_confluence(analyzed, verbose=verbose)
 
     # Add remaining candidates (no deep analysis) with null phase2 fields
     for c in candidates[deep_count:]:
@@ -830,6 +953,9 @@ def format_json_output(
         }
         if r.get("opening_range"):
             candidate["opening_range"] = r["opening_range"]
+        if r.get("forecast"):
+            candidate["forecast"] = r["forecast"]
+            candidate["forecast_score"] = r.get("forecast_score", 0)
         if r.get("news"):
             candidate["news"] = r["news"]
         output["candidates"].append(candidate)
@@ -912,6 +1038,27 @@ def format_human_output(
 
     print()
     print(f"  * = basic volume expansion (RVOL-T unavailable)")
+
+    # Forecast confluence (TimesFM, --forecast flag)
+    candidates_with_forecast = [r for r in results if r.get("forecast")]
+    if candidates_with_forecast:
+        print()
+        print(f"  {'-' * 65}")
+        print(f"  Forecast Confluence (TimesFM, 5d horizon)")
+        print(f"  {'-' * 65}")
+        print(f"  {'Symbol':<12} {'Bias':<9} {'Forecast':<10} {'Pred %':>8} "
+              f"{'Conf':>6} {'Score':>6}")
+        for r in candidates_with_forecast:
+            f = r["forecast"]
+            pc = f.get("predicted_change_pct")
+            cf = f.get("confidence")
+            fs = r.get("forecast_score", 0)
+            pc_str = f"{pc:+.1f}%" if pc is not None else "   —"
+            cf_str = f"{cf:.2f}" if cf is not None else "  —"
+            agree = "agree" if fs > 0 else "conflict" if fs < 0 else "neutral"
+            print(f"  {r['symbol']:<12} {f.get('bias',''):<9} "
+                  f"{f.get('signal',''):<10} {pc_str:>8} {cf_str:>6} "
+                  f"{fs:>+5d}  ({agree})")
 
     # Per-candidate news (Upstox, free + batched)
     candidates_with_news = [r for r in results if r.get("news")]
@@ -1177,6 +1324,7 @@ Examples:
   nf-morning-scan --json              Machine-readable output
   nf-morning-scan --verbose           Show scan progress
   nf-morning-scan --debug TATAMOTORS  Debug indicators for one stock
+  nf-morning-scan --forecast          Add TimesFM forecast confluence signal
 
   # Auto-deploy ORB strategy on top 3 candidates
   nf-morning-scan --auto-deploy orb --capital 50000 --top 3
@@ -1186,13 +1334,14 @@ Examples:
 
 Scans Nifty 500 stocks by default. Use --universe to narrow scope.
 
-Scoring (0-8):
+Scoring (0-8, or -1..10 with --forecast):
   Gap:     +1 (>=1%), +2 (>=2%)
   RelStr:  +1 (>=0.5% vs Nifty), +2 (>=1%)
   Volume:  +1 (RVOL-T >=1.5x), +2 (>=2x)
   RSI:     +1 (>=60 or <=40)
   VWAP:    +1 (price above VWAP)
   Align:   +1 (gap and move in same direction)
+  Forecast: +1/+2 (TimesFM agrees with bias), -1 (contradicts) — --forecast only
 
 Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
 """,
@@ -1206,6 +1355,9 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     parser.add_argument("--verbose", action="store_true", help="Show scan progress to stderr")
     parser.add_argument("--debug", metavar="SYMBOL", help="Debug mode: show all indicators for one stock")
     parser.add_argument("--news", action="store_true", help="Include Perplexity market-overview briefing (macro/mood). Per-candidate news from Upstox is always included.")
+    parser.add_argument("--forecast", action="store_true",
+                        help="Run TimesFM price forecasts on deep-analyzed candidates and "
+                             "fold the result into scoring as a confluence signal (adds ~15-30s)")
 
     # Auto-deploy options
     parser.add_argument("--auto-deploy", metavar="TEMPLATE",
@@ -1234,6 +1386,7 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
                 verbose=args.verbose or bool(args.debug),
                 debug_symbol=args.debug,
                 universe_name=args.universe,
+                forecast=args.forecast,
             )
         )
     except Exception as e:
