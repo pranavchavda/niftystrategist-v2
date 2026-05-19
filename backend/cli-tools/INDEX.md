@@ -356,6 +356,7 @@ View and manage the trading mandate for autonomous awakenings.
 ```
 python cli-tools/nf-mandate show [--json]
 python cli-tools/nf-mandate set [--risk-per-trade "₹5,000"] [--daily-loss-cap "₹10,000"] [--allowed-instruments "..."] [--cutoff-time "3:00 PM IST"] [--auto-squareoff-time "3:15 PM IST"] [--json]
+python cli-tools/nf-mandate edit [--patch '<JSON>'] [--unset KEY] [--replace '<JSON>'] [--json]
 python cli-tools/nf-mandate clear [--json]
 ```
 
@@ -364,11 +365,16 @@ python cli-tools/nf-mandate clear [--json]
 python cli-tools/nf-mandate show                                    # Current mandate
 python cli-tools/nf-mandate show --json                             # JSON output
 python cli-tools/nf-mandate set --risk-per-trade "₹5,000" \
-  --daily-loss-cap "₹10,000" --allowed-instruments "Nifty 500"     # Set mandate
+  --daily-loss-cap "₹10,000" --allowed-instruments "Nifty 500"     # Set common fields
+python cli-tools/nf-mandate edit --patch '{"pivot_authority": {"enabled": true, "max_pivots": 2}}'  # Edit nested fields
+python cli-tools/nf-mandate edit --unset pivot_authority.max_pivots  # Remove a nested key
 python cli-tools/nf-mandate clear                                   # Remove mandate
 ```
 
 - Mandate defines risk boundaries for autonomous awakenings
+- `set` covers the 6 common fields; `edit` reaches **any** field (incl. nested
+  v2 structures) — `--patch` deep-merges JSON, `--unset` removes (dotted paths
+  ok), `--replace` overwrites the whole mandate
 - Merges with existing mandate (update, don't replace)
 - Requires `NF_USER_ID` env var
 

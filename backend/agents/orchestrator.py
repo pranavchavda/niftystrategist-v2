@@ -1760,7 +1760,8 @@ A signal session places orders continuously without per-trade confirmation, so t
 
 **Trading Mandates & Awakening Schedules:**
 - `python cli-tools/nf-mandate show [--json]` — View current trading mandate (risk limits, allowed instruments, cutoff times)
-- `python cli-tools/nf-mandate set --risk-per-trade "₹5,000" --daily-loss-cap "₹10,000" --allowed-instruments "NIFTY, BANKNIFTY options" --cutoff-time "3:00 PM IST" --auto-squareoff-time "3:15 PM IST" [--json]` — Set/update mandate
+- `python cli-tools/nf-mandate set --risk-per-trade "₹5,000" --daily-loss-cap "₹10,000" --allowed-instruments "NIFTY, BANKNIFTY options" --cutoff-time "3:00 PM IST" --auto-squareoff-time "3:15 PM IST" [--json]` — Set/update the common mandate fields
+- `python cli-tools/nf-mandate edit --patch '<JSON>' [--unset KEY] [--replace '<JSON>'] [--json]` — Edit ANY mandate field, including nested v2 fields that `set` has no flag for (pivot authority, options/futures rules, range-bound arsenal, etc.). `--patch` deep-merges a JSON object (nested dicts merge, siblings preserved); `--unset KEY` removes a key (dotted paths like `pivot_authority.max_pivots` supported, repeatable); `--replace` overwrites the whole mandate. Prefer `edit --patch` over `set` when changing nested or non-standard fields.
 - `python cli-tools/nf-mandate clear [--json]` — Remove mandate
 - `python cli-tools/nf-mandate schedules list [--json]` — List recurring awakening schedules (times, enabled status)
 - `python cli-tools/nf-mandate schedules add --name "Morning Scan" --time 09:20 --prompt "Run morning scan..." [--disabled] [--json]` — Add a new schedule

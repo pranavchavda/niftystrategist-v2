@@ -6,6 +6,8 @@ risk per trade, daily loss cap, allowed instruments, cutoff time, etc.
 """
 
 import argparse
+import copy
+import json
 import sys
 import os
 from datetime import datetime
@@ -136,6 +138,112 @@ def cmd_clear(args):
         print_json({"mandate": None})
     else:
         print_success("Trading mandate cleared")
+
+
+# ============================================================================
+# Edit — arbitrary (incl. nested) mandate fields via JSON
+# ============================================================================
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    """Recursively merge `patch` into `base`. Nested dicts merge; everything
+    else (scalars, lists) is replaced. Mutates and returns `base`."""
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _unset_path(mandate: dict, dotted: str) -> bool:
+    """Delete a key at a dotted path (e.g. 'pivot_authority.max_pivots').
+    Returns True if a key was removed."""
+    parts = dotted.split(".")
+    node = mandate
+    for part in parts[:-1]:
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    if isinstance(node, dict) and parts[-1] in node:
+        del node[parts[-1]]
+        return True
+    return False
+
+
+def cmd_edit(args):
+    """Edit any part of the trading mandate, including nested v2 fields.
+
+    --patch deep-merges a JSON object; --unset removes keys (dotted paths
+    supported); --replace overwrites the whole mandate.
+    """
+    from database.session import get_db_context
+    from database.models import User, utc_now
+
+    user_id = _get_user_id()
+
+    patch = None
+    replace = None
+
+    if args.patch:
+        try:
+            patch = json.loads(args.patch)
+        except json.JSONDecodeError as e:
+            print_error(f"--patch is not valid JSON: {e}")
+        if not isinstance(patch, dict):
+            print_error("--patch must be a JSON object")
+
+    if args.replace:
+        try:
+            replace = json.loads(args.replace)
+        except json.JSONDecodeError as e:
+            print_error(f"--replace is not valid JSON: {e}")
+        if not isinstance(replace, dict):
+            print_error("--replace must be a JSON object")
+
+    if replace is not None and (patch is not None or args.unset):
+        print_error("--replace cannot be combined with --patch or --unset")
+    if patch is None and replace is None and not args.unset:
+        print_error("Nothing to edit. Provide --patch, --unset, or --replace.")
+
+    async def _edit():
+        async with get_db_context() as session:
+            user = await session.get(User, user_id)
+            if not user:
+                print_error(f"User {user_id} not found")
+
+            if replace is not None:
+                mandate = copy.deepcopy(replace)
+            else:
+                # deepcopy so the JSON column sees a fresh object (no aliasing)
+                mandate = copy.deepcopy(user.trading_mandate or {})
+                if patch is not None:
+                    _deep_merge(mandate, patch)
+
+            removed = []
+            missing = []
+            for path in (args.unset or []):
+                (removed if _unset_path(mandate, path) else missing).append(path)
+
+            mandate["last_edited_at"] = utc_now().isoformat()
+            user.trading_mandate = mandate
+            await session.commit()
+            return mandate, removed, missing
+
+    mandate, removed, missing = run_async(_edit())
+
+    if args.json:
+        print_json({"mandate": mandate, "unset": removed, "unset_not_found": missing})
+        return
+
+    print_success("Trading mandate edited")
+    if replace is not None:
+        print("  Mandate replaced wholesale.")
+    if patch is not None:
+        print(f"  Merged keys: {', '.join(patch.keys())}")
+    if removed:
+        print(f"  Removed: {', '.join(removed)}")
+    if missing:
+        print(f"  Not found (skipped): {', '.join(missing)}")
 
 
 # ============================================================================
@@ -495,6 +603,12 @@ Examples:
   nf-mandate set --risk-per-trade "₹5,000"             Set risk per trade
   nf-mandate clear                                     Remove mandate
 
+  # edit — change ANY field, including nested v2 fields set has no flag for
+  nf-mandate edit --patch '{"risk_per_trade": "₹6,000",
+      "pivot_authority": {"enabled": true, "max_pivots": 2}}'
+  nf-mandate edit --unset pivot_authority.max_pivots    Remove a nested key
+  nf-mandate edit --replace '{...}'                     Replace whole mandate
+
   nf-mandate followup schedule --thread-id THREAD \\
       --delay "2h" --prompt "Check RELIANCE position"   One-shot in-thread followup
   nf-mandate followup list                              List pending followups
@@ -527,6 +641,14 @@ Examples:
     # clear
     p_clear = sub.add_parser("clear", help="Clear trading mandate")
     p_clear.add_argument("--json", action="store_true", help="JSON output")
+
+    # edit
+    p_edit = sub.add_parser("edit", help="Edit any mandate field (incl. nested v2 fields) via JSON")
+    p_edit.add_argument("--patch", help="JSON object deep-merged into the mandate")
+    p_edit.add_argument("--unset", action="append", metavar="KEY",
+                        help="Remove a key (dotted path supported, e.g. pivot_authority.max_pivots); repeatable")
+    p_edit.add_argument("--replace", help="JSON object that replaces the entire mandate")
+    p_edit.add_argument("--json", action="store_true", help="JSON output")
 
     # followup (with sub-subcommands)
     p_fu = sub.add_parser("followup", help="Manage one-shot follow-ups")
@@ -593,6 +715,8 @@ Examples:
         cmd_set(args)
     elif args.command == "clear":
         cmd_clear(args)
+    elif args.command == "edit":
+        cmd_edit(args)
     elif args.command == "followup":
         cmd_followup(args)
     elif args.command == "schedules":
