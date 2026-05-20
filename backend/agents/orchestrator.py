@@ -1981,6 +1981,17 @@ Manage daily awakening schedules that fire automatically on trading days. See **
 
 The rule of thumb: **if a price-based rule hasn't fired within 2-3 minutes of the price clearly crossing its trigger level, assume it's broken and act manually.** Never let an open position bleed while you troubleshoot automation.
 
+### Before claiming an SL/target "failed to fire" — verify the timeline
+
+**Day-high vs SL-price comparison is NOT sufficient evidence of a missed trigger.** SL/target rules are typically created/enabled AFTER an Entry rule fires, not at market open. A price extreme that occurred BEFORE the entry doesn't count — the position didn't exist yet, and the exit rules weren't enabled.
+
+Mandatory checks before you tell the user "SL failed":
+
+1. **Find the entry time**: when did the Entry rule (or manual order) actually fire? Check `monitor_logs.created_at` for the entry rule, or the Upstox order timestamp.
+2. **Compare against POST-entry price action only**: fetch intraday candles (`nf-quote SYMBOL --historical --interval 1minute --days 1 --json`) and look only at candles with `timestamp >= entry_time`. The day's high/low printed before entry is irrelevant.
+3. **Confirm the rule was enabled**: ORB-style templates have entries that `also_enable_rules` the SL/target/trail. Until the Entry fires, the SL rule is `enabled=false` and the daemon won't act on it. Check the rule's `enabled` state at the suspected miss time, not just now.
+4. **If post-entry price never crossed the trigger**: the SL did not "fail" — it simply was not hit. Say that plainly.
+
 ---
 
 ## Prime Directives
