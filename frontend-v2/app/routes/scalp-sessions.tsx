@@ -275,7 +275,7 @@ export default function ScalpSessionsRoute() {
     trail_percent: '',
     trail_points: '',
     trail_arm_points: '',
-    squareoff_time: '15:14',
+    squareoff_time: '15:09',
     active_windows: [] as { start: string; end: string }[],
     entry_side: 'both',
     max_trades: 20,
@@ -674,7 +674,7 @@ export default function ScalpSessionsRoute() {
               <p className="text-sm text-zinc-500">Stateful indicator-driven trading — options scalp, equity intraday, equity swing</p>
             </div>
           </div>
-          <Button onClick={() => { setFormData({ name: '', session_mode: 'options_scalp', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, quantity: '', indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:14', active_windows: [], entry_side: 'both', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
+          <Button onClick={() => { setFormData({ name: '', session_mode: 'options_scalp', underlying: 'NIFTY', expiry: expiries[0] || '', lots: 1, quantity: '', indicator_timeframe: '1m', utbot_period: 10, utbot_sensitivity: 1.0, primary_indicator: 'utbot', primary_params: { ...PARAM_DEFAULTS.utbot }, confirm_indicator: '', confirm_params: {}, sl_points: '', target_points: '', trail_percent: '', trail_points: '', trail_arm_points: '', squareoff_time: '15:09', active_windows: [], entry_side: 'both', max_trades: 20, cooldown_seconds: 60 }); setShowCreate(true); }}>
             <Plus className="w-4 h-4" /> New Session
           </Button>
         </div>

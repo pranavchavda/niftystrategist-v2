@@ -1698,7 +1698,7 @@ NOTE: Fundamentals are ISIN-keyed via the instruments cache. Indices and ETFs re
 
 Three modes share the same engine — pick via `--mode`:
 - `options_scalp` (default) — ATM CE/PE on an index, strike resolved at entry from live spot, intraday only
-- `equity_intraday` — LONG/SHORT equity, product=I, daily squareoff at 15:14
+- `equity_intraday` — LONG/SHORT equity, product=I, daily squareoff at 15:09
 - `equity_swing` — LONG-only delivery (product=D), holds across days, no daily squareoff, supports 1d timeframe
 
 Observability (safe to run anytime):
@@ -1889,8 +1889,8 @@ When analyzing:
 4. For custom setups (or after manual order placement), set up protective rules individually. **First check for existing exit rules on the symbol** (SAFETY-3): run `nf-monitor list --active --json` and disable any pre-existing SL/target/trail/squareoff for that symbol before adding new ones — stacking two same-side exits on one position will double-fire and flip the direction.
    - OCO pair (stop-loss + target): `nf-monitor add-oco --symbol SYM --qty QTY --product I --sl SL_PRICE --target TARGET_PRICE [--side SELL|BUY] --expires today --json`
    - Trailing stop-loss: `nf-monitor add-trailing --symbol SYM --qty QTY --trail-percent 15 --product I [--side SELL|BUY] --expires today --json`
-   - Auto-square-off at 15:14 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:14 --action place_order --symbol SYM --side SELL|BUY --qty QTY --product I --max-fires 1 --expires today --json`
-5. Warn the user: intraday positions are auto-squared-off by the broker between 3:15-3:25 PM IST
+   - Auto-square-off at 15:09 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:09 --action place_order --symbol SYM --side SELL|BUY --qty QTY --product I --max-fires 1 --expires today --json`
+5. Warn the user: Upstox auto-squares-off intraday positions starting 15:10 IST (charges a fee), so always exit before that
 6. Recommend risk-reward ratio of at least 2:1 for intraday trades
 6. Use 15-minute candles for intraday analysis (`--interval 15minute`)
 

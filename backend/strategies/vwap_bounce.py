@@ -26,7 +26,7 @@ class VWAPBounceTemplate(StrategyTemplate):
         "rsi_timeframe": "5m",
         "vwap_band_pct": 0.3,     # Entry within 0.3% of VWAP
         "target": None,
-        "squareoff_time": "15:14",
+        "squareoff_time": "15:09",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:

@@ -395,9 +395,9 @@ export default function Help() {
                   <ul className="text-sm space-y-2 ml-4 list-disc">
                     <li><strong>Options Scalp:</strong> ATM CE/PE on an index (NIFTY, BANKNIFTY, FINNIFTY,
                       MIDCPNIFTY). The strike is resolved at entry time from the live spot price, not at
-                      session creation. Intraday only, daily squareoff at 15:14 IST.</li>
+                      session creation. Intraday only, daily squareoff at 15:09 IST.</li>
                     <li><strong>Equity Intraday:</strong> Direct LONG or SHORT on any NSE equity with
-                      product=I. Daily squareoff at 15:14 IST. SHORT is permitted (intraday margin).</li>
+                      product=I. Daily squareoff at 15:09 IST. SHORT is permitted (intraday margin).</li>
                     <li><strong>Equity Swing:</strong> LONG-only delivery (product=D) that holds across
                       days until a signal reversal, SL, target, or trailing-stop fires. No daily squareoff.
                       Supports larger timeframes (15m / 1h / 1d). SHORT is not supported (no SLBM).</li>
@@ -473,7 +473,7 @@ export default function Help() {
                       (or lowest for SHORT) seen premium/price at a fixed distance. Prefer absolute
                       <em>Trail Points</em> over percentage when working with high-priced options.</li>
                     <li><strong>Auto squareoff:</strong> intraday modes close at the configured time
-                      (default 15:14 IST). Swing mode ignores this.</li>
+                      (default 15:09 IST). Swing mode ignores this.</li>
                     <li><strong>Disable-while-holding:</strong> toggling a session off while it's holding
                       schedules an <em>exit-and-disable</em>. The daemon closes the position on its next
                       poll and then disables the session. No orphaned broker positions.</li>

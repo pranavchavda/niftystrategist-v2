@@ -28,7 +28,7 @@ class IronCondorTemplate(StrategyTemplate):
     ]
     optional_params = {
         "product": "D",
-        "squareoff_time": "15:14",
+        "squareoff_time": "15:09",
         "entry_time": "09:20",
     }
 

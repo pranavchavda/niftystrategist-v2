@@ -601,7 +601,7 @@ Examples:
     p_deploy.add_argument("--product", choices=["D", "I"], help="D=Delivery, I=Intraday (default: I)")
     p_deploy.add_argument("--trail-percent", type=float, help="Trailing stop %% (default: varies)")
     p_deploy.add_argument("--side", choices=["long", "short", "both"], help="Trade direction")
-    p_deploy.add_argument("--squareoff-time", help="Auto square-off time HH:MM IST (default: 15:14)")
+    p_deploy.add_argument("--squareoff-time", help="Auto square-off time HH:MM IST (default: 15:09)")
     p_deploy.add_argument("--max-entries", type=int, help="Max entries for scalp template")
     p_deploy.add_argument("--quantity", type=int, help="Fixed share/lot count (UT Bot, EMA cross, utbot-scalp)")
     p_deploy.add_argument("--timeframe", help="Indicator timeframe (e.g. 1m, 5m, 15m) — UT Bot, EMA cross")

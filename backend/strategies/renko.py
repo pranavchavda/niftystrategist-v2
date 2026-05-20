@@ -29,7 +29,7 @@ class RenkoTemplate(StrategyTemplate):
         "risk_percent": 2.0,
         "trail_percent": 1.5,
         "product": "I",
-        "squareoff_time": "15:14",
+        "squareoff_time": "15:09",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:

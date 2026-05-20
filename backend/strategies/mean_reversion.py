@@ -25,7 +25,7 @@ class MeanReversionTemplate(StrategyTemplate):
         "rsi_exit": None,         # Auto: 70 for long, 30 for short
         "rsi_timeframe": "5m",
         "entry_price": None,      # Approximate entry for sizing (uses SL distance)
-        "squareoff_time": "15:14",
+        "squareoff_time": "15:09",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:

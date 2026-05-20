@@ -94,8 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Trailing stop in percent")
     p.add_argument("--trail-arm", dest="trail_arm_points", type=float, default=None,
                    help="Points of profit before trail activates")
-    p.add_argument("--squareoff", default="15:14",
-                   help="Intraday squareoff time HH:MM IST (default: 15:14)")
+    p.add_argument("--squareoff", default="15:09",
+                   help="Intraday squareoff time HH:MM IST (default: 15:09)")
 
     # Risk + discipline
     p.add_argument("--quantity", "-q", type=int, required=True,

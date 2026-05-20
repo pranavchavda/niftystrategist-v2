@@ -39,7 +39,7 @@ class CreateSessionRequest(BaseModel):
     trail_percent: Optional[float] = None
     trail_points: Optional[float] = None
     trail_arm_points: Optional[float] = None
-    squareoff_time: str = "15:14"
+    squareoff_time: str = "15:09"
     active_windows: Optional[list[dict]] = None
     entry_side: str = "both"
     max_trades: int = 20
