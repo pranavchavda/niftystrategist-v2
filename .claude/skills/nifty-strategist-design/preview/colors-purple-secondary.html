@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Colors — purple secondary</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:10px;">
+  <div class="ns-eyebrow">Secondary · purple — AI reasoning</div>
+  <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap:8px;">
+    <div class="swatch">
+  <div class="chip" style="background:#faf5ff; "></div>
+  <div class="name">50</div>
+  <div class="hex">#faf5ff</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#f3e8ff; "></div>
+  <div class="name">100</div>
+  <div class="hex">#f3e8ff</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#d8b4fe; "></div>
+  <div class="name">300</div>
+  <div class="hex">#d8b4fe</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#a855f7; "></div>
+  <div class="name">500</div>
+  <div class="hex">#a855f7</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#9333ea; "></div>
+  <div class="name">600</div>
+  <div class="hex">#9333ea</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#7c3aed; "></div>
+  <div class="name">700</div>
+  <div class="hex">#7c3aed</div>
+</div>
+  </div>
+  <div class="ns-helper">Reserved for "thinking" / "reasoning" displays — the collapsible chain-of-thought panel.</div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

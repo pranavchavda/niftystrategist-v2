@@ -1,0 +1,338 @@
+/* =========================================================
+   Nifty Strategist — Colors & Type tokens
+   Source of truth derived from frontend-v2/app/styles/design-tokens.ts
+   and frontend-v2/app/index.css (Tailwind v4 @theme block).
+   ========================================================= */
+
+/* Local vendored webfonts (see fonts/). Path is relative to this CSS
+   file — if you copy this stylesheet elsewhere, also copy fonts/ next
+   to it, or rewrite these src URLs. The fallback chain in --font-sans
+   / --font-mono covers environments that can't load woff2. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('fonts/inter-variable.woff2') format('woff2-variations'),
+       url('fonts/inter-variable.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('fonts/inter-variable-italic.woff2') format('woff2-variations'),
+       url('fonts/inter-variable-italic.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-semibold.woff2') format('woff2');
+}
+
+:root {
+  /* ------------------------------------------------------- */
+  /* FONT FAMILIES                                            */
+  /* ------------------------------------------------------- */
+  --font-sans: 'Inter', 'Inter Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+
+  /* tabular-nums must be enabled on every price / pnl /
+     quantity readout — the brand depends on aligned digits. */
+  --font-feature-settings-tabular: "tnum" 1, "lnum" 1;
+
+  /* ------------------------------------------------------- */
+  /* TYPOGRAPHIC SCALE                                        */
+  /* (px values; line-height as multiple)                     */
+  /* ------------------------------------------------------- */
+  --text-3xl: 30px;   --leading-3xl: 36px;  /* h1 page titles */
+  --text-2xl: 24px;   --leading-2xl: 32px;  /* h2 sections    */
+  --text-xl:  20px;   --leading-xl:  28px;  /* h3 card titles */
+  --text-lg:  18px;   --leading-lg:  28px;  /* h4 subsection  */
+  --text-base:16px;   --leading-base:24px;  /* body default   */
+  --text-sm:  14px;   --leading-sm:  20px;  /* body small / labels */
+  --text-xs:  12px;   --leading-xs:  16px;  /* secondary text */
+  --text-2xs: 11px;   --leading-2xs: 14px;  /* dense tables   */
+  --text-3xs: 10px;   --leading-3xs: 12px;  /* eyebrow UPPERCASE labels */
+
+  /* Weights */
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-semibold:600;
+  --weight-bold:    700;
+
+  /* Tracking */
+  --tracking-tight:  -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide:   0.05em;
+  --tracking-eyebrow:0.15em; /* used for "MARKET PULSE" / "WATCHLIST" small caps */
+
+  /* ------------------------------------------------------- */
+  /* NEUTRALS (Zinc) — the workhorse                          */
+  /* ------------------------------------------------------- */
+  --zinc-50:  #fafafa;
+  --zinc-100: #f4f4f5;
+  --zinc-200: #e4e4e7;
+  --zinc-300: #d4d4d8;
+  --zinc-400: #a1a1aa;
+  --zinc-500: #71717a;
+  --zinc-600: #52525b;
+  --zinc-700: #3f3f46;
+  --zinc-800: #27272a;
+  --zinc-900: #18181b;
+  --zinc-950: #09090b;
+
+  /* ------------------------------------------------------- */
+  /* BRAND — Amber (trading focus highlights, primary FAB,    */
+  /*               active watchlist tab, "Ask AI" sparkle).   */
+  /* ------------------------------------------------------- */
+  --amber-50:  #fffbeb;
+  --amber-100: #fef3c7;
+  --amber-200: #fde68a;
+  --amber-300: #fcd34d;
+  --amber-400: #fbbf24;
+  --amber-500: #f59e0b;  /* PRIMARY brand */
+  --amber-600: #d97706;
+  --amber-700: #b45309;
+  --amber-800: #92400e;
+  --amber-900: #78350f;
+
+  /* ------------------------------------------------------- */
+  /* ACCENT — Blue (logo gradient, links, info, focus rings). */
+  /* The actual app-icon is a blue-gradient square.           */
+  /* ------------------------------------------------------- */
+  --blue-50:  #eff6ff;
+  --blue-100: #dbeafe;
+  --blue-200: #bfdbfe;
+  --blue-300: #93c5fd;
+  --blue-400: #60a5fa;
+  --blue-500: #3b82f6;  /* logo gradient start */
+  --blue-600: #2563eb;  /* logo gradient end / link */
+  --blue-700: #1d4ed8;
+  --blue-800: #1e40af;
+  --blue-900: #1e3a8a;
+
+  /* Logo gradient — used on the app-icon and on premium CTAs */
+  --gradient-logo: linear-gradient(135deg, #4f7df7 0%, #2c5be8 100%);
+
+  /* ------------------------------------------------------- */
+  /* SECONDARY — Purple (AI reasoning / thinking displays).   */
+  /* ------------------------------------------------------- */
+  --purple-50:  #faf5ff;
+  --purple-100: #f3e8ff;
+  --purple-300: #d8b4fe;
+  --purple-500: #a855f7;
+  --purple-600: #9333ea;
+  --purple-700: #7c3aed;
+
+  /* ------------------------------------------------------- */
+  /* TRADING SEMANTICS — Green = profit/buy, Red = loss/sell. */
+  /* Use these any time a number, badge or chip represents    */
+  /* P&L, direction, alert direction.                         */
+  /* ------------------------------------------------------- */
+  --profit-500:  #22c55e;
+  --profit-600:  #16a34a;  /* up sparkline stroke */
+  --profit-700:  #15803d;
+  --profit-text-light: #16a34a;
+  --profit-text-dark:  #4ade80;
+  --profit-bg-light:   rgba(34, 197, 94, 0.10);
+  --profit-bg-dark:    rgba(34, 197, 94, 0.20);
+
+  --loss-500:  #ef4444;
+  --loss-600:  #dc2626;   /* down sparkline stroke */
+  --loss-700:  #b91c1c;
+  --loss-text-light: #dc2626;
+  --loss-text-dark:  #f87171;
+  --loss-bg-light:   rgba(239, 68, 68, 0.10);
+  --loss-bg-dark:    rgba(239, 68, 68, 0.20);
+
+  /* ------------------------------------------------------- */
+  /* SEMANTIC ROLES (light mode default — toggled in .dark)   */
+  /* ------------------------------------------------------- */
+  --bg-canvas:        var(--zinc-50);   /* page background */
+  --bg-surface:       #ffffff;          /* card body       */
+  --bg-elevated:      #ffffff;          /* modal/popover   */
+  --bg-muted:         var(--zinc-100);  /* inputs / chips  */
+  --bg-hover:         rgba(244,244,245,0.8);
+  --bg-glass:         rgba(255,255,255,0.80);
+  --bg-glass-topbar:  rgba(255,255,255,0.70);
+
+  --fg-strong:        var(--zinc-900);  /* H1 / values     */
+  --fg-default:       var(--zinc-800);  /* body            */
+  --fg-muted:         var(--zinc-500);  /* labels / hint   */
+  --fg-subtle:        var(--zinc-400);  /* eyebrows / icon */
+  --fg-on-brand:      #ffffff;          /* white on amber  */
+
+  --border-default:   rgba(228,228,231,0.70);
+  --border-subtle:    rgba(228,228,231,0.40);
+  --border-strong:    var(--zinc-300);
+
+  --link:             var(--blue-600);
+  --focus-ring:       var(--blue-500);
+  --warning:          var(--amber-500);
+  --info:             var(--blue-500);
+
+  /* ------------------------------------------------------- */
+  /* RADIUS                                                   */
+  /* ------------------------------------------------------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  /* ------------------------------------------------------- */
+  /* SHADOWS                                                  */
+  /* ------------------------------------------------------- */
+  --shadow-xs:  0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-sm:  0 1px 3px 0 rgb(0 0 0 / 0.10), 0 1px 2px -1px rgb(0 0 0 / 0.10);
+  --shadow-md:  0 4px 6px -1px rgb(0 0 0 / 0.10), 0 2px 4px -2px rgb(0 0 0 / 0.10);
+  --shadow-lg:  0 10px 15px -3px rgb(0 0 0 / 0.10), 0 4px 6px -4px rgb(0 0 0 / 0.10);
+  --shadow-xl:  0 20px 25px -5px rgb(0 0 0 / 0.10), 0 8px 10px -6px rgb(0 0 0 / 0.10);
+  --shadow-fab: 0 8px 16px -4px rgba(245, 158, 11, 0.35);
+
+  /* ------------------------------------------------------- */
+  /* SPACING (4px base)                                       */
+  /* ------------------------------------------------------- */
+  --space-0:  0;
+  --space-px: 1px;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ------------------------------------------------------- */
+  /* MOTION                                                   */
+  /* ------------------------------------------------------- */
+  --duration-fast:    100ms;
+  --duration-default: 150ms;
+  --duration-medium:  200ms;
+  --duration-slow:    300ms;
+  --ease-default:     cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out:         ease-out;
+}
+
+/* =========================================================
+   DARK MODE — toggled via .dark class on <html> or <body>.
+   Surfaces flip to deep zinc; semantic profit/loss text uses
+   the lighter variants for AA contrast on dark backgrounds.
+   ========================================================= */
+.dark {
+  --bg-canvas:        var(--zinc-950);
+  --bg-surface:       var(--zinc-900);
+  --bg-elevated:      var(--zinc-900);
+  --bg-muted:         var(--zinc-800);
+  --bg-hover:         rgba(39,39,42,0.6);
+  --bg-glass:         rgba(24,24,27,0.80);
+  --bg-glass-topbar:  rgba(24,24,27,0.70);
+
+  --fg-strong:        var(--zinc-100);
+  --fg-default:       var(--zinc-200);
+  --fg-muted:         var(--zinc-400);
+  --fg-subtle:        var(--zinc-500);
+
+  --border-default:   rgba(39,39,42,0.70);
+  --border-subtle:    rgba(39,39,42,0.40);
+  --border-strong:    var(--zinc-700);
+
+  --link:             var(--blue-400);
+}
+
+/* =========================================================
+   SEMANTIC TYPOGRAPHY UTILITIES
+   Use these directly: <h1 class="ns-h1">…</h1>
+   ========================================================= */
+
+.ns-base, body {
+  font-family: var(--font-sans);
+  color: var(--fg-default);
+  background: var(--bg-canvas);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.ns-h1 { font-family: var(--font-sans); font-size: var(--text-3xl); line-height: var(--leading-3xl); font-weight: var(--weight-bold);    letter-spacing: var(--tracking-tight); color: var(--fg-strong); }
+.ns-h2 { font-family: var(--font-sans); font-size: var(--text-2xl); line-height: var(--leading-2xl); font-weight: var(--weight-semibold);letter-spacing: var(--tracking-tight); color: var(--fg-strong); }
+.ns-h3 { font-family: var(--font-sans); font-size: var(--text-xl);  line-height: var(--leading-xl);  font-weight: var(--weight-semibold);color: var(--fg-strong); }
+.ns-h4 { font-family: var(--font-sans); font-size: var(--text-lg);  line-height: var(--leading-lg);  font-weight: var(--weight-medium);  color: var(--fg-strong); }
+.ns-h5 { font-family: var(--font-sans); font-size: var(--text-base);line-height: var(--leading-base);font-weight: var(--weight-medium);  color: var(--fg-strong); }
+.ns-h6 { font-family: var(--font-sans); font-size: var(--text-sm);  line-height: var(--leading-sm);  font-weight: var(--weight-medium);  color: var(--fg-strong); }
+
+.ns-body       { font-size: var(--text-base); line-height: var(--leading-base); color: var(--fg-default); }
+.ns-body-sm    { font-size: var(--text-sm);   line-height: var(--leading-sm);   color: var(--fg-default); }
+.ns-body-xs    { font-size: var(--text-xs);   line-height: var(--leading-xs);   color: var(--fg-default); }
+
+.ns-label      { font-size: var(--text-sm);   font-weight: var(--weight-medium); color: var(--fg-muted); }
+.ns-helper     { font-size: var(--text-xs);   color: var(--fg-muted); }
+
+/* Eyebrow / micro section heading — used everywhere in the
+   trading UI: "MARKET PULSE", "WATCHLIST", "PORTFOLIO". */
+.ns-eyebrow {
+  font-size: var(--text-3xs);
+  line-height: var(--leading-3xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+
+/* Money / numerals — ALWAYS tabular. This is brand-critical. */
+.ns-tabular,
+.ns-money,
+.ns-num {
+  font-feature-settings: var(--font-feature-settings-tabular);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* Profit / loss text — works in both modes */
+.ns-profit { color: var(--profit-text-light); }
+.dark .ns-profit { color: var(--profit-text-dark); }
+.ns-loss   { color: var(--loss-text-light); }
+.dark .ns-loss   { color: var(--loss-text-dark); }
+
+/* Code / mono — used for ticker symbols when displayed in
+   chat output, JSON blobs, CLI excerpts. */
+.ns-code,
+.ns-mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* Link */
+.ns-link {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--link) 40%, transparent);
+  text-underline-offset: 2px;
+  transition: text-decoration-color var(--duration-default) var(--ease-default);
+}
+.ns-link:hover {
+  text-decoration-color: var(--link);
+}

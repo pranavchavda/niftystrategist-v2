@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Components — badges</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:12px;">
+  <div class="ns-eyebrow">Badges</div>
+  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius: var(--radius-sm); background:rgba(34,197,94,0.15); color:#15803d; font-size:11px; font-weight:600; letter-spacing:0.02em;">BUY</span><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius: var(--radius-sm); background:rgba(239,68,68,0.15); color:#b91c1c; font-size:11px; font-weight:600; letter-spacing:0.02em;">SELL</span><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius: var(--radius-sm); background:rgba(245,158,11,0.20); color:#92400e; font-size:11px; font-weight:600; letter-spacing:0.02em;">RISK</span><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius: var(--radius-sm); background:rgba(59,130,246,0.15); color:#1d4ed8; font-size:11px; font-weight:600; letter-spacing:0.02em;">INFO</span><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius: var(--radius-sm); background:rgba(82,82,91,0.12); color:#3f3f46; font-size:11px; font-weight:600; letter-spacing:0.02em;">NEUTRAL</span><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius: var(--radius-sm); background:rgba(168,85,247,0.15); color:#7c3aed; font-size:11px; font-weight:600; letter-spacing:0.02em;">THINKING</span>
+  </div>
+  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <span style="display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius: var(--radius-md); background: var(--bg-muted); font-size:11px; font-weight:700; color: var(--profit-600); letter-spacing:0.05em;">
+      <i data-lucide="circle-dot" style="width:11px; height:11px; color: var(--profit-600);"></i>LIVE
+    </span>
+    <span style="display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius: var(--radius-md); background: var(--bg-muted); font-size:11px; font-weight:700; color: var(--loss-600); letter-spacing:0.05em;">
+      <i data-lucide="circle-dot" style="width:11px; height:11px; color: var(--loss-600);"></i>CLOSED
+    </span>
+    <span class="ns-helper">Market-status pills — only ever LIVE or CLOSED.</span>
+  </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

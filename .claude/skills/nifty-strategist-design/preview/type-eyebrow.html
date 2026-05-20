@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Type — eyebrow micro-headers</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:14px;">
+  <div class="ns-eyebrow">The eyebrow pattern</div>
+  <div class="ns-helper" style="margin:0;">Used above every dense panel. 10px, 700-weight, uppercase, tracking-0.15em, zinc-400/500.</div>
+  <div style="display:flex; gap:32px; flex-wrap:wrap;">
+    <span class="ns-eyebrow">Market pulse</span>
+    <span class="ns-eyebrow">Watchlist</span>
+    <span class="ns-eyebrow">Portfolio</span>
+    <span class="ns-eyebrow">Overall</span>
+    <span class="ns-eyebrow">Day P&amp;L</span>
+    <span class="ns-eyebrow">Margin used</span>
+  </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

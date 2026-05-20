@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Brand — P&L type signature</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:14px;">
+  <div class="ns-eyebrow">P&amp;L signature</div>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
+    <div style="padding: 16px 18px; border-radius: var(--radius-md); background: rgba(34,197,94,0.07); border: 1px solid rgba(34,197,94,0.20);">
+      <div class="ns-eyebrow" style="color: var(--profit-text-light); letter-spacing:0.08em;">Day P&amp;L</div>
+      <div class="ns-num" style="font-size:28px; font-weight:700; color: var(--profit-text-light); margin-top:4px;">+₹4,320</div>
+      <div class="ns-num" style="font-size:13px; color: var(--profit-text-light); opacity:.8;">+0.42% · 5 trades</div>
+    </div>
+    <div style="padding: 16px 18px; border-radius: var(--radius-md); background: rgba(239,68,68,0.07); border: 1px solid rgba(239,68,68,0.20);">
+      <div class="ns-eyebrow" style="color: var(--loss-text-light); letter-spacing:0.08em;">INFY P&amp;L</div>
+      <div class="ns-num" style="font-size:28px; font-weight:700; color: var(--loss-text-light); margin-top:4px;">−₹500</div>
+      <div class="ns-num" style="font-size:13px; color: var(--loss-text-light); opacity:.8;">−1.40% · 7 days held</div>
+    </div>
+  </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

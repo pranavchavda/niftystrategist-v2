@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Brand — voice & tone</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:10px;">
+  <div class="ns-eyebrow">Voice · sample assistant reply</div>
+  <div style="background: var(--bg-surface); border:1px solid var(--border-default); border-radius: var(--radius-md); padding: 12px 14px; font-size:13px; line-height: 1.55; color: var(--fg-default);">
+    INFY is at <span class="ns-num" style="font-weight:600; color: var(--fg-strong);">1,755</span> — just <span class="ns-num">25</span> points (1.4%) above your stop loss at <span class="ns-num" style="font-weight:600;">1,730</span>.<br><br>
+    <strong style="color: var(--fg-strong);">Technical picture:</strong>
+    <ul style="margin:6px 0 0 18px; padding:0;">
+      <li>RSI: <span class="ns-num">38</span> (approaching oversold)</li>
+      <li>Below 20-day SMA (bearish)</li>
+      <li>Support at 1,730–1,740 zone</li>
+    </ul>
+    <div style="margin-top:8px;"><strong style="color: var(--fg-strong);">My take:</strong> The stop loss is doing its job. Rather than panic-exit, let it play out…</div>
+  </div>
+  <div class="ns-helper">Fact → interpretation → suggestion. Second-person, calm, no emoji.</div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

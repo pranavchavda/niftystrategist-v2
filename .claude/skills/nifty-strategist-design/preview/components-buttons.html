@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Components — buttons</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:12px;">
+  <div class="ns-eyebrow">Buttons</div>
+  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <button style="border:0; padding:8px 14px; border-radius: var(--radius-md); background: var(--zinc-950); color:#fff; font-weight:600; font-size:13px; box-shadow: var(--shadow-sm); cursor:pointer;">Place order</button>
+    <button style="border:1px solid var(--border-strong); padding:8px 14px; border-radius: var(--radius-md); background: var(--bg-surface); color: var(--fg-strong); font-weight:600; font-size:13px; cursor:pointer;">Cancel</button>
+    <button style="border:0; padding:8px 14px; border-radius: var(--radius-md); background:transparent; color: var(--fg-strong); font-weight:600; font-size:13px; cursor:pointer;">Ghost</button>
+    <button style="border:0; padding:8px 14px; border-radius: var(--radius-md); background: var(--loss-600); color:#fff; font-weight:600; font-size:13px; box-shadow: 0 4px 14px -2px rgba(220,38,38,.35); cursor:pointer;">Exit position</button>
+  </div>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <button title="Open chat" style="border:0; width:44px; height:44px; border-radius: 9999px; background: var(--amber-500); color:#fff; box-shadow: var(--shadow-fab); cursor:pointer; display:flex; align-items:center; justify-content:center;"><i data-lucide="message-square" style="width:18px; height:18px;"></i></button>
+    <button title="Open watchlist" style="border:0; width:44px; height:44px; border-radius: 9999px; background: var(--zinc-900); color:#fff; box-shadow: var(--shadow-lg); cursor:pointer; display:flex; align-items:center; justify-content:center;"><i data-lucide="list" style="width:18px; height:18px;"></i></button>
+    <span class="ns-helper">FAB · amber for Chat, zinc-900 for Watchlist (Cockpit FAB pair).</span>
+  </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

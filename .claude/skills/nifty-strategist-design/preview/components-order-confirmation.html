@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Components — order confirmation</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:10px;">
+  <div class="ns-eyebrow">Render-UI confirmation card</div>
+  <div style="background: var(--bg-surface); border:1px solid var(--border-default); border-radius: var(--radius-lg); padding: 16px; box-shadow: var(--shadow-sm);">
+    <div style="display:flex; align-items:flex-start; gap:10px; margin-bottom:12px;">
+      <span style="font-size:20px; line-height:1;">⚠️</span>
+      <div>
+        <div style="font-size:14px; font-weight:600; color: var(--fg-strong);">Confirm trade</div>
+        <div style="font-size:13px; color: var(--fg-default); margin-top:2px;">Buy <span class="ns-num" style="font-weight:600;">10</span> shares of <strong style="color:var(--fg-strong);">TCS</strong> at <span class="ns-num">₹4,125.00</span>. Total value: <span class="ns-num" style="font-weight:600; color: var(--fg-strong);">₹41,250</span>.</div>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button style="border:0; padding:8px 16px; border-radius:8px; background: var(--profit-600); color:#fff; font-weight:600; font-size:13px; cursor:pointer; box-shadow: 0 4px 12px -2px rgba(22,163,74,.35);">Approve</button>
+      <button style="border:1px solid var(--border-strong); padding:8px 16px; border-radius:8px; background: var(--bg-surface); color: var(--fg-strong); font-weight:600; font-size:13px; cursor:pointer;">Reject</button>
+    </div>
+  </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

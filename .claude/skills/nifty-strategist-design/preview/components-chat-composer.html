@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Components — chat composer</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:10px;">
+  <div class="ns-eyebrow">Chat composer</div>
+  <div style="background: var(--bg-canvas); padding: 8px; border-radius: var(--radius-xl); border:1px solid var(--border-default); box-shadow: var(--shadow-sm);">
+    <textarea rows="1" placeholder="Message Nifty Strategist..." style="display:block; width:100%; box-sizing:border-box; resize:none; border:0; outline:none; background:transparent; font-size:15px; color: var(--fg-strong); font-family: var(--font-sans); padding: 6px 8px 8px;">Should I exit INFY? It's been dropping for a week.</textarea>
+    <div style="display:flex; justify-content:space-between; align-items:center; padding: 0 4px;">
+      <div style="display:flex; gap:2px;">
+        <button title="Image" style="border:0; background:transparent; padding:6px; border-radius:8px; color: var(--fg-subtle); cursor:pointer; display:flex;"><i data-lucide="image-plus" style="width:18px; height:18px;"></i></button>
+        <button title="File" style="border:0; background:transparent; padding:6px; border-radius:8px; color: var(--fg-subtle); cursor:pointer; display:flex;"><i data-lucide="paperclip" style="width:18px; height:18px;"></i></button>
+        <button title="Voice" style="border:0; background:transparent; padding:6px; border-radius:8px; color: var(--fg-subtle); cursor:pointer; display:flex;"><i data-lucide="mic" style="width:18px; height:18px;"></i></button>
+      </div>
+      <button style="border:0; padding:8px 12px; border-radius:10px; background: var(--zinc-500); color:#fff; display:flex; align-items:center; gap:6px; font-size:13px; font-weight:600; cursor:pointer; box-shadow: var(--shadow-sm);">
+        <i data-lucide="send" style="width:16px; height:16px;"></i>Send
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

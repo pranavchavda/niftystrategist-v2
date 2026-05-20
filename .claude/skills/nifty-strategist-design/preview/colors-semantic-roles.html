@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Colors — semantic roles</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:10px;">
+  <div class="ns-eyebrow">Semantic roles · light · dark</div>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+    <div style="padding:14px; border-radius: var(--radius-md); background:#fafafa; border:1px solid #e4e4e7;">
+      <div style="font-size:11px; color:#71717a; font-weight:600; letter-spacing:0.05em;">LIGHT</div>
+      <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+        <span style="display:inline-block; width:14px; height:14px; border-radius:4px; background:#ffffff; border:1px solid #e4e4e7;"></span><span style="font-size:12px; color:#18181b;">bg-surface</span>
+        <span style="display:inline-block; width:14px; height:14px; border-radius:4px; background:#f4f4f5;"></span><span style="font-size:12px; color:#18181b;">bg-muted</span>
+        <span style="display:inline-block; width:14px; height:14px; border-radius:4px; background:#27272a;"></span><span style="font-size:12px; color:#18181b;">fg-strong</span>
+      </div>
+    </div>
+    <div style="padding:14px; border-radius: var(--radius-md); background:#09090b; border:1px solid #27272a;">
+      <div style="font-size:11px; color:#a1a1aa; font-weight:600; letter-spacing:0.05em;">DARK</div>
+      <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+        <span style="display:inline-block; width:14px; height:14px; border-radius:4px; background:#18181b; border:1px solid #27272a;"></span><span style="font-size:12px; color:#f4f4f5;">bg-surface</span>
+        <span style="display:inline-block; width:14px; height:14px; border-radius:4px; background:#27272a;"></span><span style="font-size:12px; color:#f4f4f5;">bg-muted</span>
+        <span style="display:inline-block; width:14px; height:14px; border-radius:4px; background:#f4f4f5;"></span><span style="font-size:12px; color:#f4f4f5;">fg-strong</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

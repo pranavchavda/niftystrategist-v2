@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Components — market pulse</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:8px;">
+  <div class="ns-eyebrow">Market pulse</div>
+  <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-radius: var(--radius-md); background:rgba(34,197,94,0.07); border:1px solid rgba(34,197,94,0.20);">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <i data-lucide="trending-up" style="width:12px; height:12px; color:var(--profit-text-light);"></i>
+        <span style="font-size:12px; font-weight:700; color: var(--fg-strong);">NIFTY 50</span>
+      </div>
+      <div style="text-align:right;">
+        <div class="ns-num" style="font-size:12px; font-weight:700; color: var(--fg-strong);">23,456.70</div>
+        <div class="ns-num" style="font-size:10px; font-weight:600; color:var(--profit-text-light);">+187.45 (+0.81%)</div>
+      </div>
+    </div><div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-radius: var(--radius-md); background:rgba(239,68,68,0.07); border:1px solid rgba(239,68,68,0.20);">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <i data-lucide="trending-down" style="width:12px; height:12px; color:var(--loss-text-light);"></i>
+        <span style="font-size:12px; font-weight:700; color: var(--fg-strong);">BANK NIFTY</span>
+      </div>
+      <div style="text-align:right;">
+        <div class="ns-num" style="font-size:12px; font-weight:700; color: var(--fg-strong);">49,823.15</div>
+        <div class="ns-num" style="font-size:10px; font-weight:600; color:var(--loss-text-light);">-124.30 (-0.25%)</div>
+      </div>
+    </div><div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-radius: var(--radius-md); background:rgba(239,68,68,0.07); border:1px solid rgba(239,68,68,0.20);">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <i data-lucide="trending-down" style="width:12px; height:12px; color:var(--loss-text-light);"></i>
+        <span style="font-size:12px; font-weight:700; color: var(--fg-strong);">INDIA VIX</span>
+      </div>
+      <div style="text-align:right;">
+        <div class="ns-num" style="font-size:12px; font-weight:700; color: var(--fg-strong);">13.42</div>
+        <div class="ns-num" style="font-size:10px; font-weight:600; color:var(--loss-text-light);">-0.58 (-4.14%)</div>
+      </div>
+    </div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

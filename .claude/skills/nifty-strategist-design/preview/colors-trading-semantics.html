@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Colors — trading semantics</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:10px;">
+  <div class="ns-eyebrow">Trading semantics · profit / loss</div>
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:8px;">
+    <div class="swatch">
+  <div class="chip" style="background:#22c55e; "></div>
+  <div class="name">profit-500</div>
+  <div class="hex">#22c55e</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#16a34a; "></div>
+  <div class="name">profit-600</div>
+  <div class="hex">#16a34a</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#ef4444; "></div>
+  <div class="name">loss-500</div>
+  <div class="hex">#ef4444</div>
+</div>
+    <div class="swatch">
+  <div class="chip" style="background:#dc2626; "></div>
+  <div class="name">loss-600</div>
+  <div class="hex">#dc2626</div>
+</div>
+  </div>
+  <div style="display:flex; gap:32px; align-items:baseline; padding-top:4px;">
+    <div class="ns-num ns-profit" style="font-size:22px; font-weight:700;">+₹1,425  +5.57%</div>
+    <div class="ns-num ns-loss" style="font-size:22px; font-weight:700;">−₹500  −1.40%</div>
+  </div>
+  <div class="ns-helper">Green = profit/BUY. Red = loss/SELL. Never use these to mean "active" or "deleted" in this product.</div>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>

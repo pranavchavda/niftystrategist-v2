@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Components — position row</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-canvas);
+    padding: 16px 20px;
+    box-sizing: border-box;
+    min-height: 100vh;
+  }
+  .card-grid { display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .swatch { display: flex; flex-direction: column; gap: 4px; }
+  .swatch .chip {
+    width: 100%; height: 56px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+  }
+  .swatch .name {
+    font-size: var(--text-2xs); color: var(--fg-strong);
+    font-weight: var(--weight-semibold);
+  }
+  .swatch .hex {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-muted);
+    font-feature-settings: "tnum" 1;
+  }
+  .specimen { color: var(--fg-strong); }
+  .ds-bg-canvas { background: var(--bg-canvas); }
+  .ds-bg-surface { background: var(--bg-surface); }
+</style>
+</head>
+<body>
+
+<div class="col" style="gap:8px;">
+  <div class="ns-eyebrow">Position row · table</div>
+  <table style="border-collapse: collapse; width: 100%; font-feature-settings: 'tnum' 1;">
+    <thead>
+      <tr style="text-align:left; font-size:10px; font-weight:600; color: var(--fg-muted); text-transform:uppercase; letter-spacing:0.05em; border-bottom: 1px solid var(--border-default);">
+        <th style="padding:8px 6px;">Symbol</th><th style="padding:8px 6px; text-align:right;">Qty</th>
+        <th style="padding:8px 6px; text-align:right;">LTP</th><th style="padding:8px 6px; text-align:right;">P&amp;L</th>
+        <th style="padding:8px 6px; text-align:right;">P&amp;L %</th><th style="padding:8px 6px; text-align:right;">Days</th>
+      </tr>
+    </thead>
+    <tbody style="font-size:12px;">
+      <tr style="border-bottom: 1px solid var(--border-subtle);">
+          <td style="padding:9px 6px; font-weight:700; color: var(--fg-strong);">RELIANCE</td>
+          <td style="padding:9px 6px; text-align:right; color: var(--fg-muted);">10</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:600; color: var(--fg-strong);">2,847.50</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:700; color:var(--profit-text-light);">+675</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:600; color:var(--profit-text-light);">+2.43%</td>
+          <td style="padding:9px 6px; text-align:right; color: var(--fg-subtle);">3d</td>
+        </tr><tr style="border-bottom: 1px solid var(--border-subtle);">
+          <td style="padding:9px 6px; font-weight:700; color: var(--fg-strong);">INFY</td>
+          <td style="padding:9px 6px; text-align:right; color: var(--fg-muted);">20</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:600; color: var(--fg-strong);">1,755.00</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:700; color:var(--loss-text-light);">−500</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:600; color:var(--loss-text-light);">−1.40%</td>
+          <td style="padding:9px 6px; text-align:right; color: var(--fg-subtle);">7d</td>
+        </tr><tr style="border-bottom: 1px solid var(--border-subtle);">
+          <td style="padding:9px 6px; font-weight:700; color: var(--fg-strong);">HDFCBANK</td>
+          <td style="padding:9px 6px; text-align:right; color: var(--fg-muted);">12</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:600; color: var(--fg-strong);">1,712.00</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:700; color:var(--profit-text-light);">+324</td>
+          <td style="padding:9px 6px; text-align:right; font-weight:600; color:var(--profit-text-light);">+1.60%</td>
+          <td style="padding:9px 6px; text-align:right; color: var(--fg-subtle);">2d</td>
+        </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>if (window.lucide) lucide.createIcons({ attrs: { 'stroke-width': 2 } });</script>
+</body>
+</html>
