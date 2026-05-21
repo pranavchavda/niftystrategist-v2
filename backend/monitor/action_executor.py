@@ -141,7 +141,55 @@ class ActionExecutor:
         except Exception as e:
             logger.error("Failed to sync rule fire state for rule %d: %s", rule.id, e, exc_info=True)
 
+        # Best-effort Telegram notification. Failures here must not affect the
+        # fire path — the notifier already swallows network errors but a stray
+        # bug at this seam shouldn't be allowed to break order execution logic.
+        try:
+            await self._notify_fire(rule, result, action_result)
+        except Exception:
+            logger.exception("ActionExecutor telegram notify raised; ignoring")
+
         return action_result
+
+    async def _notify_fire(
+        self,
+        rule: MonitorRule,
+        result: RuleResult,
+        action_result: dict,
+    ) -> None:
+        """Send a per-fire Telegram message to the rule's owner.
+
+        Success → monitor_fire (informational). Failure → monitor_failure
+        (more important; users typically want this even when they've muted
+        the chatty success category).
+        """
+        from services.telegram_notifier import notify
+
+        success = bool(action_result.get("success"))
+        category = "monitor_fire" if success else "monitor_failure"
+
+        action_type = result.action_type or "unknown"
+        config = result.action_config or {}
+        rule_label = rule.name or f"#{rule.id}"
+
+        # Build a tight one-line summary that survives a phone notification preview.
+        if action_type == "place_order":
+            symbol = config.get("symbol") or config.get("instrument_token") or "?"
+            side = config.get("transaction_type") or config.get("side") or "?"
+            qty = config.get("quantity") or "?"
+            head = f"{'✅' if success else '❌'} {rule_label} → {side} {qty} {symbol}"
+        elif action_type == "cancel_order":
+            order_id = config.get("order_id") or config.get("order_ref") or "?"
+            head = f"{'✅' if success else '❌'} {rule_label} → cancel order {order_id}"
+        elif action_type == "cancel_rule":
+            head = f"{'✅' if success else '❌'} {rule_label} → disabled linked rule(s)"
+        else:
+            head = f"{'✅' if success else '❌'} {rule_label} → {action_type}"
+
+        detail = action_result.get("error") if not success else ""
+        text = head if not detail else f"{head}\n{detail[:300]}"
+
+        await notify(user_id=rule.user_id, category=category, text=text)
 
     async def _execute_place_order(self, rule: MonitorRule, config: dict) -> dict:
         """Place an order, routing through the user's order node if configured.

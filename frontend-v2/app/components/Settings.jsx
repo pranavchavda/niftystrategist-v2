@@ -22,6 +22,8 @@ import {
   Fingerprint,
   Trash2,
   Plus,
+  Send,
+  Bell,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router';
 import { Button } from './catalyst/button';
@@ -60,6 +62,25 @@ export default function Settings({ authToken, user, setUser }) {
   const [totpSecret, setTotpSecret] = useState('');
   const [isSavingTotp, setIsSavingTotp] = useState(false);
   const [isTestingTotp, setIsTestingTotp] = useState(false);
+
+  // Telegram state
+  const TELEGRAM_CATEGORIES = [
+    { key: 'monitor_fire', label: 'Monitor rule fires', desc: 'Triggers, SL/target hits, OCO completions' },
+    { key: 'monitor_failure', label: 'Monitor failures', desc: 'Order rejections, stream auth issues' },
+    { key: 'awakening', label: 'Scheduled awakenings', desc: 'Summary of each autonomous awakening' },
+    { key: 'order_fill', label: 'Order fills', desc: 'When Upstox confirms an order fill (Phase 1.5)' },
+    { key: 'system', label: 'System alerts', desc: 'TOTP failures, daemon issues, deploy notices' },
+  ];
+  const [telegram, setTelegram] = useState({
+    configured: false,
+    paired: false,
+    bot_username: null,
+    chat_id: null,
+    notification_prefs: {},
+  });
+  const [telegramToken, setTelegramToken] = useState('');
+  const [isSavingTelegram, setIsSavingTelegram] = useState(false);
+  const [isClearingTelegram, setIsClearingTelegram] = useState(false);
 
   // Fetch available models and user preference
   useEffect(() => {
@@ -421,6 +442,118 @@ export default function Settings({ authToken, user, setUser }) {
       showSaveStatus('Failed to test TOTP auto-login', 'error');
     } finally {
       setIsTestingTotp(false);
+    }
+  };
+
+  // Telegram fetch + handlers
+  const fetchTelegramStatus = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/telegram/status', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTelegram(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch telegram status:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchTelegramStatus();
+    // Poll while waiting for the user to /confirm pairing so the UI reflects
+    // the chat_id binding without a manual refresh.
+    const interval = setInterval(() => {
+      // Only poll if a token is configured but pairing isn't complete yet.
+      // We don't have telegram.* available in this closure, so we poll
+      // unconditionally and the endpoint is cheap (single indexed lookup).
+      fetchTelegramStatus();
+    }, 8000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken]);
+
+  const handleSaveTelegramToken = async () => {
+    const token = telegramToken.trim();
+    if (!token) {
+      showSaveStatus('Bot token is required', 'error');
+      return;
+    }
+    setIsSavingTelegram(true);
+    try {
+      const res = await fetch('/api/telegram/bot-token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ token }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showSaveStatus(`Bot @${data.bot_username} configured. Now DM it /start.`, 'success');
+        setTelegramToken('');
+        await fetchTelegramStatus();
+      } else {
+        showSaveStatus(data.detail || 'Failed to save bot token', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to save telegram token:', err);
+      showSaveStatus('Failed to save bot token', 'error');
+    } finally {
+      setIsSavingTelegram(false);
+    }
+  };
+
+  const handleClearTelegramToken = async () => {
+    if (!confirm('Disconnect Telegram bot? Notifications will stop.')) return;
+    setIsClearingTelegram(true);
+    try {
+      const res = await fetch('/api/telegram/bot-token', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        showSaveStatus('Telegram disconnected', 'success');
+        await fetchTelegramStatus();
+      } else {
+        showSaveStatus('Failed to disconnect', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to clear telegram:', err);
+      showSaveStatus('Failed to disconnect', 'error');
+    } finally {
+      setIsClearingTelegram(false);
+    }
+  };
+
+  const handleToggleCategory = async (categoryKey) => {
+    // Missing key defaults to enabled (server-side opt-out), so we flip
+    // current effective state — undefined → false on first toggle.
+    const current = telegram.notification_prefs?.[categoryKey];
+    const next = current === false ? true : false;
+    const newPrefs = { ...(telegram.notification_prefs || {}), [categoryKey]: next };
+    // Optimistic update
+    setTelegram((t) => ({ ...t, notification_prefs: newPrefs }));
+    try {
+      const res = await fetch('/api/telegram/notification-prefs', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ prefs: newPrefs }),
+      });
+      if (!res.ok) {
+        showSaveStatus('Failed to update preferences', 'error');
+        // Revert
+        setTelegram((t) => ({ ...t, notification_prefs: telegram.notification_prefs }));
+      }
+    } catch (err) {
+      console.error('Failed to update prefs:', err);
+      setTelegram((t) => ({ ...t, notification_prefs: telegram.notification_prefs }));
     }
   };
 
@@ -883,6 +1016,143 @@ export default function Settings({ authToken, user, setUser }) {
                         'Save TOTP Credentials'
                       )}
                     </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Telegram Notifications */}
+              <div className="p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
+                <div className="flex items-center gap-2 mb-3">
+                  <Send className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
+                  <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                    Telegram Notifications
+                  </div>
+                  {telegram.configured && telegram.paired && (
+                    <span className="ml-auto px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
+                      Paired
+                    </span>
+                  )}
+                  {telegram.configured && !telegram.paired && (
+                    <span className="ml-auto px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                      Pairing pending
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">
+                  Use your own Telegram bot for outbound notifications. The bot
+                  token is encrypted; only your account can DM it.
+                </p>
+
+                {!telegram.configured ? (
+                  <div className="space-y-3">
+                    <ol className="text-xs text-zinc-600 dark:text-zinc-400 list-decimal list-inside space-y-1">
+                      <li>Open Telegram, DM <code className="px-1 rounded bg-zinc-200 dark:bg-zinc-700">@BotFather</code></li>
+                      <li>Send <code className="px-1 rounded bg-zinc-200 dark:bg-zinc-700">/newbot</code>, pick a name + username</li>
+                      <li>Copy the HTTP API token BotFather gives you and paste it below</li>
+                    </ol>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                        Bot Token
+                      </label>
+                      <input
+                        type="password"
+                        value={telegramToken}
+                        onChange={(e) => setTelegramToken(e.target.value)}
+                        placeholder="123456:ABC-DEF..."
+                        className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
+                    <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                      <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300 text-xs">
+                        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                        <span>
+                          Telegram is NOT end-to-end encrypted. Trade activity sent through
+                          this channel is visible to Telegram and to anyone who has the bot token.
+                          Rotate the token via BotFather if it ever leaks.
+                        </span>
+                      </div>
+                    </div>
+                    <Button
+                      onClick={handleSaveTelegramToken}
+                      disabled={isSavingTelegram || !telegramToken.trim()}
+                    >
+                      {isSavingTelegram ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Validating...
+                        </>
+                      ) : (
+                        'Save Bot Token'
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+                      <div className="text-sm text-green-700 dark:text-green-300">
+                        Bot: <code className="font-mono">@{telegram.bot_username}</code>
+                        {telegram.paired ? (
+                          <span className="ml-2 text-xs">— chat #{telegram.chat_id}</span>
+                        ) : (
+                          <span className="ml-2 text-xs">
+                            — DM <a
+                              href={`https://t.me/${telegram.bot_username}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline"
+                            >@{telegram.bot_username}</a> with <code>/start</code> then <code>/confirm</code>
+                          </span>
+                        )}
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={handleClearTelegramToken}
+                        disabled={isClearingTelegram}
+                        className="text-xs"
+                      >
+                        {isClearingTelegram ? (
+                          <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                        ) : (
+                          <X className="w-3 h-3 mr-1" />
+                        )}
+                        Disconnect
+                      </Button>
+                    </div>
+
+                    {telegram.paired && (
+                      <div>
+                        <div className="flex items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-2">
+                          <Bell className="w-3.5 h-3.5" />
+                          Notification categories
+                        </div>
+                        <div className="space-y-2">
+                          {TELEGRAM_CATEGORIES.map((cat) => {
+                            const enabled = telegram.notification_prefs?.[cat.key] !== false;
+                            return (
+                              <label
+                                key={cat.key}
+                                className="flex items-start gap-3 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={enabled}
+                                  onChange={() => handleToggleCategory(cat.key)}
+                                  className="mt-0.5"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-sm text-zinc-900 dark:text-zinc-100">
+                                    {cat.label}
+                                  </div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                    {cat.desc}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

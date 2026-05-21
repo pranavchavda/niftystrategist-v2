@@ -784,11 +784,32 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to start chart market stream: {e}")
         # Non-fatal — SSE handler falls back to polling automatically.
 
+    # Start per-user Telegram bot Applications (inbound).
+    # See docs/plans/2026-05-20-telegram-integration.md.
+    try:
+        from telegram_bot import manager as telegram_manager
+        await telegram_manager.start_all()
+        logger.info("Telegram bot manager started")
+    except Exception:
+        logger.exception("Failed to start telegram_bot manager — continuing without it")
+
     # Yield to allow app to run
     yield
 
     # Cleanup on shutdown
     logger.info("Shutting down Nifty Strategist...")
+
+    # Stop per-user Telegram bot Applications + drop shared notifier client.
+    try:
+        from telegram_bot import manager as telegram_manager
+        await telegram_manager.stop_all()
+    except Exception:
+        logger.exception("Error stopping telegram_bot manager")
+    try:
+        from services.telegram_notifier import aclose as telegram_notifier_close
+        await telegram_notifier_close()
+    except Exception:
+        logger.exception("Error closing telegram notifier client")
 
     # Stop the chart market-data stream
     try:
@@ -904,6 +925,10 @@ app.include_router(awakenings_router, prefix="/api/awakenings", tags=["awakening
 # Public endpoint — Upstox docs require no-auth. See docs/plans/2026-05-11-upstox-webhook-design.md.
 from api.upstox_webhooks import router as upstox_webhooks_router
 app.include_router(upstox_webhooks_router)
+
+# Telegram per-user bot config. See docs/plans/2026-05-20-telegram-integration.md.
+from api.telegram import router as telegram_router
+app.include_router(telegram_router)
 
 # Passkey (WebAuthn) authentication routes
 from routes.passkey_routes import router as passkey_router

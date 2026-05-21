@@ -1263,6 +1263,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 awakening_section += "- NOT place any orders if no valid mandate is found in the history\n"
                 awakening_section += "- Describe each order clearly in your written response (instrument, direction, qty, price, rationale)\n\n"
                 awakening_section += "**IMPORTANT:** `render_ui` calls are invisible during awakenings. Write trade confirmation details as plain text in your response instead of using render_ui.\n"
+                awakening_section += "\n**Telegram nudge:** The user is NOT watching the NS UI. If this awakening produces a result they should look at (a setup worth their attention, an order placed under the mandate, an anomaly), call `message_user(text=..., category='awakening')` with a short summary so they get a phone notification. Reserve this for SIGNAL — don't message on every quiet awakening.\n"
                 awakening_section += "\n**This section OVERRIDES SAFETY-1 for the current awakening session when a mandate is present.**\n"
                 sections.append(awakening_section)
 
@@ -4627,6 +4628,71 @@ The note has been permanently removed from your second brain."""
                 return f'No results found for: "{q}" (searched: {", ".join(selected)})'
 
             return "\n\n".join(sections)
+
+        @self.agent.tool
+        async def message_user(
+            ctx: RunContext[OrchestratorDeps],
+            text: str,
+            category: str = "system",
+        ) -> str:  # pyright: ignore[reportUnusedFunction]
+            """Send a one-way Telegram message to the current user.
+
+            Use this when you have important information the user should see
+            *outside* the current chat surface — e.g. an awakening discovered
+            something time-sensitive, a monitor rule fired in an unexpected
+            way, or a long-running tool produced a result the user is likely
+            not actively watching for.
+
+            ⚠️ Reserve for SIGNAL, not chatter:
+            - Awakening finds a setup that needs review
+            - Order placed/cancelled with notable outcome
+            - System anomaly the user should know about (e.g. Upstox auth)
+            - A scheduled task completed and the user should look at it
+
+            DO NOT use:
+            - As a substitute for replying in the chat
+            - For chit-chat or acknowledgements
+            - More than once per topic (no spam loops)
+
+            One-way: the user will NOT reply through this channel back to
+            you. If you need an answer, ask in the chat surface.
+
+            Args:
+                text: The message body. Plain text. Keep under ~500 chars so
+                      the phone notification preview is useful. Newlines OK.
+                category: One of "system", "awakening", "monitor_fire",
+                          "monitor_failure", "order_fill". Defaults to
+                          "system". Users can mute categories independently
+                          in their NS Settings.
+
+            Returns:
+                "sent" if delivered, otherwise a short reason string. Failure
+                is non-fatal — proceed with the original task either way.
+            """
+            self._check_interrupted(ctx)
+
+            user_id = ctx.deps.user_id
+            if not user_id or user_id <= 0:
+                return "not_sent: orchestrator has no user_id in context"
+
+            if not text or not text.strip():
+                return "not_sent: empty message"
+
+            try:
+                from services.telegram_notifier import notify
+                delivered = await notify(
+                    user_id=user_id,
+                    category=category,
+                    text=text.strip(),
+                )
+            except Exception as e:
+                logger.exception("message_user notify raised")
+                return f"not_sent: {e!r}"
+
+            return "sent" if delivered else (
+                "not_sent: user is unpaired, category disabled, "
+                "or telegram delivery failed (check server logs)"
+            )
 
     def register_agent(self, name: str, agent: Any):
         """

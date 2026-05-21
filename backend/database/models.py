@@ -7,7 +7,7 @@ Core infrastructure from EspressoBot, stripped of e-commerce, with trading-speci
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import (
-    Column, String, Text, Integer, DateTime, JSON, Boolean,
+    Column, String, Text, Integer, BigInteger, DateTime, JSON, Boolean,
     ForeignKey, Index, Float, Table, UniqueConstraint, Enum, LargeBinary
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -164,6 +164,14 @@ class User(Base):
     # Standing trading mandate for autonomous awakenings (JSONB)
     # {risk_per_trade, daily_loss_cap, allowed_instruments, cutoff_time, auto_squareoff_time, approved_at}
     trading_mandate = Column(JSON, nullable=True)
+
+    # Telegram integration — per-user bot. See docs/plans/2026-05-20-telegram-integration.md.
+    telegram_bot_token = Column(Text, nullable=True)  # Fernet-encrypted
+    telegram_bot_username = Column(String(100), nullable=True)
+    telegram_chat_id = Column(BigInteger, nullable=True)
+    telegram_pending_chat_id = Column(BigInteger, nullable=True)  # awaiting /confirm
+    telegram_paired_at = Column(DateTime, nullable=True)
+    notification_prefs = Column(JSON, nullable=False, default=dict)
 
     # Relationships
     roles = relationship("Role", secondary=user_roles, back_populates="users")

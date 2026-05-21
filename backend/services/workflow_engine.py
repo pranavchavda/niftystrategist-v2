@@ -867,6 +867,22 @@ ensure to think carefully about the classification before making a decision.
                     user_id=user_id,
                     response_text=orchestrator_result,
                 )
+                # Best-effort Telegram nudge so the user knows an awakening
+                # landed without having to refresh the NS UI. The full text
+                # is already in the daily thread; we only send a preview.
+                try:
+                    from services.telegram_notifier import notify
+                    preview = orchestrator_result.strip().splitlines()[0][:300] \
+                        if orchestrator_result.strip() else ""
+                    name = workflow_def.name or "awakening"
+                    text = f"🌅 {name}\n\n{preview}\n\nFull details in your daily thread."
+                    await notify(
+                        user_id=user_id,
+                        category="awakening",
+                        text=text,
+                    )
+                except Exception:
+                    logger.exception("Awakening telegram notify raised; ignoring")
 
             # Update run record
             run.status = WorkflowStatus.COMPLETED

@@ -715,6 +715,25 @@ def _totp_get_token(
         return {"success": False, "error": str(e)}
 
 
+async def _notify_totp_failure(user_id: int, error: str) -> None:
+    """Best-effort Telegram alert when a TOTP refresh fails.
+
+    Wrapped in a try/except so we never let a notifier bug interfere with
+    the actual auth path. The notifier itself already swallows network
+    errors, but a stray import-time bug here would be catastrophic.
+    """
+    try:
+        from services.telegram_notifier import notify
+        truncated = error[:300] if error else "unknown"
+        await notify(
+            user_id=user_id,
+            category="system",
+            text=f"⚠️ Upstox TOTP refresh failed.\n\n{truncated}\n\n30 min cooldown active. Re-OAuth manually if it persists.",
+        )
+    except Exception:
+        logger.exception("Telegram TOTP-failure notify raised; ignoring")
+
+
 async def auto_refresh_upstox_token(user_id: int, force: bool = False) -> Optional[str]:
     """Try to auto-refresh an expired Upstox token via TOTP.
 
@@ -873,6 +892,7 @@ async def _auto_refresh_upstox_token_inner(user_id: int, force: bool = False) ->
             logger.error("TOTP auto-refresh exception for user %d: %s", user_id, e)
             db_user.upstox_totp_last_failed_at = datetime.utcnow()
             await session.commit()
+            await _notify_totp_failure(user_id, str(e))
             return None
 
         if not totp_result.get("success"):
@@ -882,6 +902,7 @@ async def _auto_refresh_upstox_token_inner(user_id: int, force: bool = False) ->
             )
             db_user.upstox_totp_last_failed_at = datetime.utcnow()
             await session.commit()
+            await _notify_totp_failure(user_id, totp_result.get("error") or "unknown error")
             return None
 
         # Success — store new token

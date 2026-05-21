@@ -328,6 +328,20 @@ class MonitorDaemon:
                     "streams stopped until next poll cycle",
                     user_id,
                 )
+                try:
+                    from services.telegram_notifier import notify
+                    await notify(
+                        user_id=user_id,
+                        category="monitor_failure",
+                        text=(
+                            "⚠️ Monitor daemon: Upstox WS auth failed and token "
+                            "refresh did not produce a fresh credential. Streams "
+                            "are down until the next poll cycle. Re-OAuth if this "
+                            "persists."
+                        ),
+                    )
+                except Exception:
+                    logger.exception("Daemon telegram notify raised; ignoring")
 
     # ── Rule polling ──────────────────────────────────────────────────
 
