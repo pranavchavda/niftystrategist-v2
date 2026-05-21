@@ -722,10 +722,16 @@ function makeChart(
     handleScroll: { vertTouchDrag: false },
   });
 
+  // Browser may deliver queued ResizeObserver entries after chart.remove() —
+  // applyOptions on a disposed chart throws "Object is disposed". Swallow it.
   const ro = new ResizeObserver((entries) => {
     for (const entry of entries) {
       const { width, height } = entry.contentRect;
-      chart.applyOptions({ width, height });
+      try {
+        chart.applyOptions({ width, height });
+      } catch {
+        /* chart disposed mid-resize */
+      }
     }
   });
   ro.observe(container);
@@ -1584,6 +1590,7 @@ function ChartsView({ authToken }: { authToken: string }) {
     if (!live) {
       setLiveStatus('off');
       setLiveBackend(null);
+      setLastTickPrice(null);
       return;
     }
     if (candles.length === 0) return;
@@ -1628,7 +1635,7 @@ function ChartsView({ authToken }: { authToken: string }) {
     let serverCandlesActive = false;
 
     const applyTick = (ltp: number, lttMs: number) => {
-      if (serverCandlesActive) return;
+      if (cancelled || serverCandlesActive) return;
       const series = priceCandleRef.current;
       if (!series) return;
       const tickTimeSec = Math.floor(lttMs / 1000);
@@ -1651,10 +1658,14 @@ function ChartsView({ authToken }: { authToken: string }) {
             close: ltp,
           };
           liveBarRef.current = newBar;
-          series.update({
-            time: bucketStart as Time,
-            open: ltp, high: ltp, low: ltp, close: ltp,
-          });
+          try {
+            series.update({
+              time: bucketStart as Time,
+              open: ltp, high: ltp, low: ltp, close: ltp,
+            });
+          } catch {
+            /* chart disposed mid-tick */
+          }
           // Tick-fold rollover (no server candles): refresh historicals so
           // pane time-axis and indicators advance with the new closed bar.
           refreshHistoryRef.current();
@@ -1667,16 +1678,21 @@ function ChartsView({ authToken }: { authToken: string }) {
       live.high = Math.max(live.high, ltp);
       live.low = Math.min(live.low, ltp);
       live.close = ltp;
-      series.update({
-        time: live.time as Time,
-        open: live.open, high: live.high, low: live.low, close: live.close,
-      });
+      try {
+        series.update({
+          time: live.time as Time,
+          open: live.open, high: live.high, low: live.low, close: live.close,
+        });
+      } catch {
+        /* chart disposed mid-tick */
+      }
     };
 
     const applyServerCandle = (c: {
       time: number; open: number; high: number; low: number; close: number;
       volume?: number; closed?: boolean;
     }) => {
+      if (cancelled) return;
       const series = priceCandleRef.current;
       if (!series) return;
       serverCandlesActive = true;
@@ -1688,10 +1704,14 @@ function ChartsView({ authToken }: { authToken: string }) {
         close: c.close,
       };
       liveBarRef.current = newBar;
-      series.update({
-        time: c.time as Time,
-        open: c.open, high: c.high, low: c.low, close: c.close,
-      });
+      try {
+        series.update({
+          time: c.time as Time,
+          open: c.open, high: c.high, low: c.low, close: c.close,
+        });
+      } catch {
+        /* chart disposed mid-tick */
+      }
       // On bar close, pull fresh candles + indicator data so the RSI/MACD
       // panes pick up the new closed bar (their time axes and whitespace
       // padding are driven by the historical candles state, which the
@@ -1808,8 +1828,11 @@ function ChartsView({ authToken }: { authToken: string }) {
       }
       if (waitingTimer) window.clearTimeout(waitingTimer);
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
-      setLastTickPrice(null);
-      setLiveBackend(null);
+      // No setState here — when this cleanup runs during route unmount,
+      // setState on a dead component triggers warnings; if the SSE loop
+      // has already queued frames, those frames calling setState during
+      // unmount can wedge React Router's transition. State will be reset
+      // naturally on next mount.
     };
     // candles.length > 0 is what we actually need — use sentinel to avoid
     // re-subscribing on every candle mutation.
