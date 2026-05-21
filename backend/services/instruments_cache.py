@@ -65,6 +65,12 @@ _NIFTY_500_CACHE = os.path.join(_CACHE_DIR, "nifty500_constituents.csv")
 _NIFTY_500_META = os.path.join(_CACHE_DIR, "nifty500_constituents.meta")
 NIFTY_500_SYMBOLS: set[str] = set()
 
+# Nifty Total Market (~750) — fetched dynamically from NSE
+_NIFTY_TOTAL_URL = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+_NIFTY_TOTAL_CACHE = os.path.join(_CACHE_DIR, "nifty_total_market_constituents.csv")
+_NIFTY_TOTAL_META = os.path.join(_CACHE_DIR, "nifty_total_market_constituents.meta")
+NIFTY_TOTAL_SYMBOLS: set[str] = set()
+
 # NSE ETFs — fetched from the NSE ETF JSON endpoint. The list isn't an "index"
 # so niftyindices.com doesn't host it; this hits NSE directly (needs a real UA
 # + Referer or it 401s). NSE rate-limits this endpoint sporadically, so we
@@ -86,6 +92,7 @@ _index_key_to_name: dict[str, str] = {}  # instrument_key → display name
 _index_key_to_tradingsymbol: dict[str, str] = {}  # instrument_key → tradingsymbol
 _loaded = False
 _nifty500_loaded = False
+_nifty_total_loaded = False
 _etfs_loaded = False
 
 # Common index aliases not directly in the CSV. Keys are canonicalized
@@ -304,6 +311,73 @@ def _load_nifty500() -> bool:
         return False
 
 
+def _nifty_total_cache_is_fresh() -> bool:
+    """Return True if Nifty Total Market cache exists and is less than _TTL_SECONDS old."""
+    if not os.path.exists(_NIFTY_TOTAL_META):
+        return False
+    try:
+        with open(_NIFTY_TOTAL_META) as f:
+            ts = float(f.read().strip())
+        return (time.time() - ts) < _TTL_SECONDS
+    except (ValueError, OSError):
+        return False
+
+
+def _load_nifty_total() -> bool:
+    """Download Nifty Total Market constituents from NSE and cache to disk."""
+    global NIFTY_TOTAL_SYMBOLS, _nifty_total_loaded
+
+    if _nifty_total_loaded:
+        return True
+
+    if _nifty_total_cache_is_fresh() and os.path.exists(_NIFTY_TOTAL_CACHE):
+        try:
+            with open(_NIFTY_TOTAL_CACHE, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+            if symbols:
+                NIFTY_TOTAL_SYMBOLS = symbols
+                _nifty_total_loaded = True
+                logger.info(f"Nifty Total Market loaded from cache: {len(symbols)} symbols")
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to parse Nifty Total Market cache: {e}")
+
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    try:
+        logger.info("Downloading Nifty Total Market constituents from NSE")
+        req = urllib.request.Request(
+            _NIFTY_TOTAL_URL,
+            headers={"User-Agent": "Mozilla/5.0 (NiftyStrategist/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read().decode("utf-8")
+
+        with open(_NIFTY_TOTAL_CACHE, "w", encoding="utf-8") as f:
+            f.write(data)
+        with open(_NIFTY_TOTAL_META, "w") as f:
+            f.write(str(time.time()))
+
+        reader = csv.DictReader(io.StringIO(data))
+        symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+        if symbols:
+            NIFTY_TOTAL_SYMBOLS = symbols
+            _nifty_total_loaded = True
+            logger.info(f"Nifty Total Market constituents cached: {len(symbols)} symbols")
+            return True
+        else:
+            logger.warning("Nifty Total Market CSV parsed but no symbols found")
+            return False
+    except Exception as e:
+        logger.warning(f"Failed to download Nifty Total Market constituents: {e}")
+        # Fallback: use Nifty 500 if download fails
+        if not NIFTY_TOTAL_SYMBOLS:
+            NIFTY_TOTAL_SYMBOLS = NIFTY_500_SYMBOLS.copy()
+            logger.warning(f"Falling back to Nifty 500 ({len(NIFTY_TOTAL_SYMBOLS)} symbols)")
+        _nifty_total_loaded = True
+        return False
+
+
 def _etf_cache_is_fresh() -> bool:
     """Return True if NSE ETF cache exists and is less than _TTL_SECONDS old."""
     if not os.path.exists(_NSE_ETF_META):
@@ -464,6 +538,7 @@ def ensure_loaded() -> None:
 
     _load_from_disk()
     _load_nifty500()
+    _load_nifty_total()
     _load_etfs()
 
 
@@ -502,6 +577,12 @@ def is_nifty500(symbol: str) -> bool:
     return symbol.upper() in NIFTY_500_SYMBOLS
 
 
+def is_nifty_total(symbol: str) -> bool:
+    """Return True if symbol is a Nifty Total Market constituent."""
+    ensure_loaded()
+    return symbol.upper() in NIFTY_TOTAL_SYMBOLS
+
+
 def is_etf(symbol: str) -> bool:
     """Return True if symbol is an NSE-listed ETF."""
     ensure_loaded()
@@ -511,7 +592,7 @@ def is_etf(symbol: str) -> bool:
 def get_universe(name: str = "nifty500") -> set[str]:
     """Return the symbol set for a named universe.
 
-    Supported: nifty50, nifty100, nifty500.
+    Supported: nifty50, nifty100, nifty500, niftytotal (Nifty Total Market ~750).
     """
     ensure_loaded()
     match name.lower().replace(" ", "").replace("_", "").replace("-", ""):
@@ -521,8 +602,12 @@ def get_universe(name: str = "nifty500") -> set[str]:
             return NIFTY_100_SYMBOLS
         case "nifty500":
             return NIFTY_500_SYMBOLS
+        case "niftytotal" | "niftytotalmarket":
+            return NIFTY_TOTAL_SYMBOLS
         case _:
-            raise ValueError(f"Unknown universe: {name}. Use nifty50, nifty100, or nifty500.")
+            raise ValueError(
+                f"Unknown universe: {name}. Use nifty50, nifty100, nifty500, or niftytotal."
+            )
 
 
 def symbol_exists(symbol: str) -> bool:

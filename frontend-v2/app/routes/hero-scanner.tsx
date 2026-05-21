@@ -348,13 +348,20 @@ function OrderModal({ authToken, candidate, defaultSide, onClose }: OrderModalPr
   );
 }
 
+const UNIVERSE_LABELS: Record<'nifty50' | 'nifty100' | 'nifty500' | 'niftytotal', string> = {
+  nifty50: 'Nifty 50',
+  nifty100: 'Nifty 100',
+  nifty500: 'Nifty 500',
+  niftytotal: 'Nifty Total Market',
+};
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export default function HeroScannerPage() {
   const { authToken } = useOutletContext<AuthContext>();
 
   // Scan options
-  const [universe, setUniverse] = useState<'nifty50' | 'nifty100' | 'nifty500'>('nifty50');
+  const [universe, setUniverse] = useState<'nifty50' | 'nifty100' | 'nifty500' | 'niftytotal'>('nifty50');
   const [top, setTop] = useState('10');
   const [minScore, setMinScore] = useState('0');
   const [deep, setDeep] = useState('15');
@@ -466,14 +473,15 @@ export default function HeroScannerPage() {
               <div>
                 <label className="mb-1 flex items-center gap-1 text-sm font-medium text-zinc-600 dark:text-zinc-400">
                   Universe
-                  <Tooltip content="How many stocks to scan. nifty50 is fastest (~10s); nifty500 is the deepest sweep but can take a few minutes.">
+                  <Tooltip content="How many stocks to scan. nifty50 is fastest (~10s); nifty500 ~30s; niftytotal (~750) is the broadest sweep including small/microcaps.">
                     <Info className="h-3.5 w-3.5 text-zinc-400" />
                   </Tooltip>
                 </label>
                 <select value={universe} onChange={e => setUniverse(e.target.value as any)} className={selectCls}>
                   <option value="nifty50">Nifty 50 — fastest</option>
                   <option value="nifty100">Nifty 100</option>
-                  <option value="nifty500">Nifty 500 — deepest</option>
+                  <option value="nifty500">Nifty 500 — broad</option>
+                  <option value="niftytotal">Nifty Total Market — all of Nifty (~750)</option>
                 </select>
               </div>
 
@@ -594,7 +602,11 @@ export default function HeroScannerPage() {
               </button>
               {running && (
                 <p className="text-center text-xs text-zinc-400">
-                  {universe === 'nifty500' ? 'Deep sweep — this can take a few minutes.' : 'Hang tight…'}
+                  {universe === 'niftytotal'
+                    ? 'Broad sweep across ~750 stocks — this takes about a minute.'
+                    : universe === 'nifty500'
+                    ? 'Deep sweep — this can take a minute or so.'
+                    : 'Hang tight…'}
                 </p>
               )}
             </div>
@@ -623,7 +635,7 @@ export default function HeroScannerPage() {
             {running && (
               <div className="flex flex-col items-center justify-center rounded-xl border border-zinc-200 py-24 dark:border-zinc-700/50">
                 <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
-                <p className="mt-3 text-sm text-zinc-500">Scanning {universe.replace('nifty', 'Nifty ')}…</p>
+                <p className="mt-3 text-sm text-zinc-500">Scanning {UNIVERSE_LABELS[universe]}…</p>
               </div>
             )}
 

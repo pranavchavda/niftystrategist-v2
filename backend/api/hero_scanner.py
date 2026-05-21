@@ -50,7 +50,7 @@ _ORDER_TIMEOUT = 45
 # ---------------------------------------------------------------------------
 
 class ScanRequest(BaseModel):
-    universe: Literal["nifty50", "nifty100", "nifty500"] = "nifty50"
+    universe: Literal["nifty50", "nifty100", "nifty500", "niftytotal"] = "nifty50"
     top: int = Field(10, ge=1, le=50)
     min_score: int = Field(0, ge=0, le=8)
     deep: int = Field(15, ge=1, le=50)

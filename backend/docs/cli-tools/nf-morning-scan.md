@@ -5,10 +5,10 @@ Scan the market for high-probability intraday trade candidates. Best run 9:20-9:
 ## Usage
 
 ```bash
-nf-morning-scan [--universe nifty50|nifty100|nifty500] [--top N] [--min-score N] [--news] [--json]
+nf-morning-scan [--universe nifty50|nifty100|nifty500|niftytotal] [--top N] [--min-score N] [--news] [--json]
 ```
 
-- `--universe`: Stock universe to scan (default: nifty500). Use nifty50 for faster scans.
+- `--universe`: Stock universe to scan (default: nifty500). Use `nifty50` for faster scans, or `niftytotal` for the broadest sweep across the Nifty Total Market (~750 stocks, incl. small/microcaps).
 - `--top`: Show top N candidates (default: 10)
 - `--min-score`: Minimum score threshold
 - `--news`: Include market news context via Perplexity

@@ -1332,7 +1332,8 @@ Examples:
   # Dry-run auto-deploy (preview only)
   nf-morning-scan --auto-deploy breakout --capital 100000 --top 5 --dry-run
 
-Scans Nifty 500 stocks by default. Use --universe to narrow scope.
+Scans Nifty 500 stocks by default. Use --universe to narrow scope or
+--universe niftytotal for the full Nifty Total Market (~750 stocks).
 
 Scoring (0-8, or -1..10 with --forecast):
   Gap:     +1 (>=1%), +2 (>=2%)
@@ -1346,8 +1347,8 @@ Scoring (0-8, or -1..10 with --forecast):
 Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
 """,
     )
-    parser.add_argument("--universe", choices=["nifty50", "nifty100", "nifty500"], default="nifty500",
-                        help="Stock universe to scan (default: nifty500)")
+    parser.add_argument("--universe", choices=["nifty50", "nifty100", "nifty500", "niftytotal"], default="nifty500",
+                        help="Stock universe to scan (default: nifty500). niftytotal = Nifty Total Market (~750)")
     parser.add_argument("--top", type=int, default=10, metavar="N", help="Number of top candidates to show (default: 10)")
     parser.add_argument("--min-score", type=int, default=0, metavar="N", help="Minimum total score to display (default: 0)")
     parser.add_argument("--deep", type=int, default=15, metavar="N", help="Number of stocks to deep-analyze (default: 15)")
