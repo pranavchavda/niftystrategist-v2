@@ -67,6 +67,7 @@ function ConversationItem({
   onPin,
   isPinned,
   isCollapsed,
+  reloadOnNav = false,
 }) {
   const [showActions, setShowActions] = useState(false);
 
@@ -75,6 +76,7 @@ function ConversationItem({
       <div className="relative group px-2 py-1 flex justify-center">
         <Link
           to={`/chat/${conversation.id}`}
+          reloadDocument={reloadOnNav}
           className={`
             p-2 rounded-xl transition-all duration-200
             ${isActive
@@ -113,6 +115,7 @@ function ConversationItem({
       >
         <Link
           to={`/chat/${conversation.id}`}
+          reloadDocument={reloadOnNav}
           className="block w-full text-left px-3 py-2.5 rounded-xl relative z-10"
         >
           <div className="flex items-start gap-3 pr-8">
@@ -227,6 +230,13 @@ export default function Sidebar({
   const location = useLocation();
   const { threadId: currentThreadId } = useParams();
 
+  // Force full-document navigation when leaving /charts — the live SSE
+  // stream + lightweight-charts dispose paths race with React Router's
+  // client-side transition and can freeze the renderer. See PR fixing
+  // "live SSE wedges route transitions". Cost: one extra reload only
+  // when navigating away from charts.
+  const reloadOnNav = location.pathname.startsWith('/charts');
+
   // Component state
   const [conversations, setConversations] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -321,8 +331,8 @@ export default function Sidebar({
   const handleNewTask = useCallback(() => {
     // Generate a new threadId immediately so scratchpad can work from the start
     const newThreadId = `thread_${Date.now()}`;
-    navigate(`/chat/${newThreadId}`);
-  }, [navigate]);
+    navigate(`/chat/${newThreadId}`, reloadOnNav ? { reloadDocument: true } : undefined);
+  }, [navigate, reloadOnNav]);
 
   // Memoized computations
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
@@ -385,12 +395,12 @@ export default function Sidebar({
         <SidebarHeader className="pb-4">
           <div className={`flex items-center ${isCollapsed ? 'justify-center px-2' : 'px-3'} py-3`}>
             {isCollapsed ? (
-              <Link to="/" className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/25 ring-2 ring-blue-500/10 hover:scale-105 transition-transform">
+              <Link to="/" reloadDocument={reloadOnNav} className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/25 ring-2 ring-blue-500/10 hover:scale-105 transition-transform">
                 <ArrowTrendingUpIcon className="h-6 w-6 text-white" />
               </Link>
             ) : (
               <div className="flex items-center gap-3 px-2 w-full">
-                <Link to="/" className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600">
+                <Link to="/" reloadDocument={reloadOnNav} className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600">
                   <ArrowTrendingUpIcon className="h-5 w-5 text-white" />
                 </Link>
                 <div className="flex-1 min-w-0">
@@ -474,7 +484,7 @@ export default function Sidebar({
             ) : (
               <div className="flex flex-wrap items-center gap-1 pt-1">
                 {hasPermission(user, PERMISSIONS.DASHBOARD_ACCESS) && (
-                  <NavLink
+                  <NavLink reloadDocument={reloadOnNav}
                     to="/dashboard"
                     title="Dashboard"
                     className={({ isActive }) =>
@@ -487,7 +497,7 @@ export default function Sidebar({
                     <LayoutDashboard className="w-4 h-4" />
                   </NavLink>
                 )}
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/notes"
                   title="Notes"
                   className={({ isActive }) =>
@@ -499,7 +509,7 @@ export default function Sidebar({
                 >
                   <StickyNote className="w-4 h-4" />
                 </NavLink>
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/monitor"
                   title="Trade Monitor"
                   className={({ isActive }) =>
@@ -511,7 +521,7 @@ export default function Sidebar({
                 >
                   <Shield className="w-4 h-4" />
                 </NavLink>
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/strategies"
                   title="Strategies"
                   className={({ isActive }) =>
@@ -523,7 +533,7 @@ export default function Sidebar({
                 >
                   <Layers className="w-4 h-4" />
                 </NavLink>
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/backtest"
                   title="Backtester"
                   className={({ isActive }) =>
@@ -535,7 +545,7 @@ export default function Sidebar({
                 >
                   <FlaskConical className="w-4 h-4" />
                 </NavLink>
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/charts"
                   title="Charts"
                   className={({ isActive }) =>
@@ -547,7 +557,7 @@ export default function Sidebar({
                 >
                   <CandlestickChart className="w-4 h-4" />
                 </NavLink>
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/hero-scanner"
                   title="Hero Scanner"
                   className={({ isActive }) =>
@@ -559,7 +569,7 @@ export default function Sidebar({
                 >
                   <Radar className="w-4 h-4" />
                 </NavLink>
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/mandates"
                   title="Mandates"
                   className={({ isActive }) =>
@@ -571,7 +581,7 @@ export default function Sidebar({
                 >
                   <ScrollText className="w-4 h-4" />
                 </NavLink>
-                <NavLink
+                <NavLink reloadDocument={reloadOnNav}
                   to="/scalp-sessions"
                   title="Signal Sessions"
                   className={({ isActive }) =>
@@ -584,7 +594,7 @@ export default function Sidebar({
                   <Flame className="w-4 h-4" />
                 </NavLink>
                 {hasPermission(user, PERMISSIONS.GOOGLE_WORKSPACE_ACCESS) && (
-                  <NavLink
+                  <NavLink reloadDocument={reloadOnNav}
                     to="/tasks"
                     title="Tasks"
                     className={({ isActive }) =>
@@ -652,6 +662,7 @@ export default function Sidebar({
                         onPin={handlePin}
                         isPinned={true}
                         isCollapsed={isCollapsed}
+                        reloadOnNav={reloadOnNav}
                       />
                     ))}
                   </div>
@@ -687,6 +698,7 @@ export default function Sidebar({
                             onPin={handlePin}
                             isPinned={pinnedSet.has(conv.id)}
                             isCollapsed={isCollapsed}
+                            reloadOnNav={reloadOnNav}
                           />
                         ))}
                       </div>
@@ -711,6 +723,7 @@ export default function Sidebar({
                             onPin={handlePin}
                             isPinned={pinnedSet.has(conv.id)}
                             isCollapsed={isCollapsed}
+                            reloadOnNav={reloadOnNav}
                           />
                         ))}
                       </div>
@@ -735,6 +748,7 @@ export default function Sidebar({
                             onPin={handlePin}
                             isPinned={pinnedSet.has(conv.id)}
                             isCollapsed={isCollapsed}
+                            reloadOnNav={reloadOnNav}
                           />
                         ))}
                       </div>
@@ -759,6 +773,7 @@ export default function Sidebar({
                             onPin={handlePin}
                             isPinned={pinnedSet.has(conv.id)}
                             isCollapsed={isCollapsed}
+                            reloadOnNav={reloadOnNav}
                           />
                         ))}
                       </div>
