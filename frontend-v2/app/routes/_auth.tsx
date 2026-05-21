@@ -297,8 +297,7 @@ export default function AuthLayout() {
           <button
             onClick={() => {
               const newThreadId = `thread_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-              const reloadDoc = location.pathname.startsWith('/charts');
-              navigate(`/chat/${newThreadId}`, reloadDoc ? { reloadDocument: true } : undefined);
+              navigate(`/chat/${newThreadId}`);
             }}
             className="xl:hidden fixed top-4 right-16 z-30 p-2.5 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-full shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 active:scale-95"
             aria-label="Start new chat"
