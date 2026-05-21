@@ -1536,6 +1536,16 @@ function ChartsView({ authToken }: { authToken: string }) {
       try { volRo.disconnect(); } catch { /* ignore */ }
       try { priceChart.remove(); } catch { /* ignore */ }
       try { volChart.remove(); } catch { /* ignore */ }
+      // Pane charts (RSI, MACD, ATR, VWAP, ...) are created by a separate
+      // effect that has no cleanup of its own. If we don't dispose them
+      // here on ChartsView unmount, their leaked ResizeObservers and
+      // logical-range subscriptions keep firing on orphan DOM nodes —
+      // lightweight-charts re-renders against phantom canvases and pegs
+      // the main thread, freezing the next route's render.
+      for (const key in paneChartsRef.current) {
+        try { paneChartsRef.current[key].remove(); } catch { /* ignore */ }
+      }
+      paneChartsRef.current = {};
       priceChartRef.current = null;
       volumeChartRef.current = null;
       priceCandleRef.current = null;
