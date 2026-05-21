@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -28,6 +29,15 @@ from sqlalchemy import select
 from telegram.ext import Application, CommandHandler
 
 from database.models import User as DBUser
+
+
+def _is_disabled() -> bool:
+    """True if NF_DISABLE_TELEGRAM_BOT is set — short-circuits all start/reload.
+
+    Used in dev to avoid getUpdates conflicts with the prod backend that polls
+    the same per-user bot tokens (Telegram allows only one poller per token).
+    """
+    return os.getenv("NF_DISABLE_TELEGRAM_BOT", "").lower() in ("1", "true", "yes")
 from database.session import get_db_session
 from utils.encryption import decrypt_token
 
@@ -133,6 +143,9 @@ async def start_user_app(user_id: int) -> bool:
 
     Returns True if started, False if no token configured or already running.
     """
+    if _is_disabled():
+        logger.debug(f"telegram_bot: disabled via env; skip user {user_id}")
+        return False
     async with _lock:
         if user_id in _apps:
             logger.debug(f"telegram_bot: user {user_id} already running; skip")

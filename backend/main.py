@@ -786,12 +786,17 @@ async def lifespan(app: FastAPI):
 
     # Start per-user Telegram bot Applications (inbound).
     # See docs/plans/2026-05-20-telegram-integration.md.
-    try:
-        from telegram_bot import manager as telegram_manager
-        await telegram_manager.start_all()
-        logger.info("Telegram bot manager started")
-    except Exception:
-        logger.exception("Failed to start telegram_bot manager — continuing without it")
+    # Skip when NF_DISABLE_TELEGRAM_BOT=1 — used in dev to avoid getUpdates
+    # conflicts with the prod backend that polls the same bot tokens.
+    if os.getenv("NF_DISABLE_TELEGRAM_BOT", "").lower() in ("1", "true", "yes"):
+        logger.info("Telegram bot manager disabled via NF_DISABLE_TELEGRAM_BOT")
+    else:
+        try:
+            from telegram_bot import manager as telegram_manager
+            await telegram_manager.start_all()
+            logger.info("Telegram bot manager started")
+        except Exception:
+            logger.exception("Failed to start telegram_bot manager — continuing without it")
 
     # Yield to allow app to run
     yield

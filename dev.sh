@@ -176,6 +176,15 @@ start_backend() {
         export $(grep -v '^#' .env | xargs)
     fi
 
+    # Default: skip Telegram bot polling in dev to avoid getUpdates conflicts
+    # with prod (which polls the same per-user tokens). Override via .env if you
+    # want telegram in dev (set NF_DISABLE_TELEGRAM_BOT=0 and use a separate
+    # dev bot token).
+    if [ -z "$NF_DISABLE_TELEGRAM_BOT" ]; then
+        export NF_DISABLE_TELEGRAM_BOT=1
+        print_color "Telegram bot polling disabled in dev (set NF_DISABLE_TELEGRAM_BOT=0 in .env to enable)" "$YELLOW"
+    fi
+
     # WSL-specific note
     if grep -qi microsoft /proc/version 2>/dev/null; then
         print_color "WSL detected - database connection may have higher latency" "$YELLOW"
