@@ -791,6 +791,27 @@ async def _auto_refresh_upstox_token_inner(user_id: int, force: bool = False) ->
                 )
                 # Return the existing valid token
                 return decrypt_token(db_user.upstox_access_token) if db_user.upstox_access_token else None
+
+        # Force-path throttle: when a 401 caller arrives shortly after a
+        # successful refresh, the 401 came from an in-flight request still
+        # carrying the now-invalidated prior token.  Doing *another* TOTP
+        # login here would mint T3, invalidate T2, and start a cascade:
+        # every other in-flight T1-stamped request would then 401 against
+        # T2, force-refresh, mint T4, invalidate T3, ad infinitum — one OTP
+        # SMS per cycle.  Returning the current DB token lets the caller
+        # retry on the fresh credential; if it's genuinely bad, the next
+        # 401 (after the throttle window closes) will refresh properly.
+        # See incident 2026-05-21 (15:18-15:40 UTC).
+        if force and db_user.upstox_token_expiry:
+            remaining = db_user.upstox_token_expiry - datetime.utcnow()
+            if remaining > timedelta(hours=23, minutes=59):
+                logger.info(
+                    "TOTP throttle: token for user %d rotated <60s ago; "
+                    "returning current token without new TOTP (401 was from "
+                    "in-flight stale request)",
+                    user_id,
+                )
+                return decrypt_token(db_user.upstox_access_token) if db_user.upstox_access_token else None
         if force:
             logger.info("TOTP auto-refresh: FORCED refresh for user %d (401 detected)", user_id)
 
