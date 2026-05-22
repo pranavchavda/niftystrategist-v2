@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from sqlalchemy import select
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from database.models import User as DBUser
 
@@ -81,6 +81,10 @@ def _register_handlers(application: Application, user_id: int) -> None:
     application.add_handler(CommandHandler("unpair", handlers.cmd_unpair))
     application.add_handler(CommandHandler("status", handlers.cmd_status))
     application.add_handler(CommandHandler("help", handlers.cmd_help))
+    # Phase 2a: any non-command text DM → daily mandate thread.
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message)
+    )
 
 
 async def _run_application(application: Application, user_id: int) -> None:

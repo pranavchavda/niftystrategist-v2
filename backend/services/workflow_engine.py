@@ -843,33 +843,45 @@ ensure to think carefully about the classification before making a decision.
             # Execute the prompt — agent.run() handles full multi-turn tool loops and
             # returns the complete final response (stream_text only captures first model call)
             import asyncio
-            try:
-                kwargs = {}
-                if message_history:
-                    kwargs["message_history"] = message_history
+            from contextlib import nullcontext
+            from services.thread_locks import thread_lock
 
-                run_result = await asyncio.wait_for(
-                    orchestrator.agent.run(effective_prompt, deps=deps, **kwargs),
-                    timeout=workflow_def.timeout_seconds
-                )
-                orchestrator_result = run_result.output if run_result.output else ""
-            except asyncio.TimeoutError:
-                raise TimeoutError(f"Workflow timed out after {workflow_def.timeout_seconds} seconds")
+            # Serialize against a concurrent inbound Telegram turn on the same
+            # daily thread — both run the orchestrator in this process and would
+            # otherwise race on writes / updated_at. No-op for ephemeral
+            # (non-followup) workflows, which have no shared thread.
+            _lock_ctx = thread_lock(thread_id) if is_followup else nullcontext()
+            async with _lock_ctx:
+                try:
+                    kwargs = {}
+                    if message_history:
+                        kwargs["message_history"] = message_history
 
-            # Calculate duration
-            end_time = utc_now_naive()
-            duration_ms = int((end_time - start_time).total_seconds() * 1000)
+                    run_result = await asyncio.wait_for(
+                        orchestrator.agent.run(effective_prompt, deps=deps, **kwargs),
+                        timeout=workflow_def.timeout_seconds
+                    )
+                    orchestrator_result = run_result.output if run_result.output else ""
+                except asyncio.TimeoutError:
+                    raise TimeoutError(f"Workflow timed out after {workflow_def.timeout_seconds} seconds")
 
-            # For thread follow-ups: write result back to the thread
+                # Calculate duration
+                end_time = utc_now_naive()
+                duration_ms = int((end_time - start_time).total_seconds() * 1000)
+
+                # For thread follow-ups: write result back to the thread
+                if is_followup and orchestrator_result:
+                    await self._write_followup_to_thread(
+                        thread_id=workflow_def.thread_id,
+                        user_id=user_id,
+                        response_text=orchestrator_result,
+                    )
+
+            # Best-effort Telegram nudge so the user knows an awakening landed
+            # without having to refresh the NS UI. Sent outside the thread lock
+            # (network I/O). The full text is already in the daily thread; we
+            # only send a preview.
             if is_followup and orchestrator_result:
-                await self._write_followup_to_thread(
-                    thread_id=workflow_def.thread_id,
-                    user_id=user_id,
-                    response_text=orchestrator_result,
-                )
-                # Best-effort Telegram nudge so the user knows an awakening
-                # landed without having to refresh the NS UI. The full text
-                # is already in the daily thread; we only send a preview.
                 try:
                     from services.telegram_notifier import notify
                     preview = orchestrator_result.strip().splitlines()[0][:300] \

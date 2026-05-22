@@ -10,17 +10,22 @@ arbitrary-text routing into the daily mandate thread.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 
 from sqlalchemy import select
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from database.models import User as DBUser
 from database.session import get_db_session
 
 logger = logging.getLogger(__name__)
+
+# Telegram hard-caps a message at 4096 chars; stay under it with headroom.
+_TG_MAX = 4000
 
 
 HELP_TEXT = (
@@ -29,7 +34,10 @@ HELP_TEXT = (
     "  /confirm — confirm pairing after /start\n"
     "  /unpair  — disconnect this chat from NS\n"
     "  /status  — show pairing state\n"
-    "  /help    — this message"
+    "  /help    — this message\n\n"
+    "Once paired, just DM me anything — I'll answer as your NS agent in today's "
+    "daily thread (positions, quotes, analysis, trade planning). Order placement "
+    "still happens in the web app for now."
 )
 
 
@@ -198,3 +206,72 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message:
         await update.effective_message.reply_text(HELP_TEXT)
+
+
+def _split_message(text: str, limit: int = _TG_MAX) -> list[str]:
+    """Split a long reply into <=limit chunks, preferring newline boundaries."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        cut = remaining.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+async def _keep_typing(bot, chat_id: int) -> None:
+    """Re-send the 'typing…' chat action every 4s until cancelled.
+
+    A single send_chat_action lasts ~5s; orchestrator turns can take far longer,
+    so loop it for the lifetime of the run.
+    """
+    try:
+        while True:
+            try:
+                await bot.send_chat_action(chat_id, ChatAction.TYPING)
+            except Exception:
+                pass
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Phase 2a: route a plain-text DM into the user's daily mandate thread."""
+    if not update.effective_chat or not update.effective_message:
+        return
+    # Only private chats. If the bot is added to a group, never act there —
+    # it would reply as the owner to whatever anyone in the group asks.
+    if update.effective_chat.type != "private":
+        return
+    text = update.effective_message.text
+    if not text or not text.strip():
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = _owning_user_id(context)
+
+    typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))
+    try:
+        from services.telegram_chat import run_telegram_turn
+
+        reply = await run_telegram_turn(user_id, chat_id, text)
+    except Exception:
+        logger.exception("telegram handle_message failed user=%s", user_id)
+        reply = "⚠️ Something went wrong. Try again, or use the NS web app."
+    finally:
+        typing_task.cancel()
+
+    # Empty reply == unauthorized chat (not the paired one) or empty input —
+    # stay silent rather than leaking that this bot belongs to someone.
+    if not reply:
+        return
+
+    for chunk in _split_message(reply):
+        await update.effective_message.reply_text(chunk)

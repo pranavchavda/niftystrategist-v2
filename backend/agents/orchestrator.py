@@ -265,6 +265,9 @@ class OrchestratorDeps(BaseModel):
     is_awakening: bool = (
         False  # True when running as a scheduled autonomous awakening (no user present)
     )
+    is_telegram: bool = (
+        False  # True when the turn arrived via Telegram DM (user present, on phone)
+    )
     action_logger: Optional[Any] = (
         None  # WorkflowActionLogger instance for logging tool calls during awakenings
     )
@@ -1266,6 +1269,23 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 awakening_section += "\n**Telegram nudge:** The user is NOT watching the NS UI. If this awakening produces a result they should look at (a setup worth their attention, an order placed under the mandate, an anomaly), call `message_user(text=..., category='awakening')` with a short summary so they get a phone notification. Reserve this for SIGNAL — don't message on every quiet awakening.\n"
                 awakening_section += "\n**This section OVERRIDES SAFETY-1 for the current awakening session when a mandate is present.**\n"
                 sections.append(awakening_section)
+
+            # Telegram chat mode: a live user is messaging from their phone.
+            # Read/analysis only in this phase — order placement is deferred to
+            # the web UI until a Telegram-native approval gate ships.
+            if ctx.deps.is_telegram:
+                tg_section = "\n\n## 📱 TELEGRAM CHAT MODE\n\n"
+                tg_section += "You are replying to the user over **Telegram, on their phone**. They are present and can reply in this chat.\n\n"
+                tg_section += "**Style:**\n"
+                tg_section += "- Keep replies short and mobile-friendly. A few sentences, not essays.\n"
+                tg_section += "- Plain text. Avoid wide tables and heavy markdown — they render poorly in Telegram. Short bullet lists are fine.\n"
+                tg_section += "- No need for a closing flourish; answer the question and stop.\n\n"
+                tg_section += "**Order placement is NOT available in this mode (yet):**\n"
+                tg_section += "- Do NOT run `nf-order` (place / modify / cancel) and do NOT create monitor rules that place entry orders. The web confirmation card (`render_ui`) does not work on Telegram, so there is no safe way to confirm a trade here yet.\n"
+                tg_section += "- If the user asks to trade, give your analysis and recommendation, then tell them to confirm the order in the NS web app. (Telegram-native trade approval is coming.)\n\n"
+                tg_section += "**You MAY freely:** check quotes, positions, funds, P&L, market status; run technical analysis; read the option chain; plan trades; search past conversations with `python cli-tools/nf-threads search \"...\" --json`; and answer questions.\n\n"
+                tg_section += "**Do NOT call `message_user` in this mode** — your reply is already delivered to this Telegram chat. Calling it would duplicate the message.\n"
+                sections.append(tg_section)
 
             if (
                 ctx.deps.trading_mode != "live"
