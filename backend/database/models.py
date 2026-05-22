@@ -330,6 +330,21 @@ class Memory(Base):
     used_count = Column(Integer, default=0, nullable=False)
     last_used_at = Column(DateTime, nullable=True)
 
+    # Memory fading: recency+frequency+confidence score (0-1), recomputed
+    # nightly by jobs/memory_fade.py. Retrieval ranks by similarity * this
+    # (NULL treated as 1.0). Stale, unused memories sink and eventually archive.
+    importance_score = Column(Float, nullable=True)
+
+    # Memory consolidation (jobs/memory_consolidation.py): near-duplicate
+    # clusters are merged into one comprehensive memory; sources are archived.
+    is_consolidated = Column(Boolean, nullable=False, default=False)
+    consolidated_from = Column(JSON, nullable=True)  # source memory ids
+
+    # Non-lossy archive flag: faded-out or merged-away memories. Excluded from
+    # retrieval; category is preserved so it's reversible.
+    archived = Column(Boolean, nullable=False, default=False)
+    archived_at = Column(DateTime, nullable=True)
+
     # Relationship
     conversation = relationship("Conversation", back_populates="memories")
 

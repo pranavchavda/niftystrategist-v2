@@ -118,6 +118,19 @@ async def process_message_with_vision(
 
 
 # Helper to retrieve user memories
+def _memory_with_date(mem) -> str:
+    """Annotate a memory fact with when it was noted, so the agent can weigh
+    point-in-time figures (cash, float, positions) against fresher data and
+    not treat a months-old note as current truth."""
+    created = getattr(mem, "created_at", None)
+    if created:
+        try:
+            return f"{mem.fact} ⟨noted {created:%Y-%m-%d}⟩"
+        except Exception:
+            pass
+    return mem.fact
+
+
 async def get_user_memories_for_context(
     user_email: str,
     current_message: Optional[str] = None,
@@ -173,8 +186,8 @@ async def get_user_memories_for_context(
                         method="semantic_search"
                     )
 
-                    # Return just the fact text
-                    return [mem.fact for mem, score in memories_with_scores]
+                    # Return the fact text, annotated with when it was noted
+                    return [_memory_with_date(mem) for mem, score in memories_with_scores]
 
                 except Exception as e:
                     logger.error(f"Semantic search failed, falling back to recent memories: {e}")
@@ -198,7 +211,7 @@ async def get_user_memories_for_context(
                 method="recent"
             )
 
-            return [mem.fact for mem in memories]
+            return [_memory_with_date(mem) for mem in memories]
 
     except Exception as e:
         logger.error(f"Failed to retrieve memories for {user_email}: {e}")

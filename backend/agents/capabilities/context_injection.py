@@ -47,7 +47,11 @@ class MemoryCapability(AbstractCapability["OrchestratorDeps"]):
             for i, memory in enumerate(memories, 1):
                 section += f"{i}. {memory}\n"
             section += (
-                "\nUse this information to provide personalized assistance.\n"
+                "\nUse this to personalize your assistance. Each item shows when it was "
+                "noted (⟨noted YYYY-MM-DD⟩). Treat point-in-time figures — available cash, "
+                "intraday float/capital, position sizes, P&L, holdings — as possibly stale: "
+                "when they matter, confirm against live data (nf-funds, nf-portfolio, the "
+                "current thread) and prefer the live value if it conflicts with an older note.\n"
             )
             return section
 

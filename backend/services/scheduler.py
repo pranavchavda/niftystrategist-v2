@@ -91,6 +91,10 @@ class WorkflowScheduler:
         # Refresh NSE ETF list once a week (Sunday 02:00 UTC = 07:30 IST)
         self._add_etf_refresh_job()
 
+        # Daily memory maintenance — fade (importance recompute + archive) then
+        # consolidate near-duplicates (20:30 UTC = 2:00 AM IST)
+        self._add_memory_maintenance_job()
+
         # Thread embedding is now event-driven (triggered on message save)
         # instead of polling every 60s. See thread_embedder.schedule_debounced_embed()
 
@@ -450,6 +454,53 @@ class WorkflowScheduler:
             return job.next_run_time
 
         return None
+
+    def _add_memory_maintenance_job(self):
+        """Daily memory maintenance: fade (recompute importance_score + archive
+        stale, unused memories) then consolidate near-duplicate clusters. See
+        jobs/memory_fade.py + jobs/memory_consolidation.py. Runs 20:30 UTC
+        (2:00 AM IST).
+        """
+        job_id = "memory_maintenance"
+
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        self.scheduler.add_job(
+            func=self._run_memory_maintenance,
+            trigger=CronTrigger(hour=20, minute=30),  # 20:30 UTC = 2:00 AM IST
+            id=job_id,
+            name="Memory maintenance — fade + consolidate (2:00 AM IST)",
+            replace_existing=True,
+        )
+        logger.info("Scheduled memory maintenance at 20:30 UTC (2:00 AM IST)")
+
+    async def _run_memory_maintenance(self):
+        """Run fade (score + archive) then consolidation (cluster + merge)."""
+        # Fade first so stale memories are archived and excluded from clustering.
+        try:
+            from jobs.memory_fade import run_memory_fade
+            fade = await run_memory_fade(dry_run=False)
+            logger.info(
+                "memory_fade: scored=%d archived=%d users=%d",
+                fade.get("scored", 0),
+                len(fade.get("would_archive", [])),
+                fade.get("users", 0),
+            )
+        except Exception:
+            logger.exception("memory_fade job failed")
+
+        try:
+            from jobs.memory_consolidation import run_consolidation
+            cons = await run_consolidation(dry_run=False)
+            logger.info(
+                "memory_consolidation: clusters=%d merged=%d users=%d",
+                cons.get("clusters_found", 0),
+                cons.get("memories_consolidated", 0),
+                cons.get("users", 0),
+            )
+        except Exception:
+            logger.exception("memory_consolidation job failed")
 
     def _add_totp_refresh_job(self):
         """Add a daily job to proactively refresh Upstox tokens via TOTP.

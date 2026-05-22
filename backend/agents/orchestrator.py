@@ -1155,7 +1155,11 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 for i, memory in enumerate(ctx.deps.user_memories, 1):
                     memories_section += f"{i}. {memory}\n"
                 memories_section += (
-                    "\nUse this information to provide personalized assistance.\n"
+                    "\nUse this to personalize your assistance. Each item shows when it was "
+                    "noted (⟨noted YYYY-MM-DD⟩). Treat point-in-time figures — available cash, "
+                    "intraday float/capital, position sizes, P&L, holdings — as possibly stale: "
+                    "when they matter, confirm against live data (nf-funds, nf-portfolio, the "
+                    "current thread) and prefer the live value if it conflicts with an older note.\n"
                 )
                 sections.append(memories_section)
 

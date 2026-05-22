@@ -780,6 +780,7 @@ class MemoryOps:
                 FROM memories m
                 WHERE m.user_id = $2
                   AND m.embedding IS NOT NULL
+                  AND m.archived = FALSE
             )
             SELECT *
             FROM similarities
@@ -900,6 +901,9 @@ class MemoryOps:
 
         if category:
             query = query.where(Memory.category == category)
+        # Hide faded/archived memories from default listings + the recent
+        # fallback (a specific category filter can still surface them).
+        query = query.where(Memory.archived.is_(False))
 
         query = query.order_by(Memory.last_accessed.desc()).limit(limit).offset(offset)
 
@@ -949,6 +953,9 @@ class MemoryOps:
         # Convert embedding to halfvec format string
         halfvec_str = '[' + ','.join(str(v) for v in embedding) + ']'
 
+        # Threshold filters on raw cosine similarity; ranking multiplies by
+        # importance_score (NULL → 1.0) so faded/stale memories sink. Archived
+        # memories are excluded entirely.
         query_sql = text("""
             SELECT
                 id,
@@ -960,12 +967,14 @@ class MemoryOps:
                 created_at,
                 last_accessed,
                 access_count,
-                (1 - (embedding_halfvec <=> CAST(:embedding AS halfvec(3072)))) AS similarity
+                (1 - (embedding_halfvec <=> CAST(:embedding AS halfvec(3072)))) AS similarity,
+                importance_score
             FROM memories
             WHERE user_id = :user_id
               AND embedding_halfvec IS NOT NULL
+              AND archived = FALSE
               AND (1 - (embedding_halfvec <=> CAST(:embedding AS halfvec(3072)))) >= :threshold
-            ORDER BY embedding_halfvec <=> CAST(:embedding AS halfvec(3072))
+            ORDER BY (1 - (embedding_halfvec <=> CAST(:embedding AS halfvec(3072)))) * COALESCE(importance_score, 1.0) DESC
             LIMIT :limit
         """)
 
@@ -992,7 +1001,8 @@ class MemoryOps:
                 confidence=row[5] or 1.0,
                 created_at=row[6],
                 last_accessed=row[7],
-                access_count=row[8] or 0
+                access_count=row[8] or 0,
+                importance_score=row[10],
             )
             similarity = float(row[9]) if row[9] is not None else 0.0
             memories_with_scores.append((memory, similarity))
@@ -1011,11 +1021,12 @@ class MemoryOps:
         Fallback semantic search using Python when pgvector is not available.
         Fetches all memories with embeddings and calculates similarity in Python.
         """
-        # Fetch all memories for this user that have embeddings
+        # Fetch all non-archived memories for this user that have embeddings
         query = select(Memory).where(
             and_(
                 Memory.user_id == user_id,
-                Memory.embedding.isnot(None)
+                Memory.embedding.isnot(None),
+                Memory.archived.is_(False),
             )
         )
         result = await session.execute(query)
@@ -1038,8 +1049,11 @@ class MemoryOps:
             if similarity >= similarity_threshold:
                 memories_with_scores.append((memory, similarity))
 
-        # Sort by similarity (descending) and limit
-        memories_with_scores.sort(key=lambda x: x[1], reverse=True)
+        # Threshold on raw similarity (above); rank by similarity * importance
+        # (NULL → 1.0) to mirror the pgvector backend so faded memories sink.
+        memories_with_scores.sort(
+            key=lambda x: x[1] * (x[0].importance_score or 1.0), reverse=True
+        )
         return memories_with_scores[:limit]
 
     @staticmethod
