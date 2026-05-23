@@ -1,0 +1,157 @@
+{
+  "ts": "2026-05-23T19:08:48.617496",
+  "models": [
+    "deepseek/deepseek-v4-flash"
+  ],
+  "judge": [
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "facts": [
+        {
+          "fact": "User's risk tolerance is conservative — max 1% of capital per trade.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User prefers EMA crossover entries for equity intraday.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User avoids the pharma sector entirely after past losses.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants trade rationale explained in plain language, not jargon.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User is a swing trader who typically holds positions for two to five days.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.6,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User never holds F&O positions overnight.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User only trades during the first hour after market open.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.4,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User currently holds 65 lots of the NIFTY 23750 call option.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 3.05,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Available margin is 56,541 rupees.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "NIFTY is trading at 23,810 right now.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "RSI on RELIANCE is 58 today.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.55,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User placed a buy order on TATACHEM this morning.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 2.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants to check today's option chain for BANKNIFTY.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Stocks can go up or down depending on market conditions.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "The user is currently up 3,200 rupees on the day.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.5,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 116.4,
+      "tp": 7,
+      "fp": 0,
+      "tn": 8,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

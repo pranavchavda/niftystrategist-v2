@@ -7,7 +7,8 @@ Evaluates candidate memories before storage using:
 3. Semantic similarity check with existing memories
 4. LLM judge for final decision (INSERT, UPDATE, CONSOLIDATE, REJECT)
 
-Uses x-ai/grok-code-fast-1 for logical, systematic evaluation.
+Uses deepseek/deepseek-v4-flash for logical, systematic evaluation
+(bake-off 2026-05-23: 15/15 judge accuracy; unifies the memory pipeline).
 Fast reasoning model tuned for coding/logical tasks.
 
 This prevents low-quality, duplicate, or redundant memories from being stored.
@@ -35,7 +36,7 @@ SIMILARITY_CHECK_THRESHOLD = float(os.getenv("MEMORY_SIMILARITY_CHECK_THRESHOLD"
 DUPLICATE_THRESHOLD = float(os.getenv("MEMORY_DUPLICATE_THRESHOLD", "0.85"))
 CONSOLIDATE_THRESHOLD = float(os.getenv("MEMORY_CONSOLIDATE_THRESHOLD", "0.70"))
 
-JUDGE_MODEL = os.getenv("MEMORY_JUDGE_MODEL", "x-ai/grok-code-fast-1")
+JUDGE_MODEL = os.getenv("MEMORY_JUDGE_MODEL", "deepseek/deepseek-v4-flash")
 
 
 @dataclass

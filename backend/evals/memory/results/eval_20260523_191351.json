@@ -1,0 +1,1315 @@
+{
+  "ts": "2026-05-23T19:11:01.690717",
+  "models": [
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3.6-flash",
+    "tencent/hy3-preview",
+    "mistralai/mistral-small-2603",
+    "x-ai/grok-4.3"
+  ],
+  "extractor": [
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "fixtures": [
+        {
+          "id": "risk_and_avoid_with_price_trap",
+          "extracted": [
+            {
+              "fact": "User never trades penny stocks due to bad experience in 2019",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User always risks 2% of capital per trade",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📉 Risk & Avoid List",
+          "error": null
+        },
+        {
+          "id": "sector_pref_and_style",
+          "extracted": [
+            {
+              "fact": "User is a swing trader, typically holds positions for 2-5 days and rarely trades intraday.",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User prefers IT and banking sectors for trading.",
+              "category": "sector_preference",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User avoids commodities entirely because they don't understand them.",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📈 Swing Trade Preferences",
+          "error": null
+        },
+        {
+          "id": "experience_and_comms",
+          "extracted": [
+            {
+              "fact": "User is a beginner and prefers explanations in plain language without jargon.",
+              "category": "experience_level",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📚 Beginner-Friendly Explanation Preference",
+          "error": null
+        },
+        {
+          "id": "schedule_and_sizing",
+          "extracted": [
+            {
+              "fact": "User only trades during the first hour after market open (9:15-10:15 AM) due to day job commitments.",
+              "category": "schedule",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User caps single position size at 5% of portfolio.",
+              "category": "position_sizing",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "⏰ First-Hour Trader",
+          "error": null
+        },
+        {
+          "id": "pure_session_noise",
+          "extracted": [],
+          "summary": "📈 BANKNIFTY Option Trade",
+          "error": null
+        },
+        {
+          "id": "durable_buried_in_noise",
+          "extracted": [
+            {
+              "fact": "Never holds F&O positions overnight, squares off by 3pm.",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📊 No Overnight F&O",
+          "error": null
+        },
+        {
+          "id": "leverage_rule_and_indicator_pref",
+          "extracted": [
+            {
+              "fact": "User never wants leverage above 2x.",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User prefers to buy only when RSI is below 30.",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📊 Leverage & Entry Rules",
+          "error": null
+        },
+        {
+          "id": "nothing_durable_smalltalk",
+          "extracted": [],
+          "summary": "👋 Morning Greeting",
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 31.3
+    },
+    {
+      "model": "qwen/qwen3.6-flash",
+      "fixtures": [
+        {
+          "id": "risk_and_avoid_with_price_trap",
+          "extracted": [
+            {
+              "fact": "User strictly avoids penny stocks due to significant losses in 2019.",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User maintains a strict risk management rule of risking no more than 2% of capital per trade.",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "🛡️ Trading Rules & Preferences",
+          "error": null
+        },
+        {
+          "id": "sector_pref_and_style",
+          "extracted": [
+            {
+              "fact": "User is a swing trader, typically holding positions for 2 to 5 days and rarely trades intraday.",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User prefers trading in IT and banking sectors.",
+              "category": "sector_preference",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User avoids commodities entirely due to lack of understanding.",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📈 Swing Trading Preferences",
+          "error": null
+        },
+        {
+          "id": "experience_and_comms",
+          "extracted": [
+            {
+              "fact": "User is a beginner and prefers all technical analysis explained in plain language without trading jargon.",
+              "category": "communication",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📊 Beginner Trading Guidance",
+          "error": null
+        },
+        {
+          "id": "schedule_and_sizing",
+          "extracted": [
+            {
+              "fact": "User only trades during the first hour of market open (9:15 to 10:15 AM) due to a day job.",
+              "category": "schedule",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User caps single stock positions at a maximum of 5% of their total portfolio.",
+              "category": "position_sizing",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "⏰ First Hour Trading Rules",
+          "error": null
+        },
+        {
+          "id": "pure_session_noise",
+          "extracted": [],
+          "summary": "📉 BANKNIFTY Option Execution",
+          "error": null
+        },
+        {
+          "id": "durable_buried_in_noise",
+          "extracted": [
+            {
+              "fact": "User never holds F&O positions overnight and strictly squares off all positions by 3 PM.",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "⏰ Intraday F&O Trading Rules",
+          "error": null
+        },
+        {
+          "id": "leverage_rule_and_indicator_pref",
+          "extracted": [
+            {
+              "fact": "User strictly limits leverage to a maximum of 2x.",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User prefers buying entries only when RSI is below 30.",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📉 Conservative Leverage & RSI Entry Rules",
+          "error": null
+        },
+        {
+          "id": "nothing_durable_smalltalk",
+          "extracted": [],
+          "summary": "👋 Morning Greeting Session",
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 60.5
+    },
+    {
+      "model": "tencent/hy3-preview",
+      "fixtures": [
+        {
+          "id": "risk_and_avoid_with_price_trap",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        },
+        {
+          "id": "sector_pref_and_style",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        },
+        {
+          "id": "experience_and_comms",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        },
+        {
+          "id": "schedule_and_sizing",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        },
+        {
+          "id": "pure_session_noise",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        },
+        {
+          "id": "durable_buried_in_noise",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        },
+        {
+          "id": "leverage_rule_and_indicator_pref",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        },
+        {
+          "id": "nothing_durable_smalltalk",
+          "extracted": [],
+          "summary": "Error extracting memories",
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 3.6
+    },
+    {
+      "model": "mistralai/mistral-small-2603",
+      "fixtures": [
+        {
+          "id": "risk_and_avoid_with_price_trap",
+          "extracted": [
+            {
+              "fact": "User avoids penny stocks due to past losses in 2019",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User limits risk to 2% of capital per trade",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "🚫 Avoids Penny Stocks, 2% Risk Limit",
+          "error": null
+        },
+        {
+          "id": "sector_pref_and_style",
+          "extracted": [
+            {
+              "fact": "User is a swing trader, typically holding positions for 2-5 days",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User focuses on IT and banking sectors",
+              "category": "sector_preference",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User avoids commodities entirely due to lack of understanding",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "🎯 Swing Trading Preferences",
+          "error": null
+        },
+        {
+          "id": "experience_and_comms",
+          "extracted": [],
+          "summary": "📚 Beginner Trading Preferences",
+          "error": null
+        },
+        {
+          "id": "schedule_and_sizing",
+          "extracted": [
+            {
+              "fact": "User only trades in the first hour after market open (9:15 AM to 10:15 AM IST)",
+              "category": "schedule",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User caps any single position at 5% of their portfolio",
+              "category": "position_sizing",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "⏰ First-Hour Trading Schedule",
+          "error": null
+        },
+        {
+          "id": "pure_session_noise",
+          "extracted": [],
+          "summary": "📊 BANKNIFTY Options Query",
+          "error": null
+        },
+        {
+          "id": "durable_buried_in_noise",
+          "extracted": [
+            {
+              "fact": "User never holds F&O positions overnight, squares off by 3pm",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📉 F&O Overnight Rule",
+          "error": null
+        },
+        {
+          "id": "leverage_rule_and_indicator_pref",
+          "extracted": [
+            {
+              "fact": "User never wants leverage above 2x",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User prefers buying stocks when RSI is below 30 (oversold conditions)",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "🎯 Trading Strategy Preferences",
+          "error": null
+        },
+        {
+          "id": "nothing_durable_smalltalk",
+          "extracted": [],
+          "summary": "👋 Casual Check-in",
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 9.5
+    },
+    {
+      "model": "x-ai/grok-4.3",
+      "fixtures": [
+        {
+          "id": "risk_and_avoid_with_price_trap",
+          "extracted": [
+            {
+              "fact": "User never trades penny stocks due to major losses in 2019",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User never risks more than 2% of capital per trade",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "🛡️ Risk Rules & Avoids",
+          "error": null
+        },
+        {
+          "id": "sector_pref_and_style",
+          "extracted": [
+            {
+              "fact": "User is a swing trader who holds positions for 2-5 days and rarely trades intraday",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User focuses on IT and banking stocks",
+              "category": "sector_preference",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User avoids commodities entirely",
+              "category": "avoid_list",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📈 Swing Trading Preferences",
+          "error": null
+        },
+        {
+          "id": "experience_and_comms",
+          "extracted": [
+            {
+              "fact": "User is a beginner and prefers technical terms explained in plain language without jargon",
+              "category": "communication",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📚 Beginner Trading Session",
+          "error": null
+        },
+        {
+          "id": "schedule_and_sizing",
+          "extracted": [
+            {
+              "fact": "User only trades in the first hour after market open (9:15 to 10:15)",
+              "category": "schedule",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "User caps any single position at 5% of portfolio",
+              "category": "position_sizing",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "⏰ First-Hour Trading Limits",
+          "error": null
+        },
+        {
+          "id": "pure_session_noise",
+          "extracted": [],
+          "summary": "📈 BANKNIFTY CE Trade",
+          "error": null
+        },
+        {
+          "id": "durable_buried_in_noise",
+          "extracted": [
+            {
+              "fact": "User never holds F&O positions overnight and squares off everything by 3pm",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "⏰ No Overnight F&O Rule",
+          "error": null
+        },
+        {
+          "id": "leverage_rule_and_indicator_pref",
+          "extracted": [
+            {
+              "fact": "Never recommend leverage above 2x",
+              "category": "risk_tolerance",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            },
+            {
+              "fact": "Prefers RSI below 30 for buy entries",
+              "category": "trading_style",
+              "confidence": 1.0,
+              "is_ephemeral": false
+            }
+          ],
+          "summary": "📉 Leverage & RSI Preferences",
+          "error": null
+        },
+        {
+          "id": "nothing_durable_smalltalk",
+          "extracted": [],
+          "summary": "👋 Casual Morning Greeting",
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 39.8
+    }
+  ],
+  "judge": [
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "facts": [
+        {
+          "fact": "User's risk tolerance is conservative — max 1% of capital per trade.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User prefers EMA crossover entries for equity intraday.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.45,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User avoids the pharma sector entirely after past losses.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants trade rationale explained in plain language, not jargon.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.35,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User is a swing trader who typically holds positions for two to five days.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User never holds F&O positions overnight.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User only trades during the first hour after market open.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.8,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User currently holds 65 lots of the NIFTY 23750 call option.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Available margin is 56,541 rupees.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "NIFTY is trading at 23,810 right now.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "RSI on RELIANCE is 58 today.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User placed a buy order on TATACHEM this morning.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.25,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants to check today's option chain for BANKNIFTY.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Stocks can go up or down depending on market conditions.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "The user is currently up 3,200 rupees on the day.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 99.7,
+      "tp": 7,
+      "fp": 0,
+      "tn": 8,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "model": "qwen/qwen3.6-flash",
+      "facts": [
+        {
+          "fact": "User's risk tolerance is conservative — max 1% of capital per trade.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.05,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User prefers EMA crossover entries for equity intraday.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.45,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User avoids the pharma sector entirely after past losses.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants trade rationale explained in plain language, not jargon.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.05,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User is a swing trader who typically holds positions for two to five days.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User never holds F&O positions overnight.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User only trades during the first hour after market open.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.2,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User currently holds 65 lots of the NIFTY 23750 call option.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Available margin is 56,541 rupees.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "NIFTY is trading at 23,810 right now.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "RSI on RELIANCE is 58 today.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User placed a buy order on TATACHEM this morning.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants to check today's option chain for BANKNIFTY.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Stocks can go up or down depending on market conditions.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "The user is currently up 3,200 rupees on the day.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.25,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 106.8,
+      "tp": 7,
+      "fp": 0,
+      "tn": 8,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "model": "tencent/hy3-preview",
+      "facts": [
+        {
+          "fact": "User's risk tolerance is conservative — max 1% of capital per trade.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 5.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User prefers EMA crossover entries for equity intraday.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.45,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User avoids the pharma sector entirely after past losses.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants trade rationale explained in plain language, not jargon.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User is a swing trader who typically holds positions for two to five days.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User never holds F&O positions overnight.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.1,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User only trades during the first hour after market open.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.25,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User currently holds 65 lots of the NIFTY 23750 call option.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.25,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Available margin is 56,541 rupees.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "NIFTY is trading at 23,810 right now.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "RSI on RELIANCE is 58 today.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User placed a buy order on TATACHEM this morning.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants to check today's option chain for BANKNIFTY.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Stocks can go up or down depending on market conditions.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "The user is currently up 3,200 rupees on the day.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 99.9,
+      "tp": 7,
+      "fp": 0,
+      "tn": 8,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "model": "mistralai/mistral-small-2603",
+      "facts": [
+        {
+          "fact": "User's risk tolerance is conservative — max 1% of capital per trade.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User prefers EMA crossover entries for equity intraday.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.15,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User avoids the pharma sector entirely after past losses.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants trade rationale explained in plain language, not jargon.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.55,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User is a swing trader who typically holds positions for two to five days.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User never holds F&O positions overnight.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User only trades during the first hour after market open.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.95,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User currently holds 65 lots of the NIFTY 23750 call option.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Available margin is 56,541 rupees.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "NIFTY is trading at 23,810 right now.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "RSI on RELIANCE is 58 today.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User placed a buy order on TATACHEM this morning.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants to check today's option chain for BANKNIFTY.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Stocks can go up or down depending on market conditions.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "The user is currently up 3,200 rupees on the day.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.25,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 95.0,
+      "tp": 7,
+      "fp": 0,
+      "tn": 8,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "model": "x-ai/grok-4.3",
+      "facts": [
+        {
+          "fact": "User's risk tolerance is conservative — max 1% of capital per trade.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User prefers EMA crossover entries for equity intraday.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 7.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User avoids the pharma sector entirely after past losses.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 10.0,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants trade rationale explained in plain language, not jargon.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.15,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User is a swing trader who typically holds positions for two to five days.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.15,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User never holds F&O positions overnight.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 9.85,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User only trades during the first hour after market open.",
+          "label": "accept",
+          "action": "INSERT",
+          "weighted": 8.5,
+          "predicted": "accept",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User currently holds 65 lots of the NIFTY 23750 call option.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Available margin is 56,541 rupees.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "NIFTY is trading at 23,810 right now.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "RSI on RELIANCE is 58 today.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User placed a buy order on TATACHEM this morning.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "User wants to check today's option chain for BANKNIFTY.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "Stocks can go up or down depending on market conditions.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        },
+        {
+          "fact": "The user is currently up 3,200 rupees on the day.",
+          "label": "reject",
+          "action": "REJECT",
+          "weighted": 1.0,
+          "predicted": "reject",
+          "correct": true,
+          "error": null
+        }
+      ],
+      "error": null,
+      "elapsed_s": 100.5,
+      "tp": 7,
+      "fp": 0,
+      "tn": 8,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  ]
+}

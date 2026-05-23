@@ -20,9 +20,11 @@ from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-# Default model for memory extraction - cheap, fast, good at JSON
-# Override with MEMORY_EXTRACTION_MODEL env var
-DEFAULT_MEMORY_MODEL = "x-ai/grok-4.3"
+# Default model for memory extraction - cheap, fast, good at JSON.
+# Override with MEMORY_EXTRACTION_MODEL env var.
+# Chosen via bake-off 2026-05-23 (evals/memory/): tied best recall/precision
+# (12/12, 0 spurious) with best category accuracy; cheaper/faster than grok-4.3.
+DEFAULT_MEMORY_MODEL = "deepseek/deepseek-v4-flash"
 
 
 class ExtractedMemory(BaseModel):
