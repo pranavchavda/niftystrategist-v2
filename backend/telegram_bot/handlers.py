@@ -410,7 +410,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Download the OGG/Opus voice note. OpenAI transcription accepts it as-is.
         tg_file = await voice.get_file()
         audio_bytes = bytes(await tg_file.download_as_bytearray())
-        transcript = voice_service.transcribe_bytes(audio_bytes, filename="voice.oga")
+        # Telegram voice notes are OGG/Opus. OpenAI STT accepts the .ogg
+        # extension but rejects .oga ("Unsupported file format oga") — same
+        # container, different extension string. Use .ogg.
+        transcript = voice_service.transcribe_bytes(audio_bytes, filename="voice.ogg")
 
         if not transcript.strip():
             typing_task.cancel()
