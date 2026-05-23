@@ -13,6 +13,8 @@ from typing import Optional
 import openai
 import io
 
+from services import voice as voice_service
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
@@ -36,38 +38,9 @@ async def transcribe_audio(audio: UploadFile = File(...)):
     Returns transcribed text.
     """
     try:
-        # Validate OpenAI API key
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise HTTPException(
-                status_code=500,
-                detail="OpenAI API key not configured"
-            )
-
-        # Initialize OpenAI client
-        client = openai.OpenAI(api_key=api_key)
-
-        # Read audio file
         audio_data = await audio.read()
-
-        # Validate file size (OpenAI limit: 25 MB)
-        if len(audio_data) > 25 * 1024 * 1024:
-            raise HTTPException(
-                status_code=400,
-                detail="Audio file too large. Maximum size is 25 MB."
-            )
-
-        # Create file-like object for OpenAI API
-        audio_file = io.BytesIO(audio_data)
-        audio_file.name = audio.filename or "audio.webm"
-
-        logger.info(f"[Voice STT] Transcribing audio file: {audio.filename} ({len(audio_data)} bytes)")
-
-        # Call OpenAI Whisper API
-        transcription = client.audio.transcriptions.create(
-            model="gpt-4o-mini-transcribe",
-            file=audio_file,
-            response_format="text"
+        transcription = voice_service.transcribe_bytes(
+            audio_data, filename=audio.filename or "audio.webm"
         )
 
         logger.info(f"[Voice STT] Transcription successful: {transcription[:100]}...")
@@ -78,6 +51,10 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             "filename": audio.filename
         }
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except openai.APIError as e:
         logger.error(f"[Voice STT] OpenAI API error: {e}")
         raise HTTPException(status_code=502, detail=f"OpenAI API error: {str(e)}")
@@ -94,14 +71,6 @@ async def synthesize_speech(request: TTSRequest):
     Returns audio stream in MP3 format.
     """
     try:
-        # Validate OpenAI API key
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise HTTPException(
-                status_code=500,
-                detail="OpenAI API key not configured"
-            )
-
         # Validate input
         if not request.text or len(request.text.strip()) == 0:
             raise HTTPException(
@@ -143,9 +112,6 @@ async def synthesize_speech(request: TTSRequest):
                 detail="No text available for synthesis with the provided offset and chunk size."
             )
 
-        # Initialize OpenAI client
-        client = openai.OpenAI(api_key=api_key)
-
         logger.info(
             "[Voice TTS] Synthesizing speech chunk: start=%d end=%d total=%d (voice=%s, speed=%s)",
             offset,
@@ -155,20 +121,19 @@ async def synthesize_speech(request: TTSRequest):
             request.speed,
         )
 
-        # Call OpenAI TTS API
-        response = client.audio.speech.create(
-            model="gpt-4o-mini-tts",  # Use gpt-4o-tts for faster/cheaper, tts-1-hd for higher quality
-            voice=request.voice,
-            input=chunk_text,
-            instructions="Clear, professional tone. Indian English accent. Read financial numbers and stock tickers clearly.",
-            speed=request.speed or 1.25
+        # Call OpenAI TTS via the shared service (mp3 for the web player).
+        audio_content = voice_service.synthesize_bytes(
+            chunk_text,
+            voice=request.voice or voice_service.DEFAULT_VOICE,
+            speed=request.speed or voice_service.DEFAULT_SPEED,
+            response_format="mp3",
         )
 
         # Stream the audio response
         logger.info(f"[Voice TTS] Speech synthesis successful")
 
         # Convert response to bytes for streaming
-        audio_bytes = io.BytesIO(response.content)
+        audio_bytes = io.BytesIO(audio_content)
 
         chunk_headers = {
             "Content-Disposition": "attachment; filename=speech.mp3",

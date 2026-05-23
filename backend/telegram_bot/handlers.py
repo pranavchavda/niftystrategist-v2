@@ -17,6 +17,7 @@ from datetime import datetime
 from sqlalchemy import select
 from telegram import Update
 from telegram.constants import ChatAction
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from database.models import User as DBUser
@@ -35,9 +36,11 @@ HELP_TEXT = (
     "  /unpair  — disconnect this chat from NS\n"
     "  /status  — show pairing state\n"
     "  /help    — this message\n\n"
-    "Once paired, just DM me anything — I'll answer as your NS agent in today's "
-    "daily thread (positions, quotes, analysis, trade planning). Order placement "
-    "still happens in the web app for now."
+    "Once paired, just DM me anything — text or a voice note — and I'll answer as "
+    "your NS agent in today's daily thread (positions, quotes, analysis, trade "
+    "planning). Send a voice note and I'll reply with one too. You can place "
+    "trades here: I'll show the order details and you reply YES to confirm. "
+    "(Setting up monitor/entry rules still happens in the web app.)"
 )
 
 
@@ -225,6 +228,46 @@ def _split_message(text: str, limit: int = _TG_MAX) -> list[str]:
     return chunks
 
 
+def _to_markdown_v2(text: str) -> str | None:
+    """Convert agent markdown to escaped Telegram MarkdownV2.
+
+    telegramify-markdown handles the ~18 chars MarkdownV2 requires escaped and
+    renders tables/code as monospace blocks. Returns None if the lib is missing
+    or conversion throws, so the caller falls back to plain text.
+    """
+    try:
+        import telegramify_markdown
+
+        return telegramify_markdown.markdownify(text)
+    except Exception:
+        logger.debug("telegramify-markdown conversion failed", exc_info=True)
+        return None
+
+
+async def _send_reply(message, text: str) -> None:
+    """Send a reply, preferring MarkdownV2, always able to fall back to plain.
+
+    Strategy:
+    - Short replies (the common case on Telegram): convert the whole thing to
+      MarkdownV2 and send as one message. On a Telegram BadRequest (escape edge
+      case) re-send the ORIGINAL plain text — never the escaped version, which
+      would leak backslashes.
+    - Over-limit replies: skip MarkdownV2 entirely and send plain split chunks.
+      Splitting escaped MarkdownV2 can cut a code fence (tables render as code
+      blocks) and corrupt rendering, so we don't risk it for long messages.
+    """
+    md = _to_markdown_v2(text)
+    if md is not None and len(md) <= _TG_MAX:
+        try:
+            await message.reply_text(md, parse_mode="MarkdownV2")
+            return
+        except BadRequest:
+            logger.warning("MarkdownV2 send rejected; falling back to plain text")
+
+    for chunk in _split_message(text):
+        await message.reply_text(chunk)
+
+
 async def _keep_typing(bot, chat_id: int) -> None:
     """Re-send the 'typing…' chat action every 4s until cancelled.
 
@@ -273,5 +316,120 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not reply:
         return
 
-    for chunk in _split_message(reply):
-        await update.effective_message.reply_text(chunk)
+    await _send_reply(update.effective_message, reply)
+
+
+# Cap a single voice-note synthesis to the OpenAI TTS per-call limit. The full
+# text is always sent as text too, so a long reply just gets a clipped voice.
+_VOICE_TTS_CAP = 4096
+
+
+async def _send_voice_reply(message, reply_text: str) -> None:
+    """Synthesize `reply_text` and send it as a Telegram voice note.
+
+    Sent AFTER the text reply so the voice bubble is the last message — it's the
+    notification + landing message (Hermes-style voice-primary feel). Best-effort:
+    on any synth/send failure we log and move on (the text already carried the
+    content). Tries OGG/Opus as a true voice bubble first, falls back to an mp3
+    audio attachment if Telegram rejects the voice payload.
+    """
+    import io
+
+    from services import voice as voice_service
+
+    spoken = reply_text.strip()
+    if not spoken:
+        return
+    if len(spoken) > _VOICE_TTS_CAP:
+        spoken = spoken[:_VOICE_TTS_CAP]
+
+    try:
+        await message.chat.send_action(ChatAction.RECORD_VOICE)
+    except Exception:
+        pass
+
+    try:
+        ogg = voice_service.synthesize_bytes(spoken, response_format="opus")
+    except Exception:
+        logger.exception("voice reply: TTS synthesis failed")
+        return
+
+    buf = io.BytesIO(ogg)
+    buf.name = "reply.ogg"
+    try:
+        await message.reply_voice(voice=buf)
+        return
+    except Exception:
+        logger.warning("voice reply: reply_voice failed, trying mp3 audio fallback")
+
+    # Fallback: mp3 as an audio attachment (not a voice bubble, but plays).
+    try:
+        mp3 = voice_service.synthesize_bytes(spoken, response_format="mp3")
+        mbuf = io.BytesIO(mp3)
+        mbuf.name = "reply.mp3"
+        await message.reply_audio(audio=mbuf, title="Nifty Strategist")
+    except Exception:
+        logger.exception("voice reply: mp3 audio fallback also failed")
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Voice note → transcribe → run the daily-thread turn → voice + text reply."""
+    if not update.effective_chat or not update.effective_message:
+        return
+    if update.effective_chat.type != "private":
+        return
+    voice = update.effective_message.voice
+    if voice is None:
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = _owning_user_id(context)
+
+    # Auth gate BEFORE any download/STT cost. run_telegram_turn re-checks this,
+    # but transcription bills OpenAI per call — a stranger who knows the bot
+    # username must not be able to drain that by DMing voice notes. (The text
+    # path has no pre-run cost, so it relies on run_telegram_turn's check.)
+    async with get_db_session() as session:
+        paired_chat_id = (
+            await session.execute(
+                select(DBUser.telegram_chat_id).where(DBUser.id == user_id)
+            )
+        ).scalar_one_or_none()
+    if paired_chat_id != chat_id:
+        logger.info(
+            "handle_voice: unauthorized chat_id=%s for user=%s (paired=%s) — silent",
+            chat_id, user_id, paired_chat_id,
+        )
+        return  # silent — same as run_telegram_turn does for unauthorized chats
+
+    typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))
+    try:
+        from services import voice as voice_service
+        from services.telegram_chat import run_telegram_turn
+
+        # Download the OGG/Opus voice note. OpenAI transcription accepts it as-is.
+        tg_file = await voice.get_file()
+        audio_bytes = bytes(await tg_file.download_as_bytearray())
+        transcript = voice_service.transcribe_bytes(audio_bytes, filename="voice.oga")
+
+        if not transcript.strip():
+            typing_task.cancel()
+            await update.effective_message.reply_text(
+                "🎙️ I couldn't make out any speech in that. Try again?"
+            )
+            return
+
+        reply = await run_telegram_turn(user_id, chat_id, transcript, is_voice=True)
+    except Exception:
+        logger.exception("telegram handle_voice failed user=%s", user_id)
+        reply = "⚠️ Something went wrong with that voice note. Try again, or use the NS web app."
+    finally:
+        typing_task.cancel()
+
+    # Empty reply == unauthorized chat — stay silent (don't leak bot ownership).
+    if not reply:
+        return
+
+    # Text first, then the voice note last (voice = the ping + landing message).
+    await _send_reply(update.effective_message, reply)
+    await _send_voice_reply(update.effective_message, reply)

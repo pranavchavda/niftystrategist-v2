@@ -120,18 +120,35 @@ def _category_enabled(prefs: dict[str, Any], category: str) -> bool:
     return bool(value)
 
 
+def _to_markdown_v2(text: str) -> Optional[str]:
+    """Convert agent markdown to escaped MarkdownV2; None if lib missing/throws."""
+    try:
+        import telegramify_markdown
+
+        return telegramify_markdown.markdownify(text)
+    except Exception:
+        logger.debug("telegram_notifier: markdown conversion failed", exc_info=True)
+        return None
+
+
 async def notify(
     user_id: int,
     category: str,
     text: str,
     *,
     parse_mode: Optional[str] = None,
+    markdown: bool = False,
     reply_markup: Optional[dict] = None,
     disable_notification: bool = False,
 ) -> bool:
     """Send a Telegram message to a user.
 
     Returns True on successful delivery, False otherwise. Never raises.
+
+    `markdown=True` renders `text` as MarkdownV2 (for agent-authored sends like
+    `message_user`); on a Telegram 400 it retries once with the ORIGINAL plain
+    text so a bad escape never leaks backslashes or drops the message. Plain
+    system notifications (TOTP / monitor fires) should leave it False.
 
     `reply_markup` is passed through as-is — pass a `InlineKeyboardMarkup`
     JSON dict here when you want approve/cancel buttons (Phase 2 trade flow).
@@ -152,6 +169,42 @@ async def notify(
         )
         return False
 
+    # When markdown=True, prefer a MarkdownV2 send with a plain-text fallback.
+    send_text = text
+    send_parse_mode = parse_mode
+    if markdown:
+        md = _to_markdown_v2(text)
+        if md is not None:
+            send_text = md
+            send_parse_mode = "MarkdownV2"
+
+    ok = await _send_once(
+        config, category, user_id, send_text, send_parse_mode,
+        reply_markup, disable_notification,
+    )
+    if ok or not markdown or send_parse_mode != "MarkdownV2":
+        return ok
+
+    # MarkdownV2 attempt failed (likely a 400 on a bad escape) — retry plain.
+    logger.warning(
+        "telegram_notifier: MarkdownV2 send failed user=%s; retrying plain", user_id
+    )
+    return await _send_once(
+        config, category, user_id, text, parse_mode,
+        reply_markup, disable_notification,
+    )
+
+
+async def _send_once(
+    config: dict,
+    category: str,
+    user_id: int,
+    text: str,
+    parse_mode: Optional[str],
+    reply_markup: Optional[dict],
+    disable_notification: bool,
+) -> bool:
+    """One sendMessage attempt. Returns True only on a Telegram ok response."""
     payload: dict[str, Any] = {
         "chat_id": config["chat_id"],
         "text": text,

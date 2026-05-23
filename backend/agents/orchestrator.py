@@ -271,6 +271,9 @@ class OrchestratorDeps(BaseModel):
     is_telegram: bool = (
         False  # True when the turn arrived via Telegram DM (user present, on phone)
     )
+    is_voice: bool = (
+        False  # True when the Telegram turn arrived as a voice note (reply is spoken aloud)
+    )
     action_logger: Optional[Any] = (
         None  # WorkflowActionLogger instance for logging tool calls during awakenings
     )
@@ -1229,8 +1232,10 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 sections.append(awakening_section)
 
             # Telegram chat mode: a live user is messaging from their phone.
-            # Read/analysis only in this phase — order placement is deferred to
-            # the web UI until a Telegram-native approval gate ships.
+            # render_ui does not render on Telegram, so trade confirmation is
+            # done in plain text instead (text-confirm gate), overriding SAFETY-1
+            # for this session. Each turn replays thread history, so a multi-turn
+            # ask→YES→execute flow works naturally.
             if ctx.deps.is_telegram:
                 tg_section = "\n\n## 📱 TELEGRAM CHAT MODE\n\n"
                 tg_section += "You are replying to the user over **Telegram, on their phone**. They are present and can reply in this chat.\n\n"
@@ -1238,9 +1243,23 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 tg_section += "- Keep replies short and mobile-friendly. A few sentences, not essays.\n"
                 tg_section += "- Plain text. Avoid wide tables and heavy markdown — they render poorly in Telegram. Short bullet lists are fine.\n"
                 tg_section += "- No need for a closing flourish; answer the question and stop.\n\n"
-                tg_section += "**Order placement is NOT available in this mode (yet):**\n"
-                tg_section += "- Do NOT run `nf-order` (place / modify / cancel) and do NOT create monitor rules that place entry orders. The web confirmation card (`render_ui`) does not work on Telegram, so there is no safe way to confirm a trade here yet.\n"
-                tg_section += "- If the user asks to trade, give your analysis and recommendation, then tell them to confirm the order in the NS web app. (Telegram-native trade approval is coming.)\n\n"
+                if ctx.deps.is_voice:
+                    tg_section += "**🎙️ VOICE MODE — your reply will be read aloud as a voice note:**\n"
+                    tg_section += "- The user sent a voice note; answer briefly and in a way that sounds natural spoken. Two or three sentences.\n"
+                    tg_section += "- **No tables, no markdown, no bullet symbols, no code blocks** — they sound like gibberish when spoken. Use flowing sentences.\n"
+                    tg_section += "- Say numbers the way a person would: \"about twelve hundred thirty-four rupees fifty\", not \"₹1,234.50\". Spell out tickers naturally (\"Reliance\", not \"RELIANCE\").\n"
+                    tg_section += "- Lead with the answer. The user is listening, not scanning, so don't bury it.\n\n"
+                tg_section += "**Placing trades over Telegram — text confirmation gate:**\n"
+                tg_section += "`render_ui` confirmation cards do not render on Telegram. Instead, confirm orders in plain text using this two-step flow:\n"
+                tg_section += "1. When the user asks to place / modify / cancel an order, do NOT execute it in the same turn. First reply with the exact order details — **symbol, side (buy/sell), quantity, order type, price, product (I/D)** — and ask the user to reply with `YES` to confirm.\n"
+                tg_section += "2. Only run `nf-order` after the user replies, in a **later message**, with an explicit confirmation. The user may be typing or speaking (voice notes get transcribed), so judge intent case- and punctuation-insensitively:\n"
+                tg_section += "   - **Counts:** `YES`, `Yes.`, `CONFIRM`, `GO` alone; or an unqualified affirmative that includes one of those words (`yes do it`, `yeah confirm`, `yes go ahead`).\n"
+                tg_section += "   - **Does NOT count — re-ask:** weak affirmatives with no trigger word (`ok`, `sure`, `go ahead`, `sounds good`, `I guess`); or any reply that *qualifies or changes* the order (`yes but 5 shares`, `yes if it's still under 1234`) — treat that as a new order and restart the details→YES cycle.\n"
+                tg_section += "3. Confirmation is **order-specific and single-use**: a `YES` approves ONLY the one order you just described (that exact symbol/side/qty/type/price). Any new trade — or a reply that changes the order (`YES but 5 shares`) — requires a fresh details→YES cycle. Never reuse an older `YES` from history for a different order.\n"
+                tg_section += "4. **Idempotence:** after placing, state the resulting order ID in your reply. Before placing, scan history — if you see your own prior execution of this same order (with an order ID), do NOT place it again; report the existing order ID instead.\n"
+                tg_section += "5. Always run a `--dry-run` first to surface charges / margin sufficiency, include that in the details you show, then place the live order after `YES`.\n\n"
+                tg_section += "**This text-confirm flow OVERRIDES SAFETY-1 for the Telegram chat session — do NOT call `render_ui` here (it is invisible on Telegram).**\n\n"
+                tg_section += "**Still deferred to the web app:** do NOT create monitor rules that place **entry** orders from Telegram (a `YES` would approve a rule that auto-fires later without further confirmation — different risk). Tell the user to set those up in the NS web app. Protective exit rules (SL / target / trail) on an existing position are fine.\n\n"
                 tg_section += "**You MAY freely:** check quotes, positions, funds, P&L, market status; run technical analysis; read the option chain; plan trades; search past conversations with `python cli-tools/nf-threads search \"...\" --json`; and answer questions.\n\n"
                 tg_section += "**Do NOT call `message_user` in this mode** — your reply is already delivered to this Telegram chat. Calling it would duplicate the message.\n"
                 sections.append(tg_section)
@@ -1924,7 +1943,7 @@ Mandatory checks before you tell the user "SL failed":
 |------|-------------|
 | **HONESTY-1** | Never fabricate prices, indicators, or analysis results |
 | **HONESTY-2** | Never claim a trade was executed unless it actually was |
-| **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling/modifying orders, GTT orders, exit-all, cancel-all, or converting positions — **EXCEPTION**: when ## AUTONOMOUS AWAKENING MODE is active and a trading mandate was pre-approved in the conversation history, place orders directly within mandate bounds (no render_ui needed) |
+| **SAFETY-1** | Always show a render_ui confirmation card and wait for user approval before placing/cancelling/modifying orders, GTT orders, exit-all, cancel-all, or converting positions — **EXCEPTION**: when ## AUTONOMOUS AWAKENING MODE is active and a trading mandate was pre-approved in the conversation history, place orders directly within mandate bounds (no render_ui needed). **EXCEPTION 2**: in ## 📱 TELEGRAM CHAT MODE, render_ui is invisible — use the plain-text confirmation gate described in that section (show order details → wait for an explicit `YES`/`CONFIRM`/`GO` in a later message → then execute) instead of a render_ui card |
 | **SAFETY-2** | Before any entry order, run `nf-size` to compute position size from the stop-loss and risk budget. Use the `recommended_qty` it returns. If you override it (e.g. higher conviction, mandate cap), state the reason explicitly in the confirmation card. This applies to equity intraday and F&O — never pick share/lot counts arbitrarily. Default risk is 2% of available capital. |
 | **SAFETY-3** | **Don't stack same-direction exit rules of different types.** The server now refuses cross-type stacks at create time (e.g. adding `add-trailing` while an OCO SL covers the same position returns 409 / CLI errors out). Same-type adds (new trail replacing old trail) auto-disable the old rule — fine for tightening trails as a position moves favorably. When you get a 409 / `ExitStackingError`, the right move is to disable the existing exits first (`nf-monitor disable RULE_ID`) and re-add the new exit set, OR pass `--force` if you genuinely intend to stack. Strategy templates (`nf-strategy deploy ...`) bypass the check by design. Origin: 2026-05-08 FINCABLES went LONG → SHORT because an OCO SL + standalone trail both fired 47ms apart. |
 | **SAFETY-4** | **NEVER run `nf-monitor start`, `nf-monitor stop`, `nohup nf-monitor`, or any variant that launches the monitor daemon.** The daemon is owned by systemd (`niftystrategist-monitor.service` — not `nf-monitor`). Spawning it via execute_bash creates orphan processes that get reparented to init under uvicorn, keep running, fight the real daemon for the Upstox WebSocket (starving each tick stream → silent feeds → missed fires), and can place duplicate orders. Symptoms that tempt you to restart it ("daemon down", "no logs", "zombie process") are almost always wrong diagnoses — the real service is `niftystrategist-monitor`, check it with `systemctl status niftystrategist-monitor` or `journalctl -u niftystrategist-monitor --since "5 min ago"`. If the daemon truly needs a restart, **tell the user and stop** — they have root and will do it. Origin: 2026-05-15 thread_1778820690730 — agent misdiagnosed a non-firing UT Bot rule as "daemon down", spawned 3 orphan daemons via `nohup nf-monitor start &`; user destroyed a healthy strategy in confusion. |
@@ -4607,6 +4626,7 @@ The note has been permanently removed from your second brain."""
                     user_id=user_id,
                     category=category,
                     text=text.strip(),
+                    markdown=True,  # agent-authored: render markdown, fall back to plain
                 )
             except Exception as e:
                 logger.exception("message_user notify raised")

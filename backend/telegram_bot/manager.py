@@ -85,6 +85,10 @@ def _register_handlers(application: Application, user_id: int) -> None:
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message)
     )
+    # Voice notes → transcribe → same daily-thread turn → voice + text reply.
+    application.add_handler(
+        MessageHandler(filters.VOICE, handlers.handle_voice)
+    )
 
 
 async def _run_application(application: Application, user_id: int) -> None:

@@ -899,6 +899,7 @@ ensure to think carefully about the classification before making a decision.
                         user_id=user_id,
                         category="awakening",
                         text=text,
+                        markdown=True,  # preview may contain agent markdown
                     )
                 except Exception:
                     logger.exception("Awakening telegram notify raised; ignoring")

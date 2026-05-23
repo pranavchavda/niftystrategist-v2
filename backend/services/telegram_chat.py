@@ -81,13 +81,18 @@ async def _load_thread_messages(session, thread_id: str) -> list:
 
 
 async def _persist_turn(
-    session, thread_id: str, user_text: str, assistant_text: str
+    session, thread_id: str, user_text: str, assistant_text: str, is_voice: bool = False
 ) -> None:
     """Write the user message + assistant reply to the thread, bump updated_at.
 
-    Tagged source=telegram so the web UI can badge the turn later.
+    Tagged source=telegram so the web UI can badge the turn later. When the user
+    spoke, the user message also carries voice=True (content is the transcript).
     """
     now = utc_now()
+
+    user_meta = {"source": "telegram"}
+    if is_voice:
+        user_meta["voice"] = True
 
     user_msg = Message(
         conversation_id=thread_id,
@@ -95,7 +100,7 @@ async def _persist_turn(
         role="user",
         content=user_text,
         timestamp=now,
-        extra_metadata={"source": "telegram"},
+        extra_metadata=user_meta,
     )
     session.add(user_msg)
 
@@ -118,8 +123,14 @@ async def _persist_turn(
     await session.commit()
 
 
-async def run_telegram_turn(user_id: int, chat_id: int, text: str) -> str:
+async def run_telegram_turn(
+    user_id: int, chat_id: int, text: str, is_voice: bool = False
+) -> str:
     """Process one inbound Telegram message; return the reply text.
+
+    `text` is the message text, or the transcript when `is_voice=True` (the
+    caller transcribes the voice note before calling). `is_voice` switches the
+    orchestrator into spoken-friendly mode so the reply reads well aloud.
 
     Raises nothing the caller can't show — on internal failure returns a short
     user-facing error string. Returns "" only if the chat is unauthorized (the
@@ -203,6 +214,7 @@ async def run_telegram_turn(user_id: int, chat_id: int, text: str) -> str:
         user_id=user_id,
         trading_mode=trading_mode,
         is_telegram=True,  # mobile-friendly, read/analysis-only mode
+        is_voice=is_voice,  # spoken-friendly reply when the user sent a voice note
     )
 
     # Serialize against a concurrent awakening on the same thread.
@@ -241,7 +253,7 @@ async def run_telegram_turn(user_id: int, chat_id: int, text: str) -> str:
 
         async with get_db_session() as session:
             try:
-                await _persist_turn(session, thread_id, text, reply)
+                await _persist_turn(session, thread_id, text, reply, is_voice=is_voice)
             except Exception:
                 logger.exception(
                     "telegram_chat: failed to persist turn thread=%s", thread_id
