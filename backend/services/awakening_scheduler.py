@@ -502,6 +502,9 @@ async def _write_partial_summary_on_crash(
             thread_id=thread_id,
             user_id=user_id,
             response_text="\n".join(lines),
+            # Tag so the daily memory extractor excludes this partial/untrustworthy
+            # turn — a crashed run reflects half-finished state, not durable facts.
+            extra_metadata={"crashed": True},
         )
         logger.info(
             "Awakening '%s' (id=%d): wrote partial-crash summary with %d tool calls to thread %s",

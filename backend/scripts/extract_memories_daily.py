@@ -51,6 +51,50 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _is_crashed_message(msg) -> bool:
+    """True if a message is a crash/partial-summary turn (tagged by
+    awakening_scheduler via extra_metadata.crashed). Such turns reflect
+    half-finished state, not durable facts, so the extractor excludes them.
+    """
+    meta = getattr(msg, "extra_metadata", None) or {}
+    return bool(isinstance(meta, dict) and meta.get("crashed"))
+
+
+async def rescue_memories_before_compaction(thread_id: str, user_id: str) -> dict:
+    """Phase 3 (Hermes on_pre_compress analogue): extract durable facts from a
+    thread's FULL messages just before compaction summarizes-and-deletes them.
+
+    Compaction's TOON summary is lossy; running the normal extractor first
+    captures facts at full fidelity. Runs in its OWN DB session so a failure
+    here can NEVER block compaction (the caller must proceed regardless).
+    Dedup is handled by add_memory_with_judge, so overlap with the nightly run
+    is safe. See docs/plans/2026-05-23-prefix-cache-memory-port.md.
+
+    Returns the extractor result dict, or {"error": ...} on failure (never raises).
+    """
+    try:
+        async with get_db_context() as session:
+            conversation = await ConversationOps.get_conversation(
+                session, thread_id, user_id, include_messages=False
+            )
+            if not conversation:
+                return {"error": "conversation_not_found"}
+            extractor = DailyMemoryExtractor(dry_run=False, force=True)
+            result = await extractor.extract_for_conversation(session, conversation, user_id)
+            await session.commit()
+            logger.info(
+                "[PRE-COMPACT RESCUE] %s: extracted=%d rejected=%d updated=%d",
+                thread_id,
+                result.get("extracted", 0),
+                result.get("rejected", 0),
+                result.get("updated", 0),
+            )
+            return result
+    except Exception as e:
+        logger.error("[PRE-COMPACT RESCUE] failed for %s (non-fatal): %s", thread_id, e)
+        return {"error": str(e)}
+
+
 class DailyMemoryExtractor:
     """Handles daily batch memory extraction."""
 
@@ -153,8 +197,23 @@ class DailyMemoryExtractor:
                 result["error"] = "insufficient_messages"
                 return result
 
+            # Exclude crash/partial-summary turns: a crashed awakening reflects
+            # half-finished state (orders maybe placed, strategies maybe deployed),
+            # not durable facts. Extracting from it pollutes recall with state the
+            # run never completed. The crash message is tagged
+            # extra_metadata.crashed=True by awakening_scheduler. We exclude only
+            # the tagged message(s), not the whole thread — surrounding good turns
+            # still yield memories. See docs/plans/2026-05-23-prefix-cache-memory-port.md.
+            kept = [m for m in messages if not _is_crashed_message(m)]
+            excluded = len(messages) - len(kept)
+            if excluded:
+                logger.info(
+                    "  Excluding %d crash/partial turn(s) from extraction input for %s",
+                    excluded,
+                    conversation.id,
+                )
             conversation_history = [
-                {"role": msg.role, "content": msg.content} for msg in messages
+                {"role": msg.role, "content": msg.content} for msg in kept
             ]
 
             if self.dry_run:

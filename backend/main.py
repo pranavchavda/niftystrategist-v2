@@ -398,6 +398,15 @@ async def _auto_compact_conversation(thread_id: str, user_id: str, message_count
 
             messages = conversation.messages
 
+            # Phase 3: rescue durable facts at full fidelity BEFORE the lossy
+            # summary deletes the messages. Runs in its own session; never blocks
+            # compaction. See docs/plans/2026-05-23-prefix-cache-memory-port.md.
+            try:
+                from scripts.extract_memories_daily import rescue_memories_before_compaction
+                await rescue_memories_before_compaction(thread_id, user_id)
+            except Exception as _rescue_err:
+                logger.warning(f"[AUTO-COMPACT] pre-compaction memory rescue failed (non-fatal): {_rescue_err}")
+
             # Generate compact summary
             from utils.toon_converter import create_hybrid_fork_summary
             compact_summary = await create_hybrid_fork_summary(
@@ -2357,6 +2366,25 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
         if user_memories:
             logger.info(f"Injected {len(user_memories)} memories for user {user_email}")
 
+        # Load the curated, auto-synthesized user profile (frozen, always-injected).
+        # Unlike user_memories (per-query semantic recall), this is stable across the
+        # session so it stays in the cacheable prompt prefix. Synthesized nightly by
+        # jobs/memory_profile.py. See docs/plans/2026-05-23-prefix-cache-memory-port.md.
+        user_profile_text = None
+        if user:
+            try:
+                from sqlalchemy import text as _sa_text
+                async with db_manager.async_session() as _psession:
+                    _pres = await _psession.execute(
+                        _sa_text("SELECT profile_text FROM user_profiles WHERE user_id = :uid"),
+                        {"uid": user.email},
+                    )
+                    user_profile_text = _pres.scalar_one_or_none()
+                if user_profile_text:
+                    logger.info(f"[Profile] Loaded synthesized profile for {user.email} ({len(user_profile_text)} chars)")
+            except Exception as e:
+                logger.warning(f"[Profile] Could not load user profile for {user_email}: {e}")
+
         # Get TODO mode preference from request
         preferences = body.get("preferences", {})
         use_todo = preferences.get("use_todo", False)
@@ -2399,6 +2427,7 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
             user_memories=user_memories,
             user_name=user.name if user else None,
             user_bio=user.bio if user else None,
+            user_profile=user_profile_text,
             use_todo=use_todo,
             interrupt_signal=interrupt_signal,
             upstox_access_token=user_upstox_token,

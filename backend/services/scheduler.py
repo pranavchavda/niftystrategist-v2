@@ -502,6 +502,19 @@ class WorkflowScheduler:
         except Exception:
             logger.exception("memory_consolidation job failed")
 
+        # Profile synthesis last — it reads the now-faded + consolidated memory
+        # set to build each user's curated, always-injected profile.
+        try:
+            from jobs.memory_profile import run_profile_synthesis
+            prof = await run_profile_synthesis(dry_run=False)
+            logger.info(
+                "memory_profile: synthesized=%d users=%d",
+                prof.get("synthesized", 0),
+                prof.get("users", 0),
+            )
+        except Exception:
+            logger.exception("memory_profile job failed")
+
     def _add_totp_refresh_job(self):
         """Add a daily job to proactively refresh Upstox tokens via TOTP.
 

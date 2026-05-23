@@ -657,8 +657,15 @@ ensure to think carefully about the classification before making a decision.
         thread_id: str,
         user_id: int,
         response_text: str,
+        extra_metadata: Optional[dict] = None,
     ) -> None:
-        """Write a system trigger + assistant response back to the thread."""
+        """Write a system trigger + assistant response back to the thread.
+
+        ``extra_metadata`` is merged into the assistant response message's
+        metadata. Used to tag crash/partial summaries with ``crashed: True`` so
+        the daily memory extractor can exclude untrustworthy partial turns
+        (see jobs/scripts/extract_memories_daily.py).
+        """
         import uuid
         from database.models import Message, Conversation
         from datetime import timedelta
@@ -683,7 +690,7 @@ ensure to think carefully about the classification before making a decision.
             role="assistant",
             content=response_text,
             timestamp=now + timedelta(microseconds=1),
-            extra_metadata={"auto_followup": True},
+            extra_metadata={"auto_followup": True, **(extra_metadata or {})},
         )
         self.db.add(response_msg)
 

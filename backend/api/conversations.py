@@ -969,6 +969,15 @@ async def compact_conversation(
 
     messages = conversation.messages
 
+    # Phase 3: rescue durable facts at full fidelity BEFORE the lossy summary
+    # deletes the messages. Own session; never blocks compaction.
+    # See docs/plans/2026-05-23-prefix-cache-memory-port.md.
+    try:
+        from scripts.extract_memories_daily import rescue_memories_before_compaction
+        await rescue_memories_before_compaction(conversation_id, user.email)
+    except Exception as _rescue_err:
+        logger.warning(f"Pre-compaction memory rescue failed (non-fatal): {_rescue_err}")
+
     # Generate compact summary using same pipeline as fork
     from utils.toon_converter import create_hybrid_fork_summary
 

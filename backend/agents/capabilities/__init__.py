@@ -12,17 +12,28 @@ runs unchanged. This lets the capability path bake on dev before cutover.
 import os
 
 from agents.capabilities.context_injection import (
+    UserProfileCapability,
     MemoryCapability,
     RecentThreadsCapability,
     DateTimeCapability,
+    VolatileContextCapability,
 )
 
 __all__ = [
+    "UserProfileCapability",
     "MemoryCapability",
     "RecentThreadsCapability",
     "DateTimeCapability",
+    "VolatileContextCapability",
     "capabilities_v2_enabled",
+    "prefix_cache_layout_enabled",
 ]
+
+
+def prefix_cache_layout_enabled() -> bool:
+    """Re-exported from volatile_context for convenience."""
+    from agents.capabilities.volatile_context import prefix_cache_layout_enabled as _impl
+    return _impl()
 
 
 def capabilities_v2_enabled() -> bool:

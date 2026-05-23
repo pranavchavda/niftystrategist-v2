@@ -39,21 +39,116 @@ class MemoryCapability(AbstractCapability["OrchestratorDeps"]):
 
     def get_instructions(self) -> Callable[[RunContext["OrchestratorDeps"]], str]:
         def build(ctx: RunContext["OrchestratorDeps"]) -> str:
-            memories = ctx.deps.user_memories
-            if not memories:
-                return ""
-            section = "\n\n## REMEMBERED INFORMATION\n\n"
-            section += "From previous conversations, I remember:\n"
-            for i, memory in enumerate(memories, 1):
-                section += f"{i}. {memory}\n"
-            section += (
-                "\nUse this to personalize your assistance. Each item shows when it was "
-                "noted (⟨noted YYYY-MM-DD⟩). Treat point-in-time figures — available cash, "
-                "intraday float/capital, position sizes, P&L, holdings — as possibly stale: "
-                "when they matter, confirm against live data (nf-funds, nf-portfolio, the "
-                "current thread) and prefer the live value if it conflicts with an older note.\n"
+            from agents.capabilities.volatile_context import (
+                layout_active_for, build_memory_section,
             )
-            return section
+            # Under prefix-cache layout this moves to the message tail
+            # (VolatileContextCapability) — suppress here to avoid double-inject.
+            if layout_active_for(ctx.deps):
+                return ""
+            return build_memory_section(ctx.deps)
+
+        return build
+
+
+_VOLATILE_SENTINEL = "<volatile_context>"
+
+
+@dataclass
+class VolatileContextCapability(AbstractCapability["OrchestratorDeps"]):
+    """Phase 4: inject volatile per-turn context at the TAIL of the message list
+    (current turn) instead of in the instructions block, so the prompt prefix
+    stays byte-stable and the implicit prompt cache hits on the whole history.
+
+    Active only when ENABLE_PREFIX_CACHE_LAYOUT is on AND the run is not an
+    autonomous awakening. When active, the six volatile sections (memory recall,
+    recent threads, scratchpad, tool-cache, paper portfolio, date/time) are
+    suppressed from the instructions path (legacy inline + the other
+    capabilities) and emitted here at the tail instead. When inactive, this hook
+    no-ops and the instruction path runs unchanged.
+
+    Idempotent: a `<volatile_context>` sentinel guards against injecting more
+    than one block per model request across the tool loop.
+    See docs/plans/2026-05-23-prefix-cache-memory-port.md.
+    """
+
+    async def before_model_request(self, ctx: RunContext["OrchestratorDeps"], request_context):
+        from agents.capabilities.volatile_context import (
+            layout_active_for,
+            build_volatile_context_block,
+        )
+
+        if not layout_active_for(ctx.deps):
+            return request_context
+
+        messages = request_context.messages
+        # Skip if a volatile block is already present (exactly-once per request).
+        for msg in messages:
+            for part in getattr(msg, "parts", []) or []:
+                content = getattr(part, "content", None)
+                if isinstance(content, str) and _VOLATILE_SENTINEL in content:
+                    return request_context
+
+        block = await build_volatile_context_block(ctx)
+        if not block:
+            return request_context
+
+        from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+        request_context.messages.append(
+            ModelRequest(parts=[UserPromptPart(content=block)])
+        )
+        logger.debug("[prefix-cache] injected volatile context block at message tail")
+        return request_context
+
+    async def after_model_request(self, ctx: RunContext["OrchestratorDeps"], *, request_context, response):
+        """Validation gate: log provider cache usage so we can confirm the layout
+        actually pays off. On turn 2+ of a thread, cache_read should be > 0 when
+        the prefix is stable. Observe-only; never mutates the response.
+        """
+        try:
+            from agents.capabilities.volatile_context import layout_active_for
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                logger.info(
+                    "[prefix-cache] usage: input=%s cache_read=%s cache_write=%s output=%s (layout=%s)",
+                    getattr(usage, "input_tokens", None),
+                    getattr(usage, "cache_read_tokens", None),
+                    getattr(usage, "cache_write_tokens", None),
+                    getattr(usage, "output_tokens", None),
+                    layout_active_for(ctx.deps),
+                )
+        except Exception:
+            pass
+        return response
+
+
+@dataclass
+class UserProfileCapability(AbstractCapability["OrchestratorDeps"]):
+    """Inject the auto-synthesized, curated user profile.
+
+    Unlike MemoryCapability (per-query semantic recall, volatile), this is the
+    FROZEN profile: it changes only when the nightly synthesis job re-runs, so
+    it is byte-stable across every turn within a session. That stability is
+    deliberate — it keeps it inside the cacheable prompt prefix (Hermes-style).
+
+    Ported from EspressoBot. Source: `jobs/memory_profile.py` synthesizes
+    `user_profiles.profile_text`; `main.py` preloads it into
+    `deps.user_profile`. Keep this wording stable: drift breaks the prefix cache
+    for everything after it. See docs/plans/2026-05-23-prefix-cache-memory-port.md.
+    """
+
+    def get_instructions(self) -> Callable[[RunContext["OrchestratorDeps"]], str]:
+        def build(ctx: RunContext["OrchestratorDeps"]) -> str:
+            profile = ctx.deps.user_profile
+            if not profile:
+                return ""
+            return (
+                "\n\n## USER PROFILE (Auto-synthesized)\n\n"
+                f"{profile}"
+                "\n\nThis profile is automatically synthesized from accumulated "
+                "memories. Use it to personalize your assistance.\n"
+            )
 
         return build
 
@@ -69,50 +164,12 @@ class RecentThreadsCapability(AbstractCapability["OrchestratorDeps"]):
 
     def get_instructions(self) -> Callable[[RunContext["OrchestratorDeps"]], str]:
         async def build(ctx: RunContext["OrchestratorDeps"]) -> str:
-            try:
-                from sqlalchemy import text as sa_text
-                from database.session import AsyncSessionLocal
-
-                state = ctx.deps.state
-                if not state:
-                    return ""
-                user_email = state.user_id
-                current_thread = state.thread_id
-
-                async with AsyncSessionLocal() as _db:
-                    _result = await _db.execute(sa_text(
-                        "SELECT c.id, c.title, "
-                        "  (SELECT MAX(m.timestamp) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at "
-                        "FROM conversations c "
-                        "WHERE c.user_id = :user_id AND c.id != :current_thread "
-                        "AND c.is_archived = false AND c.title IS NOT NULL "
-                        "ORDER BY last_message_at DESC NULLS LAST LIMIT 15"
-                    ), {"user_id": user_email, "current_thread": current_thread})
-                    recent_threads = _result.fetchall()
-
-                if not recent_threads:
-                    return ""
-
-                now_naive = datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)
-                thread_section = "\n\n## RECENT CONVERSATION THREADS\n\n"
-                thread_section += 'Use `python cli-tools/nf-threads search "query" --json` to find context from past conversations.\n\n'
-                for t_id, t_title, t_updated in recent_threads:
-                    if t_updated:
-                        ts = t_updated if t_updated.tzinfo is None else t_updated.replace(tzinfo=None)
-                        delta = now_naive - ts
-                        if delta.days == 0:
-                            age = "today"
-                        elif delta.days == 1:
-                            age = "yesterday"
-                        else:
-                            age = f"{delta.days}d ago"
-                    else:
-                        age = ""
-                    thread_section += f"- \"{t_title}\" ({age})\n"
-                return thread_section
-            except Exception as e:
-                logger.debug(f"RecentThreadsCapability injection failed (non-fatal): {e}")
+            from agents.capabilities.volatile_context import (
+                layout_active_for, build_recent_threads_section,
+            )
+            if layout_active_for(ctx.deps):
                 return ""
+            return await build_recent_threads_section(ctx.deps)
 
         return build
 
@@ -133,14 +190,11 @@ class DateTimeCapability(AbstractCapability["OrchestratorDeps"]):
 
     def get_instructions(self) -> Callable[[RunContext["OrchestratorDeps"]], str]:
         def build(ctx: RunContext["OrchestratorDeps"]) -> str:
-            utc_now = datetime.now(ZoneInfo("UTC"))
-            ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
-
-            date_section = "\n\n## ⏰ CURRENT DATE & TIME\n\n"
-            date_section += f"**Right now it is: {ist_now.strftime('%I:%M %p IST')}** on {ist_now.strftime('%A, %B %d, %Y')}\n"
-            date_section += f"**ISO:** {ist_now.isoformat()}\n"
-            date_section += "\nNSE market hours: 9:15 AM – 3:30 PM IST. Broker auto-square-off: 3:15–3:25 PM IST.\n"
-            date_section += "DO NOT place exit/square-off orders before 3:00 PM unless a stop-loss is hit.\n"
-            return date_section
+            from agents.capabilities.volatile_context import (
+                layout_active_for, build_datetime_section,
+            )
+            if layout_active_for(ctx.deps):
+                return ""
+            return build_datetime_section()
 
         return build

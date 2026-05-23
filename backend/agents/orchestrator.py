@@ -238,6 +238,9 @@ class OrchestratorDeps(BaseModel):
     )  # Injected memories for this conversation
     user_name: Optional[str] = None  # User's display name
     user_bio: Optional[str] = None  # User's bio for context
+    user_profile: Optional[str] = (
+        None  # Auto-synthesized curated profile (frozen, always-injected — see UserProfileCapability)
+    )
     use_todo: bool = False  # Enable TODO tracking for this conversation
     interrupt_signal: Optional[Any] = None  # Interrupt signal for cancellation
     used_bash_tools: set = Field(
@@ -1034,6 +1037,19 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 
             sections = []
 
+            # Phase 4 prefix-cache layout: when active, the six volatile sections
+            # (memory, recent-threads, scratchpad, tool-cache, paper-portfolio,
+            # date/time) move to the message tail via VolatileContextCapability,
+            # so they're suppressed here to keep the instruction prefix stable.
+            # Forced off for awakenings. See volatile_context.layout_active_for.
+            from agents.capabilities.volatile_context import (
+                layout_active_for as _layout_active_for,
+                build_scratchpad_section as _build_scratchpad,
+                build_toolcache_section as _build_toolcache,
+                build_paper_portfolio_section as _build_paper,
+            )
+            _layout = _layout_active_for(ctx.deps)
+
             # NOTE: Date/time injection is at the BOTTOM of dynamic instructions
             # (after all other sections) so it's closest to the conversation history
             # and doesn't get lost in the middle of the prompt.
@@ -1066,81 +1082,17 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                     "this section only applies when you see it.\n"
                 )
 
-            # Inject scratchpad content if available
+            # Inject scratchpad + cached-data sections (suppressed under the
+            # prefix-cache layout — they move to the message tail instead).
             thread_id = ctx.deps.state.thread_id
-            if thread_id:
-                from services.scratchpad_db import ScratchpadDB
-
-                scratchpad = ScratchpadDB(thread_id)
-                entries = await scratchpad.get_entries()
-                if entries:
-                    scratchpad_section = "\n\n## SCRATCHPAD\n\n"
-                    scratchpad_section += (
-                        "This is a shared scratchpad for important context:\n"
-                    )
-                    for entry in entries:
-                        scratchpad_section += f"- [{entry.get('timestamp', '')}][{entry.get('author', 'unknown')}] {entry.get('content', '')}\n"
-                    scratchpad_section += (
-                        "\nRefer to this information to maintain context.\n"
-                    )
+            if not _layout:
+                scratchpad_section = await _build_scratchpad(ctx.deps)
+                if scratchpad_section:
                     sections.append(scratchpad_section)
 
-            # Inject cache statistics and recent entries (with intelligent guidance)
-            if thread_id:
-                from tools.native.tool_cache import ToolCache
-
-                try:
-                    cache = ToolCache(thread_id)
-                    stats = cache.get_stats()
-
-                    if stats["valid_entries"] > 0:
-                        cache_section = "\n\n## 💾 Cached Data Available\n\n"
-
-                        tokens_saved = stats["total_tokens_saved"]
-                        cache_section += f"**{stats['valid_entries']} cached entries** ({tokens_saved:,} tokens)\n\n"
-
-                        # Show recent cache entries preview (last 3)
-                        recent_entries = cache.lookup()[:3]
-                        if recent_entries:
-                            cache_section += "**Recent cache entries:**\n"
-                            for i, entry in enumerate(recent_entries, 1):
-                                age_min = entry["age_minutes"]
-                                freshness = (
-                                    "🟢"
-                                    if age_min < 5
-                                    else "🟡"
-                                    if age_min < 15
-                                    else "🟠"
-                                )
-                                cache_section += f"{i}. {freshness} **{entry['tool_name']}** ({age_min}m ago): {entry['summary'][:60]}...\n"
-
-                        # Intelligent cache decision guidance
-                        cache_section += "\n**When to USE cache:**\n"
-                        cache_section += "- Repeating a similar search (same product type, vendor, or category)\n"
-                        cache_section += (
-                            "- Referencing data you already fetched this conversation\n"
-                        )
-                        cache_section += "- Analytics/reports where real-time precision isn't critical\n"
-                        cache_section += (
-                            "- Follow-up questions about previously fetched data\n\n"
-                        )
-
-                        cache_section += "**When to SKIP cache and fetch fresh:**\n"
-                        cache_section += "- User says: 'refresh', 'current', 'now', 'latest', 'again', 'new search'\n"
-                        cache_section += (
-                            "- After you just created/updated/deleted something\n"
-                        )
-                        cache_section += (
-                            "- Query is clearly different from cached entries\n"
-                        )
-                        cache_section += "- User is troubleshooting or verifying a change took effect\n"
-                        cache_section += "- Real-time data needed (live stock prices, portfolio positions)\n\n"
-
-                        cache_section += "**Tool execution order:** search_docs (get syntax) → cache_lookup (optional) → execute_bash\n"
-
-                        sections.append(cache_section)
-                except Exception as e:
-                    logger.error(f"Error getting cache stats: {e}")
+                cache_section = _build_toolcache(ctx.deps)
+                if cache_section:
+                    sections.append(cache_section)
 
             # When capabilities-v2 is enabled, MemoryCapability +
             # RecentThreadsCapability own the memory/threads sections. Guard the
@@ -1148,20 +1100,22 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             from agents.capabilities import capabilities_v2_enabled
             _cap_v2 = capabilities_v2_enabled()
 
-            # Inject memories if available
-            if not _cap_v2 and ctx.deps.user_memories:
-                memories_section = "\n\n## REMEMBERED INFORMATION\n\n"
-                memories_section += "From previous conversations, I remember:\n"
-                for i, memory in enumerate(ctx.deps.user_memories, 1):
-                    memories_section += f"{i}. {memory}\n"
-                memories_section += (
-                    "\nUse this to personalize your assistance. Each item shows when it was "
-                    "noted (⟨noted YYYY-MM-DD⟩). Treat point-in-time figures — available cash, "
-                    "intraday float/capital, position sizes, P&L, holdings — as possibly stale: "
-                    "when they matter, confirm against live data (nf-funds, nf-portfolio, the "
-                    "current thread) and prefer the live value if it conflicts with an older note.\n"
+            # Inject memories if available (suppressed under prefix-cache layout —
+            # moves to the message tail).
+            if not _cap_v2 and not _layout and ctx.deps.user_memories:
+                from agents.capabilities.volatile_context import build_memory_section
+                sections.append(build_memory_section(ctx.deps))
+
+            # Inject the curated user profile (frozen, always-injected). Legacy
+            # path only — under capabilities-v2 UserProfileCapability owns it.
+            # Wording mirrors UserProfileCapability byte-for-byte.
+            if not _cap_v2 and ctx.deps.user_profile:
+                sections.append(
+                    "\n\n## USER PROFILE (Auto-synthesized)\n\n"
+                    f"{ctx.deps.user_profile}"
+                    "\n\nThis profile is automatically synthesized from accumulated "
+                    "memories. Use it to personalize your assistance.\n"
                 )
-                sections.append(memories_section)
 
             # Memory capture nudge — agent-driven mid-conversation memory writes.
             # Daily cron extractor still runs on prod, but in-flight context
@@ -1291,40 +1245,12 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 tg_section += "**Do NOT call `message_user` in this mode** — your reply is already delivered to this Telegram chat. Calling it would duplicate the message.\n"
                 sections.append(tg_section)
 
-            if (
-                ctx.deps.trading_mode != "live"
-                and ctx.deps.paper_total_value is not None
-            ):
-                paper_section = "\n\n## Paper Trading Mode\n\n"
-                paper_section += "Currently operating in **paper trading mode**:\n"
-
-                # Format currency with Indian locale style (Lakhs/Crores) manually
-                # since locale might not be available in container
-                def format_inr(amount):
-                    try:
-                        s, *d = str(amount).partition(".")
-                        r = ",".join(
-                            [s[x - 2 : x] for x in range(-3, -len(s), -2)][::-1]
-                            + [s[-3:]]
-                        )
-                        return "".join([r] + d)
-                    except:
-                        return str(amount)
-
-                total_val = format_inr(round(ctx.deps.paper_total_value, 2))
-                pnl = format_inr(round(ctx.deps.paper_total_pnl or 0, 2))
-                pnl_pct = float(ctx.deps.paper_pnl_percent or 0)
-
-                pnl_emoji = "🟢" if (ctx.deps.paper_total_pnl or 0) >= 0 else "🔴"
-
-                paper_section += f"- **Current Capital**: ₹{total_val}\n"
-                paper_section += (
-                    f"- **Total P&L**: {pnl_emoji} ₹{pnl} ({pnl_pct:+.2f}%)\n"
-                )
-                paper_section += "- Orders are simulated, not real (no risk)\n"
-                paper_section += "- Perfect for learning and testing strategies\n"
-
-                sections.append(paper_section)
+            # Paper-trading portfolio (suppressed under prefix-cache layout —
+            # moves to the message tail).
+            if not _layout:
+                paper_section = _build_paper(ctx.deps)
+                if paper_section:
+                    sections.append(paper_section)
 
             # Inject TODO mode instruction if enabled
             if ctx.deps.use_todo:
@@ -1371,63 +1297,22 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 sections.append(thread_section)
 
             # Inject recent thread titles for cross-thread awareness.
-            # Skipped when capabilities-v2 owns this via RecentThreadsCapability.
-            if not _cap_v2:
-              try:
-                from sqlalchemy import select
-                from database.session import AsyncSessionLocal
-                from database.models import Conversation as ConvModel
-                user_email = ctx.deps.state.user_id  # email
-                current_thread = ctx.deps.state.thread_id
-
-                async with AsyncSessionLocal() as _db:
-                    from sqlalchemy import text as sa_text
-                    _result = await _db.execute(sa_text(
-                        "SELECT c.id, c.title, "
-                        "  (SELECT MAX(m.timestamp) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at "
-                        "FROM conversations c "
-                        "WHERE c.user_id = :user_id AND c.id != :current_thread "
-                        "AND c.is_archived = false AND c.title IS NOT NULL "
-                        "ORDER BY last_message_at DESC NULLS LAST LIMIT 15"
-                    ), {"user_id": user_email, "current_thread": current_thread})
-                    recent_threads = _result.fetchall()
-
-                if recent_threads:
-                    from datetime import timezone
-                    thread_section = "\n\n## RECENT CONVERSATION THREADS\n\n"
-                    thread_section += 'Use `python cli-tools/nf-threads search "query" --json` to find context from past conversations.\n\n'
-                    for t_id, t_title, t_updated in recent_threads:
-                        # Simple relative time
-                        if t_updated:
-                            delta = utc_now.replace(tzinfo=None) - (t_updated if t_updated.tzinfo is None else t_updated.replace(tzinfo=None))
-                            if delta.days == 0:
-                                age = "today"
-                            elif delta.days == 1:
-                                age = "yesterday"
-                            else:
-                                age = f"{delta.days}d ago"
-                        else:
-                            age = ""
-                        thread_section += f"- \"{t_title}\" ({age})\n"
+            # Skipped when capabilities-v2 owns this (RecentThreadsCapability) or
+            # under the prefix-cache layout (moves to the message tail).
+            if not _cap_v2 and not _layout:
+                from agents.capabilities.volatile_context import build_recent_threads_section
+                thread_section = await build_recent_threads_section(ctx.deps)
+                if thread_section:
                     sections.append(thread_section)
-              except Exception as e:
-                logger.debug(f"Thread titles injection failed (non-fatal): {e}")
 
             # Date/time is the LAST section — placed at the bottom of the system
             # prompt so it's closest to the conversation history and doesn't get
             # lost in the middle (needle-in-haystack attention issue).
-            # Skipped when capabilities-v2 owns this via DateTimeCapability,
-            # which is registered last so the section still lands at the bottom.
-            if not _cap_v2:
-                utc_now = datetime.now(ZoneInfo("UTC"))
-                ist_now = utc_now.astimezone(ZoneInfo("Asia/Kolkata"))
-
-                date_section = "\n\n## ⏰ CURRENT DATE & TIME\n\n"
-                date_section += f"**Right now it is: {ist_now.strftime('%I:%M %p IST')}** on {ist_now.strftime('%A, %B %d, %Y')}\n"
-                date_section += f"**ISO:** {ist_now.isoformat()}\n"
-                date_section += "\nNSE market hours: 9:15 AM – 3:30 PM IST. Broker auto-square-off: 3:15–3:25 PM IST.\n"
-                date_section += "DO NOT place exit/square-off orders before 3:00 PM unless a stop-loss is hit.\n"
-                sections.append(date_section)
+            # Skipped when capabilities-v2 owns this (DateTimeCapability) or under
+            # the prefix-cache layout (moves to the message tail).
+            if not _cap_v2 and not _layout:
+                from agents.capabilities.volatile_context import build_datetime_section
+                sections.append(build_datetime_section())
 
             return "".join(sections)
 
@@ -1497,6 +1382,14 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
 
         caps: list = [hooks]
 
+        # Phase 4 prefix-cache layout: inject volatile context at the message
+        # tail (instead of in instructions) so the prompt prefix stays
+        # cache-stable. Self-gates via ENABLE_PREFIX_CACHE_LAYOUT (default on)
+        # and is forced off on awakenings, so it's safe to always register —
+        # works whether or not capabilities-v2 is enabled.
+        from agents.capabilities import VolatileContextCapability
+        caps.append(VolatileContextCapability())
+
         # Capabilities-v2 (env-gated, default off). When enabled, the
         # context-injection capabilities own the memory/recent-threads system
         # prompt sections — the legacy inline blocks in
@@ -1504,7 +1397,8 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
         from agents.capabilities import capabilities_v2_enabled
         if capabilities_v2_enabled():
             from agents.capabilities import (
-                MemoryCapability, RecentThreadsCapability, DateTimeCapability,
+                UserProfileCapability, MemoryCapability,
+                RecentThreadsCapability, DateTimeCapability,
             )
             from pydantic_ai.capabilities import ReinjectSystemPrompt
 
@@ -1512,6 +1406,11 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             # the inline `@agent.instructions` function. DateTimeCapability is
             # registered LAST so the date/time section stays at the bottom of
             # the prompt — the legacy "date/time is the LAST section" invariant.
+            #
+            # UserProfileCapability is registered FIRST: it's the most stable
+            # block (changes only nightly), so keeping it at the top maximizes
+            # the cacheable prefix (see prefix-cache plan).
+            caps.append(UserProfileCapability())
             caps.append(MemoryCapability())
             caps.append(RecentThreadsCapability())
             caps.append(DateTimeCapability())
@@ -1524,7 +1423,7 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
             # system prompt before enabling this on prod, or the `is_awakening`
             # mandate block could be injected twice. Safe while the flag is off.
             caps.append(ReinjectSystemPrompt())
-            logger.info("[capabilities-v2] enabled: Memory + RecentThreads + DateTime + ReinjectSystemPrompt")
+            logger.info("[capabilities-v2] enabled: UserProfile + Memory + RecentThreads + DateTime + ReinjectSystemPrompt")
 
         return caps
 
