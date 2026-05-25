@@ -413,7 +413,8 @@ class UpstoxClient:
             api_client = upstox_client.ApiClient(self._configuration)
             login_api = upstox_client.LoginApi(api_client)
 
-            response = login_api.token(
+            response = await asyncio.to_thread(
+                login_api.token,
                 api_version="v2",
                 code=code,
                 client_id=self.api_key,
@@ -646,7 +647,8 @@ class UpstoxClient:
             api_client = upstox_client.ApiClient(self._configuration)
             quote_api = upstox_client.MarketQuoteApi(api_client)
 
-            response = quote_api.get_full_market_quote(
+            response = await asyncio.to_thread(
+                quote_api.get_full_market_quote,
                 symbol=instrument_keys,
                 api_version="v2",
             )
@@ -970,7 +972,7 @@ class UpstoxClient:
             sell_qty_map: dict[str, int] = {}
             intraday_positions: list[PortfolioPosition] = []
             try:
-                pos_response = portfolio_api.get_positions(api_version="v2")
+                pos_response = await asyncio.to_thread(portfolio_api.get_positions, api_version="v2")
                 for pos in (pos_response.data or []):
                     qty = getattr(pos, 'quantity', 0) or 0
                     product = getattr(pos, 'product', '')
@@ -1103,7 +1105,7 @@ class UpstoxClient:
             available_cash = 0.0
             try:
                 user_api = upstox_client.UserApi(api_client)
-                funds_response = user_api.get_user_fund_margin(api_version="v2")
+                funds_response = await asyncio.to_thread(user_api.get_user_fund_margin, api_version="v2")
                 if funds_response.data:
                     equity_data = funds_response.data.get("equity")
                     if equity_data:
@@ -1353,7 +1355,7 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             order_api = upstox_client.OrderApi(api_client)
-            response = order_api.get_trade_history(api_version="v2")
+            response = await asyncio.to_thread(order_api.get_trade_history, api_version="v2")
             trades_data = response.data if response.data else []
 
             trades = []
@@ -1403,7 +1405,8 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             post_trade_api = upstox_client.PostTradeApi(api_client)
-            response = post_trade_api.get_trades_by_date_range(
+            response = await asyncio.to_thread(
+                post_trade_api.get_trades_by_date_range,
                 start_date=start_date,
                 end_date=end_date,
                 page_number=page,
@@ -1470,7 +1473,8 @@ class UpstoxClient:
                 kwargs["from_date"] = from_date
             if to_date:
                 kwargs["to_date"] = to_date
-            response = pnl_api.get_profit_and_loss_charges(
+            response = await asyncio.to_thread(
+                pnl_api.get_profit_and_loss_charges,
                 segment=segment,
                 financial_year=financial_year,
                 api_version="v2",
@@ -1529,7 +1533,8 @@ class UpstoxClient:
         pnl_api = upstox_client.TradeProfitAndLossApi(api_client)
 
         try:
-            meta_resp = pnl_api.get_trade_wise_profit_and_loss_meta_data(
+            meta_resp = await asyncio.to_thread(
+                pnl_api.get_trade_wise_profit_and_loss_meta_data,
                 segment=segment,
                 financial_year=financial_year,
                 api_version="v2",
@@ -1553,7 +1558,8 @@ class UpstoxClient:
 
         for page in range(1, pages + 1):
             try:
-                resp = pnl_api.get_trade_wise_profit_and_loss_data(
+                resp = await asyncio.to_thread(
+                    pnl_api.get_trade_wise_profit_and_loss_data,
                     segment=segment,
                     financial_year=financial_year,
                     page_number=page,
@@ -1649,7 +1655,8 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             charge_api = upstox_client.ChargeApi(api_client)
-            response = charge_api.get_brokerage(
+            response = await asyncio.to_thread(
+                charge_api.get_brokerage,
                 instrument_token=instrument_key,
                 quantity=quantity,
                 product=product,
@@ -1725,7 +1732,7 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             quote_api = upstox_client.MarketQuoteV3Api(api_client)
-            response = quote_api.get_market_quote_option_greek(instrument_key=keys_str)
+            response = await asyncio.to_thread(quote_api.get_market_quote_option_greek, instrument_key=keys_str)
 
             results = {}
             if response.data:
@@ -1785,7 +1792,8 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             options_api = upstox_client.OptionsApi(api_client)
-            response = options_api.get_put_call_option_chain(
+            response = await asyncio.to_thread(
+                options_api.get_put_call_option_chain,
                 instrument_key=instrument_key,
                 expiry_date=expiry_date,
             )
@@ -1848,9 +1856,9 @@ class UpstoxClient:
             market_api = upstox_client.MarketHolidaysAndTimingsApi(api_client)
 
             if date:
-                response = market_api.get_holiday(date)
+                response = await asyncio.to_thread(market_api.get_holiday, date)
             else:
-                response = market_api.get_holidays()
+                response = await asyncio.to_thread(market_api.get_holidays)
 
             holidays = []
             if response.data:
@@ -1907,7 +1915,7 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             market_api = upstox_client.MarketHolidaysAndTimingsApi(api_client)
-            response = market_api.get_exchange_timings(date)
+            response = await asyncio.to_thread(market_api.get_exchange_timings, date)
 
             timings = []
             if response.data:
@@ -2054,7 +2062,7 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             order_api = upstox_client.OrderApi(api_client)
-            response = order_api.get_order_status(order_id=order_id)
+            response = await asyncio.to_thread(order_api.get_order_status, order_id=order_id)
 
             if response.data:
                 order = response.data
@@ -2098,7 +2106,8 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             order_api = upstox_client.OrderApi(api_client)
-            response = order_api.get_order_details(
+            response = await asyncio.to_thread(
+                order_api.get_order_details,
                 api_version="v2",
                 order_id=order_id,
             )
@@ -2194,7 +2203,7 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             order_api = upstox_client.OrderApi(api_client)
-            response = order_api.get_trades_by_order(order_id=order_id, api_version="v2")
+            response = await asyncio.to_thread(order_api.get_trades_by_order, order_id=order_id, api_version="v2")
 
             trades = []
             if response.data:
@@ -2262,7 +2271,7 @@ class UpstoxClient:
                 transaction_type=transaction_type,
                 quantity=quantity,
             )
-            response = portfolio_api.convert_positions(body, api_version="v2")
+            response = await asyncio.to_thread(portfolio_api.convert_positions, body, api_version="v2")
 
             return {
                 "success": True,
@@ -2320,7 +2329,7 @@ class UpstoxClient:
                 instrument_list.append(instrument_obj)
 
             body = upstox_client.MarginRequest(instruments=instrument_list)
-            response = charge_api.post_margin(body)
+            response = await asyncio.to_thread(charge_api.post_margin, body)
 
             if response.data:
                 data = response.data
@@ -2578,7 +2587,8 @@ class UpstoxClient:
         try:
             api_client = upstox_client.ApiClient(self._configuration)
             pnl_api = upstox_client.TradeProfitAndLossApi(api_client)
-            response = pnl_api.get_trade_wise_profit_and_loss_meta_data(
+            response = await asyncio.to_thread(
+                pnl_api.get_trade_wise_profit_and_loss_meta_data,
                 segment=segment,
                 financial_year=financial_year,
                 api_version="v2",
@@ -2639,7 +2649,7 @@ class UpstoxClient:
             if to_date:
                 kwargs["to_date"] = to_date
 
-            response = pnl_api.get_trade_wise_profit_and_loss_data(**kwargs)
+            response = await asyncio.to_thread(pnl_api.get_trade_wise_profit_and_loss_data, **kwargs)
 
             if response.data:
                 data = response.data
