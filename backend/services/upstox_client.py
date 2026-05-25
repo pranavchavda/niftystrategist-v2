@@ -1,5 +1,6 @@
 """Upstox API client using the official SDK."""
 
+import asyncio
 import json
 import logging
 import os
@@ -241,7 +242,11 @@ class UpstoxClient:
             try:
                 if inspect.iscoroutinefunction(call_fn):
                     return await call_fn(*args, **kwargs)
-                return call_fn(*args, **kwargs)
+                # The Upstox SDK is synchronous (urllib3). Run it in a worker
+                # thread so a slow / rate-limited call (urllib3 honors the 429
+                # Retry-After header and sleeps) can never block the asyncio
+                # event loop and freeze the whole server.
+                return await asyncio.to_thread(call_fn, *args, **kwargs)
             except ApiException as e:
                 if e.status == 401 and attempts < max_refreshes:
                     attempts += 1
@@ -470,7 +475,11 @@ class UpstoxClient:
 
         logger.info(f"Fetching {symbol} ({instrument_key}) {interval_value} {unit} candles from {from_date} to {to_date}")
 
-        try:
+        # The Upstox SDK is synchronous (urllib3). Build the blocking work as a
+        # closure and run it in a worker thread (below) so it never blocks the
+        # asyncio event loop — a single rate-limited call used to freeze the
+        # whole server via urllib3's Retry-After sleep.
+        def _blocking() -> list[OHLCVData]:
             api_client = upstox_client.ApiClient(self._configuration)
             history_api = upstox_client.HistoryV3Api(api_client)
 
@@ -484,6 +493,7 @@ class UpstoxClient:
                     instrument_key=instrument_key,
                     unit=unit,
                     interval=interval_value,
+                    _request_timeout=15,
                 )
                 candles_data = response.data.candles if response.data else []
 
@@ -497,6 +507,7 @@ class UpstoxClient:
                         interval=interval_value,
                         to_date=to_date,
                         from_date=fallback_from,
+                        _request_timeout=15,
                     )
                     candles_data = response.data.candles if response.data else []
                     # Keep only the most recent trading day's candles
@@ -518,6 +529,7 @@ class UpstoxClient:
                         interval=interval_value,
                         to_date=chunk_end.strftime("%Y-%m-%d"),
                         from_date=chunk_from.strftime("%Y-%m-%d"),
+                        _request_timeout=15,
                     )
                     chunk_candles = response.data.candles if response.data else []
                     candles_data.extend(chunk_candles)
@@ -547,6 +559,8 @@ class UpstoxClient:
             logger.info(f"Fetched {len(candles)} candles for {symbol}")
             return candles
 
+        try:
+            return await asyncio.to_thread(_blocking)
         except ApiException as e:
             raise ValueError(f"Upstox API error for {symbol}: {e.status} - {e.reason}. {e.body}")
         except Exception as e:
@@ -566,6 +580,7 @@ class UpstoxClient:
             return quote_api.get_full_market_quote(
                 symbol=instrument_key,
                 api_version="v2",
+                _request_timeout=15,
             )
 
         try:
