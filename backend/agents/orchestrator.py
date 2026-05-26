@@ -2160,10 +2160,31 @@ Permissions vary by user. Always read the **CURRENT USER** block injected dynami
                 venv_bin = str(Path(__file__).parent.parent / "venv" / "bin")
                 subprocess_env["PATH"] = venv_bin + ":" + subprocess_env.get("PATH", "")
                 subprocess_env["VIRTUAL_ENV"] = str(Path(__file__).parent.parent / "venv")
+                # Mark this as an agent-spawned subprocess so cli-tools fail
+                # CLOSED (refuse, never default to the owner account) if the
+                # user can't be identified. See base.py:init_client and
+                # feedback_cli_user_id_default_contamination (2026-05-26).
+                subprocess_env["NF_AGENT_SUBPROCESS"] = "1"
+                # Always pin NF_USER_ID to this run's user. "0" => unidentified,
+                # which cli-tools treat as fail-closed (not "fall back to owner").
+                subprocess_env["NF_USER_ID"] = (
+                    str(ctx.deps.user_id) if ctx.deps.user_id else "0"
+                )
+                if not ctx.deps.user_id:
+                    # Should not happen for authenticated chat runs. If it does,
+                    # the deps→tool propagation gap from the 2026-05-26 incident
+                    # is live; cli-tools will fail closed. Capture it loudly.
+                    logger.warning(
+                        "[execute_bash] ctx.deps.user_id is falsy (%r) — "
+                        "NF_USER_ID pinned to '0' (fail-closed). state.user_id=%r, "
+                        "has_token=%s, cmd=%r",
+                        ctx.deps.user_id,
+                        getattr(ctx.deps.state, "user_id", None),
+                        bool(ctx.deps.upstox_access_token),
+                        command[:80],
+                    )
                 if ctx.deps.upstox_access_token:
                     subprocess_env["NF_ACCESS_TOKEN"] = ctx.deps.upstox_access_token
-                if ctx.deps.user_id:
-                    subprocess_env["NF_USER_ID"] = str(ctx.deps.user_id)
                 if ctx.deps.order_node_url:
                     subprocess_env["NF_ORDER_NODE_URL"] = ctx.deps.order_node_url
 

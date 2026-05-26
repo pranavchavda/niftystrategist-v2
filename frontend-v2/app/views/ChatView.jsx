@@ -495,6 +495,16 @@ function ChatView({ authToken, onConversationChange }) {
         response.ok,
       );
 
+      if (response.status === 401) {
+        // Session expired (backend rejects unauthenticated chat to prevent
+        // running the agent without an identified user). Clear the stale
+        // token and bounce to login instead of surfacing a generic error.
+        console.warn("[ChatView] 401 from agent endpoint — session expired, redirecting to login");
+        localStorage.removeItem("auth_token");
+        navigate("/login?expired=1");
+        return;
+      }
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }

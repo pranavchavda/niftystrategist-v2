@@ -471,6 +471,15 @@ export default function CockpitChat({ authToken, contextPrefix, onClearContext, 
         signal: controller.signal,
       });
 
+      if (response.status === 401) {
+        // Session expired — clear stale token and redirect to login rather
+        // than surfacing a generic error (see backend agent_ag_ui auth guard).
+        console.warn('[CockpitChat] 401 from agent endpoint — session expired, redirecting to login');
+        localStorage.removeItem('auth_token');
+        window.location.href = '/login?expired=1';
+        return;
+      }
+
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }

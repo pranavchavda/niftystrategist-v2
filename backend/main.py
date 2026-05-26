@@ -2220,6 +2220,19 @@ async def agent_ag_ui(request: Request, user: User = Depends(get_current_user_op
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
 
+    # Require a valid authenticated session. get_current_user_optional returns
+    # None when the JWT is missing or expired; without this guard the endpoint
+    # would run the trading agent with deps.user_id=None while the cached
+    # conversation state still names the prior user — the exact split that let
+    # an expired session resolve CLI tools to the owner's Upstox account
+    # (incident 2026-05-26, thread_1779776921833). Fail fast so the frontend
+    # re-authenticates instead of degrading mid-conversation.
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Your session has expired. Please sign in again to continue.",
+        )
+
     try:
         # Parse the request to get thread_id
         body = await request.json()

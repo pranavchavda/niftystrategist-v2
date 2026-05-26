@@ -68,40 +68,90 @@ def _resolve_db_token_sync(user_id: int):
                 await _engine.dispose()
 
         return asyncio.run(_query())
-    except Exception:
+    except Exception as e:
+        # A lookup failure (DB unreachable, WARP down, decrypt error) is NOT
+        # the same as "user has no token" — surface it to stderr so a transient
+        # infra issue isn't silently reported to the user as an expired token.
+        print(f"⚠️  Upstox token lookup failed for user {user_id}: {e}",
+              file=sys.stderr)
         return None
 
 
+# DB user id of the app owner (Pranav). The owner's .env tokens
+# (NF_ACCESS_TOKEN / UPSTOX_ACCESS_TOKEN) belong to this account, so they
+# may only be used when the owner is the requesting user — never as a
+# silent fallback for another user.
+OWNER_USER_ID = int(os.environ.get("NF_OWNER_USER_ID", "1"))
+
+
 def init_client() -> UpstoxClient:
-    """Create an UpstoxClient using the freshest Upstox token available.
+    """Create an UpstoxClient scoped to the requesting user's Upstox token.
 
-    Resolution order:
-      1. Live DB token for ``NF_USER_ID`` (decrypt + expiry check).
-      2. ``NF_ACCESS_TOKEN`` (orchestrator-injected snapshot).
-      3. ``UPSTOX_ACCESS_TOKEN`` (direct terminal usage).
+    Resolution:
+      1. Resolve the requesting user from ``NF_USER_ID``.
+         - Valid positive int  -> that user.
+         - Missing/invalid in an agent subprocess (``NF_AGENT_SUBPROCESS=1``)
+           -> FAIL CLOSED. We refuse rather than default to the owner, because
+           defaulting silently executed one user's request against another
+           user's broker account (incident 2026-05-26, thread_1779776921833).
+         - Missing/invalid in direct terminal use -> the owner.
+      2. Use that user's live DB token (decrypt + expiry check).
+      3. If no DB token: the OWNER may fall back to the ``.env`` token; any
+         other user FAILS CLOSED (never borrow the owner's token).
 
-    The DB lookup is preferred because the env snapshot can be invalidated
-    by any other process refreshing the token mid-session.  Falls back to
-    env when the DB lookup fails (e.g. local dev without WARP).
+    Note: cli-tools always ``load_dotenv()``, so the owner's NF_ACCESS_TOKEN /
+    UPSTOX_ACCESS_TOKEN are present in every subprocess's env regardless of
+    what the spawner injected — which is exactly why the fail-closed guard
+    lives here and not in the env-injection sites.
 
     Use this for user-scoped reads/writes (portfolio, positions, orders,
     funds, trades, profile). For public market data (quotes, historical,
     chains, greeks, market status), prefer init_market_data_client() — it
     routes through the longer-lived analytics token when available.
     """
-    nf_user_raw = os.environ.get("NF_USER_ID", "1")
-    user_id = int(nf_user_raw) if nf_user_raw and nf_user_raw.isdigit() else 1
+    nf_user_raw = os.environ.get("NF_USER_ID")
+    is_agent = os.environ.get("NF_AGENT_SUBPROCESS") == "1"
+
+    if nf_user_raw and nf_user_raw.isdigit() and int(nf_user_raw) > 0:
+        user_id = int(nf_user_raw)
+    elif is_agent:
+        print_error(
+            "UPSTOX_USER_UNIDENTIFIED: Could not determine which user this "
+            "operation belongs to, so it was refused to avoid touching the "
+            "wrong Upstox account. Tell the user their Upstox session could "
+            "not be identified and ask them to reconnect Upstox in "
+            "Settings → Trading Settings, then try again."
+        )
+    else:
+        # Direct terminal/owner usage (no agent subprocess marker present).
+        user_id = OWNER_USER_ID
 
     db_token = _resolve_db_token_sync(user_id) if user_id > 0 else None
+    if db_token:
+        return UpstoxClient(
+            access_token=db_token,
+            paper_trading=False,
+            user_id=user_id,
+        )
+
+    # No live DB token for this user.
+    if user_id != OWNER_USER_ID:
+        print_error(
+            f"UPSTOX_TOKEN_MISSING: No usable Upstox token for user {user_id} "
+            "(missing, expired, or a temporary lookup error — see any warning "
+            "above). Refusing to fall back to another account. Tell the user "
+            "their Upstox connection isn't available right now and ask them to "
+            "reconnect Upstox in Settings → Trading Settings; if they just "
+            "connected, retrying shortly may resolve it."
+        )
+
+    # Owner only: the .env tokens belong to the owner, so they may serve as a
+    # fallback (e.g. local dev without DB/WARP, or terminal usage).
     env_live_token = os.environ.get("NF_ACCESS_TOKEN")
-    token = db_token or env_live_token or os.environ.get("UPSTOX_ACCESS_TOKEN")
-
-    # Live mode whenever we have a per-user token (either source).
-    live_mode = bool(db_token or env_live_token)
-
+    token = env_live_token or os.environ.get("UPSTOX_ACCESS_TOKEN")
     return UpstoxClient(
         access_token=token,
-        paper_trading=not live_mode,
+        paper_trading=not bool(token),
         user_id=user_id,
     )
 

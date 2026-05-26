@@ -102,6 +102,8 @@ async def _build_env(user: User) -> dict[str, str]:
     env = os.environ.copy()
     env["PATH"] = f"{_VENV_BIN}:{env.get('PATH', '')}"
     env["VIRTUAL_ENV"] = str(_BACKEND_DIR / "venv")
+    # Fail-closed marker for cli-tools (see base.py:init_client).
+    env["NF_AGENT_SUBPROCESS"] = "1"
     env["NF_ACCESS_TOKEN"] = token
     env["NF_USER_ID"] = str(user.id)
     if order_node_url:

@@ -51,6 +51,14 @@ export default function Login() {
     );
   }, []);
 
+  useEffect(() => {
+    // Friendly notice when redirected here by an expired session.
+    if (typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("expired") === "1") {
+      setError("Your session expired. Please sign in again to continue.");
+    }
+  }, []);
+
   const handlePasskeyLogin = async () => {
     setError("");
     setSuccess("");
