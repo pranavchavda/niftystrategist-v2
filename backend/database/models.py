@@ -7,7 +7,7 @@ Core infrastructure from EspressoBot, stripped of e-commerce, with trading-speci
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import (
-    Column, String, Text, Integer, BigInteger, DateTime, JSON, Boolean,
+    Column, String, Text, Integer, BigInteger, DateTime, Date, JSON, Boolean,
     ForeignKey, Index, Float, Table, UniqueConstraint, Enum, LargeBinary
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -1129,6 +1129,36 @@ class UserAwakeningSchedule(Base):
         UniqueConstraint('user_id', 'name', name='unique_awakening_schedule'),
         Index('idx_awakening_schedules_user', 'user_id'),
         Index('idx_awakening_schedules_enabled', 'enabled'),
+    )
+
+
+class DailyLearning(Base):
+    """Distilled carry-over learnings from a user's daily trading thread.
+
+    A dedicated pre-market summarizer (services/daily_learnings.py) reads the
+    most recent prior daily thread — including any post-close discussion the
+    user had with the orchestrator — and stores a headline + full markdown
+    bullets. The next day's daily thread injects the most recent row verbatim,
+    plus the headlines of the prior 2 days for pattern awareness.
+
+    Complements the semantic memory pipeline (Memory / extract_memories_daily.py):
+    that is relevance-searched, this is deterministic and always injected.
+    See migration 045_add_daily_learnings.sql.
+    """
+    __tablename__ = "daily_learnings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    trading_date = Column(Date, nullable=False)         # IST trading day the learnings are FROM
+    headline = Column(Text, nullable=True)               # one-sentence digest (rolling trail)
+    learnings_text = Column(Text, nullable=False)        # full markdown bullets, injected verbatim
+    source_thread_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'trading_date', name='unique_daily_learning'),
+        Index('idx_daily_learnings_user_date', 'user_id', 'trading_date'),
     )
 
 

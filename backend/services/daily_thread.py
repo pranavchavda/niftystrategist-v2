@@ -162,6 +162,21 @@ async def get_or_create_daily_thread(
                 "",
             ])
 
+    # Carry-over learnings from the most recent prior trading day(s). Distilled
+    # by the pre-market summarizer (services/daily_learnings.py) from yesterday's
+    # daily thread incl. any post-close discussion. Deterministic, always-injected
+    # (distinct from the semantically-searched memory pipeline). Failures here are
+    # non-fatal — the thread still gets created without the block.
+    try:
+        from services.daily_learnings import get_recent_learnings, render_learnings_block
+        recent = await get_recent_learnings(session, user_id, before_date=today, limit=3)
+        block = render_learnings_block(recent)
+        if block:
+            content_parts.extend([block, ""])
+            logger.info("Injected carry-over learnings into daily thread for user %d", user_id)
+    except Exception as e:
+        logger.warning("daily thread: learnings injection skipped (non-fatal): %s", e)
+
     content_parts.append(
         "---\n_This thread is auto-generated. "
         "All scheduled awakenings today will write to this thread._"

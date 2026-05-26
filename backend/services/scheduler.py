@@ -95,6 +95,9 @@ class WorkflowScheduler:
         # consolidate near-duplicates (20:30 UTC = 2:00 AM IST)
         self._add_memory_maintenance_job()
 
+        # Pre-market daily learnings summarizer (02:45 UTC = 08:15 IST, weekdays)
+        self._add_learnings_summary_job()
+
         # Thread embedding is now event-driven (triggered on message save)
         # instead of polling every 60s. See thread_embedder.schedule_debounced_embed()
 
@@ -514,6 +517,35 @@ class WorkflowScheduler:
             )
         except Exception:
             logger.exception("memory_profile job failed")
+
+    def _add_learnings_summary_job(self):
+        """Pre-market job that distils each user's prior daily thread into
+        carry-over learnings (services/daily_learnings.py). Runs 02:45 UTC
+        (08:15 IST) on weekdays — after any evening discussion, before the
+        09:20 Morning Scan creates the new daily thread that injects them.
+        """
+        job_id = "daily_learnings_summary"
+
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        self.scheduler.add_job(
+            func=self._run_learnings_summary,
+            trigger=CronTrigger(hour=2, minute=45, day_of_week="mon-fri"),
+            id=job_id,
+            name="Daily learnings summarizer (08:15 IST weekdays)",
+            replace_existing=True,
+        )
+        logger.info("Scheduled daily learnings summarizer at 02:45 UTC (08:15 IST) weekdays")
+
+    async def _run_learnings_summary(self):
+        """Summarize prior daily threads into carry-over learnings."""
+        try:
+            from services.daily_learnings import summarize_all_users
+            stats = await summarize_all_users()
+            logger.info("daily learnings summary job: %s", stats)
+        except Exception as e:
+            logger.exception("daily learnings summary job failed: %s", e)
 
     def _add_totp_refresh_job(self):
         """Add a daily job to proactively refresh Upstox tokens via TOTP.
