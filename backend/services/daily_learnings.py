@@ -16,9 +16,9 @@ This COMPLEMENTS the semantic memory pipeline (memories table /
 extract_memories_daily.py): that is relevance-searched and injected by match;
 this is deterministic and always present.
 
-Scheduling: a job in services/scheduler.py fires this at 02:45 UTC (08:15 IST)
-on weekdays — after any evening discussion, before the 09:20 Morning Scan
-creates the new thread.
+Scheduling: a job in services/scheduler.py fires this at 00:30 UTC (06:00 IST)
+on weekdays — after any evening discussion, and a couple hours before the
+earliest awakening (First Strike Analysis, 08:15 IST) creates the new thread.
 """
 
 from __future__ import annotations

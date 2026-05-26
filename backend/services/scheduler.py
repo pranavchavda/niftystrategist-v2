@@ -520,9 +520,11 @@ class WorkflowScheduler:
 
     def _add_learnings_summary_job(self):
         """Pre-market job that distils each user's prior daily thread into
-        carry-over learnings (services/daily_learnings.py). Runs 02:45 UTC
-        (08:15 IST) on weekdays — after any evening discussion, before the
-        09:20 Morning Scan creates the new daily thread that injects them.
+        carry-over learnings (services/daily_learnings.py). Runs 00:30 UTC
+        (06:00 IST) on weekdays — after any evening discussion, and a couple
+        hours before the earliest awakening (First Strike Analysis, 08:15 IST)
+        creates the new daily thread that injects them. Must finish before
+        that first awakening, hence the early slot.
         """
         job_id = "daily_learnings_summary"
 
@@ -531,12 +533,12 @@ class WorkflowScheduler:
 
         self.scheduler.add_job(
             func=self._run_learnings_summary,
-            trigger=CronTrigger(hour=2, minute=45, day_of_week="mon-fri"),
+            trigger=CronTrigger(hour=0, minute=30, day_of_week="mon-fri"),
             id=job_id,
-            name="Daily learnings summarizer (08:15 IST weekdays)",
+            name="Daily learnings summarizer (06:00 IST weekdays)",
             replace_existing=True,
         )
-        logger.info("Scheduled daily learnings summarizer at 02:45 UTC (08:15 IST) weekdays")
+        logger.info("Scheduled daily learnings summarizer at 00:30 UTC (06:00 IST) weekdays")
 
     async def _run_learnings_summary(self):
         """Summarize prior daily threads into carry-over learnings."""
