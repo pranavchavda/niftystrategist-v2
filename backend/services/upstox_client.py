@@ -536,6 +536,24 @@ class UpstoxClient:
                     candles_data.extend(chunk_candles)
                     chunk_from = chunk_end + timedelta(days=1)
 
+                # Upstox's historical endpoint EXCLUDES the current day — today's
+                # candles only come from the intraday endpoint. Append them so the
+                # latest session is always present (live session VWAP, same-day
+                # RSI/MACD, etc.). Dedup by timestamp in case ranges overlap.
+                if unit == "minutes":
+                    try:
+                        intra_resp = history_api.get_intra_day_candle_data(
+                            instrument_key=instrument_key,
+                            unit=unit,
+                            interval=interval_value,
+                            _request_timeout=15,
+                        )
+                        intra_candles = intra_resp.data.candles if intra_resp.data else []
+                        seen_ts = {c[0] for c in candles_data}
+                        candles_data.extend(c for c in intra_candles if c[0] not in seen_ts)
+                    except Exception as e:
+                        logger.warning(f"Intraday append failed for {symbol} (using historical only): {e}")
+
             # Sort all candles by timestamp ascending (API returns newest→oldest within each chunk).
             # Without this: multi-chunk fetches corrupt candle ordering.
             candles_data.sort(key=lambda c: c[0] if isinstance(c[0], str) else c[0].isoformat())
