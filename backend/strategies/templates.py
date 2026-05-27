@@ -111,6 +111,7 @@ def _register_all() -> None:
     from strategies.mean_reversion import MeanReversionTemplate
     from strategies.vwap_bounce import VWAPBounceTemplate
     from strategies.scalp import ScalpTemplate
+    from strategies.conviction_accumulate import ConvictionAccumulateTemplate
     from strategies.straddle import StraddleTemplate
     from strategies.strangle import StrangleTemplate
     from strategies.bull_call_spread import BullCallSpreadTemplate
@@ -132,7 +133,7 @@ def _register_all() -> None:
 
     for cls in (
         ORBTemplate, BreakoutTemplate, MeanReversionTemplate,
-        VWAPBounceTemplate, ScalpTemplate,
+        VWAPBounceTemplate, ScalpTemplate, ConvictionAccumulateTemplate,
         StraddleTemplate, StrangleTemplate, BullCallSpreadTemplate,
         BearPutSpreadTemplate, BearCallSpreadTemplate, BullPutSpreadTemplate,
         IronCondorTemplate,

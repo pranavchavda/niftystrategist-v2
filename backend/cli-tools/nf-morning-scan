@@ -45,6 +45,7 @@ from services.instruments_cache import (  # noqa: E402
     NIFTY_50_SYMBOLS,
 )
 from models.analysis import OHLCVData  # noqa: E402
+from services.indicators import session_vwap  # noqa: E402
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -244,21 +245,16 @@ async def fetch_historical_volume(client: UpstoxClient, symbol: str) -> list[OHL
 
 
 def compute_vwap(candles: list[OHLCVData]) -> float | None:
-    """Session VWAP from intraday candles."""
+    """Session VWAP from today's intraday candles (shared helper)."""
     if not candles:
         return None
     df = pd.DataFrame([c.model_dump() for c in candles])
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values("timestamp")
-
-    typical_price = (df["high"] + df["low"] + df["close"]) / 3
-    cumulative_tp_vol = (typical_price * df["volume"]).cumsum()
-    cumulative_vol = df["volume"].cumsum()
-
-    last_vol = cumulative_vol.iloc[-1]
-    if last_vol == 0:
-        return None
-    return round(float(cumulative_tp_vol.iloc[-1] / last_vol), 2)
+    # Candles are today-only (fetched via days=1 intraday), so anchoring is a
+    # no-op here, but we pass it on for safety if the input ever widens.
+    val = session_vwap(df, anchor_latest_session=True)
+    return round(val, 2) if val is not None else None
 
 
 def compute_rsi(candles: list[OHLCVData]) -> float | None:

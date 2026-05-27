@@ -20,6 +20,19 @@ class TechnicalIndicators(BaseModel):
     volume_avg_20: float | None = Field(default=None, description="20-period average volume")
     current_volume: float = Field(description="Current/latest volume")
 
+    # VWAP — two distinct measures (see technical_analysis.calculate_indicators)
+    vwap: float | None = Field(default=None, description="Session-anchored VWAP: cumulative Σ(typical×vol)/Σvol from the latest session open, reset each session. The intraday fair-value anchor. None for daily-interval or no-volume (index) data.")
+    vwap_14: float | None = Field(default=None, description="14-period rolling volume-weighted average price (smoothing signal, NOT the session anchor). Matches the line currently drawn on /charts. None when no volume.")
+
+    # Supertrend (10, 3.0) — trend direction only
+    supertrend: float | None = Field(default=None, description="Supertrend direction: 1.0 bullish / -1.0 bearish (period 10, multiplier 3.0). None if insufficient data.")
+
+    # Bollinger Bands (20, 2.0)
+    bb_upper: float | None = Field(default=None, description="Upper Bollinger Band (20-period SMA + 2σ)")
+    bb_lower: float | None = Field(default=None, description="Lower Bollinger Band (20-period SMA − 2σ)")
+    bb_pctb: float | None = Field(default=None, description="%B — position within the bands: 0=lower, 1=upper, <0 / >1 = outside. Extremes signal stretch.")
+    bb_width: float | None = Field(default=None, description="Band width as fraction of the mid band ((upper−lower)/mid). Low width = squeeze (breakout brewing).")
+
     # Renko
     renko_trend: str | None = Field(default=None, description="Renko trend: 'up', 'down', or None")
     renko_brick_count: int | None = Field(default=None, description="Consecutive bricks in current trend direction")

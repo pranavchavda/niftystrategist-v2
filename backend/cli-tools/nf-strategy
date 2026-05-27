@@ -130,6 +130,12 @@ def cmd_deploy(args):
     # VWAP-specific
     if args.vwap is not None:
         params["vwap"] = args.vwap
+    # Conviction accumulate — parse comma-separated dip levels into floats
+    if getattr(args, "dip_levels", None):
+        try:
+            params["dip_levels"] = [float(x.strip()) for x in args.dip_levels.split(",") if x.strip()]
+        except ValueError:
+            print_error("--dip-levels must be comma-separated numbers, e.g. '450.5,445'")
     # Mean reversion
     if args.rsi_entry is not None:
         params["rsi_entry"] = args.rsi_entry
@@ -625,6 +631,10 @@ Examples:
 
     # VWAP-specific
     p_deploy.add_argument("--vwap", type=float, help="VWAP bounce: current VWAP price")
+
+    # Conviction accumulate
+    p_deploy.add_argument("--dip-levels", type=str,
+                          help="conviction-accumulate: comma-separated dip-buy prices below entry (e.g. session VWAP, prior support), e.g. '450.5,445'")
 
     # Mean reversion
     p_deploy.add_argument("--rsi-entry", type=float, help="RSI entry threshold (default: 30 long, 70 short)")

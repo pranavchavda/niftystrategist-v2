@@ -1526,7 +1526,7 @@ After `nf-morning-scan --news` returns the top candidates, vet each one with fun
 This gives you `candidates + news + fundamentals` per name — much higher-confidence recommendations than scan-output alone. Skip fundamentals for pure intraday/scalp setups (technicals dominate sub-hour).
 
 **Technical Analysis:**
-- `python cli-tools/nf-analyze SYMBOL [--interval 15minute|30minute|day] [--json]` — Full analysis
+- `python cli-tools/nf-analyze SYMBOL [--interval 15minute|30minute|day] [--json]` — Full analysis. Outputs RSI, MACD (+ histogram), SMAs/EMAs, ATR, Renko, UT Bot, support/resistance, plus: `vwap` (session-anchored intraday VWAP — the fair-value anchor; null for daily/index), `vwap_14` (rolling 14-period VWAP), `supertrend` (1.0 bullish / -1.0 bearish), and Bollinger `bb_upper`/`bb_lower`/`bb_pctb`/`bb_width`. Intraday intervals include today's session (current-day candles are merged in).
 - `python cli-tools/nf-analyze SYMBOL1 SYMBOL2 --compare [--json]` — Compare signals
 
 **Price Forecasting (ML-based):**
@@ -1666,13 +1666,14 @@ Guardrails: mutual exclusion (no CE+PE or LONG+SHORT simultaneously), cooldown b
 A signal session places orders continuously without per-trade confirmation, so treat it like a trade action, not a read-only config change. When the user asks in chat to set up a session, use `render_ui` to show the config (mode, underlying/symbol, lots/quantity, primary indicator, SL/target/trail) for approval before running `nf-scalp create`. During autonomous awakenings, use `nf-scalp` for observability (`list`, `status`, `logs`) — don't create or modify sessions without a pre-approved trading mandate that covers session creation.
 
 **Strategy Templates (algo trading):**
-- `python cli-tools/nf-strategy list --json` — List available strategy templates (orb, breakout, mean-reversion, vwap-bounce, scalp)
+- `python cli-tools/nf-strategy list --json` — List available strategy templates (orb, breakout, mean-reversion, vwap-bounce, scalp, conviction-accumulate)
 - `python cli-tools/nf-strategy deploy TEMPLATE --symbol SYM --capital AMOUNT [options] --json` — Deploy a strategy (creates multiple linked monitor rules)
   - ORB: `nf-strategy deploy orb --symbol SYM --capital 50000 --range-high 2460 --range-low 2440 [--enable-reversal] --json` (exit rules start disabled until entry fires; --enable-reversal re-enables opposite entry on target hit)
   - Breakout: `nf-strategy deploy breakout --symbol SYM --capital 50000 --entry 1650 --sl 1630 [--target 1690] --json`
   - Mean Reversion: `nf-strategy deploy mean-reversion --symbol SYM --capital 50000 --sl 1850 [--side long|short] --json`
   - VWAP Bounce: `nf-strategy deploy vwap-bounce --symbol SYM --capital 50000 --vwap 2450 --sl 2430 --json`
   - Scalp: `nf-strategy deploy scalp --symbol SYM --capital 30000 --entry 2450 --sl 2445 [--max-entries 5] --json`
+  - Conviction Accumulate (Score-9 "let it run" longs): `nf-strategy deploy conviction-accumulate --symbol SYM --capital 200000 --entry 460 --dip-levels "450.5,445" --sl 428 [--trail-percent 5] --json` — initial tranche on breakout (≥entry), equal add-on tranches on dips (≤each level; arm only after the breakout fires), shared stop below day low, hold to a wide trail or square-off (NO fixed target). Each tranche carries its own gated SL+square-off sized to that tranche, so exits can never sell more than was bought. Get `--entry` from the breakout level, `--dip-levels` from `nf-analyze` session `vwap` + `support_level`, `--sl` just below the day low. Long-only.
   - Common options: `--risk-percent PCT --rr-ratio N --product D|I --trail-percent PCT --squareoff-time HH:MM --expires today|ISO`
   - **F&O Options Strategies** (use --underlying instead of --symbol):
   - Straddle: `nf-strategy deploy straddle --underlying NIFTY --expiry 2026-03-27 --strike 25000 --lots 1 [--direction sell|buy] --json`

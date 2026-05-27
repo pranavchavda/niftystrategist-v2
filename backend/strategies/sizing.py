@@ -60,6 +60,45 @@ def compute_quantity(
     return max(qty, lot_size)
 
 
+def compute_accumulation_quantity(
+    capital: float,
+    risk_percent: float,
+    entries: list[float],
+    sl: float,
+    lot_size: int = 1,
+    product: str = "I",
+) -> int:
+    """Per-tranche share count for a multi-entry accumulation (all long, shared SL).
+
+    Buys the SAME quantity Q at each entry level. Bounds the WORST case — every
+    tranche fills and the shared stop is hit — by two constraints, taking the
+    smaller:
+      1. Risk:    Q × Σ(entry_i − sl) ≤ capital × risk_percent/100
+      2. Capital: Q × Σ(entry_i) × margin_factor ≤ capital
+
+    If fewer tranches fill, realised risk and deployed capital are strictly lower,
+    so this is safe by construction. Long-only (every entry must be above sl).
+
+    Returns Q (a multiple of lot_size, minimum lot_size).
+    """
+    if not entries or sl <= 0:
+        return lot_size
+    risk_per_share_total = sum(max(e - sl, 0.0) for e in entries)
+    if risk_per_share_total <= 0:
+        return lot_size
+
+    max_risk = capital * (risk_percent / 100)
+    risk_qty = max_risk / risk_per_share_total
+
+    margin_factor = MARGIN_FACTORS.get(product, 1.0)
+    notional_per_share = sum(entries) * margin_factor
+    afford_qty = capital / notional_per_share if notional_per_share > 0 else risk_qty
+
+    raw_qty = min(risk_qty, afford_qty)
+    qty = int(math.floor(raw_qty / lot_size)) * lot_size
+    return max(qty, lot_size)
+
+
 def compute_target(entry: float, sl: float, rr_ratio: float = 2.0) -> float:
     """Compute target price from entry, SL, and reward:risk ratio.
 

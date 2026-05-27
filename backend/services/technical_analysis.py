@@ -61,6 +61,34 @@ class TechnicalAnalysisService:
         volume_avg_20 = df["volume"].rolling(window=20).mean().iloc[-1]
         current_volume = float(df["volume"].iloc[-1])
 
+        # VWAP — two measures. Both require volume (indices have none → None).
+        vwap = None
+        vwap_14 = None
+        if df["volume"].sum() > 0:
+            # vwap_14: 14-period rolling VWAP (matches /charts; a smoothing line).
+            try:
+                vwap_14 = ta.volume.VolumeWeightedAveragePrice(
+                    high=df["high"], low=df["low"], close=df["close"],
+                    volume=df["volume"], window=14,
+                ).volume_weighted_average_price().iloc[-1]
+            except Exception:
+                vwap_14 = None
+
+            # vwap: session-anchored (shared helper). min_rows=2 keeps it None
+            # for daily-interval data, where a one-bar "session" is meaningless.
+            from services.indicators import session_vwap
+            vwap = session_vwap(df, anchor_latest_session=True, min_rows=2)
+
+        # Supertrend + Bollinger — reuse the canonical monitor implementations
+        # (no duplicated math). compute_indicator takes candle dicts.
+        from monitor.indicator_engine import compute_indicator
+        candle_dicts = [d.model_dump() for d in ohlcv_data]
+        supertrend = compute_indicator("supertrend", candle_dicts, {})
+        bb_upper = compute_indicator("bollinger", candle_dicts, {"band": "upper"})
+        bb_lower = compute_indicator("bollinger", candle_dicts, {"band": "lower"})
+        bb_pctb = compute_indicator("bollinger", candle_dicts, {"band": "pctb"})
+        bb_width = compute_indicator("bollinger", candle_dicts, {"band": "width"})
+
         # Renko
         closes_list = df["close"].tolist()
         renko = self.calculate_renko(closes_list, self.renko_brick_size)
@@ -83,6 +111,13 @@ class TechnicalAnalysisService:
             atr_14=safe_float(atr_14),
             volume_avg_20=safe_float(volume_avg_20) if not np.isnan(volume_avg_20) else current_volume,
             current_volume=current_volume,
+            vwap=safe_float(vwap) if vwap is not None else None,
+            vwap_14=safe_float(vwap_14) if vwap_14 is not None else None,
+            supertrend=supertrend,
+            bb_upper=bb_upper,
+            bb_lower=bb_lower,
+            bb_pctb=bb_pctb,
+            bb_width=bb_width,
             renko_trend=renko["trend"],
             renko_brick_count=renko["brick_count"],
             renko_brick_size=self.renko_brick_size,
