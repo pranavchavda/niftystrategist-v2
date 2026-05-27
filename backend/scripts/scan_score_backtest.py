@@ -74,24 +74,38 @@ def build_index_closes(index_candles):
     out = {}
     for i, d in enumerate(dates):
         prev_close = by_date[dates[i - 1]][-1].close if i > 0 else None
-        out[d] = (prev_close, {c._dt.time(): c.close for c in by_date[d]})
+        bars = sorted(((c._naive, c.close) for c in by_date[d]), key=lambda x: x[0])
+        out[d] = {"prev_close": prev_close, "bars": bars}
     return out, dates
 
 
-def index_pct_at(index_info, d, T):
-    """Nifty % change from prev close to the last index close at/before T on day d."""
+def _index_close_before(index_info, d, moment):
+    """Last index close that closed strictly before `moment` (closed-bar convention)."""
     if d not in index_info:
-        return 0.0
-    prev_close, times = index_info[d]
-    if not prev_close:
-        return 0.0
+        return None
     last = None
-    for t in sorted(times):
-        if t <= T:
-            last = times[t]
-    if last is None:
+    for naive, close in index_info[d]["bars"]:
+        if naive < moment:
+            last = close
+    return last
+
+
+def index_pct_at(index_info, d, eval_dt):
+    """Nifty % change from prev close to the last closed index bar before eval_dt."""
+    if d not in index_info or not index_info[d]["prev_close"]:
         return 0.0
-    return (last - prev_close) / prev_close * 100
+    prev_close = index_info[d]["prev_close"]
+    last = _index_close_before(index_info, d, eval_dt)
+    return (last - prev_close) / prev_close * 100 if last else 0.0
+
+
+def _index_fwd_ret(index_info, d, eval_dt, fwd_dt):
+    """Nifty % return over [eval_dt, fwd_dt] (for market-neutralizing the stock return)."""
+    p0 = _index_close_before(index_info, d, eval_dt)
+    p1 = _index_close_before(index_info, d, fwd_dt)
+    if not p0 or not p1:
+        return 0.0
+    return (p1 - p0) / p0 * 100
 
 
 def evaluate_symbol(scan, symbol, candles, index_info, horizon_min, test_days):
@@ -114,6 +128,13 @@ def evaluate_symbol(scan, symbol, candles, index_info, horizon_min, test_days):
         prev_close = by_date[prev_dates[-1]][-1].close
         today_open = day_candles[0].open
 
+        # (c) intraday-momentum feature: first 30-min return (Gao et al 2018).
+        # = (price at 09:45 − open) / open. Known only after 09:45.
+        first30_dt = datetime.combine(d, dtime(9, 45))
+        f30_bars = [c for c in day_candles if c._naive < first30_dt]
+        first30_ret = ((f30_bars[-1].close - today_open) / today_open * 100
+                       if f30_bars and today_open else None)
+
         for T in EVAL_TIMES:
             # No lookahead: only bars that have CLOSED strictly before T. For the
             # 15-min grid this means the last bar is the one ending exactly at T
@@ -130,7 +151,7 @@ def evaluate_symbol(scan, symbol, candles, index_info, horizon_min, test_days):
             stock_pct = (ltp - prev_close) / prev_close * 100
             if stock_pct == 0:
                 continue
-            nifty_pct = index_pct_at(index_info, d, T)
+            nifty_pct = index_pct_at(index_info, d, eval_dt)
 
             gap = scan.compute_gap({"open": today_open, "close": prev_close})
             rel = scan.compute_relative_strength(stock_pct, nifty_pct)
@@ -148,8 +169,9 @@ def evaluate_symbol(scan, symbol, candles, index_info, horizon_min, test_days):
             fwd = [c for c in day_candles if c._naive < fwd_dt]
             fwd_close = fwd[-1].close if fwd else day_candles[-1].close
             raw_ret = (fwd_close - ltp) / ltp * 100
-            direction = 1 if stock_pct > 0 else -1
-            fwd_ret = raw_ret * direction
+            # (a) market-neutralize: stock forward return minus Nifty's over the same window.
+            nifty_fwd = _index_fwd_ret(index_info, d, eval_dt, fwd_dt)
+            alpha_fwd = raw_ret - nifty_fwd
 
             records.append({
                 "symbol": symbol, "date": str(d), "eval_time": T.strftime("%H:%M"),
@@ -158,46 +180,73 @@ def evaluate_symbol(scan, symbol, candles, index_info, horizon_min, test_days):
                 "rsi": rsi if rsi is not None else float("nan"),
                 "above_vwap": 1 if (vwap and ltp > vwap) else 0,
                 "rvol": (rvol if rvol is not None else volx) or float("nan"),
-                "fwd_ret": fwd_ret,
+                # first30 is only KNOWN once the 09:45 bar has closed — null it for
+                # earlier evals to avoid lookahead (e.g. the 09:30 eval).
+                "first30": (first30_ret if (first30_ret is not None and eval_dt >= first30_dt)
+                            else float("nan")),
+                "alpha_fwd": alpha_fwd,       # market-neutralized forward return (the target)
+                "raw_fwd": raw_ret,
             })
     return records
 
 
-def _spear(df, col):
-    sub = df[[col, "fwd_ret"]].dropna()
-    if len(sub) < 5 or sub[col].nunique() < 2:
-        return None, len(sub)
-    # Spearman = Pearson on ranks (avoids the scipy dependency pandas' spearman pulls in)
-    rho = sub[col].rank().corr(sub["fwd_ret"].rank())
-    return (None if pd.isna(rho) else round(float(rho), 3)), len(sub)
+TARGET = "alpha_fwd"  # market-neutralized forward return
+
+
+def _rankcorr(a, b):
+    """Spearman = Pearson on ranks (sidesteps the scipy dep pandas' spearman pulls in)."""
+    if len(a) < 8 or a.nunique() < 2 or b.nunique() < 2:
+        return None
+    rho = a.rank().corr(b.rank())
+    return None if pd.isna(rho) else float(rho)
+
+
+def _ic_by_cross_section(df, col, min_names=10):
+    """(b) Information Coefficient done right: rank-corr of `col` vs TARGET WITHIN each
+    (date, eval_time) cross-section, then average across cross-sections. Returns mean IC,
+    its t-stat (mean / se), and # of cross-sections. Also the mean top-minus-bottom
+    quintile spread of TARGET sorted by `col`."""
+    ics, spreads = [], []
+    for _, g in df.groupby(["date", "eval_time"]):
+        sub = g[[col, TARGET]].dropna()
+        if len(sub) < min_names:
+            continue
+        ic = _rankcorr(sub[col], sub[TARGET])
+        if ic is not None:
+            ics.append(ic)
+        # quintile spread
+        try:
+            q = pd.qcut(sub[col].rank(method="first"), 5, labels=False)
+            top = sub[TARGET][q == 4].mean()
+            bot = sub[TARGET][q == 0].mean()
+            if pd.notna(top) and pd.notna(bot):
+                spreads.append(top - bot)
+        except (ValueError, IndexError):
+            pass
+    if not ics:
+        return {"mean_ic": None, "ic_t": None, "n_cs": 0, "q_spread": None}
+    s = pd.Series(ics)
+    se = s.std(ddof=1) / (len(s) ** 0.5) if len(s) > 1 else float("nan")
+    return {
+        "mean_ic": round(float(s.mean()), 4),
+        "ic_t": round(float(s.mean() / se), 2) if se and not pd.isna(se) and se > 0 else None,
+        "n_cs": len(s),
+        "q_spread": round(float(pd.Series(spreads).mean()), 4) if spreads else None,
+    }
 
 
 def summarize(records):
     df = pd.DataFrame(records)
-    out = {"total_samples": len(df), "by_time": {}}
+    out = {"total_samples": len(df), "target": TARGET, "by_time": {}}
     if df.empty:
         return out, df
-    comps = ["score", "p1", "p2", "gap_abs", "rel_strength", "rsi", "above_vwap", "rvol"]
+    comps = ["score", "first30", "gap_abs", "rel_strength", "rsi", "above_vwap", "rvol"]
     for T in sorted(df["eval_time"].unique()):
         sub = df[df["eval_time"] == T]
-        corrs = {}
-        for col in comps:
-            rho, n = _spear(sub, col)
-            corrs[col] = rho
-        hi = sub[sub["score"] >= 7]["fwd_ret"]
-        lo = sub[sub["score"] < 7]["fwd_ret"]
-        # "follow" = trade WITH momentum (fwd_ret>0 wins). "fade" = short it (the inverse).
-        follow_wr = float((hi > 0).mean()) if len(hi) else None
         out["by_time"][T] = {
             "n": len(sub),
-            "mean_fwd_ret": round(float(sub["fwd_ret"].mean()), 3),
-            "score_corr": corrs["score"],
-            "component_corr": {k: corrs[k] for k in comps if k != "score"},
-            "mean_fwd_ret_score_ge7": round(float(hi.mean()), 3) if len(hi) else None,
-            "mean_fwd_ret_score_lt7": round(float(lo.mean()), 3) if len(lo) else None,
-            "n_score_ge7": int(len(hi)),
-            "follow_winrate_ge7": round(follow_wr, 3) if follow_wr is not None else None,
-            "fade_winrate_ge7": round(1 - follow_wr, 3) if follow_wr is not None else None,
+            "mean_alpha": round(float(sub[TARGET].mean()), 4),
+            "ic": {col: _ic_by_cross_section(sub, col) for col in comps},
         }
     return out, df
 
@@ -247,16 +296,20 @@ def main():
         print(json.dumps(summary, indent=2))
         return
 
-    print(f"\n=== Scan score vs forward {args.horizon}min return — "
-          f"{summary['total_samples']} samples, {len(symbols)} symbols ===\n")
-    print(f"{'time':>6} {'n':>5} {'meanRet':>8} {'scoreρ':>7} {'ret≥7':>7} {'ret<7':>7}  component ρ (gap/rel/rsi/vwap/rvol)")
+    print(f"\n=== Information Coefficient vs market-neutralized forward {args.horizon}min alpha — "
+          f"{summary['total_samples']} samples, {len(symbols)} symbols ===")
+    print("IC = rank-corr WITHIN each (date,time) cross-section, averaged. t = IC mean/SE.")
+    print("Rule of thumb: |mean IC| ~0.02-0.05 with |t|>~2 is a real, tradeable signal.\n")
+    cols = ["score", "first30", "gap_abs", "rel_strength", "rsi", "above_vwap", "rvol"]
     for T, s in summary["by_time"].items():
-        cc = s["component_corr"]
-        comp = f"{cc['gap_abs']}/{cc['rel_strength']}/{cc['rsi']}/{cc['above_vwap']}/{cc['rvol']}"
-        print(f"{T:>6} {s['n']:>5} {s['mean_fwd_ret']:>8} {str(s['score_corr']):>7} "
-              f"{str(s['mean_fwd_ret_score_ge7']):>7} {str(s['mean_fwd_ret_score_lt7']):>7}  {comp}")
-    print("\nρ = Spearman rank corr with forward return (higher = score predicts move better).")
-    print("Watch whether scoreρ and gap-ρ fall from morning → afternoon (the premise).")
+        print(f"  --- {T} (n={s['n']}, mean alpha {s['mean_alpha']}%) ---")
+        print(f"      {'feature':<13} {'meanIC':>8} {'t':>6} {'q-spread':>9} {'#cs':>4}")
+        for c in cols:
+            ic = s["ic"][c]
+            print(f"      {c:<13} {str(ic['mean_ic']):>8} {str(ic['ic_t']):>6} "
+                  f"{str(ic['q_spread']):>9} {ic['n_cs']:>4}")
+    print("\n'score' = current composite. 'first30' = Gao intraday-momentum feature "
+          "(NaN at 09:30). q-spread = top-minus-bottom quintile mean alpha (%).")
 
 
 if __name__ == "__main__":
