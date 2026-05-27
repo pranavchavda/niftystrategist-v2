@@ -59,7 +59,8 @@ def fetch_series(client, symbol, days, instrument_key=None):
     candles = run_async(client.get_historical_data(
         symbol, interval="15minute", days=days, instrument_key=instrument_key))
     for c in candles:
-        c._dt = _to_dt(c.timestamp)
+        c._dt = _to_dt(c.timestamp)              # tz-aware IST (for .date()/.time())
+        c._naive = c._dt.tz_localize(None)       # naive IST wall-clock (for arithmetic)
     candles.sort(key=lambda c: c._dt)
     return candles
 
@@ -114,10 +115,15 @@ def evaluate_symbol(scan, symbol, candles, index_info, horizon_min, test_days):
         today_open = day_candles[0].open
 
         for T in EVAL_TIMES:
-            today_T = [c for c in day_candles if c._dt.time() <= T]
-            if len(today_T) < 2:
+            # No lookahead: only bars that have CLOSED strictly before T. For the
+            # 15-min grid this means the last bar is the one ending exactly at T
+            # (e.g. T=09:30 → last bar is 09:15, covering 09:15-09:30). The bar
+            # timestamped T itself covers T..T+15 and must be excluded.
+            eval_dt = datetime.combine(d, T)
+            today_T = [c for c in day_candles if c._naive < eval_dt]
+            if len(today_T) < 1:
                 continue
-            up_to_T = [c for c in candles if c._dt <= today_T[-1]._dt]
+            up_to_T = [c for c in candles if c._naive < eval_dt]
             ltp = today_T[-1].close
             if prev_close <= 0:
                 continue
@@ -136,10 +142,11 @@ def evaluate_symbol(scan, symbol, candles, index_info, horizon_min, test_days):
             volx = scan.compute_volume_expansion(today_T, up_to_T)
             p2 = scan.phase2_score(rsi, vwap, ltp, rvol, volx)
 
-            # forward return over the horizon, in the momentum direction
-            target_dt = today_T[-1]._dt + timedelta(minutes=horizon_min)
-            fwd = [c for c in day_candles if c._dt >= target_dt]
-            fwd_close = fwd[0].close if fwd else day_candles[-1].close
+            # forward return: price h minutes after the eval moment, same closed-bar
+            # convention (last bar that closed before eval_dt + horizon).
+            fwd_dt = eval_dt + timedelta(minutes=horizon_min)
+            fwd = [c for c in day_candles if c._naive < fwd_dt]
+            fwd_close = fwd[-1].close if fwd else day_candles[-1].close
             raw_ret = (fwd_close - ltp) / ltp * 100
             direction = 1 if stock_pct > 0 else -1
             fwd_ret = raw_ret * direction
@@ -179,6 +186,8 @@ def summarize(records):
             corrs[col] = rho
         hi = sub[sub["score"] >= 7]["fwd_ret"]
         lo = sub[sub["score"] < 7]["fwd_ret"]
+        # "follow" = trade WITH momentum (fwd_ret>0 wins). "fade" = short it (the inverse).
+        follow_wr = float((hi > 0).mean()) if len(hi) else None
         out["by_time"][T] = {
             "n": len(sub),
             "mean_fwd_ret": round(float(sub["fwd_ret"].mean()), 3),
@@ -187,6 +196,8 @@ def summarize(records):
             "mean_fwd_ret_score_ge7": round(float(hi.mean()), 3) if len(hi) else None,
             "mean_fwd_ret_score_lt7": round(float(lo.mean()), 3) if len(lo) else None,
             "n_score_ge7": int(len(hi)),
+            "follow_winrate_ge7": round(follow_wr, 3) if follow_wr is not None else None,
+            "fade_winrate_ge7": round(1 - follow_wr, 3) if follow_wr is not None else None,
         }
     return out, df
 
