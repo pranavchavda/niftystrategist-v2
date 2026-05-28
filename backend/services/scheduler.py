@@ -98,6 +98,10 @@ class WorkflowScheduler:
         # Pre-market daily learnings summarizer (02:45 UTC = 08:15 IST, weekdays)
         self._add_learnings_summary_job()
 
+        # Candidate-scan cache refresh every 3 min during market hours. Runs the
+        # scan as an isolated subprocess (memory freed each cycle — prod swaps).
+        self._add_scan_cache_job()
+
         # Thread embedding is now event-driven (triggered on message save)
         # instead of polling every 60s. See thread_embedder.schedule_debounced_embed()
 
@@ -548,6 +552,72 @@ class WorkflowScheduler:
             logger.info("daily learnings summary job: %s", stats)
         except Exception as e:
             logger.exception("daily learnings summary job failed: %s", e)
+
+    # Universe the cached candidate scan covers. nifty500 = full Hero Scanner.
+    SCAN_CACHE_UNIVERSE = "nifty500"
+
+    def _add_scan_cache_job(self):
+        """Refresh the cached candidate scan every 3 min during market hours.
+
+        The scan is the snapshot's slowest + most staleness-tolerant component,
+        so it lives on its own clock. Runs as an isolated subprocess (clean
+        memory each cycle on a swap-pressured box). Market-hours gating + the
+        weekday/holiday skip live inside ``_run_scan_cache``.
+        """
+        job_id = "scan_cache_refresh"
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+        self.scheduler.add_job(
+            func=self._run_scan_cache,
+            trigger=IntervalTrigger(minutes=3),
+            id=job_id,
+            name="Candidate scan cache refresh (3 min, market hours)",
+            replace_existing=True,
+        )
+        logger.info("Scheduled candidate scan cache refresh every 3 min (market hours)")
+
+    @staticmethod
+    def _market_open_ist() -> bool:
+        """True during NSE regular hours (Mon-Fri 09:15-15:30 IST).
+
+        Time-window + weekday gate only — holidays aren't checked here (a
+        holiday scan just caches closed-market quotes harmlessly, and the
+        snapshot shows market status + scan age regardless).
+        """
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        if now.weekday() >= 5:  # Sat/Sun
+            return False
+        hm = now.hour * 60 + now.minute
+        return (9 * 60 + 15) <= hm <= (15 * 60 + 30)
+
+    async def _run_scan_cache(self):
+        """Spawn the scan-cache writer as an isolated subprocess (market hours only)."""
+        if not self._market_open_ist():
+            return
+        import sys
+        from pathlib import Path
+
+        backend = Path(__file__).resolve().parent.parent
+        script = backend / "scripts" / "scan_cache_writer.py"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, str(script), self.SCAN_CACHE_UNIVERSE,
+                cwd=str(backend),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            # Bound the wait so a hung scan can't pile up (max_instances=1 also guards).
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode != 0:
+                logger.warning("scan cache writer exited %s: %s", proc.returncode,
+                               (err or b"").decode()[-500:])
+            else:
+                logger.debug("scan cache refreshed: %s", (out or b"").decode().strip()[-200:])
+        except asyncio.TimeoutError:
+            logger.warning("scan cache writer timed out (>120s); skipping this cycle")
+        except Exception as e:
+            logger.error("scan cache refresh failed: %s", e)
 
     def _add_totp_refresh_job(self):
         """Add a daily job to proactively refresh Upstox tokens via TOTP.

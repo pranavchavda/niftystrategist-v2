@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Record/read the agent's trading intent for the current daily thread.
+
+The intent is the agent's own running thesis — *why* it is in / wants in a
+name, the plan, and what invalidates it. It is NOT live state: never write
+positions, P&L, or quantities here. Those are always rebuilt fresh in the
+snapshot, so the agent never anchors on a stale view.
+
+Usage pattern (awakening): each turn, REWRITE your complete current intent in
+one `set` call. The snapshot injects only the latest. Older rows are kept as a
+timestamped trail (the intra-day log).
+
+  nf-intent set "COALINDIA: long breakout, hold for 472, dead below 455.
+  ONGC: short gap-fill, cover ~270.
+  watch: HINDALCO if it reclaims VWAP. do NOT re-enter TATAMOTORS today."
+
+  nf-intent latest          # what the snapshot will show
+  nf-intent log             # the full intra-day trail (newest first)
+
+Thread id comes from --thread-id or the NF_THREAD_ID env var (the awakening
+job injects it). User id from NF_USER_ID (defaults to owner for terminal use).
+"""
+
+import argparse
+import os
+import sys
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import print_error, print_json, print_success, run_async  # noqa: E402
+
+
+def _resolve_thread_id(args) -> str:
+    tid = getattr(args, "thread_id", None) or os.environ.get("NF_THREAD_ID")
+    if not tid:
+        print_error(
+            "No thread id. Pass --thread-id or set NF_THREAD_ID. Intent is "
+            "scoped to the daily trading thread."
+        )
+    return tid
+
+
+def _resolve_user_id() -> int:
+    raw = os.environ.get("NF_USER_ID")
+    if raw and raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return 1  # owner / terminal default
+
+
+def cmd_set(args):
+    from services.trading_intent import set_intent
+
+    thread_id = _resolve_thread_id(args)
+    content = args.content.strip()
+    if not content:
+        print_error("Empty intent. Provide the thesis text to record.")
+    user_id = _resolve_user_id()
+    row_id = run_async(set_intent(user_id, thread_id, content))
+    if args.json:
+        print_json({"id": row_id, "thread_id": thread_id, "saved": True})
+    else:
+        print_success(f"Intent recorded (row #{row_id}) for thread {thread_id}")
+
+
+def cmd_latest(args):
+    from services.trading_intent import get_latest_intent
+
+    thread_id = _resolve_thread_id(args)
+    row = run_async(get_latest_intent(thread_id))
+    if args.json:
+        print_json(
+            None if not row
+            else {"id": row.id, "created_at": str(row.created_at), "content": row.content}
+        )
+        return
+    if not row:
+        print("(no intent recorded for this thread)")
+        return
+    print(f"# intent @ {row.created_at} (row #{row.id})\n{row.content}")
+
+
+def cmd_log(args):
+    from services.trading_intent import get_intent_log
+
+    thread_id = _resolve_thread_id(args)
+    rows = run_async(get_intent_log(thread_id, limit=args.limit))
+    if args.json:
+        print_json([
+            {"id": r.id, "created_at": str(r.created_at), "content": r.content}
+            for r in rows
+        ])
+        return
+    if not rows:
+        print("(no intent recorded for this thread)")
+        return
+    for r in rows:
+        print(f"--- {r.created_at} (row #{r.id}) ---\n{r.content}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Record/read the agent's trading intent for the daily thread.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument("--thread-id", help="Daily thread id (else NF_THREAD_ID env)")
+    parser.add_argument("--json", action="store_true", help="JSON output")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_set = sub.add_parser("set", help="Record intent (full rewrite — newest wins)")
+    p_set.add_argument("content", help="The complete current thesis text")
+    p_set.set_defaults(func=cmd_set)
+
+    p_latest = sub.add_parser("latest", help="Show the intent the snapshot will inject")
+    p_latest.set_defaults(func=cmd_latest)
+
+    p_log = sub.add_parser("log", help="Show the full intra-day intent trail")
+    p_log.add_argument("--limit", type=int, default=50, help="Max rows (default 50)")
+    p_log.set_defaults(func=cmd_log)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

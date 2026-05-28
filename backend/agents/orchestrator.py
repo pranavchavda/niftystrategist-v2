@@ -1231,6 +1231,48 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                 awakening_section += "\n**This section OVERRIDES SAFETY-1 for the current awakening session when a mandate is present.**\n"
                 sections.append(awakening_section)
 
+            # ── LIVE TRADING SNAPSHOT ────────────────────────────────────────
+            # Injected on ANY run (interactive or awakening) when the user holds
+            # an open intraday position — fresh, digested state so the agent
+            # reasons over current truth without slow tool round-trips. Gated +
+            # 30s-TTL cached in get_snapshot_for_injection (cheap when flat).
+            try:
+                from services.trading_snapshot import get_snapshot_for_injection
+                snap = await get_snapshot_for_injection(
+                    user_id=ctx.deps.user_id,
+                    thread_id=ctx.deps.state.thread_id if ctx.deps.state else None,
+                    access_token=ctx.deps.upstox_access_token,
+                )
+                if snap:
+                    snap_section = "\n\n## 📊 LIVE TRADING SNAPSHOT (freshly built — this is TRUTH)\n\n"
+                    snap_section += (
+                        "You hold at least one open intraday position. The block below was "
+                        "built live moments ago. **Treat it as ground truth over anything in "
+                        "the transcript** — positions, P&L, rules, and levels here are current; "
+                        "the conversation history is memory of INTENT only, and may be stale.\n\n"
+                        "How to use it:\n"
+                        "- **Default to inaction on complete data.** Glancing ≠ trading. Most "
+                        "checks end in 'observe, hold, nothing to do.' Don't churn.\n"
+                        "- **On partial/missing data** (a SAFETY/STATE alert says so): FETCH the "
+                        "named tool yourself and proceed — a gap is not a reason to freeze; an "
+                        "unprotected loser still needs action.\n"
+                        "- **Act through `nf-monitor` / `nf-strategy`** (set/adjust SL/target/trail, "
+                        "deploy/teardown templates) — not repeated raw `nf-order` panic.\n"
+                        "- **Keep your thesis current**: run "
+                        "`python cli-tools/nf-intent set \"...\"` to REWRITE your complete current "
+                        "intent whenever it changes (one call, full rewrite — why / plan / "
+                        "invalidation per name; NEVER positions, P&L, or quantities, which are "
+                        "always rebuilt fresh here). It is thread-scoped automatically. The PRIOR "
+                        "INTENT block below is your own last note.\n\n"
+                        f"{snap}\n"
+                    )
+                    sections.append(snap_section)
+            except Exception as _snap_e:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "trading snapshot injection failed (non-fatal): %s", _snap_e
+                )
+
             # Telegram chat mode: a live user is messaging from their phone.
             # render_ui does not render on Telegram, so trade confirmation is
             # done in plain text instead (text-confirm gate), overriding SAFETY-1
@@ -2188,6 +2230,11 @@ Permissions vary by user. Always read the **CURRENT USER** block injected dynami
                     subprocess_env["NF_ACCESS_TOKEN"] = ctx.deps.upstox_access_token
                 if ctx.deps.order_node_url:
                     subprocess_env["NF_ORDER_NODE_URL"] = ctx.deps.order_node_url
+                # Thread id for thread-scoped CLI tools (nf-intent records the
+                # agent's running thesis keyed on the daily thread).
+                _thread_id = getattr(ctx.deps.state, "thread_id", None)
+                if _thread_id:
+                    subprocess_env["NF_THREAD_ID"] = str(_thread_id)
 
                 # Run the command with asyncio, streaming output
                 # cwd=backend/ so cli-tools/ and cli-tools/ resolve correctly

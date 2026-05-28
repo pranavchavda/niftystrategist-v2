@@ -708,6 +708,73 @@ class UpstoxClient:
             logger.error(f"Failed to fetch index quotes: {e}")
             return []
 
+    async def get_market_depth(self, symbols: list[str]) -> dict[str, dict]:
+        """Live top-5 order-book depth for one or more equity symbols (batched).
+
+        Returns {SYMBOL: {bids: [(price, qty), ...up to 5], asks: [...],
+        ltp, spread, total_buy_qty, total_sell_qty}}. Depth is live-only —
+        the arrays are empty when the market is closed. Symbols that fail to
+        resolve are skipped. One batched ``get_full_market_quote`` call.
+        """
+        await self._ensure_valid_token()
+        if not self.access_token or not symbols:
+            return {}
+
+        key_to_sym: dict[str, str] = {}
+        keys: list[str] = []
+        for sym in symbols:
+            try:
+                ik = self._get_instrument_key(sym)
+            except Exception:
+                continue
+            keys.append(ik)
+            # Response keys use ':' separator; equity also keyed as NSE_EQ:SYM.
+            key_to_sym[ik.replace("|", ":")] = sym.upper()
+            key_to_sym[f"NSE_EQ:{sym.upper()}"] = sym.upper()
+        if not keys:
+            return {}
+
+        def _do_call():
+            api_client = upstox_client.ApiClient(self._configuration)
+            quote_api = upstox_client.MarketQuoteApi(api_client)
+            return quote_api.get_full_market_quote(
+                symbol=",".join(keys), api_version="v2", _request_timeout=15,
+            )
+
+        try:
+            response = await self._call_with_token_retry(_do_call)
+        except Exception as e:
+            logger.warning(f"Market depth fetch failed: {e}")
+            return {}
+
+        out: dict[str, dict] = {}
+        if not getattr(response, "data", None):
+            return out
+        for rk, qd in response.data.items():
+            sym = key_to_sym.get(rk) or rk.split(":")[-1].upper()
+            depth = getattr(qd, "depth", None)
+            bids, asks = [], []
+            if depth:
+                for lvl in (getattr(depth, "buy", None) or [])[:5]:
+                    p = getattr(lvl, "price", None)
+                    if p:
+                        bids.append((p, getattr(lvl, "quantity", 0) or 0))
+                for lvl in (getattr(depth, "sell", None) or [])[:5]:
+                    p = getattr(lvl, "price", None)
+                    if p:
+                        asks.append((p, getattr(lvl, "quantity", 0) or 0))
+            best_bid = bids[0][0] if bids else None
+            best_ask = asks[0][0] if asks else None
+            out[sym] = {
+                "bids": bids,
+                "asks": asks,
+                "ltp": getattr(qd, "last_price", None),
+                "spread": (best_ask - best_bid) if (best_bid and best_ask) else None,
+                "total_buy_qty": getattr(qd, "total_buy_quantity", None),
+                "total_sell_qty": getattr(qd, "total_sell_quantity", None),
+            }
+        return out
+
     # Market Status
 
     async def get_market_status_api(self) -> dict | None:

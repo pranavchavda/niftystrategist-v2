@@ -1206,6 +1206,50 @@ class BacktestJob(Base):
     cancel_requested = Column(Boolean, default=False, nullable=False)
 
 
+class TradingIntent(Base):
+    """Agent's self-authored trading intent/theses, rewritten each awakening.
+
+    Full-rewrite-each-turn: every ``nf-intent set`` inserts a NEW row. The
+    snapshot injects only the latest row (newest wins) as the agent's stated
+    intent. Accumulated rows form a timestamped trail of how the thinking
+    evolved during the day — the supplementary "log" that sits alongside the
+    candle-reconstructed position facts (peak/giveback/MAE), which are
+    recomputed fresh and never stored here.
+
+    Intent ONLY — why / plan / invalidation. NEVER live positions, P&L, or
+    quantities; those are always rebuilt fresh in the snapshot, so the agent
+    can't anchor on a stale 9:30 view at 2pm (the MAZDOCK/ZEEL failure class).
+    Scoped to the daily thread.
+    """
+    __tablename__ = "trading_intent"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    thread_id = Column(String, nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False, index=True)
+
+
+class ScanSnapshot(Base):
+    """Cached candidate-scan result, refreshed on its own ~3-min cron.
+
+    Decouples the slow nf-morning-scan (the snapshot's heaviest component, and
+    its most staleness-tolerant — candidate rankings drift slowly) from the
+    fast per-run snapshot build. The cron runs the scan as an isolated
+    subprocess and stores the latest rows here; the snapshot reads the newest
+    fresh row instead of scanning inline (build drops from ~5-20s to ~0.5s).
+    Falls back to an inline scan when no fresh row exists.
+    """
+    __tablename__ = "scan_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    universe = Column(String, nullable=False, index=True)
+    rows = Column(JSON, nullable=False)
+    nifty_pct = Column(Float, nullable=True)
+    elapsed_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False, index=True)
+
+
 # ==============================================================================
 # Database Connection Manager
 # ==============================================================================
