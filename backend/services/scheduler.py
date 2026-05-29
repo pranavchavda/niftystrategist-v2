@@ -608,14 +608,26 @@ class WorkflowScheduler:
                 stderr=asyncio.subprocess.PIPE,
             )
             # Bound the wait so a hung scan can't pile up (max_instances=1 also guards).
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=120)
+            # The nifty500 scan is IO-bound at ~130s on the prod box, so 120s was
+            # killing every cycle and leaving the cache permanently stale. 200s
+            # gives comfortable margin; if a cycle still overruns, the request-path
+            # snapshot is cache-only and degrades to "no candidates" (never a 524).
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=200)
             if proc.returncode != 0:
                 logger.warning("scan cache writer exited %s: %s", proc.returncode,
                                (err or b"").decode()[-500:])
             else:
                 logger.debug("scan cache refreshed: %s", (out or b"").decode().strip()[-200:])
         except asyncio.TimeoutError:
-            logger.warning("scan cache writer timed out (>120s); skipping this cycle")
+            # Kill the orphan — wait_for cancels our await but leaves the
+            # subprocess running, and back-to-back timeouts would otherwise
+            # pile up scans on a small box.
+            logger.warning("scan cache writer timed out (>200s); killing orphan")
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
         except Exception as e:
             logger.error("scan cache refresh failed: %s", e)
 

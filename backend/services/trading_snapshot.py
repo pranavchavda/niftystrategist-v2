@@ -563,13 +563,24 @@ async def _build(user_id, user_email, now, built_at, thread_id, scan_rows,
             rows = cached
             scan_source = f"cached {age/60:.1f}m ago"
         else:
-            try:
-                rows, src = await _run_live_scan(scan_universe, scan_top_n)
-                scan_source = src + " (inline)"
-            except Exception as e:
-                logger.warning(f"snapshot: live scan failed: {e}")
-                stale.append("scan")
-                rows = []
+            # Cache-only in the request path. The live scan is IO-bound (~130s of
+            # serialized sync Upstox SDK calls over nifty500) and runs in the
+            # uvicorn event loop here — an inline fallback freezes ALL requests
+            # for its full duration and 524s the conversation. A stale/missing
+            # cache instead degrades gracefully to "no candidates": the agent can
+            # fetch them via nf-morning-scan itself (fetch-and-proceed doctrine).
+            # The 3-min scan_cache cron is the sole producer of candidate rows.
+            logger.info(
+                "snapshot: scan cache stale/missing (age=%s) — skipping inline scan",
+                None if age is None else round(age),
+            )
+            stale.append("scan")
+            rows = []
+            scan_source = (
+                "stale — run nf-morning-scan to refresh"
+                if age is not None else
+                "unavailable — run nf-morning-scan"
+            )
 
     # Drop names we're already in or have queued — held (intraday + delivery)
     # and any symbol with an enabled place_order rule. Frees the 5 slots for
