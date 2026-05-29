@@ -104,6 +104,13 @@ interface BacktestResult {
 
 // Indicators usable as a scalp PRIMARY (must return signed scalar so the
 // flip contract `prev<=0 → curr>0 = bullish` works).
+// Full indicator catalog. Every indicator is available as both PRIMARY and
+// CONFIRM here and in the live signal-session UI (scalp-sessions.tsx) — the
+// two must stay in sync so a backtested config behaves identically live.
+// Each must emit a SIGNED scalar (sign = direction, zero-cross = flip); the
+// signed `output`/`band` is baked into defaultParams for indicators whose raw
+// reading isn't directional (rsi→centered, linear_regression→slope,
+// vwap→centered, bollinger→centered, volume_spike→directional).
 const SCALP_PRIMARY_INDICATORS = [
   { value: 'utbot', label: 'UT Bot (ATR trailing stop)',
     defaultParams: '{"period":10,"sensitivity":1.0}' },
@@ -117,22 +124,22 @@ const SCALP_PRIMARY_INDICATORS = [
     defaultParams: '{"period":10}' },
   { value: 'hilega_milega', label: 'Hilega Milega (RSI EMA/WMA cross)',
     defaultParams: '{"rsi_period":9,"wma_period":21,"ema_period":3}' },
+  { value: 'qqe_mod', label: 'QQE MOD', defaultParams: '{"rsi_period":6,"smoothing":5}' },
   { value: 'linear_regression', label: 'Linear Regression (slope)',
     defaultParams: '{"period":20,"output":"slope"}' },
   { value: 'macd', label: 'MACD Histogram', defaultParams: '{}' },
   { value: 'rsi', label: 'RSI (centered)', defaultParams: '{"period":14,"output":"centered"}' },
+  { value: 'renko', label: 'Renko', defaultParams: '{"brick_size":10.0}' },
+  { value: 'vwap', label: 'VWAP (close − vwap)', defaultParams: '{"output":"centered"}' },
+  { value: 'bollinger', label: 'Bollinger (%B centered)',
+    defaultParams: '{"period":20,"band":"centered"}' },
+  { value: 'volume_spike', label: 'Volume Spike (directional)',
+    defaultParams: '{"lookback":20,"threshold":1.5,"output":"directional"}' },
 ];
 
 const SCALP_CONFIRM_INDICATORS = [
   { value: '', label: '(none)' },
-  { value: 'qqe_mod', label: 'QQE MOD', defaultParams: '{"rsi_period":6,"smoothing":5}' },
-  { value: 'linear_regression', label: 'Linear Regression',
-    defaultParams: '{"period":20,"output":"slope"}' },
-  { value: 'rsi', label: 'RSI (centered)', defaultParams: '{"period":14,"output":"centered"}' },
-  { value: 'bollinger', label: 'Bollinger', defaultParams: '{"period":20,"band":"pctb"}' },
-  { value: 'renko', label: 'Renko', defaultParams: '{"brick_size":10.0}' },
-  { value: 'vwap', label: 'VWAP', defaultParams: '{}' },
-  { value: 'hilega_milega', label: 'Hilega Milega', defaultParams: '{"output":"raw"}' },
+  ...SCALP_PRIMARY_INDICATORS,
 ];
 
 // Indicators that have a native O(n) series implementation — used to flag

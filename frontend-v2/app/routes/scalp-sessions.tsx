@@ -15,26 +15,31 @@ import { EquitySymbolPicker } from '../components/EquitySymbolPicker';
 
 // Indicator catalogs and per-indicator default param schemas. Used to render
 // dynamic param inputs as the user picks a primary or confirm indicator.
+// Full indicator catalog — kept identical (same values, primary AND confirm)
+// to the backtester (backtest.tsx SCALP_PRIMARY_INDICATORS) so a config tested
+// in the backtester behaves the same when run live. Every indicator must emit a
+// SIGNED scalar (sign = direction, zero-cross = flip); indicators whose raw
+// reading isn't directional get a signed output injected via PARAM_OVERRIDES.
 const PRIMARY_INDICATORS: { value: string; label: string }[] = [
   { value: 'utbot', label: 'UT Bot' },
+  { value: 'ema_crossover', label: 'EMA Crossover' },
+  { value: 'supertrend', label: 'Supertrend' },
   { value: 'halftrend', label: 'HalfTrend' },
   { value: 'ssl_hybrid', label: 'SSL Hybrid' },
   { value: 'hilega_milega', label: 'Hilega Milega' },
-  { value: 'ema_crossover', label: 'EMA Crossover' },
-  { value: 'supertrend', label: 'Supertrend' },
+  { value: 'qqe_mod', label: 'QQE MOD' },
+  { value: 'linear_regression', label: 'Linear Regression (slope)' },
+  { value: 'macd', label: 'MACD Histogram' },
+  { value: 'rsi', label: 'RSI (centered)' },
   { value: 'renko', label: 'Renko' },
+  { value: 'vwap', label: 'VWAP (close − vwap)' },
+  { value: 'bollinger', label: 'Bollinger (%B centered)' },
+  { value: 'volume_spike', label: 'Volume Spike (directional)' },
 ];
 
 const CONFIRM_INDICATORS: { value: string; label: string }[] = [
   { value: '', label: '— None —' },
-  { value: 'qqe_mod', label: 'QQE MOD' },
-  { value: 'macd', label: 'MACD' },
-  { value: 'rsi', label: 'RSI 14' },
-  { value: 'hilega_milega', label: 'Hilega Milega' },
-  { value: 'halftrend', label: 'HalfTrend' },
-  { value: 'ssl_hybrid', label: 'SSL Hybrid' },
-  { value: 'utbot', label: 'UT Bot' },
-  { value: 'supertrend', label: 'Supertrend' },
+  ...PRIMARY_INDICATORS,
 ];
 
 const PARAM_DEFAULTS: Record<string, Record<string, number>> = {
@@ -48,13 +53,27 @@ const PARAM_DEFAULTS: Record<string, Record<string, number>> = {
   qqe_mod: { rsi_period: 6, smoothing: 5 },
   rsi: { period: 14 },
   macd: {},
+  linear_regression: { period: 20 },
+  vwap: {},
+  bollinger: { period: 20 },
+  volume_spike: { lookback: 20, threshold: 1.5 },
 };
 
 // Indicators that need a non-numeric param injected at submit time so the
 // scalp engine's signed-scalar contract is satisfied (engine detects flips
-// via sign change). RSI's natural 0..100 range needs centering on 50.
+// via sign change). Applied to both primary and confirm at submit.
+//   rsi               → 0..100 centered on 50
+//   linear_regression → slope (signed), not the default 0..1 %B
+//   vwap              → close − vwap (signed distance), not the raw price level
+//   bollinger         → %B centered on the midband (plain %B is broken as a
+//                       confirm — its 0..1 range always blocks the bearish gate)
+//   volume_spike      → directional: ±1 on a spike up/down candle, 0 otherwise
 const PARAM_OVERRIDES: Record<string, Record<string, string>> = {
   rsi: { output: 'centered' },
+  linear_regression: { output: 'slope' },
+  vwap: { output: 'centered' },
+  bollinger: { band: 'centered' },
+  volume_spike: { output: 'directional' },
 };
 
 const PARAM_LABELS: Record<string, string> = {
@@ -69,6 +88,8 @@ const PARAM_LABELS: Record<string, string> = {
   brick_size: 'Brick Size',
   rsi_period: 'RSI Period',
   smoothing: 'Smoothing',
+  lookback: 'Lookback',
+  threshold: 'Spike ×',
   baseline_period: 'Baseline EMA',
   wma_period: 'WMA of RSI',
   ema_period: 'EMA of RSI',

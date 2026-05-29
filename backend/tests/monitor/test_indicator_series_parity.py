@@ -139,20 +139,32 @@ def test_ema_crossover_parity_legacy_keys():
     assert legacy == canonical
 
 
-def test_volume_spike_parity():
+@pytest.mark.parametrize("output", ["value", "directional"])
+def test_volume_spike_parity(output):
     candles = _uptrend(30)
-    # Bump volume on the last few bars to get a real spike
+    # Bump volume on the last few bars to get a real spike. _uptrend builds
+    # up-candles (close > open), so directional output exercises the +1 branch;
+    # the non-spike bars exercise the 0 branch.
     for i in range(25, 30):
         candles[i]["volume"] = 5000
-    _check_parity("volume_spike", candles, {"lookback": 10})
+    _check_parity("volume_spike", candles, {"lookback": 10, "output": output, "threshold": 1.5})
 
 
-def test_vwap_parity():
+def test_volume_spike_directional_downbars_parity():
+    # Down-candles (close < open) on the spike bars exercise the -1 branch.
+    candles = _downtrend(30)
+    for i in range(25, 30):
+        candles[i]["volume"] = 5000
+    _check_parity("volume_spike", candles, {"lookback": 10, "output": "directional"})
+
+
+@pytest.mark.parametrize("output", ["value", "centered"])
+def test_vwap_parity(output):
     candles = _zigzag(30)
-    _check_parity("vwap", candles, {})
+    _check_parity("vwap", candles, {"output": output})
 
 
-@pytest.mark.parametrize("band", ["upper", "lower", "width", "pctb"])
+@pytest.mark.parametrize("band", ["upper", "lower", "width", "pctb", "centered"])
 def test_bollinger_parity(band):
     candles = _zigzag(40, amp=3.0)
     _check_parity("bollinger", candles, {"period": 20, "band": band})

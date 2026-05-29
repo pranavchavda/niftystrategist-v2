@@ -49,22 +49,53 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
             ema_slow = ta.trend.EMAIndicator(df["close"], window=slow).ema_indicator().iloc[-1]
             return float(ema_fast - ema_slow)
         elif indicator == "volume_spike":
+            # output="value" (default) → current/avg volume ratio (≥0), for
+            #   monitor threshold rules ("volume > 2x average").
+            # output="directional" → signed scalar for use as a scalp primary
+            #   or confirm: volume is non-directional, so fold in the bar's
+            #   direction. Returns +1 on an up-candle spike, -1 on a down-candle
+            #   spike, and 0 when there's no spike (a valid "no flip", NOT None —
+            #   the scalp engine early-returns on None and would stop advancing
+            #   prev_val). None only on warmup / undefined average.
             lookback = params.get("lookback", 20)
+            output = params.get("output", "value")
+            threshold = float(params.get("threshold", 1.5))
             if len(df) < lookback:
                 return None
             avg_vol = df["volume"].iloc[-lookback:-1].mean()
             if avg_vol == 0:
                 return None
-            return float(df["volume"].iloc[-1] / avg_vol)
+            ratio = float(df["volume"].iloc[-1] / avg_vol)
+            if output == "directional":
+                if ratio < threshold:
+                    return 0.0
+                close = float(df["close"].iloc[-1])
+                open_ = float(df["open"].iloc[-1])
+                if close > open_:
+                    return 1.0
+                if close < open_:
+                    return -1.0
+                return 0.0
+            return ratio
         elif indicator == "vwap":
             # VWAP: cumulative(typical_price * volume) / cumulative(volume)
+            # output="value" (default) → the VWAP price level (for monitor
+            #   rules comparing price to VWAP).
+            # output="centered" → close - vwap, a signed scalar so VWAP can act
+            #   as a scalp primary/confirm (sign = above/below VWAP, zero-cross
+            #   = price crossing VWAP).
+            output = params.get("output", "value")
             typical_price = (df["high"] + df["low"] + df["close"]) / 3
             cum_tp_vol = (typical_price * df["volume"]).cumsum()
             cum_vol = df["volume"].cumsum()
             if cum_vol.iloc[-1] == 0:
                 return None
             val = cum_tp_vol.iloc[-1] / cum_vol.iloc[-1]
-            return None if pd.isna(val) else float(val)
+            if pd.isna(val):
+                return None
+            if output == "centered":
+                return float(df["close"].iloc[-1]) - float(val)
+            return float(val)
         elif indicator == "bollinger":
             period = params.get("period", 20)
             std_dev = params.get("std_dev", 2.0)
@@ -81,6 +112,12 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
                 if pd.isna(mid) or mid == 0:
                     return None
                 val = (bb.bollinger_hband().iloc[-1] - bb.bollinger_lband().iloc[-1]) / mid
+            elif band == "centered":
+                # %B re-centered on the middle band: pctb - 0.5. Signed scalar
+                # for scalp primary/confirm use — crosses zero at the basis
+                # (SMA midline). Note plain "pctb" sits in 0..1 and is broken as
+                # a confirm (the bearish branch `val >= 0` always blocks).
+                val = bb.bollinger_pband().iloc[-1] - 0.5
             else:  # pctb
                 val = bb.bollinger_pband().iloc[-1]
             return None if pd.isna(val) else float(val)

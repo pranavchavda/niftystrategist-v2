@@ -180,6 +180,8 @@ def _series_volume_spike(df: pd.DataFrame, params: dict) -> list[float | None]:
     if n < 3:
         return [None] * n
     lookback = int(params.get("lookback", 20))
+    output = params.get("output", "value")
+    threshold = float(params.get("threshold", 1.5))
     if n < lookback:
         return [None] * n
     # compute_indicator: avg over candles[i-lookback : i] / candles[i].
@@ -188,6 +190,8 @@ def _series_volume_spike(df: pd.DataFrame, params: dict) -> list[float | None]:
     # That's volume[i] / volume.shift(1).rolling(lookback-1)? Easier just
     # to compute it directly as a numpy loop — bounded O(n).
     vols = df["volume"].astype(float).to_numpy()
+    closes = df["close"].astype(float).to_numpy()
+    opens = df["open"].astype(float).to_numpy()
     out: list[float | None] = [None] * n
     # compute_indicator uses df["volume"].iloc[-lookback:-1].mean() — the
     # previous (lookback-1) bars EXCLUDING the current one. Slice
@@ -200,8 +204,21 @@ def _series_volume_spike(df: pd.DataFrame, params: dict) -> list[float | None]:
         avg = window.mean()
         if avg == 0:
             out[i] = None
+            continue
+        ratio = float(vols[i] / avg)
+        if output == "directional":
+            # Pointwise mirror of compute_indicator: 0 on no-spike (valid
+            # "no flip"), ±1 on a directional spike. Never None past warmup.
+            if ratio < threshold:
+                out[i] = 0.0
+            elif closes[i] > opens[i]:
+                out[i] = 1.0
+            elif closes[i] < opens[i]:
+                out[i] = -1.0
+            else:
+                out[i] = 0.0
         else:
-            out[i] = float(vols[i] / avg)
+            out[i] = ratio
     return _mask_warmup(out, lookback)
 
 
@@ -209,13 +226,17 @@ def _series_vwap(df: pd.DataFrame, params: dict) -> list[float | None]:
     n = len(df)
     if n < 3:
         return [None] * n
+    output = params.get("output", "value")
     typical = (df["high"] + df["low"] + df["close"]) / 3
     cum_tpv = (typical * df["volume"]).cumsum()
     cum_vol = df["volume"].cumsum()
+    closes = df["close"].astype(float).tolist()
     out: list[float | None] = []
-    for tpv, v in zip(cum_tpv.tolist(), cum_vol.tolist()):
+    for idx, (tpv, v) in enumerate(zip(cum_tpv.tolist(), cum_vol.tolist())):
         if v == 0 or pd.isna(tpv) or pd.isna(v):
             out.append(None)
+        elif output == "centered":
+            out.append(float(closes[idx]) - float(tpv / v))
         else:
             out.append(float(tpv / v))
     return _mask_warmup(out, 3)
@@ -248,6 +269,9 @@ def _series_bollinger(df: pd.DataFrame, params: dict) -> list[float | None]:
             else:
                 out.append(float((u - l) / m))
         return _mask_warmup(out, period)
+    if band == "centered":
+        # pctb - 0.5: signed scalar for scalp use. NaN - 0.5 = NaN → None.
+        return _mask_warmup(_series_from(bb.bollinger_pband() - 0.5, n), period)
     # default pctb
     return _mask_warmup(_series_from(bb.bollinger_pband(), n), period)
 
