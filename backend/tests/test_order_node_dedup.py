@@ -2,10 +2,15 @@
 flood. Client-side backoff (scalp_session.py) is the primary guard; this
 catches duplicates from any source (manual chat, retry tools, multiple daemons)
 within a 25s window.
+
+Note: order_node migrated off the upstox-python SDK to httpx
+(``AsyncUpstoxOrderApi``) on 2026-05-11, so these tests mock that layer. Its
+``place_order`` is async and returns a plain dict (``{"success", "order_id",
+...}``), not an SDK response object.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -16,6 +21,21 @@ def app_module():
     import order_node.app as app
     app._recent_orders.clear()
     return app
+
+
+def _patch_place_order(app_module, *, success=True, order_id="ORD-1", message=None):
+    """Patch AsyncUpstoxOrderApi so place_order returns a canned result dict.
+
+    Returns the patch context manager; the inner AsyncMock is accessible as
+    ``mock_cls.return_value.place_order`` for call-count assertions.
+    """
+    result = {"success": success, "order_id": order_id if success else None}
+    if message is not None:
+        result["message"] = message
+    cm = patch.object(app_module, "AsyncUpstoxOrderApi")
+    mock_cls = cm.start()
+    mock_cls.return_value.place_order = AsyncMock(return_value=result)
+    return cm, mock_cls
 
 
 def _request(symbol="NIFTY26MAY24350CE", instrument_token="NSE_FO|72241",
@@ -38,14 +58,14 @@ def _request(symbol="NIFTY26MAY24350CE", instrument_token="NSE_FO|72241",
 @pytest.mark.asyncio
 async def test_first_call_records_recent_order(app_module):
     req = _request()
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             result = await app_module.place_order(
                 req, authorization="Bearer tok", x_node_secret="",
             )
+    finally:
+        cm.stop()
     assert result.success is True
     assert result.order_id == "ORD-1"
     key = app_module._dedup_key(req.instrument_token, req.transaction_type, req.quantity, req.order_type)
@@ -56,10 +76,8 @@ async def test_first_call_records_recent_order(app_module):
 async def test_duplicate_within_window_returns_prior_success(app_module):
     """Prior attempt succeeded → dup mirrors success so daemon transitions IDLE."""
     req = _request()
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             first = await app_module.place_order(req, authorization="Bearer t", x_node_secret="")
             assert first.success is True
@@ -67,6 +85,8 @@ async def test_duplicate_within_window_returns_prior_success(app_module):
             # Second identical request — should NOT call place_order again
             mock_cls.return_value.place_order.reset_mock()
             second = await app_module.place_order(req, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 0
     assert second.success is True  # mirrors prior
@@ -78,17 +98,16 @@ async def test_duplicate_within_window_returns_prior_success(app_module):
 async def test_duplicate_within_window_returns_prior_failure(app_module):
     """Prior attempt failed → dup mirrors failure so daemon retries via backoff."""
     req = _request()
-    from upstox_client.rest import ApiException
-    err = ApiException(status=500, reason="Bad Gateway")
-    err.body = '{"message": "broker timeout"}'
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.side_effect = err
+    cm, mock_cls = _patch_place_order(app_module, success=False, message="broker timeout")
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             first = await app_module.place_order(req, authorization="Bearer t", x_node_secret="")
             assert first.success is False
 
             mock_cls.return_value.place_order.reset_mock()
             second = await app_module.place_order(req, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 0
     assert second.success is False
@@ -99,13 +118,13 @@ async def test_duplicate_within_window_returns_prior_failure(app_module):
 async def test_different_instrument_not_deduped(app_module):
     req1 = _request(instrument_token="NSE_FO|72241")
     req2 = _request(instrument_token="NSE_FO|72243")
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             await app_module.place_order(req1, authorization="Bearer t", x_node_secret="")
             await app_module.place_order(req2, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 2
 
@@ -114,13 +133,13 @@ async def test_different_instrument_not_deduped(app_module):
 async def test_different_side_not_deduped(app_module):
     req_buy = _request(transaction_type="BUY")
     req_sell = _request(transaction_type="SELL")
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             await app_module.place_order(req_buy, authorization="Bearer t", x_node_secret="")
             await app_module.place_order(req_sell, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 2
 
@@ -128,12 +147,9 @@ async def test_different_side_not_deduped(app_module):
 @pytest.mark.asyncio
 async def test_after_window_expires_request_proceeds(app_module):
     req = _request()
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
     import time as time_module
-
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             await app_module.place_order(req, authorization="Bearer t", x_node_secret="")
 
@@ -147,6 +163,8 @@ async def test_after_window_expires_request_proceeds(app_module):
 
             mock_cls.return_value.place_order.reset_mock()
             second = await app_module.place_order(req, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 1
     assert second.success is True
@@ -158,10 +176,8 @@ async def test_after_window_expires_request_proceeds(app_module):
 @pytest.mark.asyncio
 async def test_same_id_dedupes(app_module):
     """Same client_request_id within window → second call is suppressed."""
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             req = _request(client_request_id="scalp:1:abc123")
             first = await app_module.place_order(req, authorization="Bearer t", x_node_secret="")
@@ -170,6 +186,8 @@ async def test_same_id_dedupes(app_module):
             mock_cls.return_value.place_order.reset_mock()
             req2 = _request(client_request_id="scalp:1:abc123")  # same id
             second = await app_module.place_order(req2, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 0
     assert second.success is True
@@ -181,15 +199,15 @@ async def test_different_ids_same_tuple_both_proceed(app_module):
     """Two parallel orders for the same instrument/side/qty from different
     sources (each with its own id) must BOTH proceed — the false-positive case
     that motivated the id field."""
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             scalp_req = _request(client_request_id="scalp:1:aaa")
             chat_req = _request(client_request_id="chat:1:bbb")  # same tuple, different id
             await app_module.place_order(scalp_req, authorization="Bearer t", x_node_secret="")
             await app_module.place_order(chat_req, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 2
 
@@ -198,10 +216,8 @@ async def test_different_ids_same_tuple_both_proceed(app_module):
 async def test_id_path_ignores_tuple_collision(app_module):
     """When id is supplied, tuple is not consulted — even if a tuple-keyed
     entry exists from a prior id-less call, an id-supplied request proceeds."""
-    fake_response = MagicMock()
-    fake_response.data.order_ids = ["ORD-1"]
-    with patch.object(app_module.upstox_client, 'OrderApiV3') as mock_cls:
-        mock_cls.return_value.place_order.return_value = fake_response
+    cm, mock_cls = _patch_place_order(app_module)
+    try:
         with patch.object(app_module, 'NODE_SECRET', ''):
             tuple_req = _request()  # no id → tuple key
             await app_module.place_order(tuple_req, authorization="Bearer t", x_node_secret="")
@@ -209,6 +225,8 @@ async def test_id_path_ignores_tuple_collision(app_module):
             id_req = _request(client_request_id="scalp:1:xyz")  # same tuple, but with id
             mock_cls.return_value.place_order.reset_mock()
             second = await app_module.place_order(id_req, authorization="Bearer t", x_node_secret="")
+    finally:
+        cm.stop()
 
     assert mock_cls.return_value.place_order.call_count == 1
     assert second.success is True

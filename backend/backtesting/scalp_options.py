@@ -68,6 +68,7 @@ class LegFetchPlan:
     option_type: str         # "CE" | "PE"
     instrument_key: str
     tradingsymbol: str = ""
+    lot_size: int = 0        # resolved per-contract lot (varies by expiry for stocks)
 
 
 @dataclass
@@ -97,6 +98,7 @@ class ScalpOptionsBacktestResult:
     squareoff_exits: int
     missing_leg_blocks: int      # flips where no option candles were available
     no_strike_blocks: int        # flips where the F&O cache returned no strikes
+    post_cutoff_blocks: int = 0  # flips rejected for being at/after squareoff cutoff
 
 
 @dataclass
@@ -131,6 +133,7 @@ def plan_atm_legs(
     underlying_candles: list[dict],
     config: ScalpSessionConfig,
     interval: str,
+    warmup_bars: int = 0,
 ) -> list[LegFetchPlan]:
     """Scan the underlying primary signal once, return every (date, ATM, type)
     leg the replay will need to BUY.
@@ -190,6 +193,10 @@ def plan_atm_legs(
         prev_primary = primary_val
         if not (bullish or bearish):
             continue
+        # Warm-up region: indicators are still converging and the replay won't
+        # trade here, so don't plan (or fetch) legs for these flips.
+        if i < warmup_bars:
+            continue
 
         direction_sign = 1 if bullish else -1
         option_type = "CE" if bullish else "PE"
@@ -234,6 +241,7 @@ def plan_atm_legs(
             option_type=option_type,
             instrument_key=inst["instrument_key"],
             tradingsymbol=inst.get("tradingsymbol", ""),
+            lot_size=int(inst.get("lot_size") or 0),
         ))
 
     return plans
@@ -252,6 +260,7 @@ def run_scalp_options_backtest(
     slippage_bps: float = 0.0,
     progress_cb=None,
     cancel_check=None,
+    warmup_bars: int = 0,
 ) -> ScalpOptionsBacktestResult:
     """Bar-replay the options scalp state machine.
 
@@ -291,8 +300,11 @@ def run_scalp_options_backtest(
     if not normalised:
         return _empty_result(config, interval)
 
-    # Lot-aware sizing — option legs trade in multiples of lot_size.
-    lot_size = get_lot_size(config.underlying)
+    # Lot-aware sizing — option legs trade in multiples of lot_size. Pass the
+    # expiry: stock (OPTSTK) lots can differ across expiries, and the whole
+    # replay is anchored to config.expiry (the same contract plan_atm_legs
+    # resolved), so this matches the legs being replayed.
+    lot_size = get_lot_size(config.underlying, config.expiry)
     quantity = int(config.lots) * lot_size
 
     # Build per-leg timestamp index for O(1) lookup. The replay aligns
@@ -329,6 +341,7 @@ def run_scalp_options_backtest(
     current_day = None
     trade_count = 0
     last_exit_time: datetime | None = None
+    prev_ts: datetime | None = None                # last processed bar ts (prior-day squareoff)
 
     intra_bar_ambiguity = 0
     primary_flips = 0
@@ -338,10 +351,28 @@ def run_scalp_options_backtest(
     squareoff_exits = 0
     missing_leg_blocks = 0
     no_strike_blocks = 0
+    post_cutoff_blocks = 0
     slippage_total = 0.0
     charges_total = 0.0
 
     session_days: set = set()
+
+    # Warm-up buffer: drop the leading `warmup_bars` history candles from the
+    # replay (trades/diagnostics cover only the requested window) but seed
+    # prev_primary from the last warm-up bar so the first in-window flip is
+    # detected against a converged value. Only the UNDERLYING is sliced — leg
+    # candles are keyed by timestamp and only consumed when a position is held
+    # (entries are in-window), so leg_ts_index is unaffected.
+    if warmup_bars > 0 and normalised:
+        warmup_bars = min(warmup_bars, len(normalised))
+        if warmup_bars >= 1:
+            prev_primary = primary_series[warmup_bars - 1]
+        normalised = normalised[warmup_bars:]
+        primary_series = primary_series[warmup_bars:]
+        if confirm_series is not None:
+            confirm_series = confirm_series[warmup_bars:]
+        if not normalised:
+            return _empty_result(config, interval)
 
     slip_frac = slippage_bps / 10_000.0
     total_bars = len(normalised)
@@ -364,22 +395,26 @@ def run_scalp_options_backtest(
         bar_date = ts.date()
         session_days.add(bar_date)
 
-        # Day boundary — squareoff any open leg at the new day's first
-        # underlying open in option space (we use the held leg's same-bar
-        # candle when present, else fall back to last seen entry price for
-        # accounting safety). Reset trade_count + cooldown anchor.
+        # Day boundary — squareoff any open leg. With the past-cutoff entry
+        # guard below this is rare (day ended before cutoff), but as a safety
+        # net we close at the PRIOR day's last leg bar (close) and stamp the
+        # prior day's ts — never carry overnight or show a next-day timestamp.
+        # Reset trade_count + cooldown anchor.
         if current_day is not None and bar_date != current_day and not pos.is_flat:
-            opt_bar = leg_ts_index.get(pos.instrument_key, {}).get(ts)
-            exit_price = opt_bar["open"] if opt_bar else pos.entry_price
+            prior_opt_bar = (
+                leg_ts_index.get(pos.instrument_key, {}).get(prev_ts)
+                if prev_ts is not None else None
+            )
+            exit_price = prior_opt_bar["close"] if prior_opt_bar else pos.entry_price
             tr = _close_options(
-                pos, exit_price, ts, "squareoff", slip_frac,
+                pos, exit_price, prev_ts or ts, "squareoff", slip_frac,
             )
             if tr:
                 _apply_options_costs(tr)
                 trades.append(tr)
                 charges_total += getattr(tr, "_charges_total", 0.0)
             squareoff_exits += 1
-            last_exit_time = ts
+            last_exit_time = prev_ts or ts
         if current_day != bar_date:
             trade_count = 0
             last_exit_time = None
@@ -388,6 +423,7 @@ def run_scalp_options_backtest(
         # Time-based squareoff guard within the day. Mirrors scalp_session
         # check_time_squareoff but driven by bar timestamps.
         bar_tod = ts.timetz().replace(tzinfo=None)
+        prev_ts = ts  # track for the prior-day boundary close (before continues)
         if not pos.is_flat and bar_tod >= squareoff_cutoff:
             opt_bar = leg_ts_index.get(pos.instrument_key, {}).get(ts)
             exit_price = opt_bar["open"] if opt_bar else (
@@ -461,6 +497,15 @@ def run_scalp_options_backtest(
             direction_sign = 1 if bullish_flip else -1
             option_type = "CE" if bullish_flip else "PE"
 
+            # Past-cutoff entry guard — mirrors the live session and the equity
+            # backtest. Options scalps are always intraday; a flip on the last
+            # bar (>= cutoff) would otherwise open a leg with no same-day bars
+            # left, carrying it to the next session's boundary squareoff.
+            if bar_tod >= squareoff_cutoff:
+                post_cutoff_blocks += 1
+                prev_primary = primary_val
+                continue
+
             # Cooldown
             if last_exit_time is not None:
                 elapsed = (ts - last_exit_time).total_seconds()
@@ -525,6 +570,15 @@ def run_scalp_options_backtest(
             # Guard: don't carry an entry across day boundary.
             if next_ts.date() != bar_date:
                 missing_leg_blocks += 1
+                prev_primary = primary_val
+                continue
+            # Past-cutoff FILL guard. Options fill at the next bar, so a flip
+            # just before the cutoff (decision bar < cutoff, passes the guard
+            # above) would fill AT/after the cutoff and be squared off on that
+            # same bar — the degenerate enter→immediate-squareoff the live
+            # session forbids. Block when the fill bar is at/after the cutoff.
+            if next_ts.timetz().replace(tzinfo=None) >= squareoff_cutoff:
+                post_cutoff_blocks += 1
                 prev_primary = primary_val
                 continue
             fill_bar = leg_ts_index.get(instrument_key, {}).get(next_ts)
@@ -596,6 +650,7 @@ def run_scalp_options_backtest(
         squareoff_exits=squareoff_exits,
         missing_leg_blocks=missing_leg_blocks,
         no_strike_blocks=no_strike_blocks,
+        post_cutoff_blocks=post_cutoff_blocks,
     )
 
 

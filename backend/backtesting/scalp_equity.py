@@ -25,7 +25,7 @@ Key differences from the live engine:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Literal
 
 from backtesting.metrics import compute_metrics
@@ -102,6 +102,7 @@ class ScalpBacktestResult:
     cooldown_blocks: int                     # flips rejected by cooldown
     max_trades_blocks: int                   # flips rejected by max_trades cap
     squareoff_exits: int                     # intraday mode only
+    post_cutoff_blocks: int = 0              # intraday flips rejected for being at/after squareoff cutoff
 
 
 @dataclass
@@ -222,6 +223,33 @@ def _parse_squareoff(ts_str: str) -> dtime:
     return dtime(hour=hour, minute=minute)
 
 
+def _interval_offset(interval: str) -> timedelta:
+    """Bar duration for a minute interval; zero for day/week/month."""
+    s = interval.lower()
+    if s.endswith("minute"):
+        try:
+            return timedelta(minutes=int(s[: -len("minute")]))
+        except ValueError:
+            return timedelta(0)
+    return timedelta(0)
+
+
+def _bar_close_ts(ts: datetime, offset: timedelta) -> datetime:
+    """Return the bar's CLOSE time (start + interval) for DISPLAY, capped at the
+    15:30 IST session close.
+
+    Live stamps a trade at the moment the signal fires — i.e. bar close — while
+    the backtest loops over bar-start timestamps. Aligning the displayed trade
+    times to bar close removes the ~one-interval offset vs live. Display-only:
+    cooldown/max-trades use raw bar starts, and holding duration is preserved
+    because entry and exit shift by the same offset.
+    """
+    if not offset:
+        return ts
+    session_close = ts.replace(hour=15, minute=30, second=0, microsecond=0)
+    return min(ts + offset, session_close)
+
+
 def run_scalp_equity_backtest(
     candles: list[dict],
     config: ScalpSessionConfig,
@@ -231,6 +259,7 @@ def run_scalp_equity_backtest(
     slippage_bps: float = 0.0,
     progress_cb=None,
     cancel_check=None,
+    warmup_bars: int = 0,
 ) -> ScalpBacktestResult:
     """Run a scalp-style bar-replay backtest.
 
@@ -286,6 +315,9 @@ def run_scalp_equity_backtest(
 
     is_intraday = mode == SessionMode.EQUITY_INTRADAY.value
     squareoff_cutoff = _parse_squareoff(config.squareoff_time) if is_intraday else None
+    # Display offset so trade timestamps reflect bar CLOSE (matches live, which
+    # stamps at signal time). Logic stays on raw bar starts. Zero for day bars.
+    disp_off = _interval_offset(interval)
 
     # ── Replay state ───────────────────────────────────────────────────
     sim = TradeSimulator(symbol)
@@ -296,6 +328,8 @@ def run_scalp_equity_backtest(
     current_day: datetime.date | None = None
     trade_count: int = 0                           # resets at session boundary (intraday)
     last_exit_time: datetime | None = None
+    prev_bar: dict | None = None                   # last processed bar (for prior-day squareoff)
+    prev_ts: datetime | None = None
 
     intra_bar_ambiguity = 0
     primary_flips = 0
@@ -303,6 +337,7 @@ def run_scalp_equity_backtest(
     cooldown_blocks = 0
     max_trades_blocks = 0
     squareoff_exits = 0
+    post_cutoff_blocks = 0
     slippage_total = 0.0
 
     session_days: set = set()
@@ -325,6 +360,23 @@ def run_scalp_equity_backtest(
             config.confirm_indicator, normalised, config.confirm_params or {}
         )
 
+    # Warm-up buffer: the indicator series above was computed over the full
+    # fetched window, whose leading `warmup_bars` candles are pure history. Drop
+    # those from the replay so trades, the equity curve, and diagnostics only
+    # cover the requested window — but seed prev_primary from the last warm-up
+    # bar so the first in-window flip is detected against a CONVERGED value, not
+    # a cold start. (ATR-family indicators like UTBot need ~150 bars to settle.)
+    if warmup_bars > 0 and normalised:
+        warmup_bars = min(warmup_bars, len(normalised))
+        if warmup_bars >= 1:
+            prev_primary = primary_series[warmup_bars - 1]
+        normalised = normalised[warmup_bars:]
+        primary_series = primary_series[warmup_bars:]
+        if confirm_series is not None:
+            confirm_series = confirm_series[warmup_bars:]
+        if not normalised:
+            return _empty_result(symbol, config, interval)
+
     total_bars = len(normalised)
     # Progress / cancel cadence. Once every ~200 bars is plenty: at 16k
     # bars/sec post-cache that's ~80 progress updates per second worst
@@ -346,26 +398,35 @@ def run_scalp_equity_backtest(
 
         ts = _parse_candle_ts(bar["timestamp"])
         bar_date = ts.date()
+        bar_tod = ts.timetz().replace(tzinfo=None)
         session_days.add(bar_date)
 
         # ── Session boundary (intraday only) ──────────────────────────
+        # A new trading day started while still holding. With the past-cutoff
+        # entry guard below this is rare (only when a day ends before the
+        # cutoff — half-day or data gap), but as a safety net we square off at
+        # the PRIOR day's last bar. Never carry overnight, and never stamp the
+        # exit with the new day's open (the bug where an intraday trade showed
+        # an exit at 09:15 the next morning).
         if is_intraday and current_day is not None and bar_date != current_day:
-            if not pos.is_flat:
-                trade = _close(sim, pos, bar["open"], ts, "squareoff",
-                               slip_frac, is_intraday)
+            if not pos.is_flat and prev_bar is not None:
+                trade = _close(sim, pos, prev_bar["close"], _bar_close_ts(prev_ts, disp_off),
+                               "squareoff", slip_frac, is_intraday)
                 if trade:
                     _apply_costs(trade, is_intraday)
                 squareoff_exits += 1
             trade_count = 0
             last_exit_time = None
         current_day = bar_date
+        # Track the last processed bar (updated here, before the guards' early
+        # `continue`s, so the boundary close above always has the prior bar).
+        prev_bar, prev_ts = bar, ts
 
         # ── Squareoff guard (intraday only) ───────────────────────────
         if is_intraday and squareoff_cutoff and not pos.is_flat:
-            bar_tod = ts.timetz().replace(tzinfo=None)
             if bar_tod >= squareoff_cutoff:
-                trade = _close(sim, pos, bar["open"], ts, "squareoff",
-                               slip_frac, is_intraday)
+                trade = _close(sim, pos, bar["open"], _bar_close_ts(ts, disp_off),
+                               "squareoff", slip_frac, is_intraday)
                 if trade:
                     _apply_costs(trade, is_intraday)
                 squareoff_exits += 1
@@ -391,8 +452,8 @@ def run_scalp_equity_backtest(
                 exit_reason, exit_price, ambiguous = exit_info
                 if ambiguous:
                     intra_bar_ambiguity += 1
-                trade = _close(sim, pos, exit_price, ts, exit_reason,
-                               slip_frac, is_intraday)
+                trade = _close(sim, pos, exit_price, _bar_close_ts(ts, disp_off),
+                               exit_reason, slip_frac, is_intraday)
                 if trade:
                     _apply_costs(trade, is_intraday)
                 last_exit_time = ts
@@ -402,8 +463,8 @@ def run_scalp_equity_backtest(
             else:
                 # Reversal exit: adverse primary flip vs current side.
                 if (pos.is_long and bearish_flip) or (pos.is_short and bullish_flip):
-                    trade = _close(sim, pos, bar["close"], ts, "entry_opposite",
-                                   slip_frac, is_intraday)
+                    trade = _close(sim, pos, bar["close"], _bar_close_ts(ts, disp_off),
+                                   "entry_opposite", slip_frac, is_intraday)
                     if trade:
                         _apply_costs(trade, is_intraday)
                     last_exit_time = ts
@@ -418,6 +479,15 @@ def run_scalp_equity_backtest(
             )
             if direction is None:
                 # e.g. swing mode + bearish flip → no short allowed
+                prev_primary = primary_val
+                continue
+
+            # Past-cutoff entry guard (intraday only) — mirrors the live
+            # session's "skip entry past squareoff_time" rule. Without it, a
+            # flip on the last bar opens a position that can't be squared off
+            # the same day and carries to the next session's open.
+            if is_intraday and squareoff_cutoff and bar_tod >= squareoff_cutoff:
+                post_cutoff_blocks += 1
                 prev_primary = primary_val
                 continue
 
@@ -456,7 +526,7 @@ def run_scalp_equity_backtest(
             pos.trail_armed = False
             pos.highest_price = entry_price
             pos.lowest_price = entry_price
-            sim.open_position(direction, entry_price, ts, quantity)
+            sim.open_position(direction, entry_price, _bar_close_ts(ts, disp_off), quantity)
 
         prev_primary = primary_val
 
@@ -474,8 +544,8 @@ def run_scalp_equity_backtest(
     if not pos.is_flat:
         last_bar = normalised[-1]
         last_ts = _parse_candle_ts(last_bar["timestamp"])
-        trade = _close(sim, pos, last_bar["close"], last_ts, "end_of_data",
-                       slip_frac, is_intraday)
+        trade = _close(sim, pos, last_bar["close"], _bar_close_ts(last_ts, disp_off),
+                       "end_of_data", slip_frac, is_intraday)
         if trade:
             _apply_costs(trade, is_intraday)
 
@@ -511,6 +581,7 @@ def run_scalp_equity_backtest(
         cooldown_blocks=cooldown_blocks,
         max_trades_blocks=max_trades_blocks,
         squareoff_exits=squareoff_exits,
+        post_cutoff_blocks=post_cutoff_blocks,
     )
 
 

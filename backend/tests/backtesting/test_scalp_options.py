@@ -105,7 +105,7 @@ def patch_fno(monkeypatch):
             "tradingsymbol": f"NIFTY{int(strike)}{option_type}",
         }
 
-    def fake_lot(_underlying):
+    def fake_lot(_underlying, _expiry=None):
         return 25
 
     monkeypatch.setattr(so, "list_strikes", fake_list_strikes)

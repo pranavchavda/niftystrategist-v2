@@ -477,6 +477,15 @@ class TestEntryPosition:
 
 
 class TestExitPosition:
+    @pytest.fixture(autouse=True)
+    def _force_market_open(self):
+        # These tests verify exit order mechanics, not the market-hours gate.
+        # Pin the gate open so they're deterministic regardless of when they
+        # run — NSE being closed (weekend/after-hours) would otherwise make
+        # signal-driven exits skip the order and the assertions fail.
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_exit_transitions_to_idle(self):
         mgr = _make_manager()
@@ -515,8 +524,10 @@ class TestExitPosition:
         """Time-based squareoff must pass premium LTP so P&L isn't null."""
         from zoneinfo import ZoneInfo
         mgr = _make_manager()
-        ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
-        past = ist_now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        # Pin a fixed weekday + time so check_time_squareoff (which weekend-skips
+        # and compares against real wall-clock) is deterministic. 2026-05-26 is
+        # a Tuesday; 11:00 IST is mid-session and past the 10:59 squareoff.
+        fixed_now = datetime(2026, 5, 26, 11, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
         session = _make_session(
             state=ScalpState.HOLDING_CE,
             entry_price=200.0,
@@ -524,10 +535,12 @@ class TestExitPosition:
             current_option_type="CE",
             last_premium_ltp=185.0,
         )
-        session.config.squareoff_time = f"{past.hour:02d}:{past.minute:02d}"
+        session.config.squareoff_time = "10:59"
         mgr._sessions = {999: [session]}
 
-        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit:
+        with patch.object(mgr, '_exit_position', new_callable=AsyncMock) as mock_exit, \
+             patch("monitor.scalp_session.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
             await mgr.check_time_squareoff()
             mock_exit.assert_called_once_with(session, "exit_squareoff", 185.0)
 
@@ -628,6 +641,13 @@ class TestExitBackoff:
     """2026-05-06 broker-outage fix: in-flight + exponential backoff prevent
     a 30s retry storm during broker downtime, and the dump-on-recovery flood
     of duplicate exits."""
+
+    @pytest.fixture(autouse=True)
+    def _force_market_open(self):
+        # Backoff/in-flight is what these exercise — pin the market-hours gate
+        # open so the signal exits aren't skipped for being off-hours.
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True):
+            yield
 
     def test_backoff_schedule(self):
         from monitor.scalp_session import _exit_backoff_seconds
@@ -1296,6 +1316,13 @@ class TestEquityEntry:
 
 
 class TestEquityExit:
+    @pytest.fixture(autouse=True)
+    def _force_market_open(self):
+        # Verifies equity exit side/qty/P&L, not the market-hours gate — pin it
+        # open so the signal exit isn't skipped when run off-hours.
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_equity_long_exit_sells_and_pnl_positive(self):
         mgr = _make_manager()

@@ -525,6 +525,55 @@ _INTERVAL_TO_TIMEFRAME = {
     "15minute": "15m", "30minute": "30m", "day": "1d",
 }
 
+# Warm-up buffer for scalp backtests. Recursive indicators — especially the
+# ATR/stateful-stop family (UTBot, SuperTrend) — need ~150 bars to converge
+# their state; a backtest that starts cold trades on wrong early signals
+# (the first ~12 days of a 30m UTBot run). We fetch extra history before the
+# requested window and tell the engine to skip it (compute-only), so trades
+# fire only in-window but against converged indicators.
+_WARMUP_TARGET_BARS = 200
+_TF_BARS_PER_DAY = {
+    "1minute": 375, "3minute": 125, "5minute": 75, "10minute": 37,
+    "15minute": 25, "30minute": 13, "day": 1,
+}
+
+
+def _warmup_fetch_days(interval: str) -> int:
+    """Extra calendar days to fetch so the prefix yields >= _WARMUP_TARGET_BARS bars."""
+    bpd = _TF_BARS_PER_DAY.get(interval, 75)
+    trading_days = -(-_WARMUP_TARGET_BARS // bpd)  # ceil
+    # Trading→calendar (~5/7) + holiday cushion; >=2 so minute intervals hit
+    # the multi-day historical endpoint rather than today-only intraday.
+    return max(2, round(trading_days * 7 / 5) + 3)
+
+
+async def fetch_with_warmup(client, underlying: str, interval: str, days: int,
+                            instrument_key: str | None = None):
+    """Fetch ``days`` of candles PLUS a warm-up prefix.
+
+    Returns ``(ohlcv, warmup_bars)`` where ``warmup_bars`` is the count of
+    leading candles that fall before the requested ``days`` window (now-anchored
+    in IST, matching how get_historical_data builds its from_date). Pass
+    ``warmup_bars`` to the engine so it computes indicators over the full series
+    but only trades within the requested window.
+    """
+    from datetime import datetime, timedelta, timezone
+    ist = timezone(timedelta(hours=5, minutes=30))
+    wdays = _warmup_fetch_days(interval)
+    ohlcv = await client.get_historical_data(
+        underlying, interval=interval, days=days + wdays, instrument_key=instrument_key,
+    )
+    if not ohlcv:
+        return ohlcv, 0
+    cutoff = datetime.now(ist) - timedelta(days=days)
+
+    def _ts(c):
+        t = c.timestamp
+        return datetime.fromisoformat(t) if isinstance(t, str) else t
+
+    warmup_bars = sum(1 for c in ohlcv if _ts(c) < cutoff)
+    return ohlcv, warmup_bars
+
 
 # ---------------------------------------------------------------------------
 # POST /api/backtest/scalp — scalp-style equity backtest
@@ -578,6 +627,7 @@ def _scalp_result_to_dict(r: ScalpBacktestResult) -> dict:
             "cooldown_blocks": r.cooldown_blocks,
             "max_trades_blocks": r.max_trades_blocks,
             "squareoff_exits": r.squareoff_exits,
+            "post_cutoff_blocks": getattr(r, "post_cutoff_blocks", 0),
         },
     }
 
@@ -625,6 +675,7 @@ def _scalp_options_result_to_dict(r: ScalpOptionsBacktestResult) -> dict:
             "squareoff_exits": r.squareoff_exits,
             "missing_leg_blocks": r.missing_leg_blocks,
             "no_strike_blocks": r.no_strike_blocks,
+            "post_cutoff_blocks": getattr(r, "post_cutoff_blocks", 0),
         },
     }
 
@@ -662,8 +713,8 @@ async def _run_options_scalp_sync(
     from api.cockpit import get_market_data_client
     try:
         client = await get_market_data_client(user)
-        ohlcv = await client.get_historical_data(
-            underlying, interval=body.interval, days=body.days,
+        ohlcv, warmup_bars = await fetch_with_warmup(
+            client, underlying, body.interval, body.days,
         )
     except Exception as e:
         logger.error(f"options scalp backtest: fetch underlying failed: {e}")
@@ -703,7 +754,7 @@ async def _run_options_scalp_sync(
 
     try:
         plans = await asyncio.to_thread(
-            plan_atm_legs, underlying_candles, cfg, body.interval,
+            plan_atm_legs, underlying_candles, cfg, body.interval, warmup_bars,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -736,6 +787,7 @@ async def _run_options_scalp_sync(
             underlying_candles, leg_candles_by_key, cfg,
             interval=body.interval,
             slippage_bps=body.slippage_bps,
+            warmup_bars=warmup_bars,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -781,8 +833,8 @@ async def api_run_scalp_backtest(
     from api.cockpit import get_market_data_client
     try:
         client = await get_market_data_client(user)
-        ohlcv = await client.get_historical_data(
-            body.symbol, interval=body.interval, days=body.days,
+        ohlcv, warmup_bars = await fetch_with_warmup(
+            client, body.symbol, body.interval, body.days,
         )
     except Exception as e:
         logger.error(f"scalp backtest: failed to fetch candles: {e}")
@@ -829,6 +881,7 @@ async def api_run_scalp_backtest(
             candles, cfg,
             symbol=body.symbol, interval=body.interval,
             slippage_bps=body.slippage_bps,
+            warmup_bars=warmup_bars,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

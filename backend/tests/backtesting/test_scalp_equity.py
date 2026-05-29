@@ -347,6 +347,57 @@ class TestCooldown:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Warm-up buffer: indicators compute over the full series, trades only fire
+# in the post-warmup window.
+# ──────────────────────────────────────────────────────────────────────
+
+class TestWarmupBuffer:
+    def _oscillating(self):
+        """A single-day series with flips both early and late so we can prove
+        early (warm-up) flips are suppressed while later (in-window) ones fire."""
+        s = _flat_series(12, 100.0, _ist(2026, 4, 21))
+
+        def _next_start():
+            return datetime.fromisoformat(s[-1]["timestamp"]) + timedelta(minutes=5)
+
+        s += _uptrend(10, 100.0, 1.0, _next_start())
+        s += _downtrend(10, s[-1]["close"], 1.0, _next_start())
+        s += _uptrend(10, s[-1]["close"], 1.0, _next_start())
+        s += _downtrend(10, s[-1]["close"], 1.0, _next_start())
+        return s
+
+    def test_warmup_suppresses_early_trades_only(self):
+        candles = self._oscillating()
+        cfg = _base_config()
+        warmup = 22
+        boundary = datetime.fromisoformat(candles[warmup]["timestamp"])
+
+        full = run_scalp_equity_backtest(candles, cfg, symbol="TEST", interval="5minute")
+        warmed = run_scalp_equity_backtest(
+            candles, cfg, symbol="TEST", interval="5minute", warmup_bars=warmup,
+        )
+
+        def _et(t):  # Trade.entry_time is a datetime (str only in some paths)
+            return t.entry_time if isinstance(t.entry_time, datetime) else datetime.fromisoformat(t.entry_time)
+
+        # Meaningful: the un-warmed run DID trade inside the warm-up region.
+        assert any(_et(t) < boundary for t in full.trades)
+        # Contract: the warmed run trades ONLY at/after the window boundary.
+        assert warmed.trades, "expected in-window trades after the warm-up region"
+        assert all(_et(t) >= boundary for t in warmed.trades)
+        # Diagnostics reflect the eval window, not the warm-up prefix.
+        assert warmed.candle_count == len(candles) - warmup
+
+    def test_warmup_zero_is_unchanged(self):
+        candles = self._oscillating()
+        cfg = _base_config()
+        a = run_scalp_equity_backtest(candles, cfg, symbol="TEST", interval="5minute")
+        b = run_scalp_equity_backtest(candles, cfg, symbol="TEST", interval="5minute", warmup_bars=0)
+        assert len(a.trades) == len(b.trades)
+        assert a.candle_count == b.candle_count == len(candles)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Bonus: interval mismatch
 # ──────────────────────────────────────────────────────────────────────
 

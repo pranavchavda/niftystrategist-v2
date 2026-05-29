@@ -4,6 +4,18 @@ from datetime import datetime
 from collections import deque
 
 
+# NSE/BSE session open expressed in naive UTC (09:15 IST − 5:30 = 03:45 UTC).
+# Every add_tick caller and the seeder operate in naive UTC, so bars are
+# anchored to this open — making live candles line up with Upstox's official
+# candles (which the backtester and the /charts page use) instead of midnight.
+# Midnight-anchoring put 30m bars at :00/:30 while Upstox uses :15/:45 (a 15-min
+# phase shift that made live 30m signals diverge from charts/backtests). The
+# phase is timezone-invariant for the supported timeframes (1/5/15/30): the
+# 330-min IST↔UTC offset divides each, so 1m/5m/15m are unchanged and only
+# 30m (and 10m) shift onto the open-anchored grid.
+_MARKET_OPEN_MIN_UTC = 3 * 60 + 45  # 03:45 UTC = 09:15 IST
+
+
 class CandleBuffer:
     def __init__(self, timeframe_minutes: int = 5, max_candles: int = 200):
         self.tf_minutes = timeframe_minutes
@@ -12,8 +24,11 @@ class CandleBuffer:
         self._current_window: datetime | None = None
 
     def _window_start(self, ts: datetime) -> datetime:
-        minutes = (ts.hour * 60 + ts.minute) // self.tf_minutes * self.tf_minutes
-        return ts.replace(hour=minutes // 60, minute=minutes % 60, second=0, microsecond=0)
+        total = ts.hour * 60 + ts.minute
+        # Floor to the timeframe grid anchored at the session open, not midnight.
+        offset = (total - _MARKET_OPEN_MIN_UTC) % self.tf_minutes
+        binned = max(total - offset, 0)
+        return ts.replace(hour=binned // 60, minute=binned % 60, second=0, microsecond=0)
 
     def add_tick(self, price: float, volume: int = 0, timestamp: datetime | None = None) -> bool:
         """Append a tick. Returns True iff this tick opened a NEW candle

@@ -12,6 +12,7 @@ import { Badge } from '../components/catalyst/badge';
 import { Input } from '../components/catalyst/input';
 import { SnapshotChartButton, type DecisionSnapshot } from '../components/scalp/SnapshotChart';
 import { EquitySymbolPicker } from '../components/EquitySymbolPicker';
+import { FnoUnderlyingPicker } from '../components/FnoUnderlyingPicker';
 
 // Indicator catalogs and per-indicator default param schemas. Used to render
 // dynamic param inputs as the user picks a primary or confirm indicator.
@@ -986,10 +987,16 @@ export default function ScalpSessionsRoute() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Underlying</label>
-                  <select value={formData.underlying} disabled={lockInstrument} onChange={e => setFormData((p: any) => ({ ...p, underlying: e.target.value, expiry: '' }))}
-                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
-                    {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'].map(u => <option key={u} value={u}>{u}</option>)}
-                  </select>
+                  {lockInstrument ? (
+                    <Input value={formData.underlying} disabled
+                      className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm opacity-50 cursor-not-allowed" />
+                  ) : (
+                    <FnoUnderlyingPicker
+                      authToken={authToken}
+                      value={formData.underlying}
+                      onSelect={(s) => setFormData((p: any) => ({ ...p, underlying: s, expiry: '' }))}
+                    />
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Expiry</label>

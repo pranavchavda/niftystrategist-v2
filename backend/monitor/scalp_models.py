@@ -33,6 +33,10 @@ UNDERLYING_INSTRUMENT_MAP: dict[str, str] = {
     "NIFTYBANK": "NSE_INDEX|Nifty Bank",
     "FINNIFTY": "NSE_INDEX|Nifty Fin Service",
     "MIDCPNIFTY": "NSE_INDEX|NIFTY MID SELECT",
+    # BSE index options (separate exchange; instrument keys carry BSE_FO|… and
+    # route automatically via the embedded token on order placement).
+    "SENSEX": "BSE_INDEX|SENSEX",
+    "BANKEX": "BSE_INDEX|BANKEX",
 }
 
 

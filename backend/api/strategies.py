@@ -11,7 +11,7 @@ from auth import User, get_current_user
 from database.session import get_db_context
 from services.instruments_cache import get_instrument_key
 from strategies.templates import list_templates, get_template
-from strategies.fno_utils import list_expiries, list_strikes
+from strategies.fno_utils import list_expiries, list_fno_underlyings, list_strikes
 from monitor.crud import create_rule, update_rule, list_rules, list_rules_by_group, delete_rules_by_group
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,22 @@ def _serialize_rule(rule) -> dict:
 async def api_list_templates():
     """List all available strategy templates (public, no auth)."""
     return {"templates": list_templates()}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/strategies/fno-underlyings — list all F&O underlyings (index + stock)
+# ---------------------------------------------------------------------------
+@router.get("/fno-underlyings")
+async def api_list_fno_underlyings():
+    """Return all F&O underlyings with options: indices first, then stocks.
+
+    Each item: {symbol, name, kind: "index"|"stock", lot_size}. Used to
+    populate the underlying picker in the backtester and scalp-session UIs.
+    """
+    try:
+        return {"underlyings": list_fno_underlyings()}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

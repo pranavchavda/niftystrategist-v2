@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -137,6 +137,51 @@ async def _fetch_candles(user: User, symbol: str, interval: str, days: int) -> l
             "volume": c.volume,
         })
     return out
+
+
+async def _fetch_candles_with_warmup(
+    user: User, symbol: str, interval: str, days: int,
+) -> tuple[list[dict], int | str | None]:
+    """Fetch ``days`` of display candles PLUS a warm-up prefix.
+
+    Returns ``(candles, display_start)`` where ``candles`` includes the warm-up
+    history and ``display_start`` is the ``time`` of the first candle in the
+    requested ``days`` window. Indicator overlays should be computed over the
+    full ``candles`` (so they're converged) then sliced to ``time >=
+    display_start`` — the chart renders by time, so the warm-up points simply
+    fall off the left edge instead of stretching the line into empty space.
+    """
+    from api.backtest import _warmup_fetch_days
+    wdays = _warmup_fetch_days(interval)
+    candles = await _fetch_candles(user, symbol, interval, days + wdays)
+    if not candles:
+        return candles, None
+    intraday = interval in ("1minute", "5minute", "15minute", "30minute")
+    if intraday:
+        cutoff: int | str = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+    else:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    in_window = [c for c in candles if c["time"] >= cutoff]
+    display_start = in_window[0]["time"] if in_window else candles[-1]["time"]
+    return candles, display_start
+
+
+def _slice_overlays(overlays: dict, start_time) -> dict:
+    """Drop overlay points before ``start_time`` (the warm-up prefix), keeping
+    lines/markers/panes aligned to the displayed candles."""
+    def _keep(points: list) -> list:
+        return [p for p in points if p.get("time") is not None and p["time"] >= start_time]
+
+    panes = []
+    for pane in overlays.get("panes", []):
+        p = dict(pane)
+        p["lines"] = {k: _keep(v) for k, v in pane.get("lines", {}).items()}
+        panes.append(p)
+    return {
+        "lines": {k: _keep(v) for k, v in overlays.get("lines", {}).items()},
+        "markers": _keep(overlays.get("markers", [])),
+        "panes": panes,
+    }
 
 
 @router.get("/symbols")
@@ -286,8 +331,16 @@ async def charts_indicators(
 
     interval, fetch_days = _interval_and_days(timeframe, days)
     try:
-        candles = await _fetch_candles(user, symbol, interval, fetch_days)
-        return compute_overlays(candles, names=names, params=parsed_params or None)
+        # Compute overlays over a warm-up-extended series so ATR-family
+        # indicators (UTBot/SuperTrend) are converged at the left edge, then
+        # slice the points back to the displayed window.
+        candles, display_start = await _fetch_candles_with_warmup(
+            user, symbol, interval, fetch_days,
+        )
+        overlays = compute_overlays(candles, names=names, params=parsed_params or None)
+        if display_start is not None:
+            overlays = _slice_overlays(overlays, display_start)
+        return overlays
     except Exception as e:
         logger.error(f"charts.indicators({symbol}, {indicators}): {e}")
         raise HTTPException(status_code=500, detail=str(e))

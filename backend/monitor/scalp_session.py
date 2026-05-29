@@ -779,7 +779,11 @@ class ScalpSessionManager:
             inst_info = resolve_option_instrument(cfg.underlying, cfg.expiry, atm_strike, option_type)
             instrument_key = inst_info["instrument_key"]
             tradingsymbol = inst_info.get("tradingsymbol", "")
-            lot_size = get_lot_size(cfg.underlying)
+            # Use the RESOLVED contract's lot, not the underlying-level lookup.
+            # Stock (OPTSTK) lots can differ across expiries (e.g. HDFCBANK 550
+            # near-month vs 650 later), so sizing off cfg.underlying would place
+            # the wrong quantity on a real order.
+            lot_size = inst_info.get("lot_size") or get_lot_size(cfg.underlying, cfg.expiry)
             quantity = cfg.lots * lot_size
 
             # Cross-session mutex on instrument — prevents two sessions on the
@@ -1063,7 +1067,9 @@ class ScalpSessionManager:
             symbol = cfg.underlying
         else:
             from strategies.fno_utils import get_lot_size
-            lot_size = get_lot_size(cfg.underlying)
+            # Pass expiry so the exit quantity matches the entry (stock lots
+            # can differ across expiries).
+            lot_size = get_lot_size(cfg.underlying, cfg.expiry)
             quantity = cfg.lots * lot_size
             txn = "SELL"  # Always long the option contract.
             product = cfg.product

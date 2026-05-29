@@ -29,6 +29,17 @@ _CACHE_CSV = os.path.join(_CACHE_DIR, "nse_instruments.csv")
 _CACHE_META = os.path.join(_CACHE_DIR, "nse_instruments.meta")
 _TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
+# BSE instruments — kept in a SEPARATE file from the NSE cache so NSE-only
+# consumers are unaffected. Needed for SENSEX / BANKEX F&O (BSE_FO OPTIDX rows)
+# which the NSE CSV does not contain. fno_utils reads both files for option
+# resolution. Downloaded as a sibling to the NSE cache (own TTL/meta), NOT
+# gated behind NSE freshness — otherwise it would never appear on a box whose
+# NSE cache is already fresh.
+_BSE_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/BSE.csv.gz"
+_BSE_CACHE_CSV = os.path.join(_CACHE_DIR, "bse_instruments.csv")
+_BSE_CACHE_META = os.path.join(_CACHE_DIR, "bse_instruments.meta")
+_bse_loaded = False
+
 # Nifty 50 constituents (same symbols as UpstoxClient.SYMBOL_TO_ISIN keys)
 NIFTY_50_SYMBOLS: set[str] = {
     "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN",
@@ -170,6 +181,64 @@ def _download() -> bool:
     except Exception as e:
         logger.warning(f"Failed to download instruments CSV: {e}")
         return False
+
+
+def _bse_cache_is_fresh() -> bool:
+    """Return True if the BSE disk cache exists and is younger than the TTL."""
+    if not os.path.exists(_BSE_CACHE_META):
+        return False
+    try:
+        with open(_BSE_CACHE_META) as f:
+            ts = float(f.read().strip())
+        return (time.time() - ts) < _TTL_SECONDS
+    except (ValueError, OSError):
+        return False
+
+
+def _download_bse() -> bool:
+    """Download the BSE instruments CSV to its own disk cache.
+
+    No-ops if a fresh cache already exists. Returns True if the file is
+    present and usable afterward (fresh cache or successful download). Failures
+    are non-fatal — NSE underlyings keep working; only SENSEX/BANKEX F&O
+    resolution degrades until the next attempt.
+    """
+    global _bse_loaded
+
+    if _bse_loaded and os.path.exists(_BSE_CACHE_CSV):
+        return True
+    if _bse_cache_is_fresh() and os.path.exists(_BSE_CACHE_CSV):
+        _bse_loaded = True
+        return True
+
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    try:
+        logger.info(f"Downloading BSE instruments from {_BSE_INSTRUMENTS_URL}")
+        req = urllib.request.Request(
+            _BSE_INSTRUMENTS_URL,
+            headers={"User-Agent": "NiftyStrategist/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+
+        csv_bytes = gzip.decompress(raw)
+        with open(_BSE_CACHE_CSV, "wb") as f:
+            f.write(csv_bytes)
+        with open(_BSE_CACHE_META, "w") as f:
+            f.write(str(time.time()))
+
+        _bse_loaded = True
+        logger.info(f"BSE instruments cache saved ({len(csv_bytes)} bytes)")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to download BSE instruments CSV: {e}")
+        # Keep any stale-but-present file usable rather than nothing.
+        return os.path.exists(_BSE_CACHE_CSV)
+
+
+def bse_cache_path() -> str:
+    """Return the on-disk path to the BSE instruments CSV (may not exist yet)."""
+    return _BSE_CACHE_CSV
 
 
 def _load_from_disk() -> bool:
@@ -540,6 +609,7 @@ def ensure_loaded() -> None:
     _load_nifty500()
     _load_nifty_total()
     _load_etfs()
+    _download_bse()
 
 
 def get_instrument_key(symbol: str) -> str | None:

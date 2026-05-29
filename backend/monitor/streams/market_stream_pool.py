@@ -235,12 +235,17 @@ class MarketStreamPool:
                 # joins so the next ``_on_connected`` resubscribes from
                 # ``_subscribed_keys`` (which now includes the index)
                 # — that path Upstox honours.
-                index_added = any(k.startswith("NSE_INDEX|") for k in new_subs)
+                index_added = any(
+                    k.startswith(("NSE_INDEX|", "BSE_INDEX|")) for k in new_subs
+                )
                 if index_added and self._stream._ws is not None:
                     logger.info(
-                        "[MarketStreamPool] NSE_INDEX subscribed via diff "
+                        "[MarketStreamPool] index subscribed via diff "
                         "(%s) — forcing reconnect so Upstox honours it",
-                        sorted(k for k in new_subs if k.startswith("NSE_INDEX|")),
+                        sorted(
+                            k for k in new_subs
+                            if k.startswith(("NSE_INDEX|", "BSE_INDEX|"))
+                        ),
                     )
                     try:
                         await self._stream._ws.close()

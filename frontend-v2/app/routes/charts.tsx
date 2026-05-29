@@ -196,7 +196,7 @@ const PRESET_INDICATORS: IndicatorDef[] = [
   { key: 'renko', label: 'Renko Trend', apiName: 'renko', kind: 'pane' },
 ];
 
-const POPULAR_INDICES = ['NIFTY 50', 'NIFTY BANK', 'NIFTY FIN SERVICE', 'NIFTY MID SELECT', 'SENSEX'];
+const POPULAR_INDICES = ['NIFTY 50', 'NIFTY BANK', 'NIFTY FIN SERVICE', 'NIFTY MID SELECT', 'SENSEX', 'BANKEX'];
 
 // Bar-bucket size in seconds for each intraday timeframe. Daily+ timeframes
 // never create a new bar from ticks — they only update the latest bar's h/l/c.

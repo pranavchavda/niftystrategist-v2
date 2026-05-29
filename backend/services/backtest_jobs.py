@@ -319,7 +319,7 @@ async def _run_scalp(job_id: int, user_id: int, config: dict) -> dict | None:
     from services.upstox_client import UpstoxClient
     from backtesting.scalp_equity import run_scalp_equity_backtest
     from monitor.scalp_models import ScalpSessionConfig
-    from api.backtest import _scalp_result_to_dict, _INTERVAL_TO_TIMEFRAME
+    from api.backtest import _scalp_result_to_dict, _INTERVAL_TO_TIMEFRAME, fetch_with_warmup
 
     symbol = config["symbol"]
     interval = config.get("interval", "5minute")
@@ -332,7 +332,9 @@ async def _run_scalp(job_id: int, user_id: int, config: dict) -> dict | None:
         raise ValueError("Upstox token not available — please authenticate via Settings")
 
     client = UpstoxClient(access_token=token, user_id=user_id)
-    ohlcv = await client.get_historical_data(symbol, interval=interval, days=days)
+    # Fetch the requested window plus a warm-up prefix so indicators are
+    # converged before the first tradable bar.
+    ohlcv, warmup_bars = await fetch_with_warmup(client, symbol, interval, days)
     if not ohlcv:
         raise ValueError(f"No historical data for {symbol}")
 
@@ -373,6 +375,7 @@ async def _run_scalp(job_id: int, user_id: int, config: dict) -> dict | None:
             candles, cfg, symbol=symbol, interval=interval,
             slippage_bps=float(config.get("slippage_bps", 0.0)),
             progress_cb=progress, cancel_check=cancel,
+            warmup_bars=warmup_bars,
         )
 
     result = await asyncio.to_thread(_go)
@@ -421,7 +424,11 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
         raise ValueError("Upstox token not available — please authenticate via Settings")
 
     client = UpstoxClient(access_token=token, user_id=user_id)
-    ohlcv = await client.get_historical_data(underlying, interval=interval, days=days)
+    # Warm-up prefix on the UNDERLYING so the signal indicators are converged
+    # before the first tradable bar. Option legs are fetched for the eval
+    # window only (below) — they're consumed only when a position is held.
+    from api.backtest import fetch_with_warmup
+    ohlcv, warmup_bars = await fetch_with_warmup(client, underlying, interval, days)
     if not ohlcv:
         raise ValueError(f"No historical data for {underlying}")
 
@@ -457,7 +464,7 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
     # Pass 1 — plan which option legs the replay will need.
     await _update_progress(job_id, message="Planning ATM legs from underlying signal")
     plans = await asyncio.to_thread(
-        plan_atm_legs, underlying_candles, cfg, interval,
+        plan_atm_legs, underlying_candles, cfg, interval, warmup_bars,
     )
     if not plans:
         # No flips that pass confirm gate — return empty result so the user
@@ -467,6 +474,7 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
             underlying_candles, {}, cfg,
             interval=interval,
             slippage_bps=float(config.get("slippage_bps", 0.0)),
+            warmup_bars=warmup_bars,
         )
         return _scalp_options_result_to_dict(empty)
 
@@ -514,6 +522,7 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
             interval=interval,
             slippage_bps=float(config.get("slippage_bps", 0.0)),
             progress_cb=progress, cancel_check=cancel,
+            warmup_bars=warmup_bars,
         )
 
     result = await asyncio.to_thread(_go)

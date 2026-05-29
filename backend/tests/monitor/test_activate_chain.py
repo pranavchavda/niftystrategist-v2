@@ -99,15 +99,20 @@ class TestORBBidirectional:
             if spec.role in ("entry_long", "entry_short"):
                 assert spec.enabled is True, f"{spec.role} should be enabled"
 
-    def test_squareoff_always_enabled(self):
-        """Auto square-off is a safety net, always enabled."""
-        squareoff = [s for s in self.plan.rules if s.role == "squareoff"]
-        assert len(squareoff) == 1
-        assert squareoff[0].enabled is True
+    def test_squareoff_gated_by_entry_when_bidirectional(self):
+        """Square-off is now per-direction and gated by entry: a bidirectional
+        plan can't know which side will fill, so each side's square-off starts
+        DISABLED and is armed only when its entry fires — otherwise a time
+        square-off could place a rogue order on a side that never entered."""
+        so = {s.role: s for s in self.plan.rules
+              if s.role in ("squareoff_long", "squareoff_short")}
+        assert set(so) == {"squareoff_long", "squareoff_short"}
+        assert so["squareoff_long"].enabled is False
+        assert so["squareoff_short"].enabled is False
 
     def test_entry_long_activates_long_exits(self):
         entry = [s for s in self.plan.rules if s.role == "entry_long"][0]
-        assert set(entry.activates_roles) == {"sl_long", "target_long", "trailing_long"}
+        assert set(entry.activates_roles) == {"sl_long", "target_long", "trailing_long", "squareoff_long"}
 
     def test_entry_long_kills_short_side(self):
         entry = [s for s in self.plan.rules if s.role == "entry_long"][0]
@@ -117,7 +122,7 @@ class TestORBBidirectional:
 
     def test_entry_short_activates_short_exits(self):
         entry = [s for s in self.plan.rules if s.role == "entry_short"][0]
-        assert set(entry.activates_roles) == {"sl_short", "target_short", "trailing_short"}
+        assert set(entry.activates_roles) == {"sl_short", "target_short", "trailing_short", "squareoff_short"}
 
     def test_entry_short_kills_long_side(self):
         entry = [s for s in self.plan.rules if s.role == "entry_short"][0]
@@ -127,9 +132,8 @@ class TestORBBidirectional:
     def test_all_roles_present(self):
         roles = {s.role for s in self.plan.rules}
         expected = {
-            "entry_long", "sl_long", "target_long", "trailing_long",
-            "entry_short", "sl_short", "target_short", "trailing_short",
-            "squareoff",
+            "entry_long", "sl_long", "target_long", "trailing_long", "squareoff_long",
+            "entry_short", "sl_short", "target_short", "trailing_short", "squareoff_short",
         }
         assert roles == expected
 
@@ -165,7 +169,7 @@ class TestORBUnidirectional:
         """Unidirectional entry still has activates (no-op since exits already enabled)."""
         entry = [s for s in self.plan.rules if s.role == "entry_long"][0]
         # activates_roles is set but since exits start enabled, it's a no-op
-        assert set(entry.activates_roles) == {"sl_long", "target_long", "trailing_long"}
+        assert set(entry.activates_roles) == {"sl_long", "target_long", "trailing_long", "squareoff_long"}
 
 
 # ── ORB template: reversal mode ──────────────────────────────────────

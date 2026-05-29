@@ -24,20 +24,31 @@ _INTERVAL_MAP: dict[int, str] = {
     30: "30minute",
 }
 
-# How many trading days of history to request per timeframe.
+# Seed enough history that indicators are already CONVERGED before the session
+# acts on live ticks. ATR / stateful-stop indicators (UTBot, SuperTrend) need
+# ~150 bars to converge their state — far more than the textbook 5×period — so
+# we target a fixed BAR count, not a per-timeframe day count.
 #
-# UpstoxClient.get_historical_data routes days<=1 with unit=minutes to the
-# *intraday* endpoint (today's candles); larger values hit the historical
-# endpoint which stops at the previous trading day's close. Use days=1 for
-# minute intervals so we seed with today's live data — a single trading
-# session gives ~375 1m candles, more than enough for any indicator warmup.
-# Larger timeframes can safely use the historical endpoint.
-_DAYS_MAP: dict[int, int] = {
-    1: 1,
-    5: 1,
-    15: 10,
-    30: 20,
-}
+# The old day-based map under-seeded minute intervals: days<=1 routed to the
+# *intraday* endpoint (today-only → ~75 bars for 5m, fewer if the session was
+# enabled early in the day), so 5m and morning-started 1m sessions began INSIDE
+# the cold-start zone and traded on wrong signals for hours. Targeting bars —
+# and always using days>=2 so the multi-day historical endpoint is hit (which
+# also appends today's candles) — keeps the cold zone entirely in the past,
+# independent of what time of day the session was switched on.
+_TARGET_SEED_BARS = 200  # > the ~150-bar convergence floor, with margin
+
+# Approx regular-session bars per trading day (NSE 09:15–15:30 = 375 min).
+_BARS_PER_DAY: dict[int, int] = {1: 375, 5: 75, 15: 25, 30: 13}
+
+
+def _seed_days(tf_minutes: int) -> int:
+    """Calendar days to fetch so the seed yields >= _TARGET_SEED_BARS bars."""
+    bpd = _BARS_PER_DAY.get(tf_minutes) or max(1, 375 // tf_minutes)
+    trading_days = -(-_TARGET_SEED_BARS // bpd)  # ceil division
+    # Trading→calendar (~5/7) + holiday cushion; >=2 forces the historical
+    # endpoint (days<=1 hits the intraday/today-only path).
+    return max(2, round(trading_days * 7 / 5) + 3)
 
 
 def _to_naive_utc(ts: Any) -> datetime | None:
@@ -74,7 +85,7 @@ async def seed_candle_buffer(
     interval = _INTERVAL_MAP.get(tf_minutes)
     if interval is None:
         return 0  # unsupported timeframe for Upstox historical API
-    days = _DAYS_MAP.get(tf_minutes, 2)
+    days = _seed_days(tf_minutes)
     try:
         bars = await upstox_client.get_historical_data(
             symbol="",  # unused when instrument_key provided

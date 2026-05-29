@@ -19,6 +19,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _resolve_options_underlying(symbol: str) -> tuple[str, str]:
+    """Resolve an options_scalp underlying to (normalized_symbol, instrument_token).
+
+    Indices map to their index token (NIFTY → NSE_INDEX|…, SENSEX → BSE_INDEX|…).
+    Anything else is treated as a stock (OPTSTK) underlying: it must actually
+    have listed options, and the *equity* spot key (NSE_EQ|…) becomes the
+    signal stream the daemon subscribes to (same as equity modes). Raises
+    HTTPException(400) if the symbol is neither.
+    """
+    upper = symbol.upper()
+    if upper in UNDERLYING_INSTRUMENT_MAP:
+        return upper, UNDERLYING_INSTRUMENT_MAP[upper]
+
+    # Stock underlying — only valid if it has option contracts in the cache.
+    from strategies.fno_utils import list_expiries
+
+    try:
+        has_options = bool(list_expiries(upper))
+    except Exception:
+        has_options = False
+    if not has_options:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{symbol}' is not a valid options underlying. Use an index "
+                f"({', '.join(sorted(UNDERLYING_INSTRUMENT_MAP.keys()))}) or a "
+                f"stock that offers F&O options."
+            ),
+        )
+    equity_key = get_instrument_key(upper)
+    if not equity_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stock '{symbol}' has options but its equity is not in the instruments cache.",
+        )
+    return upper, equity_key
+
+
 # ---------------------------------------------------------------------------
 # Pydantic request models
 # ---------------------------------------------------------------------------
@@ -257,13 +295,9 @@ async def api_create_session(
 
     underlying_upper = body.underlying.upper()
     if body.session_mode == SessionMode.OPTIONS_SCALP.value:
-        if underlying_upper not in UNDERLYING_INSTRUMENT_MAP:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown underlying '{body.underlying}' for options_scalp. "
-                       f"Valid: {', '.join(sorted(UNDERLYING_INSTRUMENT_MAP.keys()))}",
-            )
-        underlying_instrument_token = UNDERLYING_INSTRUMENT_MAP[underlying_upper]
+        underlying_upper, underlying_instrument_token = _resolve_options_underlying(
+            body.underlying
+        )
         if not body.expiry:
             raise HTTPException(status_code=400, detail="expiry is required for options_scalp")
     else:
@@ -385,14 +419,9 @@ async def api_update_session(
         if body.underlying is not None:
             upper = body.underlying.upper()
             if effective_mode == SessionMode.OPTIONS_SCALP.value:
-                if upper not in UNDERLYING_INSTRUMENT_MAP:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Unknown underlying '{body.underlying}' for options_scalp. "
-                               f"Valid: {', '.join(sorted(UNDERLYING_INSTRUMENT_MAP.keys()))}",
-                    )
+                upper, token = _resolve_options_underlying(body.underlying)
                 updates["underlying"] = upper
-                updates["underlying_instrument_token"] = UNDERLYING_INSTRUMENT_MAP[upper]
+                updates["underlying_instrument_token"] = token
             else:
                 instrument_key = get_instrument_key(upper)
                 if not instrument_key:

@@ -10,6 +10,7 @@ import { Button } from '../components/catalyst/button';
 import { Badge } from '../components/catalyst/badge';
 import { Input } from '../components/catalyst/input';
 import { EquitySymbolPicker } from '../components/EquitySymbolPicker';
+import { FnoUnderlyingPicker } from '../components/FnoUnderlyingPicker';
 
 interface AuthContext {
   authToken: string;
@@ -1182,15 +1183,11 @@ export default function BacktestPage() {
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Underlying</label>
-                      <select
-                        className={selectClassName}
+                      <FnoUnderlyingPicker
+                        authToken={authToken}
                         value={scalpUnderlying}
-                        onChange={e => { setScalpUnderlying(e.target.value); setScalpExpiry(''); }}
-                      >
-                        {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'].map(u => (
-                          <option key={u} value={u}>{u}</option>
-                        ))}
-                      </select>
+                        onSelect={(s) => { setScalpUnderlying(s); setScalpExpiry(''); }}
+                      />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Expiry</label>
@@ -1334,7 +1331,7 @@ export default function BacktestPage() {
                       <div>
                         <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
                           Lots
-                          <InfoTip text="Each lot = the underlying's standard lot size (NIFTY 25, BANKNIFTY 15, FINNIFTY 25, MIDCPNIFTY 50)." />
+                          <InfoTip text="Each lot = the contract's standard lot size (e.g. NIFTY 65, SENSEX 20, BANKEX 30). Stock options have their own per-symbol lot, which can differ by expiry — sizing uses the resolved contract's lot." />
                         </label>
                         <Input type="number" value={scalpLots} onChange={e => setScalpLots(e.target.value)} min={1} />
                       </div>

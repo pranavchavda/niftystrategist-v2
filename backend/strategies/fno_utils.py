@@ -10,22 +10,28 @@ import re
 from datetime import datetime
 from typing import Any
 
-_CACHE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".cache", "nse_instruments.csv",
+_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache",
 )
+_CACHE_PATH = os.path.join(_CACHE_DIR, "nse_instruments.csv")
+# BSE F&O instruments live in a separate file (SENSEX / BANKEX OPTIDX rows are
+# not in the NSE CSV). Read alongside the NSE cache when present.
+_BSE_CACHE_PATH = os.path.join(_CACHE_DIR, "bse_instruments.csv")
 
 _options_cache: dict[str, dict] = {}
 # Maps short trading symbol prefix (e.g. "RELIANCE") → full company name
 _symbol_to_name: dict[str, str] = {}
 
-# Standard lot sizes (updated periodically by NSE)
+# Standard lot sizes — fallback ONLY when the instruments cache fails to load.
+# The cache is authoritative (get_lot_size prefers it); these are last-resort
+# values verified against the cache 2026-05-29. Lots are revised periodically.
 LOT_SIZES: dict[str, int] = {
-    "NIFTY": 25,
-    "BANKNIFTY": 15,
-    "FINNIFTY": 25,
-    "MIDCPNIFTY": 50,
-    "SENSEX": 10,
+    "NIFTY": 65,
+    "BANKNIFTY": 30,
+    "FINNIFTY": 60,
+    "MIDCPNIFTY": 120,
+    "SENSEX": 20,
+    "BANKEX": 30,
 }
 
 # Default strike intervals on NSE options chains. Used by ladder-style
@@ -37,12 +43,27 @@ DEFAULT_STRIKE_INTERVALS: dict[str, float] = {
     "FINNIFTY": 50.0,
     "MIDCPNIFTY": 25.0,
     "SENSEX": 100.0,
+    "BANKEX": 100.0,
 }
 
 
 def get_strike_interval(underlying: str) -> float:
     """Return the default strike interval for an underlying."""
     return DEFAULT_STRIKE_INTERVALS.get(underlying.upper(), 50.0)
+
+
+# OPTSTK tradingsymbols are monthly-coded: SYMBOL + YY + MMM + STRIKE + CE/PE
+# e.g. "RELIANCE26JUN1400CE", "360ONE26JUN1100CE". The symbol itself may contain
+# digits ("360ONE"), so anchoring on the *first* digit truncates it to garbage.
+# Anchor on the END instead — peel off CE/PE, strike, and the YY+MMM expiry —
+# and let the trailing $ force the symbol group to take exactly the remainder.
+_OPTSTK_RE = re.compile(r'^(?P<sym>.+?)\d{2}[A-Z]{3}\d+(?:\.\d+)?(?:CE|PE)$')
+
+
+def _parse_optstk_symbol(tradingsymbol: str) -> str | None:
+    """Extract the underlying symbol from an OPTSTK tradingsymbol, or None."""
+    m = _OPTSTK_RE.match(tradingsymbol)
+    return m.group(1) if m else None
 
 
 def _resolve_symbol(symbol: str) -> str:
@@ -59,16 +80,44 @@ def _resolve_symbol(symbol: str) -> str:
     return _symbol_to_name.get(symbol, symbol)
 
 
-def get_lot_size(underlying: str) -> int:
-    """Return lot size for an underlying from cache, with hardcoded fallback."""
+def get_lot_size(underlying: str, expiry: str | None = None) -> int:
+    """Return lot size for an underlying from cache, with hardcoded fallback.
+
+    When ``expiry`` is given, prefer a contract for that expiry. Stock (OPTSTK)
+    lot sizes can differ across expiries after a revision (e.g. HDFCBANK 550 in
+    the near month, 650 in later months), so callers placing a real order for a
+    specific expiry should pass it. Indices have a uniform lot, so this is a
+    no-op there.
+    """
     underlying = underlying.upper()
     # Prefer cache (authoritative, updated daily)
     try:
         cache = _load_cache()
         resolved = _resolve_symbol(underlying)
+        expiry_normalized = expiry
+        if expiry and "-" in expiry:
+            try:
+                expiry_normalized = datetime.strptime(
+                    expiry, "%Y-%m-%d"
+                ).strftime("%d%b%y").upper()
+            except ValueError:
+                pass
+        fallback_lot: int | None = None
         for data in cache.values():
-            if data["name"] == resolved:
+            if data["name"] != resolved:
+                continue
+            if expiry is None:
                 return data["lot_size"]
+            # Expiry given: match it; keep first row as fallback if none match.
+            if fallback_lot is None:
+                fallback_lot = data["lot_size"]
+            cache_expiry = data.get("expiry", "") or ""
+            if expiry in cache_expiry or (
+                expiry_normalized and expiry_normalized in cache_expiry
+            ):
+                return data["lot_size"]
+        if fallback_lot is not None:
+            return fallback_lot
     except FileNotFoundError:
         pass
     # Fallback to hardcoded (may be stale)
@@ -76,10 +125,23 @@ def get_lot_size(underlying: str) -> int:
 
 
 def _load_cache() -> dict[str, dict]:
-    """Load F&O instruments from the shared NSE instruments CSV cache."""
+    """Load F&O instruments from the NSE + BSE instruments CSV caches.
+
+    NSE covers NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + stock options; BSE covers
+    SENSEX/BANKEX index options. The BSE file is optional — NSE underlyings
+    still resolve if it's absent (e.g. before the first download).
+    """
     global _options_cache, _symbol_to_name
     if _options_cache:
         return _options_cache
+
+    # Make sure both CSVs are on disk (downloads them if stale/missing). The
+    # download is a no-op when fresh, so this is cheap on the hot path.
+    try:
+        from services.instruments_cache import ensure_loaded
+        ensure_loaded()
+    except Exception:
+        pass
 
     if not os.path.exists(_CACHE_PATH):
         raise FileNotFoundError(
@@ -89,30 +151,73 @@ def _load_cache() -> dict[str, dict]:
 
     options: dict[str, dict] = {}
     sym_to_name: dict[str, str] = {}
-    with open(_CACHE_PATH, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row.get("instrument_type") in ("OPTIDX", "OPTSTK"):
-                ts = row.get("tradingsymbol", "")
-                name = row.get("name", "")
-                options[ts] = {
-                    "instrument_key": row.get("instrument_key"),
-                    "tradingsymbol": ts,
-                    "name": name,
-                    "expiry": row.get("expiry"),
-                    "strike": float(row.get("strike") or 0),
-                    "lot_size": int(row.get("lot_size") or 1),
-                    "instrument_type": row.get("instrument_type"),
-                    "option_type": row.get("option_type"),
-                    "exchange": row.get("exchange"),
-                }
-                if row.get("instrument_type") == "OPTSTK" and ts:
-                    m = re.match(r'^([A-Z&-]+?)\d', ts)
-                    if m and m.group(1) not in sym_to_name:
-                        sym_to_name[m.group(1)] = name
+
+    paths = [_CACHE_PATH]
+    if os.path.exists(_BSE_CACHE_PATH):
+        paths.append(_BSE_CACHE_PATH)
+
+    for path in paths:
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("instrument_type") in ("OPTIDX", "OPTSTK"):
+                    ts = row.get("tradingsymbol", "")
+                    name = row.get("name", "")
+                    options[ts] = {
+                        "instrument_key": row.get("instrument_key"),
+                        "tradingsymbol": ts,
+                        "name": name,
+                        "expiry": row.get("expiry"),
+                        "strike": float(row.get("strike") or 0),
+                        "lot_size": int(row.get("lot_size") or 1),
+                        "instrument_type": row.get("instrument_type"),
+                        "option_type": row.get("option_type"),
+                        "exchange": row.get("exchange"),
+                    }
+                    if row.get("instrument_type") == "OPTSTK" and ts:
+                        sym = _parse_optstk_symbol(ts)
+                        if sym and sym not in sym_to_name:
+                            sym_to_name[sym] = name
     _options_cache = options
     _symbol_to_name = sym_to_name
     return _options_cache
+
+
+def list_fno_underlyings() -> list[dict]:
+    """Return all F&O underlyings (index + stock) that have option contracts.
+
+    Each entry: ``{symbol, name, kind: "index"|"stock", lot_size}``. Indices
+    come first (sorted), then stocks (sorted). ``lot_size`` is indicative
+    (first-seen contract) — actual order sizing must use the resolved
+    contract's lot via ``resolve_option_instrument`` / ``get_lot_size(expiry=)``,
+    since stock lots can vary by expiry.
+    """
+    cache = _load_cache()
+    indices: dict[str, dict] = {}
+    stocks: dict[str, dict] = {}
+    for data in cache.values():
+        name = data.get("name") or ""
+        itype = data.get("instrument_type")
+        if itype == "OPTIDX":
+            if name and name not in indices:
+                indices[name] = {
+                    "symbol": name,
+                    "name": name,
+                    "kind": "index",
+                    "lot_size": data.get("lot_size", 1),
+                }
+        elif itype == "OPTSTK":
+            sym = _parse_optstk_symbol(data.get("tradingsymbol", ""))
+            if sym and sym not in stocks:
+                stocks[sym] = {
+                    "symbol": sym,
+                    "name": name,
+                    "kind": "stock",
+                    "lot_size": data.get("lot_size", 1),
+                }
+    result = sorted(indices.values(), key=lambda r: r["symbol"])
+    result += sorted(stocks.values(), key=lambda r: r["symbol"])
+    return result
 
 
 def list_expiries(underlying: str) -> list[str]:
