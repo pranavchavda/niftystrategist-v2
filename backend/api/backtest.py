@@ -78,9 +78,12 @@ class ScalpBacktestRequest(BaseModel):
     trail_points: float | None = None
     trail_percent: float | None = None
     trail_arm_points: float | None = None
-    squareoff_time: str = "15:15"
+    squareoff_time: str = "15:09"
     max_trades: int = 20
     cooldown_seconds: int = 60
+    # Direction gate for new entries: "both" | "long" | "short". For options
+    # scalp, "long" → CE-only, "short" → PE-only. Mirrors ScalpSessionConfig.
+    entry_side: str = "both"
     # Equity sizing (required for equity_intraday + equity_swing).
     quantity: int | None = None
     slippage_bps: float = 0.0
@@ -628,6 +631,7 @@ def _scalp_result_to_dict(r: ScalpBacktestResult) -> dict:
             "max_trades_blocks": r.max_trades_blocks,
             "squareoff_exits": r.squareoff_exits,
             "post_cutoff_blocks": getattr(r, "post_cutoff_blocks", 0),
+            "entry_side_blocks": getattr(r, "entry_side_blocks", 0),
         },
     }
 
@@ -676,6 +680,7 @@ def _scalp_options_result_to_dict(r: ScalpOptionsBacktestResult) -> dict:
             "missing_leg_blocks": r.missing_leg_blocks,
             "no_strike_blocks": r.no_strike_blocks,
             "post_cutoff_blocks": getattr(r, "post_cutoff_blocks", 0),
+            "entry_side_blocks": getattr(r, "entry_side_blocks", 0),
         },
     }
 
@@ -750,6 +755,7 @@ async def _run_options_scalp_sync(
         squareoff_time=body.squareoff_time,
         max_trades=body.max_trades,
         cooldown_seconds=body.cooldown_seconds,
+        entry_side=body.entry_side,
     )
 
     try:
@@ -871,6 +877,7 @@ async def api_run_scalp_backtest(
         squareoff_time=body.squareoff_time,
         max_trades=body.max_trades,
         cooldown_seconds=body.cooldown_seconds,
+        entry_side=body.entry_side,
         quantity=body.quantity,
     )
 
@@ -995,9 +1002,16 @@ def _job_config_summary(kind: str, config: dict) -> str:
             )
         else:
             label = config.get("symbol", "?")
+        strat = config.get("primary_indicator", "?")
+        confirm = config.get("confirm_indicator")
+        if confirm:
+            strat = f"{strat}+{confirm}"
+        side = (config.get("entry_side") or "both").lower()
+        if side != "both":
+            strat = f"{strat} ({side})"
         return (
             f"{label} · {config.get('interval', '?')} · "
-            f"{config.get('days', '?')}d · {config.get('primary_indicator', '?')}"
+            f"{config.get('days', '?')}d · {strat}"
         )
     if kind == "equity":
         return (

@@ -43,6 +43,7 @@ from backtesting.scalp_equity import (
     _INTERVAL_TO_TIMEFRAME,
     _candles_to_frame,
     _confirm_agrees_at,
+    _interval_offset,
     _parse_candle_ts,
     _parse_squareoff,
 )
@@ -99,6 +100,7 @@ class ScalpOptionsBacktestResult:
     missing_leg_blocks: int      # flips where no option candles were available
     no_strike_blocks: int        # flips where the F&O cache returned no strikes
     post_cutoff_blocks: int = 0  # flips rejected for being at/after squareoff cutoff
+    entry_side_blocks: int = 0   # flips rejected by entry_side (CE/PE-only) gate
 
 
 @dataclass
@@ -176,6 +178,7 @@ def plan_atm_legs(
     plans: list[LegFetchPlan] = []
     seen: set[tuple[str, float, str]] = set()
     prev_primary: float | None = None
+    entry_side = (config.entry_side or "both").lower()
 
     # Cache strike lists per (date, type) — list_strikes is cheap but no
     # reason to redo it per flip.
@@ -200,6 +203,11 @@ def plan_atm_legs(
 
         direction_sign = 1 if bullish else -1
         option_type = "CE" if bullish else "PE"
+
+        # Entry-side gate — don't plan (or fetch) legs the run loop will skip.
+        # "long" → CE-only (bullish flips), "short" → PE-only (bearish flips).
+        if (bullish and entry_side == "short") or (bearish and entry_side == "long"):
+            continue
 
         # Confirm gate
         conf_val = confirm_series[i] if confirm_series is not None else None
@@ -319,6 +327,11 @@ def run_scalp_options_backtest(
         leg_ts_index[ik] = idx
 
     squareoff_cutoff = _parse_squareoff(config.squareoff_time)
+    # Bar duration — used to evaluate the squareoff/entry cutoff against each
+    # bar's CLOSE (the bar live at the cutoff) rather than its open, so a 15:09
+    # cutoff trips on the bar containing 15:09 instead of the next one.
+    disp_off = _interval_offset(interval)
+    entry_side = (config.entry_side or "both").lower()
 
     # Precompute primary + confirm series on the underlying. Same trick as
     # scalp_equity: O(n) once instead of O(n²) per-bar.
@@ -352,6 +365,7 @@ def run_scalp_options_backtest(
     missing_leg_blocks = 0
     no_strike_blocks = 0
     post_cutoff_blocks = 0
+    entry_side_blocks = 0
     slippage_total = 0.0
     charges_total = 0.0
 
@@ -423,12 +437,12 @@ def run_scalp_options_backtest(
         # Time-based squareoff guard within the day. Mirrors scalp_session
         # check_time_squareoff but driven by bar timestamps.
         bar_tod = ts.timetz().replace(tzinfo=None)
+        bar_close_tod = (ts + disp_off).time() if disp_off else bar_tod
         prev_ts = ts  # track for the prior-day boundary close (before continues)
-        if not pos.is_flat and bar_tod >= squareoff_cutoff:
+        if not pos.is_flat and bar_close_tod > squareoff_cutoff:
             opt_bar = leg_ts_index.get(pos.instrument_key, {}).get(ts)
-            exit_price = opt_bar["open"] if opt_bar else (
-                opt_bar["close"] if opt_bar else pos.entry_price
-            )
+            # Exit at this bar's close — the premium at the cutoff boundary.
+            exit_price = opt_bar["close"] if opt_bar else pos.entry_price
             tr = _close_options(
                 pos, exit_price, ts, "squareoff", slip_frac,
             )
@@ -497,11 +511,20 @@ def run_scalp_options_backtest(
             direction_sign = 1 if bullish_flip else -1
             option_type = "CE" if bullish_flip else "PE"
 
+            # Entry-side gate (mirrors ScalpSessionManager): "long" takes only
+            # bullish flips (BUY CE), "short" only bearish (BUY PE).
+            if (bullish_flip and entry_side == "short") or (
+                bearish_flip and entry_side == "long"
+            ):
+                entry_side_blocks += 1
+                prev_primary = primary_val
+                continue
+
             # Past-cutoff entry guard — mirrors the live session and the equity
-            # backtest. Options scalps are always intraday; a flip on the last
-            # bar (>= cutoff) would otherwise open a leg with no same-day bars
-            # left, carrying it to the next session's boundary squareoff.
-            if bar_tod >= squareoff_cutoff:
+            # backtest. Options scalps are always intraday; a flip on the bar
+            # live at the cutoff (or later) would otherwise open a leg that gets
+            # squared off on that same bar, carrying it across the cutoff.
+            if bar_close_tod > squareoff_cutoff:
                 post_cutoff_blocks += 1
                 prev_primary = primary_val
                 continue
@@ -576,8 +599,14 @@ def run_scalp_options_backtest(
             # just before the cutoff (decision bar < cutoff, passes the guard
             # above) would fill AT/after the cutoff and be squared off on that
             # same bar — the degenerate enter→immediate-squareoff the live
-            # session forbids. Block when the fill bar is at/after the cutoff.
-            if next_ts.timetz().replace(tzinfo=None) >= squareoff_cutoff:
+            # session forbids. Block when the fill bar is the one live at the
+            # cutoff (or later) — evaluated against its close, consistent with
+            # the held-leg squareoff above.
+            fill_close_tod = (
+                (next_ts + disp_off).time() if disp_off
+                else next_ts.timetz().replace(tzinfo=None)
+            )
+            if fill_close_tod > squareoff_cutoff:
                 post_cutoff_blocks += 1
                 prev_primary = primary_val
                 continue
@@ -651,6 +680,7 @@ def run_scalp_options_backtest(
         missing_leg_blocks=missing_leg_blocks,
         no_strike_blocks=no_strike_blocks,
         post_cutoff_blocks=post_cutoff_blocks,
+        entry_side_blocks=entry_side_blocks,
     )
 
 

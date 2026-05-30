@@ -103,6 +103,7 @@ class ScalpBacktestResult:
     max_trades_blocks: int                   # flips rejected by max_trades cap
     squareoff_exits: int                     # intraday mode only
     post_cutoff_blocks: int = 0              # intraday flips rejected for being at/after squareoff cutoff
+    entry_side_blocks: int = 0               # flips rejected by entry_side (long/short-only) gate
 
 
 @dataclass
@@ -338,6 +339,7 @@ def run_scalp_equity_backtest(
     max_trades_blocks = 0
     squareoff_exits = 0
     post_cutoff_blocks = 0
+    entry_side_blocks = 0
     slippage_total = 0.0
 
     session_days: set = set()
@@ -399,6 +401,14 @@ def run_scalp_equity_backtest(
         ts = _parse_candle_ts(bar["timestamp"])
         bar_date = ts.date()
         bar_tod = ts.timetz().replace(tzinfo=None)
+        # Bar CLOSE time-of-day. Squareoff/entry-cutoff are evaluated against
+        # the bar's close, not its open, with a strict `>` so the squareoff
+        # fires on the first bar that would carry the position PAST the cutoff
+        # (a bar ending exactly at the cutoff is fine — flat by the cutoff).
+        # This matches the live session's `now >= cutoff` in bar space. On a
+        # 15-min grid a 15:09 cutoff squares off on the 15:00–15:15 bar (out by
+        # ~15:15) instead of the 15:15–15:30 bar (the old open-based 15:30).
+        bar_close_tod = (ts + disp_off).time() if disp_off else bar_tod
         session_days.add(bar_date)
 
         # ── Session boundary (intraday only) ──────────────────────────
@@ -424,8 +434,15 @@ def run_scalp_equity_backtest(
 
         # ── Squareoff guard (intraday only) ───────────────────────────
         if is_intraday and squareoff_cutoff and not pos.is_flat:
-            if bar_tod >= squareoff_cutoff:
-                trade = _close(sim, pos, bar["open"], _bar_close_ts(ts, disp_off),
+            if bar_close_tod > squareoff_cutoff:
+                # Exit at this bar's close — the price at the cutoff boundary.
+                # When the cutoff falls *inside* a bar (the common case, e.g.
+                # 15:09 on 15-min) this is a wash vs the old next-bar-open fill,
+                # since close[t] == open[t+1]; only the display stamp moves a bar
+                # earlier. When the cutoff is bar-aligned on a fine interval
+                # (e.g. 15:09 on 1-min) NEW and OLD fire on the same bar but NEW
+                # uses that bar's close vs OLD's open — a one-bar-later price.
+                trade = _close(sim, pos, bar["close"], _bar_close_ts(ts, disp_off),
                                "squareoff", slip_frac, is_intraday)
                 if trade:
                     _apply_costs(trade, is_intraday)
@@ -482,11 +499,22 @@ def run_scalp_equity_backtest(
                 prev_primary = primary_val
                 continue
 
+            # Entry-side gate (mirrors ScalpSessionManager): "long" takes only
+            # bullish flips, "short" only bearish — same contract live uses, so
+            # a backtested entry_side behaves identically when run live.
+            entry_side = (config.entry_side or "both").lower()
+            if (bullish_flip and entry_side == "short") or (
+                bearish_flip and entry_side == "long"
+            ):
+                entry_side_blocks += 1
+                prev_primary = primary_val
+                continue
+
             # Past-cutoff entry guard (intraday only) — mirrors the live
             # session's "skip entry past squareoff_time" rule. Without it, a
             # flip on the last bar opens a position that can't be squared off
             # the same day and carries to the next session's open.
-            if is_intraday and squareoff_cutoff and bar_tod >= squareoff_cutoff:
+            if is_intraday and squareoff_cutoff and bar_close_tod > squareoff_cutoff:
                 post_cutoff_blocks += 1
                 prev_primary = primary_val
                 continue
@@ -582,6 +610,7 @@ def run_scalp_equity_backtest(
         max_trades_blocks=max_trades_blocks,
         squareoff_exits=squareoff_exits,
         post_cutoff_blocks=post_cutoff_blocks,
+        entry_side_blocks=entry_side_blocks,
     )
 
 

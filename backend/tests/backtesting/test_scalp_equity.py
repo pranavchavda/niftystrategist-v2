@@ -248,6 +248,60 @@ class TestIntradaySquareoff:
         assert len(sq_exits) == 1
         assert r.squareoff_exits == 1
 
+    def test_cutoff_fires_on_containing_bar_not_next(self):
+        # 15-min bars. A long opens at 14:30 and is held past a 15:09 cutoff.
+        # The squareoff must fire on the 15:00–15:15 bar (display exit 15:15),
+        # NOT the 15:15–15:30 bar (the old open-based behaviour showed 15:30).
+        start = _ist(2026, 4, 21, hh=12, mm=0)
+        flat = _flat_series(10, 100.0, start, step_mins=15)          # 12:00..14:15
+        up_start = start + timedelta(minutes=10 * 15)                # 14:30
+        up = _uptrend(6, 100.0, 1.0, up_start, step_mins=15)         # 14:30..15:45
+        cfg = _base_config(squareoff_time="15:09", indicator_timeframe="15m")
+        r = run_scalp_equity_backtest(flat + up, cfg, symbol="TEST", interval="15minute")
+
+        sq = [t for t in r.trades if t.exit_reason == "squareoff"]
+        assert len(sq) == 1
+        assert r.squareoff_exits == 1
+        # The 15:00 bar carries past 15:09; its display close is 15:15.
+        assert (sq[0].exit_time.hour, sq[0].exit_time.minute) == (15, 15)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Test 5b: entry_side direction gate
+# ──────────────────────────────────────────────────────────────────────
+
+class TestEntrySideGate:
+    def test_long_only_blocks_short_flip(self):
+        # Flat → downtrend = bearish flip = SHORT in intraday. entry_side="long"
+        # must skip it (no short trade) and record an entry_side block.
+        start = _ist(2026, 4, 21, hh=10, mm=0)
+        flat = _flat_series(10, 100.0, start)
+        down = _downtrend(8, 100.0, 1.0, start + timedelta(minutes=50))
+        cfg = _base_config(entry_side="long")
+        r = run_scalp_equity_backtest(flat + down, cfg, symbol="TEST", interval="5minute")
+        assert r.primary_flips >= 1
+        assert r.entry_side_blocks >= 1
+        assert all(t.side != "short" for t in r.trades)
+
+    def test_short_only_blocks_long_flip(self):
+        start = _ist(2026, 4, 21, hh=10, mm=0)
+        flat = _flat_series(10, 100.0, start)
+        up = _uptrend(8, 100.0, 1.0, start + timedelta(minutes=50))
+        cfg = _base_config(entry_side="short")
+        r = run_scalp_equity_backtest(flat + up, cfg, symbol="TEST", interval="5minute")
+        assert r.primary_flips >= 1
+        assert r.entry_side_blocks >= 1
+        assert all(t.side != "long" for t in r.trades)
+
+    def test_both_takes_long_flip_with_no_blocks(self):
+        start = _ist(2026, 4, 21, hh=10, mm=0)
+        flat = _flat_series(10, 100.0, start)
+        up = _uptrend(8, 100.0, 1.0, start + timedelta(minutes=50))
+        cfg = _base_config(entry_side="both")
+        r = run_scalp_equity_backtest(flat + up, cfg, symbol="TEST", interval="5minute")
+        assert r.entry_side_blocks == 0
+        assert any(t.side == "long" for t in r.trades)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Test 6: swing mode holds across days

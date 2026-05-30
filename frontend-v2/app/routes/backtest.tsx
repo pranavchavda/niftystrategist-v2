@@ -97,10 +97,20 @@ interface BacktestResult {
     cooldown_blocks: number;
     max_trades_blocks: number;
     squareoff_exits: number;
+    entry_side_blocks?: number;
   };
+  // Snapshot of the ScalpSessionConfig the run used — drives the Strategy card
+  // so a historic run shows the indicator/confirm/position that produced it.
+  config?: Record<string, any>;
   session_mode?: string;
   candle_count?: number;
   session_days?: number;
+  // Top-level run descriptors (present on scalp results).
+  symbol?: string;
+  underlying?: string;
+  expiry?: string;
+  interval?: string;
+  days?: number;
 }
 
 // Indicators usable as a scalp PRIMARY (must return signed scalar so the
@@ -142,6 +152,23 @@ const SCALP_CONFIRM_INDICATORS = [
   { value: '', label: '(none)' },
   ...SCALP_PRIMARY_INDICATORS,
 ];
+
+// value → human label, for rendering a saved run's strategy (the result.config
+// only stores the raw indicator key like "utbot").
+const INDICATOR_LABELS: Record<string, string> = Object.fromEntries(
+  SCALP_PRIMARY_INDICATORS.map(i => [i.value, i.label]),
+);
+const indicatorLabel = (v?: string | null): string =>
+  v ? (INDICATOR_LABELS[v] || v) : '';
+
+// entry_side → human label (mode-aware: options use CE/PE language).
+const positionLabel = (side?: string | null, mode?: string | null): string => {
+  const s = (side || 'both').toLowerCase();
+  const isOpt = mode === 'options_scalp';
+  if (s === 'long') return isOpt ? 'CE only (bullish)' : 'Long only';
+  if (s === 'short') return isOpt ? 'PE only (bearish)' : 'Short only';
+  return isOpt ? 'Both (CE + PE)' : 'Both (long + short)';
+};
 
 // Indicators that have a native O(n) series implementation — used to flag
 // slow-path indicators in the UI so users know what'll cost them on long
@@ -286,7 +313,7 @@ const PARAM_TOOLTIPS: Record<string, string> = {
   risk_percent: 'Max % of capital risked per trade. E.g. 2% of ₹1L = ₹2,000 max loss per trade.',
   rr_ratio: 'Reward-to-Risk ratio. If risk is ₹1,000 and RR is 2, target profit is ₹2,000.',
   trail_percent: 'Trailing stop distance as % from peak. Locks in profit as price moves favorably.',
-  squareoff_time: 'Time to auto-close all positions (HH:MM). Usually 15:15, before market close at 15:30.',
+  squareoff_time: 'Time to auto-close all positions (HH:MM). Default 15:09, before market close at 15:30. On coarse intervals the exit lands on the bar live at this time (e.g. a 15:09 cutoff on 15-min bars squares off on the 15:00–15:15 bar).',
   entry_time: 'Time to enter the trade (HH:MM). Common: 09:20 (after opening volatility settles).',
   product: 'Order product type. "I" = Intraday (auto-squared off), "D" = Delivery (hold overnight).',
   side: 'Trade direction. "both" takes long and short signals, "long" only buys, "short" only sells.',
@@ -487,7 +514,10 @@ export default function BacktestPage() {
   const [scalpTarget, setScalpTarget] = useState<string>('');
   const [scalpTrailPoints, setScalpTrailPoints] = useState<string>('');
   const [scalpTrailArm, setScalpTrailArm] = useState<string>('');
-  const [scalpSquareoff, setScalpSquareoff] = useState('15:15');
+  const [scalpSquareoff, setScalpSquareoff] = useState('15:09');
+  // Direction gate for new entries. "both" | "long" | "short". For options
+  // scalp, long → CE-only, short → PE-only. Mirrors live session entry_side.
+  const [scalpEntrySide, setScalpEntrySide] = useState<'both' | 'long' | 'short'>('both');
   const [scalpQuantity, setScalpQuantity] = useState<string>('10');
   const [scalpMaxTrades, setScalpMaxTrades] = useState<string>('20');
   const [scalpCooldown, setScalpCooldown] = useState<string>('60');
@@ -866,6 +896,7 @@ export default function BacktestPage() {
       trail_points: toNum(scalpTrailPoints),
       trail_arm_points: toNum(scalpTrailArm),
       squareoff_time: scalpSquareoff,
+      entry_side: scalpEntrySide,
       max_trades: parseInt(scalpMaxTrades) || 20,
       cooldown_seconds: parseInt(scalpCooldown) || 0,
       slippage_bps: parseFloat(scalpSlippageBps) || 0,
@@ -1292,6 +1323,33 @@ export default function BacktestPage() {
                       />
                     </div>
                   )}
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                      Position
+                      <InfoTip text={scalpSessionMode === 'options_scalp'
+                        ? 'Which side to take. "Both" buys CE on bullish flips and PE on bearish. "CE only" / "PE only" restrict to one direction.'
+                        : 'Which side to take. "Both" goes long on bullish flips and short on bearish. "Long only" / "Short only" restrict to one direction. (Swing mode is delivery-only — shorts are skipped.)'} />
+                    </label>
+                    <select
+                      className={selectClassName}
+                      value={scalpEntrySide}
+                      onChange={e => setScalpEntrySide(e.target.value as 'both' | 'long' | 'short')}
+                    >
+                      {scalpSessionMode === 'options_scalp' ? (
+                        <>
+                          <option value="both">Both (CE + PE)</option>
+                          <option value="long">CE only (bullish)</option>
+                          <option value="short">PE only (bearish)</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="both">Both (long + short)</option>
+                          <option value="long">Long only</option>
+                          <option value="short">Short only</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
                 </div>
 
                 {/* Exits */}
@@ -1317,7 +1375,10 @@ export default function BacktestPage() {
                   </div>
                   {scalpSessionMode !== 'equity_swing' && (
                     <div>
-                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Squareoff Time (IST)</label>
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                        Squareoff Time (IST)
+                        <InfoTip text="Auto-close all positions at this time. Default 15:09. The exit lands on the bar live at the cutoff — on 15-min bars a 15:09 cutoff squares off on the 15:00–15:15 bar (shows ~15:15)." />
+                      </label>
                       <Input type="text" value={scalpSquareoff} onChange={e => setScalpSquareoff(e.target.value)} placeholder="HH:MM" />
                     </div>
                   )}
@@ -1541,6 +1602,53 @@ export default function BacktestPage() {
 
             {result && m && (
               <div className="space-y-6">
+                {/* Strategy summary — what produced this run. Renders from the
+                    saved config so a historic run reloaded from the sidebar
+                    shows its indicator / confirm / position / squareoff. */}
+                {result.config && (() => {
+                  const cfg = result.config!;
+                  const mode = cfg.session_mode || result.session_mode;
+                  const isOpt = mode === 'options_scalp';
+                  const instrument = isOpt
+                    ? `${cfg.underlying || cfg.symbol || result.symbol || '?'}${cfg.expiry ? ` · ${cfg.expiry}` : ''}`
+                    : (cfg.symbol || cfg.underlying || result.symbol || '?');
+                  const sizing = isOpt
+                    ? `${cfg.lots ?? '?'} lot${(cfg.lots ?? 0) === 1 ? '' : 's'}`
+                    : `${cfg.quantity ?? '?'} qty`;
+                  const rows: Array<[string, string]> = [
+                    ['Instrument', instrument],
+                    ['Mode', String(mode || '?').replace(/_/g, ' ')],
+                    ['Primary', `${indicatorLabel(cfg.primary_indicator)}${
+                      cfg.primary_params && Object.keys(cfg.primary_params).length
+                        ? `  ${JSON.stringify(cfg.primary_params)}` : ''}`],
+                    ['Confirm', cfg.confirm_indicator
+                      ? `${indicatorLabel(cfg.confirm_indicator)}${
+                          cfg.confirm_params && Object.keys(cfg.confirm_params).length
+                            ? `  ${JSON.stringify(cfg.confirm_params)}` : ''}`
+                      : '(none)'],
+                    ['Position', positionLabel(cfg.entry_side, mode)],
+                    ['Interval / Window', `${result.interval || cfg.indicator_timeframe || '?'} · ${cfg.days ?? result.days ?? '?'}d`],
+                    ['Squareoff', mode === 'equity_swing' ? '— (swing)' : (cfg.squareoff_time || '15:09')],
+                    ['Sizing', sizing],
+                  ];
+                  return (
+                    <div className="rounded-xl border border-zinc-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 p-5">
+                      <div className="flex items-center gap-2 mb-3">
+                        <FlaskConical className="w-4 h-4 text-amber-500" />
+                        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Strategy</h3>
+                      </div>
+                      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3">
+                        {rows.map(([k, v]) => (
+                          <div key={k} className="min-w-0">
+                            <dt className="text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">{k}</dt>
+                            <dd className="text-sm font-medium text-zinc-700 dark:text-zinc-200 break-words font-mono">{v}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  );
+                })()}
+
                 {/* Metrics Grid */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {/* Shared metrics (both equity and F&O) */}
@@ -1743,6 +1851,12 @@ export default function BacktestPage() {
                           <span className="text-zinc-500 dark:text-zinc-400">Squareoff exits</span>
                           <span className="font-mono text-zinc-700 dark:text-zinc-300">{result.diagnostics.squareoff_exits}</span>
                         </div>
+                        {(result.diagnostics.entry_side_blocks ?? 0) > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500 dark:text-zinc-400">Blocked by position filter</span>
+                            <span className="font-mono text-zinc-700 dark:text-zinc-300">{result.diagnostics.entry_side_blocks}</span>
+                          </div>
+                        )}
                         {(() => {
                           const total = result.trades?.length ?? 0;
                           const ambig = result.diagnostics!.intra_bar_ambiguity;
