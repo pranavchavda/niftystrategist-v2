@@ -9,14 +9,14 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_inr, init_client, print_error, print_json, run_async  # noqa: E402
+from base import format_inr, init_broker_account, print_error, print_json, run_async  # noqa: E402
 
 
 def show_todays_trades(as_json: bool):
     """Show all executed trades for today."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        trades = run_async(client.get_trades_for_day())
+        trades = run_async(account.get_trades_for_day())
     except Exception as e:
         print_error(f"Failed to get trades: {e}")
 
@@ -24,7 +24,7 @@ def show_todays_trades(as_json: bool):
         print_json({"trades": trades, "count": len(trades)})
         return
 
-    mode = "Paper" if client.paper_trading else "Live"
+    mode = "Paper" if account.broker == "paper" else "Live"
     print(f"📋 Today's Trades [{mode}]\n")
 
     if not trades:
@@ -58,9 +58,9 @@ def show_todays_trades(as_json: bool):
 def show_historical(segment: str, start_date: str, end_date: str,
                     page: int, page_size: int, as_json: bool):
     """Show historical trades."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        result = run_async(client.get_historical_trades(
+        result = run_async(account.get_historical_trades(
             segment=segment, start_date=start_date, end_date=end_date,
             page=page, page_size=page_size,
         ))
@@ -92,11 +92,11 @@ def show_historical(segment: str, start_date: str, end_date: str,
 def show_report(segment: str, financial_year: str | None, page: int,
                 page_size: int, as_json: bool):
     """Show trade-wise P&L report with summary."""
-    client = init_client()
+    account = init_broker_account()
 
     # Get trade-wise data
     try:
-        result = run_async(client.get_pnl_report(
+        result = run_async(account.get_pnl_report(
             segment=segment, financial_year=financial_year,
             page=page, page_size=page_size,
         ))
@@ -146,9 +146,9 @@ def show_report(segment: str, financial_year: str | None, page: int,
 def show_charges(segment: str, from_date: str, to_date: str,
                  financial_year: str, as_json: bool):
     """Show trade P&L with charges breakdown."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        result = run_async(client.get_trade_charges(
+        result = run_async(account.get_trade_charges(
             segment=segment, financial_year=financial_year,
             from_date=from_date, to_date=to_date,
         ))

@@ -9,14 +9,14 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_inr, init_client, print_error, print_json, run_async  # noqa: E402
+from base import format_inr, init_broker_account, print_error, print_json, run_async  # noqa: E402
 
 
 def show_funds(as_json: bool):
     """Show funds and margin details."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        funds = run_async(client.get_funds_and_margin())
+        funds = run_async(account.get_funds_and_margin())
     except Exception as e:
         print_error(f"Failed to get funds: {e}")
 

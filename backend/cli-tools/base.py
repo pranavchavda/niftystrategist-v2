@@ -177,6 +177,41 @@ def init_market_data_client() -> UpstoxClient:
     return init_client()
 
 
+def current_broker(user_id: int | None = None) -> str:
+    """The broker the requesting user trades on.
+
+    Defaults to ``"upstox"`` until the ``users.broker`` discriminator column
+    lands (Phase C); at that point this reads the column. Centralised here so
+    CLI order tools can stamp the right ``broker`` on order-node requests.
+    """
+    return "upstox"
+
+
+def init_broker_account():
+    """Return the requesting user's ``BrokerAccount`` for account-specific ops.
+
+    Builds the adapter from the same sync-resolved, fail-closed token logic as
+    :func:`init_client` (so the multi-user isolation guarantees are identical).
+    Use for account reads/writes routed locally (portfolio, funds, trades,
+    profile, and the no-order-node fallback for orders). Order *mutations* under
+    SEBI static-IP rules still cross the order node — see ``init_order_client``.
+
+    Market data stays on :func:`init_market_data_client`.
+    """
+    broker = current_broker()
+    if broker == "upstox":
+        from brokers.upstox.account import UpstoxBrokerAccount
+
+        return UpstoxBrokerAccount(init_client())
+
+    # Future brokers register a sync builder here; until then, fail closed
+    # rather than silently routing to the wrong broker.
+    print_error(
+        f"BROKER_UNSUPPORTED: trading broker '{broker}' is not wired into the "
+        "CLI yet. Tell the user this broker isn't available."
+    )
+
+
 def run_async(coro):
     """Run an async coroutine synchronously."""
     return asyncio.run(coro)

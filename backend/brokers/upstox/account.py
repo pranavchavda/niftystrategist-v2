@@ -44,6 +44,7 @@ class UpstoxBrokerAccount(BrokerAccount):
         {
             "modify_order", "cancel_all", "exit_all", "place_multi_order",
             "gtt", "trades", "pnl_report", "trade_charges", "brokerage",
+            "convert_position",
         }
     )
 
@@ -53,13 +54,64 @@ class UpstoxBrokerAccount(BrokerAccount):
         self._client = client
         self._resolver = resolver or UpstoxInstrumentResolver()
 
+    # ── Instrument identity ──────────────────────────────────────────────
+    def _resolve_native(self, descriptor) -> str:
+        """Resolve a descriptor to an Upstox instrument_key.
+
+        Equity/index goes through the *live client's* ``_get_instrument_key`` so
+        the holdings-derived dynamic cache (built from this user's positions) is
+        honored — byte-identical to the pre-broker-layer path. F&O and explicit
+        ``native_id`` go through the stateless resolver. Falls back to the
+        stateless resolver if the client lacks the method (e.g. test stand-ins).
+        """
+        if descriptor.native_id:
+            return descriptor.native_id
+        if descriptor.instrument_kind in ("OPT", "FUT"):
+            return self._resolver.resolve_order_instrument(descriptor)
+        sym = descriptor.symbol or descriptor.underlying
+        get_key = getattr(self._client, "_get_instrument_key", None)
+        if get_key and sym:
+            return get_key(sym)
+        return self._resolver.resolve_order_instrument(descriptor)
+
+    def resolve_instrument(self, target) -> str:
+        from brokers.base import InstrumentDescriptor, OrderSpec
+
+        if isinstance(target, str):
+            descriptor = InstrumentDescriptor(symbol=target)
+        elif isinstance(target, OrderSpec):
+            descriptor = target.descriptor()
+        else:
+            descriptor = target
+        return self._resolve_native(descriptor)
+
     # ── Orders ───────────────────────────────────────────────────────────
     async def place_order(self, spec: OrderSpec) -> TradeResult:
+        desc = spec.descriptor()
+        is_fno = desc.instrument_kind in ("OPT", "FUT") or bool(desc.native_id)
+
+        if not is_fno:
+            # Equity/index: delegate to UpstoxClient.place_order — preserves the
+            # exact pre-broker-layer behavior (paper simulation, AMO auto-detect,
+            # live placement via AsyncUpstoxOrderApi, symbol→key resolution incl.
+            # the holdings dynamic cache). Byte-identical to the old direct path.
+            return await self._client.place_order(
+                symbol=desc.symbol or desc.underlying,
+                transaction_type=spec.transaction_type.value,
+                quantity=spec.quantity,
+                price=spec.price,
+                order_type=_ORDER_TYPE_CODE[spec.order_type],
+                is_amo=spec.is_amo,
+                product=_PRODUCT_CODE[spec.product],
+            )
+
+        # F&O / pre-resolved instrument: the client's symbol-based place_order
+        # can't resolve these, so place directly against the order API.
         token = getattr(self._client, "access_token", None)
         if not token:
             raise BrokerAuthError("No Upstox access token for live order placement")
 
-        instrument_token = self._resolver.resolve_order_instrument(spec.descriptor())
+        instrument_token = self._resolve_native(desc)
 
         is_amo = spec.is_amo
         if is_amo is None:
@@ -112,6 +164,15 @@ class UpstoxBrokerAccount(BrokerAccount):
     async def get_orders(self) -> list[dict[str, Any]]:
         return await self._client.get_orders()
 
+    async def get_order_details(self, order_id: str) -> dict[str, Any]:
+        return await self._client.get_order_details(order_id)
+
+    async def get_order_history(self, order_id: str) -> list[dict[str, Any]]:
+        return await self._client.get_order_history(order_id)
+
+    async def get_order_trades(self, order_id: str) -> list[dict[str, Any]]:
+        return await self._client.get_order_trades(order_id)
+
     async def modify_order(
         self,
         order_id: str,
@@ -138,7 +199,7 @@ class UpstoxBrokerAccount(BrokerAccount):
     async def place_multi_order(self, specs: list[OrderSpec]) -> dict[str, Any]:
         orders = []
         for i, spec in enumerate(specs):
-            instrument_token = self._resolver.resolve_order_instrument(spec.descriptor())
+            instrument_token = self._resolve_native(spec.descriptor())
             orders.append(
                 {
                     "instrument_token": instrument_token,
@@ -187,6 +248,22 @@ class UpstoxBrokerAccount(BrokerAccount):
     async def get_gtt_orders(self) -> list[dict[str, Any]]:
         return await self._client.get_gtt_orders()
 
+    async def convert_position(
+        self,
+        symbol: str,
+        transaction_type: TransactionType,
+        quantity: int,
+        old_product: ProductType,
+        new_product: ProductType,
+    ) -> dict[str, Any]:
+        return await self._client.convert_position(
+            symbol=symbol,
+            transaction_type=transaction_type.value,
+            quantity=quantity,
+            old_product=_PRODUCT_CODE[old_product],
+            new_product=_PRODUCT_CODE[new_product],
+        )
+
     # ── Portfolio / funds / profile ──────────────────────────────────────
     async def get_portfolio(self) -> Portfolio:
         return await self._client.get_portfolio()
@@ -206,6 +283,9 @@ class UpstoxBrokerAccount(BrokerAccount):
 
     async def get_historical_trades(self, **kwargs: Any) -> dict[str, Any]:
         return await self._client.get_historical_trades(**kwargs)
+
+    async def get_pnl_report(self, **kwargs: Any) -> dict[str, Any]:
+        return await self._client.get_pnl_report(**kwargs)
 
     async def get_pnl_report_range(
         self, from_date: date, to_date: date, segments: Optional[list[str]] = None

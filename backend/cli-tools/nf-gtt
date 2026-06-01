@@ -19,8 +19,13 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from base import current_broker, format_inr, init_broker_account, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 from services.order_node_proxy import init_order_client
+
+# NOTE (broker layer, Phase B): the single-leg GTT *node* path is broker-stamped
+# and resolves instruments via the broker account. The rich OCO/MULTIPLE *direct*
+# path still uses init_client() because GttSpec doesn't yet model multi-leg rules
+# — generalize (broaden GttSpec) when wiring a second broker's GTT.
 
 
 def place_gtt(symbol: str, side: str, quantity: int, product: str,
@@ -85,10 +90,10 @@ def place_gtt(symbol: str, side: str, quantity: int, product: str,
 
     # Route through order node proxy if configured (single-leg GTT only)
     # OCO/MULTIPLE falls through to direct Upstox (proxy doesn't support multi-leg yet)
-    order_client = init_order_client()
+    order_client = init_order_client(current_broker())
     if order_client and gtt_type == "SINGLE":
         try:
-            instrument_token = client._get_instrument_key(sym)
+            instrument_token = init_broker_account().resolve_instrument(sym)
             result = order_client.place_gtt_order(
                 instrument_token=instrument_token,
                 transaction_type=side.upper(),
@@ -161,7 +166,7 @@ def modify_gtt(gtt_order_id: str, quantity: int | None,
                trigger_price: float | None, trigger_type: str | None,
                as_json: bool):
     """Modify an existing GTT order."""
-    order_client = init_order_client()
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.modify_gtt_order(
@@ -217,7 +222,7 @@ def modify_gtt(gtt_order_id: str, quantity: int | None,
 
 def cancel_gtt(gtt_order_id: str, as_json: bool):
     """Cancel a GTT order."""
-    order_client = init_order_client()
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.cancel_gtt_order(gtt_order_id)

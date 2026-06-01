@@ -64,6 +64,12 @@ class ActionExecutor:
         self._get_order_node_url = get_order_node_url
         self._paper_mode = paper_mode
 
+    def _broker_for(self, user_id: int) -> str:
+        """The broker a user trades on — stamped on order-node requests so the
+        node dispatches correctly. Defaults to 'upstox' until the per-user
+        broker discriminator lands (Phase C); derive from the user then."""
+        return "upstox"
+
     async def execute(
         self,
         rule: MonitorRule,
@@ -291,7 +297,7 @@ class ActionExecutor:
         client = await self._get_client(rule.user_id)
         token = client.access_token
 
-        proxy = OrderNodeProxy(node_url, token)
+        proxy = OrderNodeProxy(node_url, token, broker=self._broker_for(rule.user_id))
         try:
             # Resolve instrument_token if not already set (equity path)
             instrument_token = action.instrument_token
@@ -403,7 +409,7 @@ class ActionExecutor:
         if node_url:
             from services.order_node_proxy import OrderNodeProxy
             client = await self._get_client(rule.user_id)
-            proxy = OrderNodeProxy(node_url, client.access_token)
+            proxy = OrderNodeProxy(node_url, client.access_token, broker=self._broker_for(rule.user_id))
             try:
                 result = await proxy.cancel_order(order_id=action.order_id)
                 return {

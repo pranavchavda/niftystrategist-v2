@@ -1347,7 +1347,9 @@ class ScalpSessionManager:
         from services.order_node_proxy import OrderNodeProxy
         client = await self._get_client(user_id)
         token = client.access_token
-        proxy = OrderNodeProxy(node_url, token)
+        # broker stamp for order-node dispatch; "upstox" until the per-user
+        # broker discriminator lands (Phase C), then derive from the user.
+        proxy = OrderNodeProxy(node_url, token, broker="upstox")
         # Same truncation the node applies — needed to match what the broker stored.
         # Upstox V3 tag limit is 40 chars (UDAPI1119).
         upstox_tag = (client_request_id or "")[:40] or None

@@ -9,14 +9,14 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_change, format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from base import format_change, format_inr, init_broker_account, init_market_data_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
 def show_portfolio(as_json: bool):
     """Show full portfolio summary."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        portfolio = run_async(client.get_portfolio())
+        portfolio = run_async(account.get_portfolio())
     except Exception as e:
         print_error(f"Failed to get portfolio: {e}")
 
@@ -64,7 +64,7 @@ def show_portfolio(as_json: bool):
         return
 
     # Human-readable
-    mode = "Paper" if client.paper_trading else "Live"
+    mode = "Paper" if account.broker == "paper" else "Live"
     print(f"💼 Portfolio Summary [{mode}]\n")
     print(f"  Total Value:    {format_inr(portfolio.total_value)}")
     print(f"  Available Cash: {format_inr(portfolio.available_cash)}")
@@ -101,10 +101,10 @@ def show_portfolio(as_json: bool):
 
 def show_position(symbol: str, as_json: bool):
     """Show details for a specific position."""
-    client = init_client()
+    account = init_broker_account()
     sym = symbol.upper()
     try:
-        portfolio = run_async(client.get_portfolio())
+        portfolio = run_async(account.get_portfolio())
     except Exception as e:
         print_error(f"Failed to get portfolio: {e}")
 
@@ -142,7 +142,7 @@ def show_position(symbol: str, as_json: bool):
 
 def calc_position_size(symbol: str, risk_amount: float, stop_loss_pct: float, as_json: bool):
     """Calculate recommended position size."""
-    client = init_client()
+    client = init_market_data_client()  # quote is market data, not account-scoped
     sym = symbol.upper()
     try:
         quote = run_async(client.get_quote(sym))
@@ -186,19 +186,22 @@ def calc_position_size(symbol: str, risk_amount: float, stop_loss_pct: float, as
 def convert_position(symbol: str, quantity: int, old_product: str, new_product: str,
                      transaction_type: str, as_json: bool):
     """Convert position product type (intraday <-> delivery)."""
+    from brokers.base import ProductType, TransactionType
+
     sym = validate_symbol(symbol)
-    client = init_client()
+    account = init_broker_account()
 
     old_label = "Intraday (MIS)" if old_product == "I" else "Delivery (CNC)"
     new_label = "Intraday (MIS)" if new_product == "I" else "Delivery (CNC)"
 
+    _prod = {"I": ProductType.INTRADAY, "D": ProductType.DELIVERY}
     try:
-        result = run_async(client.convert_position(
+        result = run_async(account.convert_position(
             symbol=sym,
-            transaction_type=transaction_type.upper(),
+            transaction_type=TransactionType(transaction_type.upper()),
             quantity=quantity,
-            old_product=old_product,
-            new_product=new_product,
+            old_product=_prod[old_product],
+            new_product=_prod[new_product],
         ))
     except Exception as e:
         print_error(f"Failed to convert position: {e}")

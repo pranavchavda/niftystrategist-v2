@@ -15,8 +15,28 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import SYMBOLS, format_inr, init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from base import SYMBOLS, current_broker, format_inr, init_broker_account, init_market_data_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 from services.order_node_proxy import init_order_client  # noqa: E402
+
+
+def _order_spec(sym, act, quantity, order_type, price, product, amo):
+    """Build a broker-neutral OrderSpec for an equity order."""
+    from brokers.base import OrderSpec, OrderType, ProductType, TransactionType
+
+    return OrderSpec(
+        transaction_type=TransactionType(act),
+        quantity=quantity,
+        order_type=OrderType(order_type),
+        price=price if price else 0,
+        symbol=sym,
+        product=ProductType.INTRADAY if product == "I" else ProductType.DELIVERY,
+        is_amo=True if amo else None,
+    )
+
+
+def _is_paper(account) -> bool:
+    """True when the account simulates fills (no live token in dev)."""
+    return getattr(getattr(account, "_client", None), "paper_trading", False) or account.broker == "paper"
 
 
 def place_order(symbol: str, action: str, quantity: int, order_type: str,
@@ -32,11 +52,10 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
     if quantity < 1:
         print_error("Quantity must be at least 1.")
 
-    client = init_client()
-
-    # Get current price for context
+    # Get current price for context (market data — shared analytics token)
+    md_client = init_market_data_client()
     try:
-        quote = run_async(client.get_quote(sym))
+        quote = run_async(md_client.get_quote(sym))
         ltp = quote["ltp"]
     except Exception:
         ltp = None
@@ -72,11 +91,13 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
                 print(f"  Target:      {format_inr(target)}")
         return
 
-    # Resolve instrument key locally (needed for order node proxy)
-    instrument_token = client._get_instrument_key(sym)
+    account = init_broker_account()
 
-    # Route through order node if configured
-    order_client = init_order_client()
+    # Resolve instrument key locally (needed for order node proxy)
+    instrument_token = account.resolve_instrument(sym)
+
+    # Route through order node if configured (broker-stamped for dispatch)
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.place_order(
@@ -116,14 +137,8 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
 
     # Direct path (no order node configured)
     try:
-        order_result = run_async(client.place_order(
-            symbol=sym,
-            transaction_type=act,
-            quantity=quantity,
-            order_type=order_type,
-            price=price if price else 0,
-            is_amo=True if amo else None,  # True=force AMO, None=auto-detect
-            product=product,
+        order_result = run_async(account.place_order(
+            _order_spec(sym, act, quantity, order_type, price, product, amo)
         ))
     except Exception as e:
         print_error(f"Order failed: {e}")
@@ -131,6 +146,7 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
     if not order_result.success:
         print_error(f"Order failed: {order_result.message}")
 
+    is_paper = _is_paper(account)
     if as_json:
         print_json({
             "success": True,
@@ -141,10 +157,10 @@ def place_order(symbol: str, action: str, quantity: int, order_type: str,
             "order_type": order_type,
             "executed_price": order_result.executed_price,
             "status": order_result.status,
-            "mode": "paper" if client.paper_trading else "live",
+            "mode": "paper" if is_paper else "live",
         })
     else:
-        mode = "Paper" if client.paper_trading else "🔴 LIVE"
+        mode = "Paper" if is_paper else "🔴 LIVE"
         emoji = "🟢" if act == "BUY" else "🔴"
         print_success(f"Order Placed [{mode}]")
         print(f"\n  {emoji} {act} {quantity}x {sym}")
@@ -161,7 +177,7 @@ def modify_order(order_id: str, quantity: int | None, price: float | None,
     if not any([quantity, price, order_type, trigger_price]):
         print_error("Must specify at least one of: --quantity, --price, --type, --trigger-price")
 
-    order_client = init_order_client()
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.modify_order(
@@ -190,13 +206,14 @@ def modify_order(order_id: str, quantity: int | None, price: float | None,
             print_error(f"Modify failed: {result.message}")
         return
 
-    client = init_client()
+    account = init_broker_account()
+    from brokers.base import OrderType
     try:
-        result = run_async(client.modify_order(
-            order_id=order_id,
+        result = run_async(account.modify_order(
+            order_id,
             quantity=quantity,
             price=price,
-            order_type=order_type,
+            order_type=OrderType(order_type) if order_type else None,
             trigger_price=trigger_price,
         ))
     except Exception as e:
@@ -220,9 +237,9 @@ def modify_order(order_id: str, quantity: int | None, price: float | None,
 
 def show_order_detail(order_id: str, as_json: bool):
     """Show details for a specific order."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        order = run_async(client.get_order_details(order_id))
+        order = run_async(account.get_order_details(order_id))
     except Exception as e:
         print_error(f"Failed to get order details: {e}")
 
@@ -259,9 +276,9 @@ def show_order_detail(order_id: str, as_json: bool):
 
 def show_order_history(order_id: str, as_json: bool):
     """Show state transition history for an order."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        history = run_async(client.get_order_history(order_id))
+        history = run_async(account.get_order_history(order_id))
     except Exception as e:
         print_error(f"Failed to get order history: {e}")
 
@@ -290,9 +307,9 @@ def show_order_history(order_id: str, as_json: bool):
 
 def show_order_trades(order_id: str, as_json: bool):
     """Show trade fills for a specific order."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        trades = run_async(client.get_order_trades(order_id))
+        trades = run_async(account.get_order_trades(order_id))
     except Exception as e:
         print_error(f"Failed to get order trades: {e}")
 
@@ -324,9 +341,9 @@ def show_order_trades(order_id: str, as_json: bool):
 
 def show_orders(open_only: bool, limit: int, as_json: bool):
     """Show open or recent orders."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        orders = run_async(client.get_orders())
+        orders = run_async(account.get_orders())
     except Exception as e:
         print_error(f"Failed to get orders: {e}")
 
@@ -369,7 +386,7 @@ def show_orders(open_only: bool, limit: int, as_json: bool):
 
 def cancel_order(order_id: str, as_json: bool):
     """Cancel an open order."""
-    order_client = init_order_client()
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.cancel_order(order_id)
@@ -384,9 +401,9 @@ def cancel_order(order_id: str, as_json: bool):
             print_error(f"Cancel failed: {result.message}")
         return
 
-    client = init_client()
+    account = init_broker_account()
     try:
-        result = run_async(client.cancel_order(order_id))
+        result = run_async(account.cancel_order(order_id))
     except Exception as e:
         print_error(f"Failed to cancel order: {e}")
 
@@ -400,7 +417,7 @@ def cancel_order(order_id: str, as_json: bool):
 
 def cancel_all_orders(tag: str | None, segment: str | None, as_json: bool):
     """Cancel all open orders."""
-    order_client = init_order_client()
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.cancel_multi_order(tag=tag, segment=segment)
@@ -420,9 +437,9 @@ def cancel_all_orders(tag: str | None, segment: str | None, as_json: bool):
             print_error(f"Cancel-all failed: {result.message}")
         return
 
-    client = init_client()
+    account = init_broker_account()
     try:
-        result = run_async(client.cancel_multi_order(tag=tag, segment=segment))
+        result = run_async(account.cancel_all(tag=tag, segment=segment))
     except Exception as e:
         print_error(f"Failed to cancel orders: {e}")
 
@@ -441,7 +458,7 @@ def cancel_all_orders(tag: str | None, segment: str | None, as_json: bool):
 
 def exit_all_positions(as_json: bool):
     """Exit all open positions."""
-    order_client = init_order_client()
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.exit_all_positions()
@@ -456,9 +473,9 @@ def exit_all_positions(as_json: bool):
             print_error(f"Exit-all failed: {result.message}")
         return
 
-    client = init_client()
+    account = init_broker_account()
     try:
-        result = run_async(client.exit_all_positions())
+        result = run_async(account.exit_all())
     except Exception as e:
         print_error(f"Failed to exit positions: {e}")
 

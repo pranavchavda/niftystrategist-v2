@@ -62,8 +62,24 @@ app = FastAPI(title="NiftyStrategist Order Node", docs_url=None, redoc_url=None)
 # Auth
 # ---------------------------------------------------------------------------
 
+def _order_api(broker: str, token: str):
+    """Return the per-broker order-write API client.
+
+    This is the SEBI static-IP node's broker dispatch seam: every broker's
+    order client shares the same method surface (place/modify/cancel/gtt/exit/
+    multi), so endpoints don't change — only which client they get. Defaults to
+    Upstox; a new broker registers one branch here. Unknown brokers fail closed
+    rather than silently routing to Upstox.
+    """
+    if broker in ("upstox", "", None):
+        return AsyncUpstoxOrderApi(token)
+    raise HTTPException(
+        status_code=400, detail=f"Unsupported broker '{broker}' on this order node"
+    )
+
+
 def _verify(authorization: str, x_node_secret: str) -> str:
-    """Verify auth headers and return the Upstox access token."""
+    """Verify auth headers and return the broker access token."""
     if NODE_SECRET and x_node_secret != NODE_SECRET:
         raise HTTPException(status_code=403, detail="Invalid node secret")
     if not authorization.startswith("Bearer "):
@@ -169,6 +185,7 @@ class PlaceOrderRequest(BaseModel):
     price: float = 0
     product: str = "D"  # D=Delivery, I=Intraday
     is_amo: bool | None = None  # None = auto-detect
+    broker: str = "upstox"  # broker dispatch; default keeps old behavior
     # Optional idempotency key. When supplied, dedup is keyed on this id and
     # the (instrument, side, qty, order_type) tuple is ignored — letting two
     # legitimately-parallel same-tuple orders from different sources both
@@ -183,15 +200,18 @@ class ModifyOrderRequest(BaseModel):
     price: float | None = None
     order_type: str | None = None
     trigger_price: float | None = None
+    broker: str = "upstox"
 
 
 class CancelMultiRequest(BaseModel):
     tag: str | None = None
     segment: str | None = None
+    broker: str = "upstox"
 
 
 class PlaceMultiOrderRequest(BaseModel):
     orders: list[dict]
+    broker: str = "upstox"
 
 
 class PlaceGttRequest(BaseModel):
@@ -202,6 +222,7 @@ class PlaceGttRequest(BaseModel):
     trigger_price: float
     order_type: str = "LIMIT"
     product: str = "D"
+    broker: str = "upstox"
 
 
 class ModifyGttRequest(BaseModel):
@@ -209,6 +230,7 @@ class ModifyGttRequest(BaseModel):
     quantity: int | None = None
     price: float | None = None
     trigger_price: float | None = None
+    broker: str = "upstox"
 
 
 class OrderResult(BaseModel):
@@ -264,7 +286,7 @@ async def place_order(
             message=f"[deduped {now - prior_at:.0f}s] {prior_result.get('message', '')}",
         )
 
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(req.broker, token)
 
     is_amo = req.is_amo if req.is_amo is not None else not _is_market_open()
 
@@ -361,7 +383,7 @@ async def modify_order(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(req.broker, token)
 
     try:
         r = await api.modify_order(
@@ -388,11 +410,12 @@ async def modify_order(
 @app.delete("/orders/{order_id}", response_model=OrderResult)
 async def cancel_order(
     order_id: str,
+    broker: str = "upstox",
     authorization: str = Header(""),
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(broker, token)
 
     try:
         r = await api.cancel_order(order_id)
@@ -412,7 +435,7 @@ async def cancel_all_orders(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(req.broker, token)
 
     try:
         r = await api.cancel_multi_order(tag=req.tag, segment=req.segment)
@@ -427,11 +450,12 @@ async def cancel_all_orders(
 
 @app.post("/orders/exit-all", response_model=OrderResult)
 async def exit_all_positions(
+    broker: str = "upstox",
     authorization: str = Header(""),
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(broker, token)
 
     try:
         r = await api.exit_positions(cancel_orders=True)
@@ -452,7 +476,7 @@ async def place_gtt(
 ):
     """Place a single-leg GTT order via the order node proxy."""
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(req.broker, token)
 
     try:
         r = await api.place_gtt_order(
@@ -493,7 +517,7 @@ async def modify_gtt(
 ):
     """Modify an existing GTT order's quantity or trigger price."""
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(req.broker, token)
 
     try:
         r = await api.modify_gtt_order(
@@ -518,12 +542,13 @@ async def modify_gtt(
 @app.delete("/gtt/{gtt_order_id}", response_model=OrderResult)
 async def cancel_gtt(
     gtt_order_id: str,
+    broker: str = "upstox",
     authorization: str = Header(""),
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     """Cancel an existing GTT order."""
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(broker, token)
 
     try:
         r = await api.cancel_gtt_order(gtt_order_id)
@@ -539,12 +564,13 @@ async def cancel_gtt(
 
 @app.get("/gtt/list", response_model=OrderResult)
 async def list_gtt(
+    broker: str = "upstox",
     authorization: str = Header(""),
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     """List all GTT orders for the user."""
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(broker, token)
 
     try:
         r = await api.get_gtt_orders()
@@ -584,7 +610,7 @@ async def place_multi_order(
     x_node_secret: str = Header("", alias="X-Node-Secret"),
 ):
     token = _verify(authorization, x_node_secret)
-    api = AsyncUpstoxOrderApi(token)
+    api = _order_api(req.broker, token)
 
     is_amo = not _is_market_open()
 

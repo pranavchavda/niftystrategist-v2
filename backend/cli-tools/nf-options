@@ -27,7 +27,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import format_inr, init_client, init_market_data_client, print_error, print_json, print_success, run_async
+from base import current_broker, format_inr, init_broker_account, init_client, init_market_data_client, print_error, print_json, print_success, run_async
 from services.order_node_proxy import init_order_client
 
 # Options instrument cache file (same as equity cache - it contains F&O too)
@@ -346,12 +346,13 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
     instrument_key = option["instrument_key"]
     tradingsymbol = option["tradingsymbol"]
 
-    client = init_client()
+    md_client = init_market_data_client()   # greeks/LTP are market data
+    account = init_broker_account()         # funds + order placement
 
     # Try to get live LTP for better pricing
     live_ltp = None
     try:
-        greeks = run_async(client.get_option_greeks([instrument_key]))
+        greeks = run_async(md_client.get_option_greeks([instrument_key]))
         if greeks:
             gdata = list(greeks.values())[0]
             live_ltp = gdata.get("last_price")
@@ -370,7 +371,7 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
         funds_info = None
         warnings = []
         try:
-            funds = run_async(client.get_funds_and_margin())
+            funds = run_async(account.get_funds_and_margin())
             equity = funds.get("equity", {})
             available = equity.get("available_margin", 0)
             funds_info = {
@@ -449,12 +450,8 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
                 print(f"\n  ⚠️  {w}")
         return
     
-    # Place live order
-    if not client.access_token:
-        print_error("No access token. Please connect Upstox account.")
-
-    # Route through order node if configured
-    order_client = init_order_client()
+    # Place live order — route through order node if configured (broker-stamped)
+    order_client = init_order_client(current_broker())
     if order_client:
         try:
             result = order_client.place_order(
@@ -499,35 +496,31 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
                 print(f"  Price: {format_inr(price)}")
         return
 
-    # Direct path (no order node configured)
+    # Direct path (no order node configured) — through the broker account.
+    # The option's instrument_key is already resolved, so pass it as native_id;
+    # the adapter routes F&O through the order API (no direct Upstox SDK here).
+    from brokers.base import (
+        InstrumentDescriptor, OrderSpec, OrderType, ProductType, TransactionType,
+    )
     try:
-        import upstox_client
-
-        # Auto-detect AMO
-        is_amo = not client._is_market_open()
-
-        api_client = upstox_client.ApiClient(client._configuration)
-        order_api = upstox_client.OrderApiV3(api_client)
-
-        body = upstox_client.PlaceOrderV3Request(
+        spec = OrderSpec(
+            transaction_type=TransactionType(action.upper()),
             quantity=quantity,
-            product="D",  # Delivery (for options carry forward)
-            validity="DAY",
+            order_type=OrderType(order_type),
             price=price if order_type == "LIMIT" else 0,
-            trigger_price=0,
-            instrument_token=instrument_key,
-            order_type=order_type,
-            transaction_type=action.upper(),
-            disclosed_quantity=0,
-            is_amo=is_amo,
+            instrument=InstrumentDescriptor(
+                instrument_kind="OPT", native_id=instrument_key,
+                underlying=symbol.upper(),
+            ),
+            product=ProductType.DELIVERY,  # options carry forward
         )
+        order_result = run_async(account.place_order(spec))
+        if not order_result.success:
+            print_error(f"Order failed: {order_result.message}")
 
-        response = order_api.place_order(body)
-        order_ids = response.data.order_ids if response.data else []
-        order_id = order_ids[0] if order_ids else None
-
-        amo_label = " [AMO]" if is_amo else ""
-        mode = "Paper" if client.paper_trading else "🔴 LIVE"
+        order_id = order_result.order_id
+        amo_label = " [AMO]" if "[AMO]" in (order_result.message or "") else ""
+        mode = "🔴 LIVE"
 
         if as_json:
             print_json({
@@ -541,7 +534,7 @@ def place_option_order(symbol: str, expiry: str, strike: float, option_type: str
                 "lot_size": lot_size,
                 "order_type": order_type,
                 "price": price,
-                "status": "PLACED",
+                "status": order_result.status or "PLACED",
                 "mode": mode,
             })
         else:
@@ -923,19 +916,17 @@ def _parse_option_tradingsymbol(tradingsymbol: str) -> dict | None:
 
 
 def show_fno_positions(as_json: bool = False):
-    """Show all F&O positions from Upstox positions API."""
-    client = init_client()
+    """Show all F&O positions from the broker positions API."""
+    account = init_broker_account()
 
     try:
-        import upstox_client as uc
-        api_client = uc.ApiClient(client._configuration)
-        portfolio_api = uc.PortfolioApi(api_client)
-        pos_response = portfolio_api.get_positions(api_version="v2")
+        # Returns the same raw PositionData objects the SDK did (no direct SDK).
+        positions = run_async(account.get_positions())
     except Exception as e:
         print_error(f"Failed to get positions: {e}")
 
     fno_positions = []
-    for pos in (pos_response.data or []):
+    for pos in (positions or []):
         exchange = getattr(pos, 'exchange', '') or ''
         instrument_type = getattr(pos, 'instrument_type', '') or ''
         instrument_token = getattr(pos, 'instrument_token', '') or ''
@@ -1025,7 +1016,7 @@ def show_fno_positions(as_json: bool = False):
         print("No F&O positions found.")
         return
 
-    mode = "Paper" if client.paper_trading else "Live"
+    mode = "Paper" if account.broker == "paper" else "Live"
     print(f"📊 F&O Positions [{mode}]\n")
     print(f"{'Symbol':<28} {'Qty':>6} {'Lots':>5} {'Avg':>10} {'LTP':>10} {'P&L':>12} {'%':>8}")
     print("-" * 85)

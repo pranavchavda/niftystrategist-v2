@@ -268,6 +268,17 @@ class BrokerAccount(ABC):
     def supports(self, capability: str) -> bool:
         return capability in self.capabilities
 
+    # ── Instrument identity ──────────────────────────────────────────────
+    def resolve_instrument(self, target: "str | InstrumentDescriptor | OrderSpec") -> str:
+        """Resolve a symbol / descriptor / order to this broker's native
+        instrument id (e.g. Upstox ``NSE_EQ|INE002A01018``).
+
+        Used by callers that must resolve client-side before crossing the
+        SEBI order-node boundary (the node receives a pre-resolved token).
+        Defaults to a capability error so brokers that never need it stay thin.
+        """
+        raise BrokerCapabilityError(f"{self.broker}: resolve_instrument not supported")
+
     # ── Orders (core) ────────────────────────────────────────────────────
     @abstractmethod
     async def place_order(self, spec: OrderSpec) -> TradeResult:
@@ -281,6 +292,15 @@ class BrokerAccount(ABC):
     async def get_orders(self) -> list[dict[str, Any]]:
         """Today's order book (broker-native dicts, lightly normalized keys)."""
         ...
+
+    async def get_order_details(self, order_id: str) -> dict[str, Any]:
+        raise BrokerCapabilityError(f"{self.broker}: get_order_details not supported")
+
+    async def get_order_history(self, order_id: str) -> list[dict[str, Any]]:
+        raise BrokerCapabilityError(f"{self.broker}: get_order_history not supported")
+
+    async def get_order_trades(self, order_id: str) -> list[dict[str, Any]]:
+        raise BrokerCapabilityError(f"{self.broker}: get_order_trades not supported")
 
     # ── Orders (capability) ──────────────────────────────────────────────
     async def modify_order(
@@ -315,6 +335,16 @@ class BrokerAccount(ABC):
     async def get_gtt_orders(self) -> list[dict[str, Any]]:
         raise BrokerCapabilityError(f"{self.broker}: get_gtt_orders not supported")
 
+    async def convert_position(
+        self,
+        symbol: str,
+        transaction_type: TransactionType,
+        quantity: int,
+        old_product: ProductType,
+        new_product: ProductType,
+    ) -> dict[str, Any]:
+        raise BrokerCapabilityError(f"{self.broker}: convert_position not supported")
+
     # ── Portfolio (core) ─────────────────────────────────────────────────
     @abstractmethod
     async def get_portfolio(self) -> Portfolio:
@@ -341,6 +371,9 @@ class BrokerAccount(ABC):
 
     async def get_historical_trades(self, **kwargs: Any) -> dict[str, Any]:
         raise BrokerCapabilityError(f"{self.broker}: get_historical_trades not supported")
+
+    async def get_pnl_report(self, **kwargs: Any) -> dict[str, Any]:
+        raise BrokerCapabilityError(f"{self.broker}: get_pnl_report not supported")
 
     async def get_pnl_report_range(
         self, from_date: date, to_date: date, segments: Optional[list[str]] = None

@@ -9,14 +9,14 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import init_client, print_error, print_json, run_async  # noqa: E402
+from base import init_broker_account, print_error, print_json, run_async  # noqa: E402
 
 
 def show_profile(as_json: bool):
     """Show user profile details."""
-    client = init_client()
+    account = init_broker_account()
     try:
-        profile = run_async(client.get_profile())
+        profile = run_async(account.get_profile())
     except Exception as e:
         print_error(f"Failed to get profile: {e}")
 

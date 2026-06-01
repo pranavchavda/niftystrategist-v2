@@ -38,9 +38,31 @@ class _FakeUpstoxClient:
 
     def __init__(self):
         self.access_token = "fake-token"
+        self.last_place_args = None
 
     def _is_market_open(self):
         return True
+
+    def _get_instrument_key(self, symbol):
+        # Mirror the real equity resolution for the symbols used in tests.
+        from brokers.upstox.instruments import UpstoxInstrumentResolver
+        from brokers.base import InstrumentDescriptor
+
+        return UpstoxInstrumentResolver().resolve_order_instrument(
+            InstrumentDescriptor(symbol=symbol)
+        )
+
+    async def place_order(self, *, symbol, transaction_type, quantity, price,
+                          order_type="LIMIT", is_amo=None, product="D"):
+        from models.trading import TradeResult
+
+        self.last_place_args = {
+            "symbol": symbol, "transaction_type": transaction_type,
+            "quantity": quantity, "price": price, "order_type": order_type,
+            "is_amo": is_amo, "product": product,
+        }
+        return TradeResult(success=True, order_id="UPX123", status="PENDING",
+                           message="placed")
 
     async def cancel_order(self, order_id):
         return {"success": True, "order_id": order_id}
@@ -202,9 +224,10 @@ async def test_order_spec_requires_symbol_or_instrument():
 
 
 @pytest.mark.asyncio
-async def test_upstox_enum_translation(monkeypatch):
-    """Broker-neutral enums must reach Upstox as native codes."""
-    account = _build_upstox(monkeypatch)
+async def test_upstox_equity_enum_translation(monkeypatch):
+    """Equity orders delegate to UpstoxClient.place_order with native codes."""
+    client = _FakeUpstoxClient()
+    account = UpstoxBrokerAccount(client)
     spec = OrderSpec(
         transaction_type=TransactionType.SELL,
         quantity=5,
@@ -214,12 +237,38 @@ async def test_upstox_enum_translation(monkeypatch):
         product=ProductType.INTRADAY,
     )
     await account.place_order(spec)
+    args = client.last_place_args
+    assert args["product"] == "I"            # INTRADAY -> "I"
+    assert args["order_type"] == "LIMIT"
+    assert args["transaction_type"] == "SELL"
+    assert args["symbol"] == "RELIANCE"
+    assert args["price"] == 1490.0
+
+
+@pytest.mark.asyncio
+async def test_upstox_fno_uses_order_api(monkeypatch):
+    """F&O / pre-resolved orders go directly to the order API with the token."""
+    import services.upstox_order_api as order_api_mod
+    from brokers.base import InstrumentDescriptor
+
+    monkeypatch.setattr(order_api_mod, "AsyncUpstoxOrderApi", _FakeOrderApi)
+    account = UpstoxBrokerAccount(_FakeUpstoxClient())
+    spec = OrderSpec(
+        transaction_type=TransactionType.BUY,
+        quantity=75,
+        order_type=OrderType.LIMIT,
+        price=120.0,
+        instrument=InstrumentDescriptor(
+            instrument_kind="OPT", native_id="NSE_FO|43885"
+        ),
+        product=ProductType.INTRADAY,
+    )
+    result = await account.place_order(spec)
+    assert result.success
     body = _FakeOrderApi.last_body
-    assert body["product"] == "I"            # INTRADAY -> "I"
-    assert body["order_type"] == "LIMIT"
-    assert body["transaction_type"] == "SELL"
-    assert body["instrument_token"] == "NSE_EQ|INE002A01018"
-    assert body["price"] == 1490.0
+    assert body["instrument_token"] == "NSE_FO|43885"
+    assert body["product"] == "I"
+    assert body["transaction_type"] == "BUY"
 
 
 @pytest.mark.asyncio

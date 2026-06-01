@@ -15,7 +15,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from base import init_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
+from base import init_market_data_client, print_error, print_json, print_success, run_async, validate_symbol  # noqa: E402
 
 
 def _get_user_id() -> int:
@@ -258,7 +258,7 @@ def cmd_deploy(args):
         keys = [s.action_config["instrument_token"] for s in premium_rules]
         unique_keys = list(dict.fromkeys(keys))
 
-        client = init_client()
+        client = init_market_data_client()  # greeks are market data
         greeks = run_async(client.get_option_greeks(unique_keys))
         if not greeks:
             raise ValueError(

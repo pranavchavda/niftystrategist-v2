@@ -43,9 +43,10 @@ def _parse_response(resp: httpx.Response) -> ProxyResult:
 class OrderNodeProxy:
     """Async proxy client for the order node (used by monitor daemon)."""
 
-    def __init__(self, node_url: str, access_token: str):
+    def __init__(self, node_url: str, access_token: str, broker: str = "upstox"):
         self.node_url = node_url.rstrip("/")
         self.access_token = access_token
+        self.broker = broker
 
     def _headers(self) -> dict:
         return {
@@ -53,6 +54,10 @@ class OrderNodeProxy:
             "X-Node-Secret": NODE_SECRET,
             "Content-Type": "application/json",
         }
+
+    def _params(self) -> dict:
+        """Query params for body-less requests (broker dispatch)."""
+        return {"broker": self.broker}
 
     async def place_order(
         self,
@@ -80,6 +85,7 @@ class OrderNodeProxy:
                     "product": product,
                     "is_amo": is_amo,
                     "client_request_id": client_request_id,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -89,6 +95,7 @@ class OrderNodeProxy:
             resp = await client.delete(
                 f"{self.node_url}/orders/{order_id}",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
@@ -110,6 +117,7 @@ class OrderNodeProxy:
                     "price": price,
                     "order_type": order_type,
                     "trigger_price": trigger_price,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -119,7 +127,7 @@ class OrderNodeProxy:
             resp = await client.post(
                 f"{self.node_url}/orders/cancel-all",
                 headers=self._headers(),
-                json={"tag": tag, "segment": segment},
+                json={"tag": tag, "segment": segment, "broker": self.broker},
             )
         return _parse_response(resp)
 
@@ -128,6 +136,7 @@ class OrderNodeProxy:
             resp = await client.post(
                 f"{self.node_url}/orders/exit-all",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
@@ -136,7 +145,7 @@ class OrderNodeProxy:
             resp = await client.post(
                 f"{self.node_url}/orders/place-multi",
                 headers=self._headers(),
-                json={"orders": orders},
+                json={"orders": orders, "broker": self.broker},
             )
         return _parse_response(resp)
 
@@ -166,6 +175,7 @@ class OrderNodeProxy:
                     "trigger_price": trigger_price,
                     "order_type": order_type,
                     "product": product,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -186,6 +196,7 @@ class OrderNodeProxy:
                     "quantity": quantity,
                     "price": price,
                     "trigger_price": trigger_price,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -195,6 +206,7 @@ class OrderNodeProxy:
             resp = await client.delete(
                 f"{self.node_url}/gtt/{gtt_order_id}",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
@@ -203,6 +215,7 @@ class OrderNodeProxy:
             resp = await client.get(
                 f"{self.node_url}/gtt/list",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
@@ -210,9 +223,10 @@ class OrderNodeProxy:
 class OrderNodeClient:
     """Sync proxy client for the order node (used by CLI tools)."""
 
-    def __init__(self, node_url: str, access_token: str):
+    def __init__(self, node_url: str, access_token: str, broker: str = "upstox"):
         self.node_url = node_url.rstrip("/")
         self.access_token = access_token
+        self.broker = broker
 
     def _headers(self) -> dict:
         return {
@@ -220,6 +234,10 @@ class OrderNodeClient:
             "X-Node-Secret": NODE_SECRET,
             "Content-Type": "application/json",
         }
+
+    def _params(self) -> dict:
+        """Query params for body-less requests (broker dispatch)."""
+        return {"broker": self.broker}
 
     def place_order(
         self,
@@ -247,6 +265,7 @@ class OrderNodeClient:
                     "product": product,
                     "is_amo": is_amo,
                     "client_request_id": client_request_id,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -256,6 +275,7 @@ class OrderNodeClient:
             resp = client.delete(
                 f"{self.node_url}/orders/{order_id}",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
@@ -277,6 +297,7 @@ class OrderNodeClient:
                     "price": price,
                     "order_type": order_type,
                     "trigger_price": trigger_price,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -286,7 +307,7 @@ class OrderNodeClient:
             resp = client.post(
                 f"{self.node_url}/orders/cancel-all",
                 headers=self._headers(),
-                json={"tag": tag, "segment": segment},
+                json={"tag": tag, "segment": segment, "broker": self.broker},
             )
         return _parse_response(resp)
 
@@ -295,6 +316,7 @@ class OrderNodeClient:
             resp = client.post(
                 f"{self.node_url}/orders/exit-all",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
@@ -303,7 +325,7 @@ class OrderNodeClient:
             resp = client.post(
                 f"{self.node_url}/orders/place-multi",
                 headers=self._headers(),
-                json={"orders": orders},
+                json={"orders": orders, "broker": self.broker},
             )
         return _parse_response(resp)
 
@@ -333,6 +355,7 @@ class OrderNodeClient:
                     "trigger_price": trigger_price,
                     "order_type": order_type,
                     "product": product,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -353,6 +376,7 @@ class OrderNodeClient:
                     "quantity": quantity,
                     "price": price,
                     "trigger_price": trigger_price,
+                    "broker": self.broker,
                 },
             )
         return _parse_response(resp)
@@ -362,6 +386,7 @@ class OrderNodeClient:
             resp = client.delete(
                 f"{self.node_url}/gtt/{gtt_order_id}",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
@@ -370,17 +395,20 @@ class OrderNodeClient:
             resp = client.get(
                 f"{self.node_url}/gtt/list",
                 headers=self._headers(),
+                params=self._params(),
             )
         return _parse_response(resp)
 
 
-def init_order_client() -> OrderNodeClient | None:
+def init_order_client(broker: str = "upstox") -> OrderNodeClient | None:
     """Create an OrderNodeClient if NF_ORDER_NODE_URL is set.
 
     Used by CLI tools to determine whether to proxy through an order node.
+    ``broker`` is stamped on every request so the node dispatches correctly;
+    defaults to ``"upstox"`` (current behavior).
     """
     node_url = os.environ.get("NF_ORDER_NODE_URL")
     token = os.environ.get("NF_ACCESS_TOKEN") or os.environ.get("UPSTOX_ACCESS_TOKEN")
     if node_url and token:
-        return OrderNodeClient(node_url, token)
+        return OrderNodeClient(node_url, token, broker=broker)
     return None
