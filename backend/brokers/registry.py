@@ -123,6 +123,35 @@ def _register_defaults() -> None:
         )
     )
 
+    # Kotak Neo — pure REST (httpx + pyotp), no broker SDK. Registered
+    # defensively so a Kotak import issue never breaks upstox/paper. Reachable
+    # via get_broker_account(user, broker="kotak") until the Phase C `broker`
+    # column routes real users.
+    try:
+        from brokers.kotak.account import KotakBrokerAccount
+        from brokers.kotak.auth import KotakAuth
+        from brokers.kotak.instruments import KotakInstrumentResolver
+
+        kotak_auth = KotakAuth()
+        kotak_resolver = KotakInstrumentResolver()
+
+        async def _build_kotak(user_id: int) -> BrokerAccount:
+            session = await kotak_auth.get_session(user_id)
+            return KotakBrokerAccount(session, kotak_resolver)
+
+        register_broker(
+            BrokerBundle(
+                broker="kotak",
+                build_account=_build_kotak,
+                auth=kotak_auth,
+                resolver=kotak_resolver,
+            )
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        import logging
+
+        logging.getLogger(__name__).warning("Kotak broker not registered: %s", e)
+
 
 async def _default_price_provider(symbol: str) -> float:
     """Live LTP from the shared market-data feed (analytics token)."""
