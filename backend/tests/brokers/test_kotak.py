@@ -73,9 +73,25 @@ async def test_place_order_maps_to_kotak_body():
     assert body["ts"] == "RELIANCE-EQ"
     assert body["pc"] == "MIS"              # INTRADAY -> MIS
     assert body["pt"] == "L"               # LIMIT -> L
-    assert body["tt"] == "SELL"
+    assert body["tt"] == "S"               # SELL -> "S" (Kotak code, not "SELL")
     assert body["pr"] == "1490.0"
     assert body["qt"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_cancel_reports_failure_on_kotak_error():
+    """A rejected cancel returns {stCode, errMsg} — must surface success=False,
+    not the old unconditional success=True (caught live 2026-06-01)."""
+    acct = KotakBrokerAccount(session={})
+
+    async def fake_rest(method, path, *, body=None):
+        return {"stCode": 1022, "errMsg": "order is rejected",
+                "stat": "please provide valid order number"}
+
+    acct._rest = fake_rest
+    r = await acct.cancel_order("260601000550944")
+    assert r["success"] is False
+    assert "rejected" in r["message"].lower()
 
 
 @pytest.mark.asyncio

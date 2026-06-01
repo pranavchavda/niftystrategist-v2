@@ -41,6 +41,10 @@ _ORDER_TYPE_CODE = {
     OrderType.SL: "SL",
     OrderType.SL_M: "SL-M",
 }
+# Kotak's ``tt`` wants B/S (not BUY/SELL) — confirmed by the SDK validator and a
+# live reject. hf-tools sent "BUY"/"SELL", which Kotak rejects ("valid
+# transaction type") — its order path was never actually exercised.
+_TXN_CODE = {TransactionType.BUY: "B", TransactionType.SELL: "S"}
 
 
 def _to_float(v: Any) -> float:
@@ -51,14 +55,20 @@ def _to_float(v: Any) -> float:
 
 
 def _check(resp: dict) -> dict:
-    """Raise on a Kotak error envelope, else return resp."""
+    """Raise on a Kotak error envelope, else return resp.
+
+    Kotak signals errors several ways: an ``error``/``Error`` list, ``stat ==
+    "Not_Ok"``, or — as a rejected cancel/modify shows — a non-empty ``errMsg``
+    with a numeric ``stCode`` (e.g. {stCode:1022, errMsg:"order is rejected"}).
+    """
     if isinstance(resp, dict):
         errs = resp.get("error") or resp.get("Error")
         if errs:
             msg = "; ".join(e.get("message", str(e)) for e in errs) if isinstance(errs, list) else str(errs)
             raise BrokerError(f"Kotak API error: {msg}")
-        if resp.get("stat") == "Not_Ok":
-            raise BrokerError(f"Kotak API error: {resp.get('errMsg') or resp.get('emsg') or resp}")
+        if resp.get("stat") == "Not_Ok" or resp.get("errMsg"):
+            detail = resp.get("errMsg") or resp.get("emsg") or resp.get("stat") or resp
+            raise BrokerError(f"Kotak API error: {detail}")
     return resp
 
 
@@ -139,7 +149,7 @@ class KotakBrokerAccount(BrokerAccount):
             "rt": "DAY",
             "tp": str(spec.trigger_price or 0),
             "ts": ts,
-            "tt": spec.transaction_type.value,
+            "tt": _TXN_CODE[spec.transaction_type],
             "os": "WEB",
         }
         if spec.tag:
@@ -158,8 +168,11 @@ class KotakBrokerAccount(BrokerAccount):
         )
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
-        resp = _check(await self._rest("POST", "/quick/order/cancel",
-                                       body={"on": order_id, "am": "NO"}))
+        try:
+            resp = _check(await self._rest("POST", "/quick/order/cancel",
+                                           body={"on": order_id, "am": "NO"}))
+        except BrokerError as e:
+            return {"success": False, "order_id": order_id, "message": str(e)}
         return {"success": True, "order_id": order_id, "data": resp.get("data", resp)}
 
     async def modify_order(self, order_id, *, quantity=None, price=None,
@@ -172,7 +185,10 @@ class KotakBrokerAccount(BrokerAccount):
             "pt": _ORDER_TYPE_CODE[order_type] if order_type else "L",
             "rt": "DAY",
         }
-        resp = _check(await self._rest("POST", "/quick/order/vr/modify", body=body))
+        try:
+            resp = _check(await self._rest("POST", "/quick/order/vr/modify", body=body))
+        except BrokerError as e:
+            return {"success": False, "order_id": order_id, "message": str(e)}
         return {"success": True, "order_id": order_id, "data": resp.get("data", resp)}
 
     async def get_orders(self) -> list[dict[str, Any]]:
