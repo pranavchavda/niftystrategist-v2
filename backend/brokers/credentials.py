@@ -121,37 +121,106 @@ class UpstoxCredentialStore(BrokerCredentialStore):
 
 
 class GenericCredentialStore(BrokerCredentialStore):
-    """Backs onto the shared ``broker_accounts`` JSONB table.
+    """Backs onto the shared ``broker_accounts`` JSONB table (migration 046).
 
-    The table is introduced by the Phase C migration
-    (``0NN_add_broker_discriminator.sql``). Until that lands these methods raise
-    a clear error, so wiring a new broker fails loudly rather than silently.
-    Schema (planned):
-        broker_accounts(user_id, broker, credentials JSONB, access_token TEXT,
-                        token_expiry TIMESTAMP, broker_user_id TEXT, status TEXT)
-    Secret values inside ``credentials`` are Fernet-encrypted per-value.
+    One row per ``(user_id, broker)``. ``credentials`` holds the broker's
+    credential fields Fernet-encrypted **per value**; ``session`` holds the
+    broker-minted session blob (multi-field for Kotak), encrypted as a whole
+    under ``{"_enc": <fernet>}`` since session tokens grant account access.
     """
 
     def __init__(self, broker: str):
         self.broker = broker
 
+    async def _get_row(self, session, user_id: int, *, create: bool = False):
+        from sqlalchemy import select
+
+        from database.models import UserBrokerAccount
+
+        row = (
+            await session.execute(
+                select(UserBrokerAccount).where(
+                    UserBrokerAccount.user_id == user_id,
+                    UserBrokerAccount.broker == self.broker,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None and create:
+            row = UserBrokerAccount(user_id=user_id, broker=self.broker,
+                                    credentials={}, status="connected")
+            session.add(row)
+        return row
+
     async def get_credentials(self, user_id: int) -> dict[str, Optional[str]]:
-        raise NotImplementedError(
-            "GenericCredentialStore requires the broker_accounts table "
-            "(Phase C migration). Not yet available."
-        )
+        from database.session import get_db_session
+
+        async with get_db_session() as session:
+            row = await self._get_row(session, user_id)
+            if row is None or not row.credentials:
+                return {}
+            out: dict[str, Optional[str]] = {}
+            for field, enc in (row.credentials or {}).items():
+                out[field] = decrypt_token(enc) if enc else None
+            return out
 
     async def set_credentials(self, user_id: int, values: dict[str, str]) -> None:
-        raise NotImplementedError(
-            "GenericCredentialStore requires the broker_accounts table "
-            "(Phase C migration). Not yet available."
-        )
+        from database.session import get_db_session
+
+        async with get_db_session() as session:
+            row = await self._get_row(session, user_id, create=True)
+            # Partial update: merge into the existing (encrypted) credential map.
+            creds = dict(row.credentials or {})
+            for field, value in values.items():
+                creds[field] = encrypt_token(value) if value else None
+            row.credentials = creds
+            # Reattach so SQLAlchemy tracks the JSON mutation.
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(row, "credentials")
+            await session.commit()
 
     async def clear(self, user_id: int) -> None:
-        raise NotImplementedError(
-            "GenericCredentialStore requires the broker_accounts table "
-            "(Phase C migration). Not yet available."
-        )
+        from database.session import get_db_session
+
+        async with get_db_session() as session:
+            row = await self._get_row(session, user_id)
+            if row is not None:
+                await session.delete(row)
+                await session.commit()
+
+    # ── session blob (broker-minted, encrypted as a whole) ────────────────
+    async def get_session(self, user_id: int) -> Optional[dict]:
+        import json
+
+        from database.session import get_db_session
+
+        async with get_db_session() as session:
+            row = await self._get_row(session, user_id)
+            blob = row.session if row is not None else None
+            if not blob:
+                return None
+            if isinstance(blob, dict) and "_enc" in blob:
+                try:
+                    return json.loads(decrypt_token(blob["_enc"]))
+                except Exception:
+                    logger.warning("GenericCredentialStore: failed to decrypt session for user %s", user_id)
+                    return None
+            return blob if isinstance(blob, dict) else None
+
+    async def set_session(self, user_id: int, session_blob: dict,
+                          *, token_expiry=None, broker_user_id: Optional[str] = None) -> None:
+        import json
+
+        from database.session import get_db_session
+
+        async with get_db_session() as session:
+            row = await self._get_row(session, user_id, create=True)
+            row.session = {"_enc": encrypt_token(json.dumps(session_blob))}
+            if token_expiry is not None:
+                row.token_expiry = token_expiry
+            if broker_user_id is not None:
+                row.broker_user_id = broker_user_id
+            row.status = "connected"
+            await session.commit()
 
 
 def get_credential_store(broker: str) -> BrokerCredentialStore:

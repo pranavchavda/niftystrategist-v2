@@ -177,14 +177,70 @@ def init_market_data_client() -> UpstoxClient:
     return init_client()
 
 
-def current_broker(user_id: int | None = None) -> str:
-    """The broker the requesting user trades on.
+DEFAULT_BROKER = "upstox"
 
-    Defaults to ``"upstox"`` until the ``users.broker`` discriminator column
-    lands (Phase C); at that point this reads the column. Centralised here so
-    CLI order tools can stamp the right ``broker`` on order-node requests.
+
+def _requesting_user_id() -> int | None:
+    """The resolved requesting user id, or ``None`` when it can't be safely
+    determined (agent subprocess without ``NF_USER_ID``).
+
+    Mirrors :func:`init_client`'s user resolution but RETURNS instead of exiting,
+    so non-account callers (``current_broker``) can decide. Crucially it does NOT
+    default to the owner in an agent subprocess — that silent default is exactly
+    the cross-account contamination bug (incident 2026-05-26). Account-touching
+    callers must still go through ``init_client`` / ``init_broker_account``, which
+    fail closed.
     """
-    return "upstox"
+    nf_user_raw = os.environ.get("NF_USER_ID")
+    is_agent = os.environ.get("NF_AGENT_SUBPROCESS") == "1"
+    if nf_user_raw and nf_user_raw.isdigit() and int(nf_user_raw) > 0:
+        return int(nf_user_raw)
+    if is_agent:
+        return None
+    return OWNER_USER_ID
+
+
+def _resolve_broker_sync(user_id: int) -> str | None:
+    """Sync read of ``users.broker`` for a user. ``None`` on miss/error."""
+    try:
+        from sqlalchemy import select as _select
+
+        from database.session import get_db_session, engine as _engine
+        from database.models import User as _DBUser
+
+        async def _query():
+            try:
+                async with get_db_session() as session:
+                    row = (
+                        await session.execute(
+                            _select(_DBUser.broker).where(_DBUser.id == user_id)
+                        )
+                    ).scalar_one_or_none()
+                    return row
+            finally:
+                await _engine.dispose()
+
+        return asyncio.run(_query())
+    except Exception as e:
+        print(f"⚠️  broker lookup failed for user {user_id}: {e}", file=sys.stderr)
+        return None
+
+
+def current_broker(user_id: int | None = None) -> str:
+    """The active trading broker for the requesting user (reads ``users.broker``).
+
+    Defaults to ``"upstox"`` when the user can't be resolved or the lookup fails —
+    a safe default because this only selects *which broker's plumbing* to use; the
+    actual account/token touch is gated downstream (``init_client`` /
+    ``init_broker_account`` / the order node) and fails closed on the wrong user.
+    Centralised here so CLI order tools stamp the right ``broker`` on order-node
+    requests.
+    """
+    if user_id is None:
+        user_id = _requesting_user_id()
+    if not user_id or user_id <= 0:
+        return DEFAULT_BROKER
+    return _resolve_broker_sync(user_id) or DEFAULT_BROKER
 
 
 def init_broker_account():
@@ -204,12 +260,39 @@ def init_broker_account():
 
         return UpstoxBrokerAccount(init_client())
 
-    # Future brokers register a sync builder here; until then, fail closed
-    # rather than silently routing to the wrong broker.
-    print_error(
-        f"BROKER_UNSUPPORTED: trading broker '{broker}' is not wired into the "
-        "CLI yet. Tell the user this broker isn't available."
-    )
+    # Non-Upstox brokers resolve per-user creds/session from the DB via the
+    # registry. Resolve the user fail-closed first (never the owner default in an
+    # agent subprocess) so we don't build another user's broker account.
+    user_id = _requesting_user_id()
+    if not user_id or user_id <= 0:
+        print_error(
+            "BROKER_USER_UNIDENTIFIED: Could not determine which user this "
+            f"'{broker}' operation belongs to, so it was refused. Ask the user to "
+            "reconnect their broker in Settings, then try again."
+        )
+
+    from brokers.registry import get_broker_account
+
+    async def _build():
+        try:
+            return await get_broker_account(user_id, broker=broker)
+        finally:
+            from database.session import engine as _engine
+            await _engine.dispose()
+
+    try:
+        return asyncio.run(_build())
+    except KeyError:
+        print_error(
+            f"BROKER_UNSUPPORTED: trading broker '{broker}' is not wired into the "
+            "CLI yet. Tell the user this broker isn't available."
+        )
+    except Exception as e:
+        print_error(
+            f"BROKER_UNAVAILABLE: could not initialise '{broker}' for user "
+            f"{user_id} ({e}). The broker session may be expired or not connected; "
+            "ask the user to reconnect their broker in Settings."
+        )
 
 
 def run_async(coro):

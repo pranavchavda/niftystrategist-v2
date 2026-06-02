@@ -81,6 +81,60 @@ def get_instrument_resolver(broker: str = DEFAULT_BROKER) -> InstrumentResolver:
     return _bundle(broker).resolver
 
 
+async def connected_brokers(user_id: int) -> list[str]:
+    """Brokers this user has linked — what the Dashboard consolidates across.
+
+    A user may trade actively on one broker (``users.broker``) while still
+    holding positions on others; the Dashboard reads every CONNECTED broker, not
+    just the active one. A broker counts as connected when:
+
+      * upstox  — the user has an Upstox token or API credentials, OR upstox is
+        their active broker (legacy users predate broker_accounts), OR
+      * any broker — there's a ``broker_accounts`` row with status 'connected'.
+
+    Returns registered brokers only, active broker first, deduped. Never raises
+    on a partial DB issue — returns at least the active broker.
+    """
+    from sqlalchemy import select
+
+    from database.models import User, UserBrokerAccount
+    from database.session import get_db_session
+
+    found: list[str] = []
+    try:
+        async with get_db_session() as session:
+            user = (
+                await session.execute(select(User).where(User.id == user_id))
+            ).scalar_one_or_none()
+            active = (getattr(user, "broker", None) or DEFAULT_BROKER) if user else DEFAULT_BROKER
+            found.append(active)
+            if user is not None and (
+                user.upstox_access_token or user.upstox_api_key
+            ):
+                found.append("upstox")
+            rows = (
+                await session.execute(
+                    select(UserBrokerAccount.broker).where(
+                        UserBrokerAccount.user_id == user_id,
+                        UserBrokerAccount.status == "connected",
+                    )
+                )
+            ).scalars().all()
+            found.extend(rows)
+    except Exception:  # pragma: no cover - dashboard must degrade, not crash
+        if not found:
+            found = [DEFAULT_BROKER]
+
+    # Dedup preserving order (active first), registered brokers only.
+    seen: set[str] = set()
+    out: list[str] = []
+    for b in found:
+        if b and b not in seen and b in _BROKERS:
+            seen.add(b)
+            out.append(b)
+    return out or [DEFAULT_BROKER]
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Default registrations (Upstox + Paper)
 # ──────────────────────────────────────────────────────────────────────────
@@ -129,10 +183,12 @@ def _register_defaults() -> None:
     # column routes real users.
     try:
         from brokers.kotak.account import KotakBrokerAccount
-        from brokers.kotak.auth import KotakAuth
+        from brokers.kotak.auth import DBKotakStore, KotakAuth
         from brokers.kotak.instruments import KotakInstrumentResolver
 
-        kotak_auth = KotakAuth()
+        # Real users' Kotak creds + daily session live per-user in broker_accounts
+        # (DB), never the owner's env file — fail-closed multi-user isolation.
+        kotak_auth = KotakAuth(store=DBKotakStore())
         kotak_resolver = KotakInstrumentResolver()
 
         async def _build_kotak(user_id: int) -> BrokerAccount:

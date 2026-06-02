@@ -154,6 +154,11 @@ class User(Base):
     # Trading mode: 'paper' or 'live'
     trading_mode = Column(String(10), default="live", nullable=False)
 
+    # Active trading broker (broker-agnostic layer, Phase C). ONE at a time —
+    # governs order placement + agent account context + monitor/scalp routing.
+    # Connected brokers (for the consolidated Dashboard) live in broker_accounts.
+    broker = Column(String(20), nullable=False, default="upstox", server_default="upstox")
+
     # Model preferences
     preferred_model = Column(String(100), default="deepseek/deepseek-chat")
 
@@ -178,6 +183,33 @@ class User(Base):
     trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")
     watchlist_items = relationship("WatchlistItem", back_populates="user", cascade="all, delete-orphan")
     passkeys = relationship("UserPasskey", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserBrokerAccount(Base):
+    """Per-broker credentials + minted session for one user (broker-agnostic layer).
+
+    The generic store every NON-Upstox broker uses (Upstox keeps its dedicated
+    upstox_* columns on User). A user may have several rows — one per CONNECTED
+    broker — which is what lets the Dashboard consolidate across brokers
+    regardless of which one is currently active (User.broker).
+
+    ``credentials`` holds Fernet-encrypted-per-value fields; ``session`` holds the
+    broker-minted session blob (Kotak Neo is multi-field with daily expiry).
+    """
+    __tablename__ = "broker_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker = Column(String(20), nullable=False)
+    credentials = Column(JSON, nullable=False, default=dict)   # encrypted-per-value
+    session = Column(JSON, nullable=True)                      # broker session (multi-field for Kotak)
+    token_expiry = Column(DateTime, nullable=True)             # naive UTC
+    broker_user_id = Column(Text, nullable=True)               # broker's account id (e.g. Kotak UCC)
+    status = Column(String(20), nullable=False, default="connected")
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+
+    __table_args__ = (UniqueConstraint("user_id", "broker", name="uq_broker_accounts_user_broker"),)
 
 
 class UserPasskey(Base):

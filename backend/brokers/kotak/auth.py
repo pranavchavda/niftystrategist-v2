@@ -105,6 +105,31 @@ class EnvFileKotakStore(KotakStore):
             logger.warning("Could not persist Kotak session: %s", e)
 
 
+class DBKotakStore(KotakStore):
+    """Phase C store: per-user Kotak credentials + minted session from the shared
+    ``broker_accounts`` table (via :class:`GenericCredentialStore`).
+
+    This is what the registry uses for real users — credentials and the daily
+    session are scoped to ``user_id`` in the DB, so there's no cross-user
+    contamination (unlike the env-file store, whose creds are the owner's).
+    """
+
+    def __init__(self):
+        from brokers.credentials import GenericCredentialStore
+
+        self._store = GenericCredentialStore("kotak")
+
+    async def get_credentials(self, user_id: int) -> dict:
+        return await self._store.get_credentials(user_id)
+
+    async def load_session(self, user_id: int) -> Optional[dict]:
+        return await self._store.get_session(user_id)
+
+    async def save_session(self, user_id: int, session: dict) -> None:
+        await self._store.set_session(user_id, session,
+                                      broker_user_id=session.get("ucc"))
+
+
 def _session_is_fresh(session: Optional[dict]) -> bool:
     """A session is usable if it has an edit_token minted on the current day
     (Kotak tokens expire end-of-trading-day)."""
