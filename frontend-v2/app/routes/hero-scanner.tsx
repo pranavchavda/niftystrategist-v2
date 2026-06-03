@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { requirePermission } from '../utils/route-permissions';
 import {
   Radar, Play, Loader2, TrendingUp, TrendingDown, Info, X,
-  Crown, Medal, Award, Newspaper, Rocket, Bug, ArrowUpRight,
+  Crown, Medal, Award, Newspaper, Rocket, ArrowUpRight,
   ArrowDownRight, AlertTriangle, CheckCircle2, ShoppingCart, LineChart,
   Target,
 } from 'lucide-react';
@@ -66,37 +66,34 @@ interface ScanResult {
   market_news_citations?: string[];
 }
 
-interface Deployment {
-  symbol: string;
-  rules_count?: number;
-  group_id?: string;
-  error?: string;
-}
-
-interface AutoDeploy {
-  template: string;
-  capital_per_strategy: number;
-  risk_percent: number;
-  dry_run: boolean;
-  deployments: Deployment[];
-  succeeded: number;
-  failed: number;
-}
 
 // ─── Reference copy for tooltips ────────────────────────────────────────────
+
+// Single source of truth for the momentum-score weights — used by the hover
+// tooltip and the on-page "How the score works" panel.
+const SCORE_WEIGHTS: { signal: string; rule: string }[] = [
+  { signal: 'Gap', rule: '+1 (≥1%), +2 (≥2%)' },
+  { signal: 'Relative strength', rule: '+1 (≥0.5%), +2 (≥1%)' },
+  { signal: 'Volume (RVOL-T)', rule: '+1 (≥1.5×), +2 (≥2×)' },
+  { signal: 'RSI', rule: '+1 (≥60 or ≤40)' },
+  { signal: 'VWAP', rule: '+1 (price above VWAP)' },
+  { signal: 'Alignment', rule: '+1 (gap & move same way)' },
+];
 
 const SCORE_HELP = (
   <div className="space-y-1">
     <p className="font-semibold text-amber-300">Momentum Score (0–8)</p>
     <p>Sum of six institutional signals. Higher = stronger intraday edge.</p>
     <ul className="mt-1 space-y-0.5 text-zinc-400">
-      <li>Gap: +1 (≥1%), +2 (≥2%)</li>
-      <li>Rel. Strength: +1 (≥0.5%), +2 (≥1%)</li>
-      <li>Volume: +1 (RVOL-T ≥1.5×), +2 (≥2×)</li>
-      <li>RSI: +1 (≥60 or ≤40)</li>
-      <li>VWAP: +1 (price above VWAP)</li>
-      <li>Alignment: +1 (gap & move same way)</li>
+      {SCORE_WEIGHTS.map(({ signal, rule }) => (
+        <li key={signal}>{signal}: {rule}</li>
+      ))}
     </ul>
+    <p className="mt-1.5 border-t border-zinc-700 pt-1.5 text-zinc-400">
+      With <span className="text-amber-300">Signal match</span> on, scores can exceed 8:
+      signal-agnostic stock <span className="text-emerald-400">+2</span>, best-signal
+      PF&gt;3 <span className="text-emerald-400">+1</span>; untradeable forced to 0.
+    </p>
   </div>
 );
 
@@ -123,8 +120,6 @@ const SETUP_HELP: Record<string, string> = {
   'Watching': 'No clean setup yet — keep on the radar but no edge to act on.',
   'Not analyzed': 'Outside the deep-analysis window — only Phase 1 (gap + relative strength) was computed.',
 };
-
-const TEMPLATES = ['orb', 'breakout', 'mean-reversion', 'vwap-bounce', 'scalp'];
 
 // ─── Formatting helpers ─────────────────────────────────────────────────────
 
@@ -188,12 +183,38 @@ const CONFIDENCE_TINT: Record<string, string> = {
 const fmtPF = (pf: number | 'inf') => (pf === 'inf' ? '∞' : Number(pf).toFixed(2));
 const dirArrow = (d: string) => (d === 'long' ? '▲' : d === 'short' ? '▼' : '↕');
 
-/** Compact badge for a candidate's signal-match result. */
-function SignalBadge({ sm, compact = false }: { sm: SignalMatch; compact?: boolean }) {
+/** Today's directional lean, from the same price-action fields the scan scores
+ * on (gap, relative strength, VWAP, change). Used only to flag when the
+ * backtested best signal opposes the live setup. */
+function setupBias(c: Candidate): 'bullish' | 'bearish' | 'neutral' {
+  let net = 0;
+  if (c.gap_pct > 0) net++; else if (c.gap_pct < 0) net--;
+  if (c.rel_strength_pct > 0) net++; else if (c.rel_strength_pct < 0) net--;
+  if (c.change_pct > 0) net++; else if (c.change_pct < 0) net--;
+  if (c.above_vwap === true) net++; else if (c.above_vwap === false) net--;
+  return net >= 2 ? 'bullish' : net <= -2 ? 'bearish' : 'neutral';
+}
+
+/** True when the recommended signal direction opposes today's setup bias. */
+function signalOpposesSetup(c: Candidate): boolean {
+  const dir = c.signal_match?.recommended?.direction;
+  if (dir !== 'long' && dir !== 'short') return false;
+  const bias = setupBias(c);
+  return (bias === 'bullish' && dir === 'short') || (bias === 'bearish' && dir === 'long');
+}
+
+/** Compact badge for a candidate's signal-match result. ``bias`` is today's
+ * setup lean; when it opposes the recommended direction we flag the conflict. */
+function SignalBadge({ sm, bias = 'neutral', compact = false }:
+  { sm: SignalMatch; bias?: 'bullish' | 'bearish' | 'neutral'; compact?: boolean }) {
   const meta = CLASSIFICATION_META[sm.classification] ?? CLASSIFICATION_META.untradeable;
   const rec = sm.recommended;
   const best = sm.best_signal;
   const tradeable = sm.classification !== 'untradeable' && rec?.confidence !== 'none' && !!best;
+  const conflict = tradeable && rec != null
+    && (rec.direction === 'long' || rec.direction === 'short')
+    && ((bias === 'bullish' && rec.direction === 'short')
+      || (bias === 'bearish' && rec.direction === 'long'));
 
   const tip = tradeable && rec && best ? (
     <div className="space-y-1 text-left">
@@ -204,6 +225,13 @@ function SignalBadge({ sm, compact = false }: { sm: SignalMatch; compact?: boole
         {best.total_trades} trades
       </div>
       <div className="capitalize">Confidence: {rec.confidence} — {rec.reason}</div>
+      {conflict && (
+        <div className="text-amber-300">
+          ⚠ Historically-best direction ({rec.direction}) opposes today's {bias} setup. The
+          backtest favoured {rec.direction}s over the window, but today's price action leans
+          the other way — mixed signal, trade cautiously.
+        </div>
+      )}
       <div className="text-zinc-400">
         {sm.profitable_count}/{sm.total_count} indicators profitable. Backtest is in-sample
         (best-in-hindsight) — not a forward guarantee.
@@ -226,11 +254,12 @@ function SignalBadge({ sm, compact = false }: { sm: SignalMatch; compact?: boole
   }
 
   return (
-    <Tooltip content={tip} width={280}>
+    <Tooltip content={tip} width={300}>
       <span className={`inline-flex cursor-help items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset ${meta.tint}`}>
         <span className={`h-1.5 w-1.5 rounded-full ${CONFIDENCE_TINT[rec.confidence] ?? 'bg-zinc-400'}`} />
         <span className="font-mono">{rec.indicator}</span>
         <span>{dirArrow(rec.direction)}</span>
+        {conflict && <AlertTriangle className="h-3 w-3 text-amber-500" />}
         {!compact && best && <span className="tabular-nums opacity-70">PF {fmtPF(best.profit_factor)}</span>}
       </span>
     </Tooltip>
@@ -721,22 +750,11 @@ export default function HeroScannerPage() {
   const [deep, setDeep] = useState('15');
   const [news, setNews] = useState(false);
   const [withSignalMatch, setWithSignalMatch] = useState(false);
-  const [debugMode, setDebugMode] = useState(false);
-  const [debugSymbol, setDebugSymbol] = useState('');
-
-  // Auto-deploy options
-  const [deployOn, setDeployOn] = useState(false);
-  const [template, setTemplate] = useState('orb');
-  const [capital, setCapital] = useState('50000');
-  const [riskPct, setRiskPct] = useState('2');
-  const [deployDryRun, setDeployDryRun] = useState(true);
 
   // Run state
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
-  const [autoDeploy, setAutoDeploy] = useState<AutoDeploy | null>(null);
-  const [scannedDebug, setScannedDebug] = useState<string | null>(null);
 
   // Order modal
   const [orderFor, setOrderFor] = useState<Candidate | null>(null);
@@ -746,7 +764,6 @@ export default function HeroScannerPage() {
     setRunning(true);
     setError(null);
     setScan(null);
-    setAutoDeploy(null);
     try {
       const payload: any = {
         universe,
@@ -755,15 +772,7 @@ export default function HeroScannerPage() {
         deep: parseInt(deep) || 15,
         news,
         with_signal_match: withSignalMatch,
-        debug: debugMode && debugSymbol.trim() ? debugSymbol.trim().toUpperCase() : null,
       };
-      if (deployOn) {
-        payload.auto_deploy = template;
-        payload.capital = parseFloat(capital) || 0;
-        payload.risk_percent = parseFloat(riskPct) || 2;
-        payload.dry_run = deployDryRun;
-        if (!payload.capital) { setError('Capital is required for auto-deploy'); setRunning(false); return; }
-      }
       const res = await fetch('/api/hero-scanner/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
@@ -772,8 +781,6 @@ export default function HeroScannerPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Scan failed');
       setScan(data.scan);
-      setAutoDeploy(data.auto_deploy || null);
-      setScannedDebug(payload.debug || null);
     } catch (e: any) {
       setError(e.message || 'Network error');
     } finally {
@@ -896,70 +903,6 @@ export default function HeroScannerPage() {
                 <input type="checkbox" checked={withSignalMatch} onChange={e => setWithSignalMatch(e.target.checked)} className="h-4 w-4 accent-amber-500" />
               </label>
 
-              {/* Debug mode */}
-              <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-700/50">
-                <label className="flex cursor-pointer items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-sm font-medium text-zinc-600 dark:text-zinc-400">
-                    <Bug className="h-4 w-4" /> Debug single stock
-                    <Tooltip content="Forces one symbol into deep analysis and shows all its raw indicators, even if it wouldn't otherwise rank.">
-                      <Info className="h-3.5 w-3.5 text-zinc-400" />
-                    </Tooltip>
-                  </span>
-                  <input type="checkbox" checked={debugMode} onChange={e => setDebugMode(e.target.checked)} className="h-4 w-4 accent-amber-500" />
-                </label>
-                {debugMode && (
-                  <input
-                    value={debugSymbol}
-                    onChange={e => setDebugSymbol(e.target.value.toUpperCase())}
-                    placeholder="e.g. TATAMOTORS"
-                    className={`${selectCls} mt-2 font-mono text-xs`}
-                  />
-                )}
-              </div>
-
-              {/* Auto-deploy */}
-              <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-700/50">
-                <label className="flex cursor-pointer items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-sm font-medium text-zinc-600 dark:text-zinc-400">
-                    <Rocket className="h-4 w-4" /> Auto-deploy strategy
-                    <Tooltip content="After scanning, deploy a strategy template on the top candidates via the monitor rules engine. Keep dry-run on to preview the rules without creating them." width={260}>
-                      <Info className="h-3.5 w-3.5 text-zinc-400" />
-                    </Tooltip>
-                  </span>
-                  <input type="checkbox" checked={deployOn} onChange={e => setDeployOn(e.target.checked)} className="h-4 w-4 accent-amber-500" />
-                </label>
-                {deployOn && (
-                  <div className="mt-3 space-y-3">
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-zinc-500">Template</label>
-                      <select value={template} onChange={e => setTemplate(e.target.value)} className={selectCls}>
-                        {TEMPLATES.map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-zinc-500">Capital each (₹)</label>
-                        <input type="number" min="1" value={capital} onChange={e => setCapital(e.target.value)} className={selectCls} />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-zinc-500">Risk %</label>
-                        <input type="number" step="0.5" min="0.5" value={riskPct} onChange={e => setRiskPct(e.target.value)} className={selectCls} />
-                      </div>
-                    </div>
-                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                      <input type="checkbox" checked={deployDryRun} onChange={e => setDeployDryRun(e.target.checked)} className="h-4 w-4 accent-amber-500" />
-                      Dry-run (preview rules, don't create)
-                    </label>
-                    {!deployDryRun && (
-                      <p className="flex items-start gap-1.5 rounded-md bg-rose-50 px-2 py-1.5 text-[11px] text-rose-600 dark:bg-rose-900/20 dark:text-rose-400">
-                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        Live deploy will create real monitor rules on the top {top} candidates.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-
               {/* Run */}
               <button
                 onClick={runScan}
@@ -1032,7 +975,7 @@ export default function HeroScannerPage() {
                           <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{c.setup}</p>
                           {c.signal_match && (
                             <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                              <SignalBadge sm={c.signal_match} />
+                              <SignalBadge sm={c.signal_match} bias={setupBias(c)} />
                               {c.signal_match.classification !== 'untradeable'
                                 && c.signal_match.recommended?.confidence !== 'none' && (
                                 <button
@@ -1103,7 +1046,7 @@ export default function HeroScannerPage() {
                             {hasSignalMatch && (
                               <th className="px-3 py-2.5 text-left font-semibold">
                                 <Tooltip
-                                  content="The scalp indicator + direction that historically worked best on this stock, colour-coded by tradeability classification. Dot = confidence. Hover a badge for full stats."
+                                  content="The scalp indicator + direction that was most profitable on this stock over the backtest window — colour-coded by tradeability, dot = confidence. This is a HISTORICAL read and is independent of the Setup column (today's momentum). When the best direction opposes today's setup, a ⚠ flags the conflict. Hover a badge for full stats."
                                   width={280}
                                 >
                                   <span className="inline-flex items-center gap-1 border-b border-dotted border-zinc-400/50 cursor-help">
@@ -1123,9 +1066,8 @@ export default function HeroScannerPage() {
                               : c.vol_expansion != null
                                 ? `${c.vol_expansion.toFixed(1)}×✻`
                                 : '—';
-                            const isDebug = scannedDebug != null && c.symbol === scannedDebug;
                             return (
-                              <tr key={c.symbol} className={`${isDebug ? 'bg-amber-500/[0.12] ring-1 ring-inset ring-amber-400/50' : rowTint(c.score)} transition hover:bg-amber-500/[0.06]`}>
+                              <tr key={c.symbol} className={`${rowTint(c.score)} transition hover:bg-amber-500/[0.06]`}>
                                 <td className="px-3 py-2.5 font-semibold text-zinc-900 dark:text-zinc-100">
                                   <span className="inline-flex items-center gap-1.5">
                                     {c.symbol}
@@ -1140,11 +1082,6 @@ export default function HeroScannerPage() {
                                         <LineChart className="h-3.5 w-3.5" />
                                       </Link>
                                     </Tooltip>
-                                    {isDebug && (
-                                      <span className="inline-flex items-center gap-0.5 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
-                                        <Bug className="h-2.5 w-2.5" /> debug
-                                      </span>
-                                    )}
                                   </span>
                                 </td>
                                 <td className="px-3 py-2.5 text-right tabular-nums text-zinc-600 dark:text-zinc-300">{inr(c.price)}</td>
@@ -1184,7 +1121,7 @@ export default function HeroScannerPage() {
                                   <td className="px-3 py-2.5">
                                     {c.signal_match ? (
                                       <div className="flex items-center gap-1.5">
-                                        <SignalBadge sm={c.signal_match} />
+                                        <SignalBadge sm={c.signal_match} bias={setupBias(c)} />
                                         {c.signal_match.classification !== 'untradeable'
                                           && c.signal_match.recommended?.confidence !== 'none' && (
                                           <Tooltip content="Deploy a live scalp session on this matched signal — you set budget & risk, we size it.">
@@ -1220,6 +1157,47 @@ export default function HeroScannerPage() {
                     </p>
                   </div>
                 )}
+
+                {/* Scoring explainer */}
+                <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700/50 dark:bg-zinc-900/50">
+                  <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">How the score works</h3>
+                  <p className="mb-2.5 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span className="font-medium text-zinc-700 dark:text-zinc-300">Momentum Score (0–8)</span> — sum of six
+                    institutional signals. Higher = stronger intraday edge.
+                  </p>
+                  <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+                    {SCORE_WEIGHTS.map(({ signal, rule }) => (
+                      <div key={signal} className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-300">{signal}</span>
+                        <span className="tabular-nums text-zinc-500 dark:text-zinc-400">{rule}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 border-t border-zinc-100 pt-2.5 dark:border-zinc-800">
+                    <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                      <Target className="h-3.5 w-3.5" />
+                      Signal-match bonus {hasSignalMatch ? '(active)' : '(when Signal match is on)'}
+                    </p>
+                    <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+                      <div className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="text-zinc-600 dark:text-zinc-300">Signal-agnostic stock</span>
+                        <span className="tabular-nums text-emerald-600 dark:text-emerald-400">+2</span>
+                      </div>
+                      <div className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="text-zinc-600 dark:text-zinc-300">Best-signal profit factor &gt; 3</span>
+                        <span className="tabular-nums text-emerald-600 dark:text-emerald-400">+1</span>
+                      </div>
+                      <div className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="text-zinc-600 dark:text-zinc-300">Untradeable (no profitable signal)</span>
+                        <span className="tabular-nums text-rose-600 dark:text-rose-400">→ 0</span>
+                      </div>
+                    </div>
+                    <p className="mt-1.5 text-[11px] text-zinc-400">
+                      So with Signal match on, scores can reach ~11–12. The bonus is added after the
+                      base score, and untradeable stocks are pushed to the bottom.
+                    </p>
+                  </div>
+                </div>
 
                 {/* Setup legend */}
                 <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700/50 dark:bg-zinc-900/50">
@@ -1280,39 +1258,6 @@ export default function HeroScannerPage() {
                   </div>
                 )}
 
-                {/* Auto-deploy summary */}
-                {autoDeploy && (
-                  <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700/50 dark:bg-zinc-900/50">
-                    <h3 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                      <Rocket className="h-4 w-4" />
-                      Auto-deploy: {autoDeploy.template}
-                      {autoDeploy.dry_run && (
-                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
-                          Dry run
-                        </span>
-                      )}
-                    </h3>
-                    <p className="mb-3 text-xs text-zinc-500">
-                      ₹{autoDeploy.capital_per_strategy.toLocaleString('en-IN')} each · {autoDeploy.risk_percent}% risk ·{' '}
-                      <span className="text-emerald-600 dark:text-emerald-400">{autoDeploy.succeeded} deployed</span>
-                      {autoDeploy.failed > 0 && <span className="text-rose-600 dark:text-rose-400">, {autoDeploy.failed} failed</span>}
-                    </p>
-                    <div className="space-y-1">
-                      {autoDeploy.deployments.map((d, i) => (
-                        <div key={i} className="flex items-center justify-between rounded-md bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800/50">
-                          <span className="font-medium text-zinc-800 dark:text-zinc-200">{d.symbol}</span>
-                          {d.error ? (
-                            <span className="text-rose-600 dark:text-rose-400">{d.error}</span>
-                          ) : (
-                            <span className="text-zinc-500">
-                              {d.rules_count} rules{d.group_id ? ` · ${d.group_id}` : ''}
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </>
             )}
           </div>
