@@ -954,6 +954,8 @@ def format_json_output(
             candidate["forecast_score"] = r.get("forecast_score", 0)
         if r.get("news"):
             candidate["news"] = r["news"]
+        if r.get("signal_match"):
+            candidate["signal_match"] = r["signal_match"]
         output["candidates"].append(candidate)
 
     print_json(output)
@@ -1306,6 +1308,91 @@ def format_deploy_summary(deployments: list[dict], template: str, dry_run: bool 
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def apply_signal_match(results: list, days: int = 15, verbose: bool = False) -> list:
+    """Enrich + re-score scan results with per-stock signal-match backtests.
+
+    Calls ``nf-backtest-scan`` on the candidate symbols (passing them explicitly
+    so it does NOT re-run the morning scan), then folds the deployment plan into
+    each result:
+
+      * ``classification == "untradeable"``      → score forced to 0
+      * ``best_signal.profit_factor < 1.0``      → score forced to 0
+      * ``classification == "signal_agnostic"``  → +2 bonus
+      * ``best_signal.profit_factor > 3.0``      → +1 bonus
+
+    Each result also gains a ``signal_match`` dict (classification, best_signal,
+    recommended). Results are re-sorted: highest score first, untradeable last.
+    Best-effort — if the backtest call fails, results are returned unchanged.
+    """
+    if not results:
+        return results
+    symbols = [r["symbol"] for r in results]
+    scan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nf-backtest-scan")
+    cmd = [
+        sys.executable, scan_path, "--symbols", ",".join(symbols),
+        "--days", str(days), "--json",
+    ]
+    if verbose:
+        print(f"  signal-match: backtesting {len(symbols)} candidates...", file=sys.stderr)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            print(f"  signal-match failed (exit {proc.returncode}): "
+                  f"{proc.stderr[-300:]}", file=sys.stderr)
+            return results
+        plan = json.loads(proc.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        print(f"  signal-match error: {e}", file=sys.stderr)
+        return results
+
+    by_symbol = {c["symbol"]: c for c in plan.get("candidates", [])}
+
+    def _pf(c):
+        pf = c.get("best_signal", {}).get("profit_factor", 0.0)
+        if pf == "inf":
+            return float("inf")
+        try:
+            return float(pf)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for r in results:
+        c = by_symbol.get(r["symbol"])
+        if c is None:
+            continue
+        cls = c["classification"]
+        pf = _pf(c)
+        r["signal_match"] = {
+            "classification": cls,
+            "best_signal": c.get("best_signal"),
+            "recommended": c.get("recommended"),
+            "profitable_count": c.get("profitable_count"),
+            "total_count": c.get("total_count"),
+        }
+        base = r.get("total_score", 0)
+        if cls == "untradeable" or pf < 1.0:
+            r["total_score"] = 0
+            continue
+        bonus = 0
+        if cls == "signal_agnostic":
+            bonus += 2
+        if pf > 3.0:
+            bonus += 1
+        r["total_score"] = base + bonus
+
+    # Re-sort: untradeable (score 0 / no match) to the bottom, else by score desc.
+    def _key(r):
+        sm = r.get("signal_match")
+        untradeable = bool(sm) and sm["classification"] == "untradeable"
+        return (untradeable, -r.get("total_score", 0))
+
+    results.sort(key=_key)
+    if verbose:
+        kept = sum(1 for r in results if r.get("total_score", 0) > 0)
+        print(f"  signal-match: {kept}/{len(results)} candidates tradeable", file=sys.stderr)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nf-morning-scan",
@@ -1355,6 +1442,13 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     parser.add_argument("--forecast", action="store_true",
                         help="Run TimesFM price forecasts on deep-analyzed candidates and "
                              "fold the result into scoring as a confluence signal (adds ~15-30s)")
+    parser.add_argument("--with-signal-match", action="store_true",
+                        help="Backtest each candidate across all scalp indicators (via "
+                             "nf-backtest-scan) and fold the result into scoring: untradeable "
+                             "stocks are eliminated, signal-agnostic stocks bonused, and each "
+                             "candidate gains best_signal + classification fields (adds ~15-30s)")
+    parser.add_argument("--signal-match-days", type=int, default=15, metavar="N",
+                        help="Lookback window for --with-signal-match backtests (default: 15)")
 
     # Auto-deploy options
     parser.add_argument("--auto-deploy", metavar="TEMPLATE",
@@ -1397,6 +1491,15 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     for r in results:
         if r["symbol"] in upstox_news:
             r["news"] = upstox_news[r["symbol"]]
+
+    # Phase 3c: Signal-match — backtest each candidate across all indicators and
+    # fold the result into scoring. Purely additive: without the flag, results
+    # and scores are untouched.
+    if args.with_signal_match:
+        results = apply_signal_match(
+            results, days=args.signal_match_days,
+            verbose=args.verbose or bool(args.debug),
+        )
 
     # Phase 3b: Perplexity market overview (only with --news)
     news = None

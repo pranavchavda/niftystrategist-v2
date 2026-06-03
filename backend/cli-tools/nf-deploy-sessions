@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""nf-deploy-sessions — turn a signal-match scan into live scalp sessions.
+
+Pipeline: run ``nf-backtest-scan`` → take the tradeable stocks → size each by
+capital (or risk) using a live LTP → apply concurrency + indicator-family
+diversification caps → PREVIEW the deployment plan (default) or create the
+sessions (``--execute``).
+
+This NEVER creates a live session without ``--execute``. The default output is a
+plan you read first; only ``--execute`` calls ``nf-scalp create``.
+
+Each session is deployed with the *recommended indicator AND direction* the scan
+matched to that stock — signal-to-stock-AND-direction matching is the whole
+point, so we deploy ``--side long``/``--side short`` accordingly, not "both".
+
+Usage examples:
+
+  # Preview what would be deployed from a nifty50 top-15 scan (no sessions created)
+  nf-deploy-sessions --universe nifty50 --top 15 --days 15
+
+  # Same, but actually create the sessions
+  nf-deploy-sessions --universe nifty50 --top 15 --days 15 --execute
+
+  # Deploy from a previously-saved scan plan, risk-sized, high-confidence only
+  nf-backtest-scan --universe nifty500 --top 30 --json > /tmp/plan.json
+  nf-deploy-sessions --plan-file /tmp/plan.json --min-confidence high \\
+      --risk-per-trade 6000 --execute
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import init_market_data_client, print_error, print_json, run_async  # noqa: E402
+
+# Indicator → family, for the "max N% of sessions on one family" diversification
+# cap. Sector-based caps are intentionally omitted in v1: there is no
+# symbol→sector map in the codebase. Add one and a per-sector cap later.
+_INDICATOR_FAMILY = {
+    "utbot": "atr_trend", "supertrend": "atr_trend", "halftrend": "atr_trend",
+    "ssl_hybrid": "atr_trend", "renko": "atr_trend",
+    "ema_crossover": "moving_avg", "macd": "moving_avg",
+    "qqe_mod": "oscillator", "hilega_milega": "oscillator",
+    "volume_spike": "volume",
+}
+
+_CONF_RANK = {"high": 0, "medium": 1, "low": 2, "none": 3}
+
+
+def _family(indicator: str) -> str:
+    return _INDICATOR_FAMILY.get(indicator, "other")
+
+
+def _parse_rupees(s) -> float | None:
+    """Best-effort parse of a free-text mandate amount like '₹6,000' → 6000.0."""
+    if s is None:
+        return None
+    if isinstance(s, (int, float)):
+        return float(s)
+    m = re.search(r"[\d,]+(?:\.\d+)?", str(s))
+    if not m:
+        return None
+    try:
+        return float(m.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Plan sourcing
+# ---------------------------------------------------------------------------
+
+def _get_plan(args: argparse.Namespace) -> dict:
+    """Load the signal-match plan: from --plan-file, or by running nf-backtest-scan."""
+    if args.plan_file:
+        try:
+            with open(args.plan_file) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print_error(f"could not read --plan-file: {e}")
+            sys.exit(1)
+
+    scan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nf-backtest-scan")
+    cmd = [sys.executable, scan_path, "--days", str(args.days),
+           "--interval", args.interval, "--json"]
+    if args.symbols:
+        cmd += ["--symbols", args.symbols]
+    else:
+        cmd += ["--universe", args.universe, "--top", str(args.top)]
+    if args.indicators:
+        cmd += ["--indicators", args.indicators]
+    if args.verbose:
+        print(f"  running scan: {' '.join(cmd)}", file=sys.stderr)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        print_error("nf-backtest-scan timed out")
+        sys.exit(1)
+    if proc.returncode != 0:
+        print_error(f"nf-backtest-scan failed (exit {proc.returncode}): {proc.stderr[-500:]}")
+        sys.exit(1)
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        print_error("nf-backtest-scan returned non-JSON output")
+        sys.exit(1)
+
+
+def _load_mandate_risk(verbose: bool) -> float | None:
+    """Best-effort: pull a rupee risk-per-trade from the trading mandate."""
+    mandate_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nf-mandate")
+    try:
+        proc = subprocess.run([sys.executable, mandate_path, "show", "--json"],
+                              capture_output=True, text=True, timeout=60)
+        data = json.loads(proc.stdout)
+    except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
+        return None
+    m = data.get("mandate")
+    if not m:
+        if verbose:
+            print("  no trading mandate set — falling back to --capital-per-trade", file=sys.stderr)
+        return None
+    return _parse_rupees(m.get("risk_per_trade"))
+
+
+# ---------------------------------------------------------------------------
+# Sizing
+# ---------------------------------------------------------------------------
+
+async def _fetch_ltps(symbols: list[str], verbose: bool) -> dict[str, float]:
+    """Live LTP per symbol (for sizing). Missing symbols are simply absent."""
+    client = init_market_data_client()
+    out: dict[str, float] = {}
+    for sym in symbols:  # small set (<= max_sessions); serial is fine
+        try:
+            q = await client.get_quote(sym)
+            ltp = q.get("ltp")
+            if ltp:
+                out[sym] = float(ltp)
+        except Exception as e:
+            if verbose:
+                print(f"  [{sym}] quote failed: {e}", file=sys.stderr)
+    return out
+
+
+def _size(price: float, args: argparse.Namespace, risk_per_trade: float | None) -> int:
+    """Share quantity for one session."""
+    if args.quantity is not None:
+        return max(1, args.quantity)
+    if risk_per_trade is not None and args.trail_percent > 0:
+        stop_distance = price * (args.trail_percent / 100.0)
+        if stop_distance > 0:
+            return max(1, int(risk_per_trade / stop_distance))
+    return max(1, int(args.capital_per_trade / price)) if price else 1
+
+
+# ---------------------------------------------------------------------------
+# Selection (caps)
+# ---------------------------------------------------------------------------
+
+def _select(candidates: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
+    """Apply min-confidence + concurrency + family caps. Returns (selected, skipped)."""
+    min_rank = _CONF_RANK.get(args.min_confidence, 1)
+    max_per_family = max(1, math.floor(args.max_sessions * args.max_family_fraction))
+
+    eligible = [
+        c for c in candidates
+        if c["classification"] != "untradeable"
+        and _CONF_RANK.get(c["recommended"]["confidence"], 3) <= min_rank
+    ]
+    # Best first: confidence, then profit factor.
+    def _pf(c):
+        pf = c["best_signal"]["profit_factor"]
+        return float("inf") if pf == "inf" else float(pf or 0)
+    eligible.sort(key=lambda c: (_CONF_RANK.get(c["recommended"]["confidence"], 3), -_pf(c)))
+
+    selected: list[dict] = []
+    skipped: list[dict] = []
+    family_count: dict[str, int] = {}
+    for c in eligible:
+        fam = _family(c["recommended"]["indicator"])
+        if len(selected) >= args.max_sessions:
+            c["_skip_reason"] = f"max-sessions cap ({args.max_sessions}) reached"
+            skipped.append(c)
+            continue
+        if family_count.get(fam, 0) >= max_per_family:
+            c["_skip_reason"] = f"family '{fam}' cap ({max_per_family}) reached"
+            skipped.append(c)
+            continue
+        family_count[fam] = family_count.get(fam, 0) + 1
+        selected.append(c)
+    return selected, skipped
+
+
+# ---------------------------------------------------------------------------
+# Session spec + execution
+# ---------------------------------------------------------------------------
+
+def _build_spec(c: dict, ltp: float, quantity: int, args: argparse.Namespace) -> dict:
+    rec = c["recommended"]
+    return {
+        "symbol": c["symbol"],
+        "indicator": rec["indicator"],
+        "family": _family(rec["indicator"]),
+        "direction": rec["direction"],
+        "confidence": rec["confidence"],
+        "profit_factor": c["best_signal"]["profit_factor"],
+        "win_rate": c["best_signal"]["win_rate"],
+        "backtest_trades": c["best_signal"]["total_trades"],
+        "ltp": round(ltp, 2),
+        "quantity": quantity,
+        "notional": round(ltp * quantity, 2),
+        "trail_percent": args.trail_percent,
+        "max_trades": args.max_trades,
+        "name": f"scan-{c['symbol']}-{rec['indicator']}",
+    }
+
+
+def _execute_spec(spec: dict, args: argparse.Namespace) -> dict:
+    """Create one live scalp session via nf-scalp create. Returns a result dict."""
+    scalp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nf-scalp")
+    cmd = [
+        sys.executable, scalp_path, "create",
+        "--mode", "equity_intraday",
+        "--name", spec["name"],
+        "--underlying", spec["symbol"],
+        "--quantity", str(spec["quantity"]),
+        "--primary", spec["indicator"],
+        "--side", spec["direction"] if spec["direction"] in ("long", "short") else "both",
+        "--trail-percent", str(spec["trail_percent"]),
+        "--squareoff", args.squareoff,
+        "--max-trades", str(spec["max_trades"]),
+        "--cooldown", str(args.cooldown),
+        "--timeframe", args.timeframe,
+        "--json",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return {"symbol": spec["symbol"], "error": "nf-scalp create timed out"}
+    if proc.returncode != 0:
+        return {"symbol": spec["symbol"], "error": proc.stderr[-300:] or "create failed"}
+    try:
+        created = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"symbol": spec["symbol"], "error": "create returned non-JSON"}
+    return {"symbol": spec["symbol"], "created": created,
+            "session_id": created.get("session_id") or created.get("id")}
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def _format_human(payload: dict):
+    lines = []
+    add = lines.append
+    mode = "EXECUTED" if payload["executed"] else "DRY-RUN (no sessions created)"
+    add("")
+    add(f"  Deploy Sessions  |  {payload['scan_date']}  |  {mode}")
+    add("  " + "=" * 74)
+    add(f"  Selected {len(payload['selected'])} of {payload['eligible_count']} eligible "
+        f"(max {payload['caps']['max_sessions']}, "
+        f"max {payload['caps']['max_per_family']}/family)")
+    add("")
+    if not payload["selected"]:
+        add("  Nothing to deploy.")
+        add("")
+        print("\n".join(lines))
+        return
+    add(f"  {'SYMBOL':<12} {'INDICATOR':<14} {'DIR':<6} {'CONF':<7} {'QTY':>6} "
+        f"{'NOTIONAL':>12} {'PF':>6} {'WR':>5} {'BT':>4}")
+    add("  " + "-" * 74)
+    for s in payload["selected"]:
+        sid = ""
+        if payload["executed"]:
+            sid = f"  → session {s.get('session_id', '?')}" if not s.get("error") \
+                else f"  ✗ {s.get('error', '')[:40]}"
+        add(f"  {s['symbol']:<12} {s['indicator']:<14} {s['direction']:<6} "
+            f"{s['confidence']:<7} {s['quantity']:>6} ₹{s['notional']:>10,.0f} "
+            f"{str(s['profit_factor']):>6} {round(s['win_rate'] * 100):>4}% "
+            f"{s['backtest_trades']:>4}{sid}")
+    add("")
+    fam = payload["family_breakdown"]
+    add("  Family breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(fam.items())))
+    if payload["skipped"]:
+        add(f"  Skipped {len(payload['skipped'])}: " +
+            ", ".join(f"{s['symbol']}({s['_skip_reason']})" for s in payload["skipped"][:6]))
+    add("")
+    add("  ⚠ Backtest stats are IN-SAMPLE (best indicator chosen in hindsight). "
+        "Not a forward guarantee.")
+    if not payload["executed"]:
+        add("  Re-run with --execute to create these sessions.")
+    add("")
+    print("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="nf-deploy-sessions",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Plan sourcing (mutually informative; --plan-file wins)
+    p.add_argument("--plan-file", default=None,
+                   help="Read a saved nf-backtest-scan JSON instead of running a fresh scan")
+    p.add_argument("--universe", choices=["nifty50", "nifty100", "nifty500", "niftytotal"],
+                   default="nifty500", help="Scan universe (default: nifty500)")
+    p.add_argument("--top", type=int, default=25, help="Scan candidates to backtest (default: 25)")
+    p.add_argument("--symbols", default=None, help="Explicit symbols (bypasses morning scan)")
+    p.add_argument("--days", type=int, default=15, help="Backtest lookback days (default: 15)")
+    p.add_argument("--interval", default="5minute", help="Candle interval (default: 5minute)")
+    p.add_argument("--indicators", default=None, help="Restrict indicators (comma-separated)")
+
+    # Selection caps
+    p.add_argument("--max-sessions", type=int, default=12,
+                   help="Max concurrent sessions to deploy (default: 12)")
+    p.add_argument("--max-family-fraction", type=float, default=0.4,
+                   help="Max fraction of sessions on one indicator family (default: 0.4)")
+    p.add_argument("--min-confidence", choices=["high", "medium", "low"], default="medium",
+                   help="Only deploy signals at this confidence or better (default: medium)")
+
+    # Sizing
+    p.add_argument("--quantity", type=int, default=None,
+                   help="Fixed share quantity for every session (overrides risk/capital sizing)")
+    p.add_argument("--capital-per-trade", type=float, default=100_000,
+                   help="Per-session notional; quantity = capital/LTP (default: 100000)")
+    p.add_argument("--risk-per-trade", type=float, default=None,
+                   help="Rupee risk per trade; quantity = risk / (LTP × trail%%). Overrides capital sizing.")
+    p.add_argument("--use-mandate", action="store_true",
+                   help="Pull risk-per-trade from the trading mandate (best-effort)")
+
+    # Session config
+    p.add_argument("--trail-percent", type=float, default=1.0, help="Trailing stop %% (default: 1.0)")
+    p.add_argument("--squareoff", default="15:09", help="Squareoff HH:MM IST (default: 15:09)")
+    p.add_argument("--max-trades", type=int, default=3, help="Max trades/day per session (default: 3)")
+    p.add_argument("--cooldown", type=int, default=60, help="Cooldown seconds (default: 60)")
+    p.add_argument("--timeframe", default="5m", help="Session indicator timeframe (default: 5m)")
+
+    p.add_argument("--execute", action="store_true",
+                   help="Actually create the sessions. Without it, this only PREVIEWS the plan.")
+    p.add_argument("--json", action="store_true", help="Machine-readable JSON")
+    p.add_argument("--verbose", action="store_true", help="Progress to stderr")
+    return p
+
+
+def main():
+    args = build_parser().parse_args()
+
+    plan = _get_plan(args)
+    candidates = plan.get("candidates", [])
+    if not candidates:
+        print_error("scan returned no candidates")
+        sys.exit(1)
+
+    risk_per_trade = args.risk_per_trade
+    if risk_per_trade is None and args.use_mandate:
+        risk_per_trade = _load_mandate_risk(args.verbose)
+
+    selected_cands, skipped = _select(candidates, args)
+
+    # Live LTP for sizing the selected set only.
+    ltps = run_async(_fetch_ltps([c["symbol"] for c in selected_cands], args.verbose))
+
+    specs: list[dict] = []
+    no_price: list[dict] = []
+    for c in selected_cands:
+        ltp = ltps.get(c["symbol"])
+        if not ltp:
+            c["_skip_reason"] = "no live LTP for sizing"
+            no_price.append(c)
+            continue
+        qty = _size(ltp, args, risk_per_trade)
+        specs.append(_build_spec(c, ltp, qty, args))
+    skipped.extend(no_price)
+
+    # Execute (create live sessions) only when explicitly asked.
+    if args.execute:
+        for spec in specs:
+            result = _execute_spec(spec, args)
+            spec.update({k: v for k, v in result.items() if k != "symbol"})
+
+    family_breakdown: dict[str, int] = {}
+    for s in specs:
+        family_breakdown[s["family"]] = family_breakdown.get(s["family"], 0) + 1
+
+    max_per_family = max(1, math.floor(args.max_sessions * args.max_family_fraction))
+    payload = {
+        "scan_date": plan.get("scan_date"),
+        "executed": args.execute,
+        "eligible_count": sum(
+            1 for c in candidates
+            if c["classification"] != "untradeable"
+            and _CONF_RANK.get(c["recommended"]["confidence"], 3) <= _CONF_RANK[args.min_confidence]
+        ),
+        "caps": {
+            "max_sessions": args.max_sessions,
+            "max_family_fraction": args.max_family_fraction,
+            "max_per_family": max_per_family,
+            "min_confidence": args.min_confidence,
+        },
+        "sizing": {
+            "mode": "fixed" if args.quantity is not None else (
+                "risk" if risk_per_trade is not None else "capital"),
+            "risk_per_trade": risk_per_trade,
+            "capital_per_trade": args.capital_per_trade,
+            "quantity": args.quantity,
+        },
+        "selected": specs,
+        "skipped": skipped,
+        "family_breakdown": family_breakdown,
+        "total_notional": round(sum(s["notional"] for s in specs), 2),
+    }
+
+    if args.json:
+        print_json(payload)
+    else:
+        _format_human(payload)
+
+
+if __name__ == "__main__":
+    main()

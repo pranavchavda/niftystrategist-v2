@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+"""nf-backtest-scan — signal-to-stock matching engine.
+
+Runs a panel of scalp indicators against each candidate stock over a recent
+window and ranks which indicator historically works on which stock. The output
+is a *deployment plan*: per-stock best indicator, a tradeability classification,
+and a confidence rating — so the morning scan (and the trader) know not just
+*which* stocks to trade but *which signal* to deploy on each.
+
+This runs the backtests **in-process** (same state machine as the live scalper,
+via ``run_scalp_equity_backtest``), fetching each symbol's candles exactly once
+and reusing them across all indicators. It replicates the warm-up handling of
+the ``POST /api/backtest/scalp`` endpoint so stateful indicators (UTBot,
+SuperTrend, HalfTrend, SSL Hybrid) are evaluated against *converged* state, not
+cold — otherwise the rankings for exactly the indicators that matter would be
+noise.
+
+Usage examples:
+
+  # Backtest the morning scan's top-10 nifty50 candidates across all indicators
+  nf-backtest-scan --universe nifty50 --top 10 --days 15 --json
+
+  # Explicit symbol list (skips the morning scan — fast, good for validation)
+  nf-backtest-scan --symbols SIEMENS,PERSISTENT --days 15 --json
+
+  # Only HalfTrend + SSL Hybrid, filter to PF >= 1.5
+  nf-backtest-scan --symbols RELIANCE,INFY --indicators halftrend,ssl_hybrid \\
+      --min-profit-factor 1.5
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import date, datetime, timedelta, timezone
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import (  # noqa: E402
+    init_market_data_client,
+    print_error,
+    print_json,
+    run_async,
+)
+from backtesting.scalp_equity import run_scalp_equity_backtest  # noqa: E402
+from monitor.scalp_models import ScalpSessionConfig  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+ALL_INDICATORS = [
+    "utbot", "halftrend", "ssl_hybrid", "supertrend", "ema_crossover",
+    "macd", "qqe_mod", "hilega_milega", "volume_spike", "renko",
+]
+
+_INTERVAL_TO_TIMEFRAME = {
+    "1minute": "1m", "3minute": "3m", "5minute": "5m", "10minute": "10m",
+    "15minute": "15m", "30minute": "30m", "day": "1d",
+}
+
+# Warm-up buffer — replicated verbatim from api/backtest.py so this tool's
+# numbers match the /scalp endpoint. Recursive/stateful indicators need ~150-200
+# bars to converge; we fetch extra history before the requested window and tell
+# the engine to skip it (compute-only) so trades fire only in-window but against
+# converged indicators. Keep in sync with api/backtest.py if that changes.
+_WARMUP_TARGET_BARS = 200
+_TF_BARS_PER_DAY = {
+    "1minute": 375, "3minute": 125, "5minute": 75, "10minute": 37,
+    "15minute": 25, "30minute": 13, "day": 1,
+}
+
+_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".backtest-cache")
+
+# Classification thresholds (per signal-match design).
+_PF_PROFITABLE = 1.0          # PF above this = "profitable" for this stock
+_AGNOSTIC_MIN_PROFITABLE = 7  # >= this many profitable indicators (of 10) = agnostic
+_SENSITIVE_MAX_PROFITABLE = 3  # <= this many = signal-sensitive
+_MIN_TRADES_FOR_PROFITABLE = 2  # ignore 0-1 trade "profits" when counting
+_HIGH_CONFIDENCE_MIN_PF = 3.0   # high confidence also needs PF this strong
+# Adequate-sample floor for "high" confidence + recommendation ranking is the
+# --min-trades arg (default 5).
+
+
+def _warmup_fetch_days(interval: str) -> int:
+    """Extra calendar days to fetch so the prefix yields >= _WARMUP_TARGET_BARS bars."""
+    bpd = _TF_BARS_PER_DAY.get(interval, 75)
+    trading_days = -(-_WARMUP_TARGET_BARS // bpd)  # ceil
+    return max(2, round(trading_days * 7 / 5) + 3)
+
+
+# ---------------------------------------------------------------------------
+# Profit-factor helpers ("inf" is a valid serialized value from the engine)
+# ---------------------------------------------------------------------------
+
+def _pf_to_float(pf) -> float:
+    """Coerce a profit_factor (number or the string "inf") to a sortable float."""
+    if pf == "inf" or pf == float("inf"):
+        return float("inf")
+    try:
+        return float(pf)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pf_for_json(pf):
+    """Render profit_factor for JSON: keep numbers, pass through "inf" string."""
+    f = _pf_to_float(pf)
+    if f == float("inf"):
+        return "inf"
+    return round(f, 2)
+
+
+# ---------------------------------------------------------------------------
+# Candle fetch (warm-up aware, mirrors the endpoint)
+# ---------------------------------------------------------------------------
+
+async def _fetch_candles_with_warmup(client, symbol: str, interval: str, days: int):
+    """Return (candles, warmup_bars). Mirrors api.backtest.fetch_with_warmup."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    wdays = _warmup_fetch_days(interval)
+    ohlcv = await client.get_historical_data(
+        symbol, interval=interval, days=days + wdays,
+    )
+    if not ohlcv:
+        return [], 0
+    cutoff = datetime.now(ist) - timedelta(days=days)
+
+    def _ts(c):
+        t = c.timestamp
+        return datetime.fromisoformat(t) if isinstance(t, str) else t
+
+    warmup_bars = sum(1 for c in ohlcv if _ts(c) < cutoff)
+    candles = [
+        {
+            "timestamp": c.timestamp, "open": c.open, "high": c.high,
+            "low": c.low, "close": c.close, "volume": c.volume,
+        }
+        for c in ohlcv
+    ]
+    return candles, warmup_bars
+
+
+# ---------------------------------------------------------------------------
+# Single backtest (CPU-bound, runs in a worker thread)
+# ---------------------------------------------------------------------------
+
+def _run_one(
+    candles: list[dict], warmup_bars: int, symbol: str, indicator: str,
+    interval: str, quantity: int, *, trail_percent, sl_points, target_points,
+    squareoff: str, max_trades: int, cooldown: int, entry_side: str,
+    slippage_bps: float,
+) -> dict:
+    """Run one (symbol, indicator) scalp backtest, returning a compact summary.
+
+    Indicator params are left at engine defaults (None): each indicator reads
+    its own param names (halftrend → amplitude/atr_period, qqe_mod → rsi_period,
+    etc.), so a uniform {period,sensitivity} dict would be silently ignored.
+    """
+    tf = _INTERVAL_TO_TIMEFRAME[interval]
+    cfg = ScalpSessionConfig(
+        name=f"scan-{symbol}-{indicator}",
+        session_mode="equity_intraday",
+        underlying=symbol,
+        indicator_timeframe=tf,
+        primary_indicator=indicator,
+        primary_params=None,
+        sl_points=sl_points,
+        target_points=target_points,
+        trail_percent=trail_percent,
+        squareoff_time=squareoff,
+        max_trades=max_trades,
+        cooldown_seconds=cooldown,
+        entry_side=entry_side,
+        quantity=quantity,
+    )
+    result = run_scalp_equity_backtest(
+        candles, cfg, symbol=symbol, interval=interval,
+        slippage_bps=slippage_bps, warmup_bars=warmup_bars,
+    )
+    # Rank on NET metrics (after charges + slippage) — that's realistic P&L.
+    mn = result.metrics_net
+
+    # ``direction`` describes the config these stats were produced under, so a
+    # directional recommendation always matches the numbers next to it. For a
+    # long-only / short-only run that's the entry side; for a combined "both"
+    # run we report "both" (and surface the dominant side informationally).
+    if entry_side in ("long", "short"):
+        direction = entry_side
+        dominant = entry_side
+    else:
+        long_pnl = sum(t.pnl for t in result.trades if t.side == "long")
+        short_pnl = sum(t.pnl for t in result.trades if t.side == "short")
+        dominant = "long" if long_pnl > short_pnl else (
+            "short" if short_pnl > long_pnl else "both")
+        direction = "both"
+
+    return {
+        "indicator": indicator,
+        "profit_factor": _pf_for_json(mn.get("profit_factor", 0.0)),
+        "win_rate": round(mn.get("win_rate", 0.0) / 100.0, 4),  # 0-1 in output
+        "total_pnl": round(mn.get("net_pnl", 0.0), 2),
+        "total_trades": mn.get("total_trades", 0),
+        "avg_winner": round(mn.get("avg_winner", 0.0), 2),
+        "avg_loser": round(mn.get("avg_loser", 0.0), 2),
+        "max_drawdown_pct": mn.get("max_drawdown_pct", 0.0),
+        "direction": direction,
+        "dominant_side": dominant,
+        # Internal: float PF for sorting; stripped before output.
+        "_pf_f": _pf_to_float(mn.get("profit_factor", 0.0)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Caching (per symbol+indicator+config+date)
+# ---------------------------------------------------------------------------
+
+def _config_fingerprint(args: argparse.Namespace, quantity: int) -> str:
+    """Stable hash of every input that changes a backtest result.
+
+    Excludes the entry side — that's encoded in the cache filename, since one
+    scan run may backtest several sides per indicator (--entry-side auto).
+    """
+    payload = {
+        "interval": args.interval, "days": args.days, "quantity": quantity,
+        "trail_percent": args.trail_percent, "sl_points": args.sl_points,
+        "target_points": args.target_points, "squareoff": args.squareoff,
+        "max_trades": args.max_trades, "cooldown": args.cooldown,
+        "slippage_bps": args.slippage_bps,
+        "scan_date": date.today().isoformat(),
+    }
+    blob = json.dumps(payload, sort_keys=True)
+    return hashlib.sha1(blob.encode()).hexdigest()[:12]
+
+
+def _cache_path(symbol: str, indicator: str, side: str, fp: str) -> str:
+    return os.path.join(_CACHE_DIR, f"{symbol}_{indicator}_{side}_{fp}.json")
+
+
+def _cache_read(symbol: str, indicator: str, side: str, fp: str, ttl_hours: float):
+    path = _cache_path(symbol, indicator, side, fp)
+    if not os.path.exists(path):
+        return None
+    if (time.time() - os.path.getmtime(path)) > ttl_hours * 3600:
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        data["_pf_f"] = _pf_to_float(data.get("profit_factor", 0.0))
+        return data
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _cache_write(symbol: str, indicator: str, side: str, fp: str, result: dict):
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        out = {k: v for k, v in result.items() if k != "_pf_f"}
+        with open(_cache_path(symbol, indicator, side, fp), "w") as f:
+            json.dump(out, f)
+    except OSError:
+        pass  # caching is best-effort; never fail the scan over it
+
+
+# ---------------------------------------------------------------------------
+# Per-symbol orchestration
+# ---------------------------------------------------------------------------
+
+def _sides_for(entry_side: str) -> list[str]:
+    """Which entry sides to backtest per indicator.
+
+    ``auto`` (default) runs long-only and short-only separately and keeps the
+    better — so the reported stats match the directional config that would be
+    deployed. ``both`` runs the combined config. ``long``/``short`` force one.
+    """
+    if entry_side == "auto":
+        return ["long", "short"]
+    if entry_side == "both":
+        return ["both"]
+    return [entry_side]
+
+
+async def _scan_symbol(
+    client, symbol: str, indicators: list[str], args: argparse.Namespace,
+    sem: asyncio.Semaphore, verbose: bool,
+) -> dict | None:
+    """Backtest one symbol across all requested indicators. Fetches candles once.
+
+    For each indicator we backtest every side in ``_sides_for(--entry-side)``
+    and keep the best (by net PF, then net P&L) — that pair becomes the
+    indicator's result, with ``direction`` set to the deployed side.
+    """
+    async with sem:
+        sides = _sides_for(args.entry_side)
+        fixed_qty = args.quantity
+
+        # If quantity is fixed, every (indicator, side) result may already be
+        # cached — in which case we can skip the candle fetch entirely.
+        if fixed_qty is not None and not args.no_cache:
+            fp = _config_fingerprint(args, fixed_qty)
+            cache_hits = {
+                (ind, side): _cache_read(symbol, ind, side, fp, args.cache_ttl_hours)
+                for ind in indicators for side in sides
+            }
+            if all(v is not None for v in cache_hits.values()):
+                results = [_pick_best([cache_hits[(ind, s)] for s in sides])
+                           for ind in indicators]
+                if verbose:
+                    print(f"  [{symbol}] all cached", file=sys.stderr)
+                return {"symbol": symbol, "results": results,
+                        "quantity": fixed_qty, "cached": True}
+
+        try:
+            candles, warmup_bars = await _fetch_candles_with_warmup(
+                client, symbol, args.interval, args.days,
+            )
+        except Exception as e:
+            if verbose:
+                print(f"  [{symbol}] fetch failed: {e}", file=sys.stderr)
+            return None
+        if not candles:
+            if verbose:
+                print(f"  [{symbol}] no candles", file=sys.stderr)
+            return None
+
+        last_close = candles[-1]["close"]
+        quantity = fixed_qty if fixed_qty is not None else max(
+            1, int(args.capital_per_trade / last_close) if last_close else 1
+        )
+        fp = _config_fingerprint(args, quantity)
+
+        results: list[dict] = []
+        for ind in indicators:
+            side_results: list[dict] = []
+            for side in sides:
+                if not args.no_cache:
+                    cached = _cache_read(symbol, ind, side, fp, args.cache_ttl_hours)
+                    if cached is not None:
+                        side_results.append(cached)
+                        continue
+                try:
+                    r = await asyncio.to_thread(
+                        _run_one, candles, warmup_bars, symbol, ind, args.interval,
+                        quantity,
+                        trail_percent=args.trail_percent, sl_points=args.sl_points,
+                        target_points=args.target_points, squareoff=args.squareoff,
+                        max_trades=args.max_trades, cooldown=args.cooldown,
+                        entry_side=side, slippage_bps=args.slippage_bps,
+                    )
+                except Exception as e:
+                    if verbose:
+                        print(f"  [{symbol}/{ind}/{side}] backtest failed: {e}",
+                              file=sys.stderr)
+                    continue
+                if not args.no_cache:
+                    _cache_write(symbol, ind, side, fp, r)
+                side_results.append(r)
+            best = _pick_best(side_results)
+            if best is not None:
+                results.append(best)
+
+        if verbose:
+            print(f"  [{symbol}] {len(results)}/{len(indicators)} indicators done "
+                  f"(qty={quantity}, sides={'+'.join(sides)})", file=sys.stderr)
+        return {"symbol": symbol, "results": results, "quantity": quantity,
+                "cached": False}
+
+
+def _pick_best(side_results: list[dict]) -> dict | None:
+    """Pick the best directional run for one indicator (net PF, then net P&L)."""
+    side_results = [r for r in side_results if r is not None]
+    if not side_results:
+        return None
+    return max(side_results, key=lambda r: (r["_pf_f"], r["total_pnl"]))
+
+
+# ---------------------------------------------------------------------------
+# Classification + recommendation
+# ---------------------------------------------------------------------------
+
+def _classify(results: list[dict]) -> tuple[str, int]:
+    """Classify a stock by how many indicators are profitable on it."""
+    profitable = [
+        r for r in results
+        if r["_pf_f"] > _PF_PROFITABLE
+        and r["total_trades"] >= _MIN_TRADES_FOR_PROFITABLE
+    ]
+    n = len(profitable)
+    if n == 0:
+        return "untradeable", n
+    if n >= _AGNOSTIC_MIN_PROFITABLE:
+        return "signal_agnostic", n
+    if n <= _SENSITIVE_MAX_PROFITABLE:
+        return "signal_sensitive", n
+    return "mixed", n
+
+
+def _confidence(best: dict, classification: str, min_trades: int) -> tuple[str, str]:
+    """Return (confidence, reason) for the best signal."""
+    pf = best["_pf_f"]
+    trades = best["total_trades"]
+    wr = best["win_rate"]
+    if trades < _MIN_TRADES_FOR_PROFITABLE or pf <= _PF_PROFITABLE:
+        return "none", "no profitable signal on this stock"
+    if trades < min_trades:
+        return "low", (f"only {trades} trades in window (< {min_trades}) — small "
+                       f"sample, PF {'inf' if pf == float('inf') else round(pf, 2)}")
+    if pf >= _HIGH_CONFIDENCE_MIN_PF:
+        pf_s = "inf" if pf == float("inf") else round(pf, 2)
+        return "high", (f"PF {pf_s}, {round(wr * 100)}% win rate over "
+                        f"{trades} trades, {classification} stock")
+    return "medium", (f"PF {round(pf, 2)}, {round(wr * 100)}% win rate over "
+                      f"{trades} trades")
+
+
+def _rank_key(r: dict, min_trades: int):
+    """Sort key: adequately-sampled signals first, then PF, then net P&L.
+
+    A 2-trade PF-inf fluke must not outrank a robust 25-trade PF-3 signal in a
+    deployment plan, so sample adequacy is the primary bucket.
+    """
+    adequate = 1 if r["total_trades"] >= min_trades else 0
+    return (adequate, r["_pf_f"], r["total_pnl"])
+
+
+def _build_candidate(symbol: str, scan_score, results: list[dict],
+                     lookback_days: int, min_pf: float, min_trades: int) -> dict | None:
+    """Assemble one candidate's deployment record from its indicator results."""
+    if not results:
+        return None
+    ranked = sorted(results, key=lambda r: _rank_key(r, min_trades), reverse=True)
+
+    def _clean(r: dict) -> dict:
+        return {k: v for k, v in r.items() if k != "_pf_f"}
+
+    best = ranked[0]
+    classification, profitable_count = _classify(results)
+
+    # Honour --min-profit-factor as a hard filter on the best signal.
+    if best["_pf_f"] < min_pf:
+        classification = "untradeable"
+
+    confidence, reason = _confidence(best, classification, min_trades)
+    if classification == "untradeable":
+        confidence, reason = "none", reason if confidence == "none" else \
+            "best signal below profit-factor floor"
+
+    recommended = {
+        "indicator": best["indicator"],
+        "direction": best["direction"],
+        "confidence": confidence,
+        "reason": reason,
+    }
+
+    out = {
+        "symbol": symbol,
+        "scan_score": scan_score,
+        "classification": classification,
+        "best_signal": _clean(best),
+        "second_best": _clean(ranked[1]) if len(ranked) > 1 else None,
+        "worst_signal": _clean(ranked[-1]) if len(ranked) > 1 else None,
+        "all_indicators_profitable": profitable_count == len(results),
+        "profitable_count": profitable_count,
+        "total_count": len(results),
+        "recommended": recommended,
+    }
+    return out
+
+
+def _summarize(candidates: list[dict], lookback_days: int) -> dict:
+    tradeable = [c for c in candidates if c["classification"] != "untradeable"]
+    untradeable = [c for c in candidates if c["classification"] == "untradeable"]
+    agnostic = [c for c in candidates if c["classification"] == "signal_agnostic"]
+    sensitive = [c for c in candidates if c["classification"] == "signal_sensitive"]
+
+    # Estimated daily P&L: best-signal net P&L over the window / lookback days.
+    est_daily = 0.0
+    for c in tradeable:
+        est_daily += c["best_signal"]["total_pnl"] / max(lookback_days, 1)
+
+    # Which indicator wins most often, and its profitable-stock count.
+    win_count: dict[str, int] = {}
+    for c in tradeable:
+        ind = c["best_signal"]["indicator"]
+        win_count[ind] = win_count.get(ind, 0) + 1
+    top_indicator = max(win_count, key=win_count.get) if win_count else None
+
+    return {
+        "total_candidates": len(candidates),
+        "tradeable": len(tradeable),
+        "untradeable": len(untradeable),
+        "signal_agnostic": len(agnostic),
+        "signal_sensitive": len(sensitive),
+        "estimated_daily_pnl": round(est_daily, 2),
+        "estimated_daily_pnl_note": (
+            "IN-SAMPLE, best-indicator-in-hindsight: the winning indicator per stock "
+            "is chosen on the same window its P&L is summed over. Systematically "
+            "optimistic — NOT a forward projection."
+        ),
+        "top_indicator": top_indicator,
+        "top_indicator_profitable_stocks": win_count.get(top_indicator, 0) if top_indicator else 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Candidate sourcing
+# ---------------------------------------------------------------------------
+
+def _get_candidates_from_scan(universe: str, top: int, verbose: bool) -> list[dict]:
+    """Run nf-morning-scan --json and return [{symbol, score}, ...]."""
+    scan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nf-morning-scan")
+    cmd = [sys.executable, scan_path, "--universe", universe, "--top", str(top), "--json"]
+    if verbose:
+        print(f"  running morning scan: {' '.join(cmd)}", file=sys.stderr)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        print_error("morning scan timed out after 300s")
+        return []
+    if proc.returncode != 0:
+        print_error(f"morning scan failed (exit {proc.returncode}): {proc.stderr[-500:]}")
+        return []
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        print_error("morning scan returned non-JSON output")
+        return []
+    out = []
+    for c in data.get("candidates", [])[:top]:
+        out.append({"symbol": c["symbol"], "score": c.get("score")})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def _format_human(payload: dict):
+    lines = []
+    add = lines.append
+    s = payload["summary"]
+    add("")
+    add(f"  Signal-Match Scan  |  {payload['scan_date']}  |  {payload['lookback_days']}d lookback")
+    add("  " + "=" * 70)
+    add(f"  Candidates: {s['total_candidates']}   "
+        f"Tradeable: {s['tradeable']}   Untradeable: {s['untradeable']}")
+    add(f"  Agnostic: {s['signal_agnostic']}   Sensitive: {s['signal_sensitive']}")
+    add(f"  Top indicator: {s['top_indicator']} "
+        f"(best on {s['top_indicator_profitable_stocks']} stocks)")
+    add(f"  Est. daily P&L (tradeable, best signal): ₹{s['estimated_daily_pnl']:+,.0f}")
+    add("    (in-sample, best-indicator-in-hindsight — optimistic, not a forward projection)")
+    add("")
+    for c in payload["candidates"]:
+        b = c["best_signal"]
+        rec = c["recommended"]
+        tag = {"untradeable": "✗", "signal_agnostic": "✓✓",
+               "signal_sensitive": "⚠", "mixed": "•"}.get(c["classification"], " ")
+        add(f"  {tag} {c['symbol']:<14} score={c['scan_score']}  "
+            f"[{c['classification']}]  {c['profitable_count']}/{c['total_count']} profitable")
+        if c["classification"] != "untradeable":
+            add(f"       → {rec['indicator']} ({rec['direction']}, {rec['confidence']}): "
+                f"PF {b['profit_factor']}, {round(b['win_rate'] * 100)}% WR, "
+                f"₹{b['total_pnl']:+,.0f} over {b['total_trades']} trades")
+        else:
+            add(f"       → skip: {rec['reason']}")
+    add("")
+    print("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="nf-backtest-scan",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--universe", choices=["nifty50", "nifty100", "nifty500", "niftytotal"],
+                   default="nifty500", help="Scan universe (default: nifty500)")
+    p.add_argument("--top", type=int, default=25,
+                   help="How many scan candidates to backtest (default: 25)")
+    p.add_argument("--symbols", default=None,
+                   help="Comma-separated symbols — bypasses the morning scan")
+    p.add_argument("--days", type=int, default=15,
+                   help="Lookback window in days (default: 15)")
+    p.add_argument("--interval", default="5minute", choices=list(_INTERVAL_TO_TIMEFRAME.keys()),
+                   help="Candle interval (default: 5minute)")
+    p.add_argument("--indicators", default=None,
+                   help=f"Comma-separated indicators (default: all). Options: {','.join(ALL_INDICATORS)}")
+    p.add_argument("--min-profit-factor", type=float, default=0.0,
+                   help="Filter: mark stocks untradeable if best PF below this (default: 0.0)")
+    p.add_argument("--min-trades", type=int, default=5,
+                   help="Trades in window for a signal to be 'adequately sampled' — "
+                        "recommendation prefers these, and 'high' confidence requires it "
+                        "(default: 5). Stops a 2-trade fluke outranking a robust signal.")
+
+    # Sizing
+    p.add_argument("--quantity", type=int, default=None,
+                   help="Fixed share quantity for all symbols (overrides --capital-per-trade)")
+    p.add_argument("--capital-per-trade", type=float, default=100_000,
+                   help="Per-trade notional; quantity = capital/price (default: 100000)")
+
+    # Exit / discipline config (uniform across the panel for fair comparison)
+    p.add_argument("--trail-percent", type=float, default=1.0,
+                   help="Trailing stop percent (default: 1.0)")
+    p.add_argument("--sl-points", type=float, default=None, help="Stop-loss in points (optional)")
+    p.add_argument("--target-points", type=float, default=None, help="Target in points (optional)")
+    p.add_argument("--squareoff", default="15:09", help="Intraday squareoff HH:MM IST (default: 15:09)")
+    p.add_argument("--max-trades", type=int, default=3,
+                   help="Max round-trips per session day (default: 3)")
+    p.add_argument("--cooldown", type=int, default=60,
+                   help="Seconds between trades after an exit (default: 60)")
+    p.add_argument("--entry-side", default="auto", choices=["auto", "both", "long", "short"],
+                   help="Direction handling. 'auto' (default) backtests long-only AND "
+                        "short-only per indicator and keeps the better, so the reported "
+                        "stats match the directional config that would be deployed. "
+                        "'both' runs a combined long+short config. 'long'/'short' force one side.")
+    p.add_argument("--slippage-bps", type=float, default=0.0, help="Slippage haircut bps (default: 0)")
+
+    # Performance / caching
+    p.add_argument("--max-workers", type=int, default=8,
+                   help="Concurrent symbol fetches (default: 8)")
+    p.add_argument("--no-cache", action="store_true", help="Ignore the on-disk backtest cache")
+    p.add_argument("--cache-ttl-hours", type=float, default=24.0,
+                   help="Cache TTL in hours (default: 24)")
+
+    p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p.add_argument("--verbose", action="store_true", help="Progress to stderr")
+    return p
+
+
+async def _run(args: argparse.Namespace) -> dict:
+    indicators = (
+        [s.strip() for s in args.indicators.split(",") if s.strip()]
+        if args.indicators else list(ALL_INDICATORS)
+    )
+    bad = [i for i in indicators if i not in ALL_INDICATORS]
+    if bad:
+        print_error(f"unknown indicator(s): {', '.join(bad)}. Valid: {', '.join(ALL_INDICATORS)}")
+        sys.exit(1)
+
+    # Sourcing
+    if args.symbols:
+        sourced = [{"symbol": s.strip().upper(), "score": None}
+                   for s in args.symbols.split(",") if s.strip()]
+    else:
+        sourced = _get_candidates_from_scan(args.universe, args.top, args.verbose)
+    if not sourced:
+        print_error("no candidates to backtest")
+        sys.exit(1)
+    score_by_symbol = {c["symbol"]: c["score"] for c in sourced}
+
+    client = init_market_data_client()
+    sem = asyncio.Semaphore(args.max_workers)
+    tasks = [
+        _scan_symbol(client, c["symbol"], indicators, args, sem, args.verbose)
+        for c in sourced
+    ]
+    symbol_results = await asyncio.gather(*tasks)
+
+    candidates = []
+    for sr in symbol_results:
+        if sr is None:
+            continue
+        cand = _build_candidate(
+            sr["symbol"], score_by_symbol.get(sr["symbol"]),
+            sr["results"], args.days, args.min_profit_factor, args.min_trades,
+        )
+        if cand is not None:
+            candidates.append(cand)
+
+    # Sort: untradeable to the bottom, then by confidence (high→low), then by
+    # PF. Confidence-first keeps a 2-trade PF-inf fluke from topping a robust
+    # high-confidence signal even though its raw PF is larger.
+    _conf_rank = {"high": 0, "medium": 1, "low": 2, "none": 3}
+
+    def _sort_key(c):
+        untradeable = c["classification"] == "untradeable"
+        conf = _conf_rank.get(c["recommended"]["confidence"], 3)
+        pf = _pf_to_float(c["best_signal"]["profit_factor"])
+        return (untradeable, conf, -pf)
+
+    candidates.sort(key=_sort_key)
+
+    return {
+        "scan_date": date.today().isoformat(),
+        "lookback_days": args.days,
+        "interval": args.interval,
+        "indicators": indicators,
+        "candidates": candidates,
+        "summary": _summarize(candidates, args.days),
+    }
+
+
+def main():
+    args = build_parser().parse_args()
+    payload = run_async(_run(args))
+    if args.json:
+        print_json(payload)
+    else:
+        _format_human(payload)
+
+
+if __name__ == "__main__":
+    main()

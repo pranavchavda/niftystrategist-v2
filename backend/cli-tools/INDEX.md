@@ -19,6 +19,9 @@ CLI tools for stock market data and trading operations. Run from `backend/` dire
 | `nf-watchlist` | Manage watchlist with price alerts | Yes | `python cli-tools/nf-watchlist` |
 | `nf-strategy` | Deploy strategy templates (algo trading) | Yes | `python cli-tools/nf-strategy deploy breakout --symbol RELIANCE --capital 50000 --entry 2450 --sl 2430 --json` |
 | `nf-backtest` | Backtest strategies against historical data | Yes | `python cli-tools/nf-backtest --strategy breakout --symbol RELIANCE --days 30 --entry-pct 1.0 --sl-pct 1.5 --json` |
+| `nf-backtest-scalp` | Backtest one scalp config (single symbol+indicator) | Yes | `python cli-tools/nf-backtest-scalp --symbol RELIANCE --days 30 --primary utbot --quantity 10 --json` |
+| `nf-backtest-scan` | Signal-to-stock matching: rank all 10 indicators per candidate | Yes | `python cli-tools/nf-backtest-scan --universe nifty50 --top 10 --days 15 --json` |
+| `nf-deploy-sessions` | Turn a signal-match scan into scalp sessions (dry-run default) | Yes | `python cli-tools/nf-deploy-sessions --universe nifty50 --top 15 --days 15` |
 | `nf-mandate` | View/set/clear trading mandate for awakenings | No | `python cli-tools/nf-mandate show --json` |
 | `nf-regime` | Classify the day as trending / range-bound / mixed | Yes | `python cli-tools/nf-regime --json` |
 
@@ -346,6 +349,91 @@ python cli-tools/nf-backtest --strategy breakout --symbols RELIANCE,HDFCBANK,INF
 - Outputs: win rate, profit factor, Sharpe ratio, max drawdown, expectancy, trade list
 - ORB auto-detects opening range from first candle of each day
 - Use `--entry-pct` and `--sl-pct` for multi-day backtests (levels computed per day)
+
+---
+
+### nf-backtest-scan
+
+Signal-to-stock matching engine. For each candidate stock, backtests **all 10 scalp
+indicators** over a recent window and ranks which indicator historically works on
+that stock — then emits a deployment plan. Runs in-process with the same state
+machine + warm-up as the live scalper, so results match `POST /api/backtest/scalp`.
+
+```
+python cli-tools/nf-backtest-scan [--universe U] [--top N] [--days N] [--json]
+python cli-tools/nf-backtest-scan --symbols SYM1,SYM2 [options] [--json]   # skip morning scan
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-backtest-scan --universe nifty50 --top 10 --days 15 --json
+python cli-tools/nf-backtest-scan --symbols SIEMENS,PERSISTENT --days 15        # explicit symbols
+python cli-tools/nf-backtest-scan --indicators halftrend,ssl_hybrid \
+  --symbols RELIANCE --min-profit-factor 1.5 --json
+```
+
+- Sources candidates by running `nf-morning-scan` internally (or pass `--symbols`)
+- Fetches each symbol's candles **once**, reuses across all indicators (concurrent)
+- Ranks indicators per stock by profit factor (net of charges), then net P&L
+- Classifies each stock: `untradeable` (0 profitable indicators) / `signal_sensitive`
+  (≤3) / `mixed` / `signal_agnostic` (≥7) — drives position sizing at deploy time
+- `recommended` gives the best indicator + direction + confidence (gated on a real
+  trade-count sample, so a 2-trade fluke never reads as "high")
+- Results cached 24h on disk (`.backtest-cache/`, gitignored); keyed on full config
+- `--entry-side auto` (default) backtests long-only AND short-only per indicator and
+  keeps the better, so `recommended.direction` and the stats beside it always match the
+  config that would actually be deployed
+- `--min-trades N` (default 5): the adequate-sample floor — a 2-trade PF-inf fluke never
+  outranks a robust signal, and "high" confidence requires both PF ≥ 3 and ≥ N trades
+- Indicators: utbot, halftrend, ssl_hybrid, supertrend, ema_crossover, macd, qqe_mod,
+  hilega_milega, volume_spike, renko (each run at its own engine-default params)
+
+**Caveats:**
+- `estimated_daily_pnl` is **in-sample / best-indicator-in-hindsight** — the winning
+  indicator per stock is chosen on the same window its P&L is summed over. It overstates
+  forward performance; treat it as an upper bound, never a forecast.
+- `renko` (default `brick_size=10.0` fixed points) and `volume_spike` are judged at the
+  live scalper's default params, which aren't price-aware — their ranking can be a sizing
+  artifact on high- vs low-priced stocks. Tune their params before trusting them head-to-head.
+
+Pairs with `nf-morning-scan --with-signal-match`, which folds this plan back into
+the scan's scoring (untradeable → eliminated, agnostic → bonus) and adds
+`best_signal` + `classification` to each candidate.
+
+---
+
+### nf-deploy-sessions
+
+Turns a signal-match scan into live `nf-scalp` sessions — deploying the matched
+indicator AND direction per stock. **Dry-run by default**: it only previews the
+plan; `--execute` is required to actually create sessions.
+
+```
+python cli-tools/nf-deploy-sessions [scan-args] [--max-sessions N] [--execute] [--json]
+python cli-tools/nf-deploy-sessions --plan-file SAVED_SCAN.json [options]
+```
+
+**Examples:**
+```bash
+python cli-tools/nf-deploy-sessions --universe nifty50 --top 15 --days 15        # preview only
+python cli-tools/nf-deploy-sessions --universe nifty50 --top 15 --execute        # create sessions
+python cli-tools/nf-deploy-sessions --plan-file /tmp/plan.json \
+  --min-confidence high --risk-per-trade 6000 --execute                          # risk-sized, hi-conf only
+```
+
+- Sources the plan by running `nf-backtest-scan` (or reads `--plan-file`)
+- Keeps tradeable stocks at/above `--min-confidence` (default medium), best first
+- **Caps:** `--max-sessions` (default 12) and `--max-family-fraction` (default 0.4 →
+  max ~40% of sessions on one indicator family: atr_trend / moving_avg / oscillator /
+  volume). **No per-sector cap** — there is no symbol→sector map in the codebase yet
+- **Sizing:** `--quantity` (fixed) > `--risk-per-trade` (qty = risk / (LTP × trail%)) >
+  `--capital-per-trade` (default, qty = capital / LTP). `--use-mandate` pulls
+  risk-per-trade from the trading mandate (best-effort parse of its free-text amount).
+  Uses a **live LTP** for sizing, not the stale backtest close
+- `--execute` creates each session via `nf-scalp create --mode equity_intraday`; without
+  it, nothing is created
+- Backtest stats shown are in-sample (see nf-backtest-scan caveats) — preview, sanity-check,
+  then execute
 
 ---
 

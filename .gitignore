@@ -97,6 +97,8 @@ node_modules/
 
 # User uploads (files attached in chat)
 backend/uploads/
+# nf-backtest-scan on-disk result cache
+backend/cli-tools/.backtest-cache/
 # TimesFM model weights and training data
 backend/checkpoints/
 backend/data/
