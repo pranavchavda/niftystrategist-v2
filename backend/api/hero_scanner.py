@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from auth import User, get_current_user, requires_permission
 from api.upstox_oauth import get_user_upstox_token
 from database.models import User as DBUser
-from database.session import get_db_session
+from database.session import get_db_session, get_db_context
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,12 @@ class ScanRequest(BaseModel):
     news: bool = False
     debug: Optional[str] = None  # single-symbol diagnostic mode
 
+    # Signal-match — backtest each candidate across all 10 scalp indicators and
+    # fold the result into scoring (untradeable eliminated, agnostic bonused),
+    # adding best_signal + classification per candidate. Adds ~15-30s.
+    with_signal_match: bool = False
+    signal_match_days: int = Field(15, ge=5, le=60)
+
     # Phase 4 — auto-deploy a strategy template on the top candidates.
     auto_deploy: Optional[Literal["orb", "breakout", "mean-reversion",
                                   "vwap-bounce", "scalp"]] = None
@@ -73,6 +79,33 @@ class OrderRequest(BaseModel):
     price: Optional[float] = Field(None, gt=0)
     product: Literal["I", "D"] = "I"  # Intraday / Delivery
     dry_run: bool = True  # default to preview — caller must opt into live
+
+
+class DeploySessionRequest(BaseModel):
+    """Create a live equity scalp session from a signal-match recommendation.
+
+    The caller sends budget + risk + stop, NOT a share count — the server fetches
+    a live LTP and computes the quantity, so a stale or hand-crafted client number
+    can't size a live session. Quantity is the binding minimum of the budget cap
+    (capital / LTP) and the risk cap (risk / stop-distance). The stop is enforced
+    via ``sl_points`` (the trailing stop alone does NOT bound a losing trade — it
+    only arms once price moves favorably), so the risk number is real.
+    """
+    symbol: str
+    indicator: str
+    direction: Literal["long", "short", "both"] = "both"
+    budget: float = Field(..., gt=0)                       # capital cap (₹)
+    risk_per_trade: Optional[float] = Field(None, gt=0)    # max ₹ loss per trade
+    stop_pct: float = Field(1.0, gt=0, le=20)              # SL distance as % of price
+    trail: bool = True                                      # also trail winners at stop_pct
+    max_trades: int = Field(3, ge=1, le=20)
+    squareoff_time: str = "15:09"
+    timeframe: Literal["1m", "3m", "5m", "10m", "15m", "30m"] = "5m"
+    confirm_indicator: Optional[str] = None
+    # enabled=False ⇒ created paused (must be enabled on the Sessions page);
+    # the UI forces an explicit choice rather than defaulting to live.
+    enabled: bool = False
+    dry_run: bool = True  # default to sizing preview — caller must opt into create
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +217,8 @@ async def run_scan(req: ScanRequest, user: User = Depends(get_current_user)):
                         "--deep", str(req.deep)]
     if req.news:
         args.append("--news")
+    if req.with_signal_match:
+        args += ["--with-signal-match", "--signal-match-days", str(req.signal_match_days)]
     if req.debug:
         args += ["--debug", req.debug]
     if req.auto_deploy:
@@ -240,3 +275,119 @@ async def place_order(
     if not objs:
         raise HTTPException(502, "Order command returned no parseable output")
     return objs[0]
+
+
+@router.post("/deploy-session")
+async def deploy_session(
+    req: DeploySessionRequest,
+    user: User = Depends(requires_permission("settings.access")),
+):
+    """Size and (optionally) create a live equity scalp session.
+
+    Two-step like the order flow: call with ``dry_run=true`` to get the
+    server-computed sizing (live LTP → quantity, SL, est. loss), show it, then
+    ``dry_run=false`` to actually create the session. Gated by ``settings.access``
+    so a bare JWT can't stand up a live trading session by POSTing directly.
+
+    The session is created with ``enabled`` exactly as requested — the UI makes
+    the user choose "create paused" vs "create & start"; we never silently go live.
+    """
+    from services.instruments_cache import get_instrument_key
+    from monitor import scalp_crud
+
+    symbol = req.symbol.upper()
+    instrument_key = get_instrument_key(symbol)
+    if not instrument_key:
+        raise HTTPException(400, f"Equity symbol '{symbol}' not found in instruments cache")
+
+    # Live LTP — single source of truth for sizing.
+    from api.cockpit import get_market_data_client
+    try:
+        client = await get_market_data_client(user)
+        quote = await client.get_quote(symbol)
+        ltp = float(quote.get("ltp") or 0)
+    except Exception as e:
+        logger.warning("deploy-session: quote failed for %s: %s", symbol, e)
+        raise HTTPException(502, f"Could not fetch a live price for {symbol}: {e}")
+    if ltp <= 0:
+        raise HTTPException(502, f"No live price available for {symbol}")
+
+    # Sizing: binding minimum of the budget cap and the risk cap.
+    stop_distance = ltp * req.stop_pct / 100.0
+    qty_budget = int(req.budget // ltp)
+    if qty_budget < 1:
+        raise HTTPException(
+            400, f"Budget ₹{req.budget:,.0f} is too small for one share of {symbol} at ₹{ltp:,.2f}")
+
+    qty = qty_budget
+    binding = "budget"
+    qty_risk: Optional[int] = None
+    if req.risk_per_trade is not None and stop_distance > 0:
+        qty_risk = int(req.risk_per_trade // stop_distance)
+        if qty_risk < 1:
+            raise HTTPException(
+                400,
+                f"Risk ₹{req.risk_per_trade:,.0f} at a {req.stop_pct}% stop "
+                f"(₹{stop_distance:,.2f}/share) is too small for one share")
+        if qty_risk < qty:
+            qty, binding = qty_risk, "risk"
+
+    sl_points = round(stop_distance, 2)
+    est_loss_per_trade = round(qty * sl_points, 2)
+    sizing = {
+        "ltp": round(ltp, 2),
+        "quantity": qty,
+        "qty_from_budget": qty_budget,
+        "qty_from_risk": qty_risk,
+        "binding_constraint": binding,
+        "notional": round(qty * ltp, 2),
+        "stop_pct": req.stop_pct,
+        "sl_points": sl_points,
+        "est_max_loss_per_trade": est_loss_per_trade,
+        "est_max_loss_day": round(est_loss_per_trade * req.max_trades, 2),
+        "max_trades": req.max_trades,
+    }
+
+    if req.dry_run:
+        return {"sizing": sizing, "created": None}
+
+    # Create. primary_params=None + timeframe match the scan basis so the live
+    # session is the same config the recommendation was backtested on.
+    name = f"signal-{symbol}-{req.indicator}"
+    async with get_db_context() as session:
+        row = await scalp_crud.create_session(
+            db=session,
+            user_id=user.id,
+            name=name,
+            session_mode="equity_intraday",
+            underlying=symbol,
+            underlying_instrument_token=instrument_key,
+            expiry="",
+            quantity=qty,
+            product="I",
+            indicator_timeframe=req.timeframe,
+            primary_indicator=req.indicator,
+            primary_params=None,
+            confirm_indicator=req.confirm_indicator,
+            sl_points=sl_points,
+            trail_percent=(req.stop_pct if req.trail else None),
+            squareoff_time=req.squareoff_time,
+            entry_side=req.direction,
+            max_trades=req.max_trades,
+            cooldown_seconds=60,
+            enabled=req.enabled,
+        )
+        created = {
+            "id": row.id,
+            "name": row.name,
+            "enabled": row.enabled,
+            "underlying": row.underlying,
+            "quantity": row.quantity,
+            "primary_indicator": row.primary_indicator,
+            "entry_side": getattr(row, "entry_side", req.direction),
+            "sl_points": row.sl_points,
+            "trail_percent": row.trail_percent,
+            "max_trades": row.max_trades,
+            "state": row.state,
+        }
+    return {"sizing": sizing, "created": created}
