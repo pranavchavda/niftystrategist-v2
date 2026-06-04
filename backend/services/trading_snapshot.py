@@ -30,6 +30,7 @@ from api.upstox_oauth import get_user_upstox_token
 from database.models import User
 from database.session import get_db_context
 from monitor.crud import list_rules
+from monitor.scalp_crud import list_sessions
 from monitor.indicator_engine import compute_indicator
 from services.upstox_client import UpstoxClient
 from services.technical_analysis import TechnicalAnalysisService
@@ -261,6 +262,44 @@ def _is_protective(rule, pos_symbol: str, pos_side: str) -> bool:
     return _rule_side(rule) == closing
 
 
+def _is_holding(session) -> bool:
+    """True only when the session currently holds a live position.
+
+    A scalp session is IDLE ⟺ flat (its exit closes the position), so only a
+    HOLDING_* state means it is actively managing a position. Gating on this —
+    not merely on ``enabled`` — avoids the dangerous false-negative where an
+    enabled-but-flat session masks a genuinely naked position that came from
+    elsewhere (manual fill, ORB rule, reconciliation lag).
+    """
+    st = getattr(session, "state", None)
+    return bool(st) and str(st).startswith("HOLDING")
+
+
+def _scalp_symbol_map(sessions) -> dict:
+    """Map held-position-key → the scalp session currently managing it.
+
+    Only sessions actively HOLDING a position are included. Keyed by, in order
+    of reliability:
+      * ``current_instrument_token`` — the Upstox token the session is holding.
+        Format-independent, so it matches an option position whose displayed
+        tradingsymbol (``NIFTY 23450CE``) differs from the instrument-cache form.
+      * the equity ``underlying`` (== position symbol for equity modes).
+      * ``current_tradingsymbol`` — best-effort string fallback.
+    All string keys are upper-cased. First session wins on a tie.
+    """
+    out: dict = {}
+    for s in sessions:
+        if not _is_holding(s):
+            continue
+        if getattr(s, "current_instrument_token", None):
+            out.setdefault(s.current_instrument_token, s)
+        if getattr(s, "underlying", None):
+            out.setdefault(s.underlying.upper(), s)
+        if getattr(s, "current_tradingsymbol", None):
+            out.setdefault(s.current_tradingsymbol.upper(), s)
+    return out
+
+
 # ── main builder ─────────────────────────────────────────────────────────────
 
 async def build_trading_snapshot(
@@ -343,17 +382,24 @@ async def _build(user_id, user_email, now, built_at, thread_id, scan_rows,
     if not _ok(funds):
         stale.append("funds")
 
-    # Rules + mandate from DB.
+    # Rules + mandate + scalp sessions from DB.
     rules = []
     mandate = None
+    scalp_sessions = []
     try:
         async with get_db_context() as db:
             rules = await list_rules(db, user_id, enabled_only=False)
             db_user = await db.get(User, user_id)
             mandate = db_user.trading_mandate if db_user else None
+            scalp_sessions = await list_sessions(db, user_id, enabled_only=True)
     except Exception as e:
-        logger.warning(f"snapshot: rules/mandate load failed: {e}")
+        logger.warning(f"snapshot: rules/mandate/sessions load failed: {e}")
         stale.append("rules")
+
+    # Symbol → enabled scalp session. A signal session manages its position via
+    # indicator-flip exits (NOT a price-based monitor rule), so a held symbol
+    # under an active session is NOT "unprotected" even with no SL rule.
+    scalp_by_symbol = _scalp_symbol_map(scalp_sessions)
 
     # Agent's self-authored intent for this daily thread (latest = newest wins).
     intent_content = ""
@@ -499,7 +545,21 @@ async def _build(user_id, user_email, now, built_at, thread_id, scan_rows,
                 lvl, rid = tgt_lvls[0]
                 dist = (lvl - ltp) / ltp * 100 if side == "LONG" else (ltp - lvl) / ltp * 100
                 sub.append(f"target {_inr(lvl)} ({dist:+.2f}%, rule#{rid})")
-            if not protectors:
+            # Signal-session management counts as protection (daemon exits on
+            # indicator flip), so check it BEFORE flagging a missing SL rule.
+            # Prefer the instrument token (set by get_portfolio for held names) —
+            # it matches options whose displayed symbol differs from the contract
+            # form — then fall back to the symbol string.
+            pos_token = getattr(live, "_dynamic_symbols", {}).get(sym.upper())
+            sess = (scalp_by_symbol.get(pos_token) if pos_token else None) \
+                or scalp_by_symbol.get(sym.upper())
+            if sess:
+                st = sess.state or "IDLE"
+                sub.append(
+                    f"signal-managed: scalp #{sess.id} {sess.primary_indicator} "
+                    f"{sess.entry_side} ({st}, daemon flip-exit)"
+                )
+            if not protectors and not sess:
                 sub.append("NO PROTECTIVE RULE")
                 alerts.append(f"⚠ {sym} [{side}] is UNPROTECTED — no active SL/exit rule")
             if entry_times.get(sym.upper()):
