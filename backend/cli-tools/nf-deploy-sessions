@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 """nf-deploy-sessions — turn a signal-match scan into live scalp sessions.
 
-Pipeline: run ``nf-backtest-scan`` → take the tradeable stocks → size each by
-capital (or risk) using a live LTP → apply concurrency + indicator-family
-diversification caps → PREVIEW the deployment plan (default) or create the
-sessions (``--execute``).
+Pipeline: run ``nf-backtest-scan`` → take the tradeable stocks → apply quality
+gates (confidence, min-trades, min-pf) → fetch a live quote per stock → apply the
+gap-exhaustion filter → apply concurrency + indicator-family diversification caps
+→ size each by capital (or risk) → PREVIEW the deployment plan (default) or create
+the sessions (``--execute``).
+
+Quality gates (tuned from the 2026-06-04 end-of-day review, all ON by default
+unless noted, set to 0 to disable):
+
+* ``--min-trades 6``   — drop a stock whose best signal fired < N times in the
+  backtest window. Kills high-PF/low-sample "phantoms" (the GESHIP PF-8.86-off-
+  3-trades case).
+* ``--max-gap-pct 5.0`` — gap-exhaustion filter. Skip a LONG if the stock gapped
+  UP more than this %% (open vs prev close), a SHORT if it gapped DOWN more than
+  this %%, and a both/auto session on a gap of this magnitude either way. Stops
+  chasing a stock into the exhaustion fade (the TEJASNET +6.3%-gap-up case).
+* ``--min-pf 0.0``     — OFF by default. A profit-factor floor *also* kills
+  borderline winners (a PF 1.95 stock was a day's only profit), so it is opt-in.
 
 This NEVER creates a live session without ``--execute``. The default output is a
 plan you read first; only ``--execute`` calls ``nf-scalp create``.
@@ -136,16 +150,18 @@ def _load_mandate_risk(verbose: bool) -> float | None:
 # Sizing
 # ---------------------------------------------------------------------------
 
-async def _fetch_ltps(symbols: list[str], verbose: bool) -> dict[str, float]:
-    """Live LTP per symbol (for sizing). Missing symbols are simply absent."""
+async def _fetch_quotes(symbols: list[str], verbose: bool) -> dict[str, dict]:
+    """Live quote per symbol (ltp + open + prev close, for sizing AND gap filter).
+
+    Missing symbols are simply absent from the returned dict.
+    """
     client = init_market_data_client()
-    out: dict[str, float] = {}
-    for sym in symbols:  # small set (<= max_sessions); serial is fine
+    out: dict[str, dict] = {}
+    for sym in symbols:  # small set (<= eligible count); serial is fine
         try:
             q = await client.get_quote(sym)
-            ltp = q.get("ltp")
-            if ltp:
-                out[sym] = float(ltp)
+            if q.get("ltp"):
+                out[sym] = q
         except Exception as e:
             if verbose:
                 print(f"  [{sym}] quote failed: {e}", file=sys.stderr)
@@ -167,22 +183,103 @@ def _size(price: float, args: argparse.Namespace, risk_per_trade: float | None) 
 # Selection (caps)
 # ---------------------------------------------------------------------------
 
-def _select(candidates: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
-    """Apply min-confidence + concurrency + family caps. Returns (selected, skipped)."""
+def _pf_value(c: dict) -> float:
+    """Numeric profit factor for a candidate's best signal ('inf' → +inf)."""
+    pf = c["best_signal"]["profit_factor"]
+    return float("inf") if pf == "inf" else float(pf or 0)
+
+
+def _eligible(candidates: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
+    """Stage 1 — intrinsic (no-quote) gates: untradeable, confidence, min-trades, min-pf.
+
+    Returns (eligible_sorted_best_first, skipped). These gates depend only on the
+    backtest stats already in the plan, so they run before any live quote fetch.
+    """
     min_rank = _CONF_RANK.get(args.min_confidence, 1)
-    max_per_family = max(1, math.floor(args.max_sessions * args.max_family_fraction))
-
-    eligible = [
-        c for c in candidates
-        if c["classification"] != "untradeable"
-        and _CONF_RANK.get(c["recommended"]["confidence"], 3) <= min_rank
-    ]
+    eligible: list[dict] = []
+    skipped: list[dict] = []
+    for c in candidates:
+        if c["classification"] == "untradeable":
+            c["_skip_reason"] = "untradeable (no profitable indicator)"
+            skipped.append(c)
+            continue
+        if _CONF_RANK.get(c["recommended"]["confidence"], 3) > min_rank:
+            c["_skip_reason"] = f"confidence '{c['recommended']['confidence']}' below {args.min_confidence}"
+            skipped.append(c)
+            continue
+        trades = c["best_signal"].get("total_trades") or 0
+        if args.min_trades > 0 and trades < args.min_trades:
+            c["_skip_reason"] = f"only {trades} backtest trades (<{args.min_trades}) — phantom PF"
+            skipped.append(c)
+            continue
+        if args.min_pf > 0 and _pf_value(c) < args.min_pf:
+            c["_skip_reason"] = f"PF {c['best_signal']['profit_factor']} below floor {args.min_pf}"
+            skipped.append(c)
+            continue
+        eligible.append(c)
     # Best first: confidence, then profit factor.
-    def _pf(c):
-        pf = c["best_signal"]["profit_factor"]
-        return float("inf") if pf == "inf" else float(pf or 0)
-    eligible.sort(key=lambda c: (_CONF_RANK.get(c["recommended"]["confidence"], 3), -_pf(c)))
+    eligible.sort(key=lambda c: (_CONF_RANK.get(c["recommended"]["confidence"], 3), -_pf_value(c)))
+    return eligible, skipped
 
+
+def _gap_pct(quote: dict) -> float | None:
+    """Open-gap %% = (open - prev_close) / prev_close * 100 — same as nf-morning-scan."""
+    op = quote.get("open")
+    close = quote.get("close")  # previous close
+    if op and close:
+        return round((op - close) / close * 100, 2)
+    return None
+
+
+def _gap_exhausted(direction: str, gap: float, max_gap: float) -> bool:
+    """True if entering `direction` would be chasing an exhausted gap.
+
+    long  → skip on a big gap UP (gap >= +max_gap)
+    short → skip on a big gap DOWN (gap <= -max_gap)
+    both/auto → skip on a gap of either sign at that magnitude (fresh entry into a
+                volatile, extended open is risky regardless of side).
+    """
+    if max_gap <= 0:
+        return False
+    if direction == "long":
+        return gap >= max_gap
+    if direction == "short":
+        return gap <= -max_gap
+    return abs(gap) >= max_gap
+
+
+def _apply_gap_filter(
+    eligible: list[dict], quotes: dict[str, dict], args: argparse.Namespace
+) -> tuple[list[dict], list[dict]]:
+    """Stage 2 — drop candidates with no live quote (can't size) or an exhausted gap.
+
+    Runs before the concurrency/family caps so a gap-killed stock frees its slot
+    for the next-best candidate instead of silently shrinking the deploy.
+    """
+    survivors: list[dict] = []
+    skipped: list[dict] = []
+    for c in eligible:
+        q = quotes.get(c["symbol"])
+        if not q or not q.get("ltp"):
+            c["_skip_reason"] = "no live LTP for sizing"
+            skipped.append(c)
+            continue
+        gap = _gap_pct(q)
+        direction = c["recommended"]["direction"]
+        if gap is not None and _gap_exhausted(direction, gap, args.max_gap_pct):
+            arrow = "up" if gap > 0 else "down"
+            c["_skip_reason"] = f"gap {gap:+.1f}% {arrow} > {args.max_gap_pct}% — {direction} exhaustion"
+            c["_gap_pct"] = gap
+            skipped.append(c)
+            continue
+        c["_gap_pct"] = gap
+        survivors.append(c)
+    return survivors, skipped
+
+
+def _apply_caps(eligible: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
+    """Stage 3 — concurrency (max-sessions) + indicator-family diversification caps."""
+    max_per_family = max(1, math.floor(args.max_sessions * args.max_family_fraction))
     selected: list[dict] = []
     skipped: list[dict] = []
     family_count: dict[str, int] = {}
@@ -217,6 +314,7 @@ def _build_spec(c: dict, ltp: float, quantity: int, args: argparse.Namespace) ->
         "win_rate": c["best_signal"]["win_rate"],
         "backtest_trades": c["best_signal"]["total_trades"],
         "ltp": round(ltp, 2),
+        "gap_pct": c.get("_gap_pct"),
         "quantity": quantity,
         "notional": round(ltp * quantity, 2),
         "trail_percent": args.trail_percent,
@@ -268,9 +366,18 @@ def _format_human(payload: dict):
     add("")
     add(f"  Deploy Sessions  |  {payload['scan_date']}  |  {mode}")
     add("  " + "=" * 74)
+    caps = payload["caps"]
     add(f"  Selected {len(payload['selected'])} of {payload['eligible_count']} eligible "
-        f"(max {payload['caps']['max_sessions']}, "
-        f"max {payload['caps']['max_per_family']}/family)")
+        f"(max {caps['max_sessions']}, "
+        f"max {caps['max_per_family']}/family)")
+    filters = [f"conf≥{caps['min_confidence']}"]
+    if caps.get("min_trades", 0) > 0:
+        filters.append(f"trades≥{caps['min_trades']}")
+    if caps.get("min_pf", 0) > 0:
+        filters.append(f"PF≥{caps['min_pf']}")
+    if caps.get("max_gap_pct", 0) > 0:
+        filters.append(f"|gap|≤{caps['max_gap_pct']}% (dir-aware)")
+    add("  Filters: " + ", ".join(filters))
     add("")
     if not payload["selected"]:
         add("  Nothing to deploy.")
@@ -278,17 +385,19 @@ def _format_human(payload: dict):
         print("\n".join(lines))
         return
     add(f"  {'SYMBOL':<12} {'INDICATOR':<14} {'DIR':<6} {'CONF':<7} {'QTY':>6} "
-        f"{'NOTIONAL':>12} {'PF':>6} {'WR':>5} {'BT':>4}")
-    add("  " + "-" * 74)
+        f"{'NOTIONAL':>12} {'PF':>6} {'WR':>5} {'BT':>4} {'GAP':>6}")
+    add("  " + "-" * 82)
     for s in payload["selected"]:
         sid = ""
         if payload["executed"]:
             sid = f"  → session {s.get('session_id', '?')}" if not s.get("error") \
                 else f"  ✗ {s.get('error', '')[:40]}"
+        gap = s.get("gap_pct")
+        gap_str = f"{gap:+.1f}%" if gap is not None else "—"
         add(f"  {s['symbol']:<12} {s['indicator']:<14} {s['direction']:<6} "
             f"{s['confidence']:<7} {s['quantity']:>6} ₹{s['notional']:>10,.0f} "
             f"{str(s['profit_factor']):>6} {round(s['win_rate'] * 100):>4}% "
-            f"{s['backtest_trades']:>4}{sid}")
+            f"{s['backtest_trades']:>4} {gap_str:>6}{sid}")
     add("")
     fam = payload["family_breakdown"]
     add("  Family breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(fam.items())))
@@ -332,6 +441,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Max fraction of sessions on one indicator family (default: 0.4)")
     p.add_argument("--min-confidence", choices=["high", "medium", "low"], default="medium",
                    help="Only deploy signals at this confidence or better (default: medium)")
+    p.add_argument("--min-trades", type=int, default=6,
+                   help="Hard gate: drop a stock whose best signal had fewer than this "
+                        "many backtest trades in the window. Kills high-PF/low-sample "
+                        "'phantoms' (e.g. PF 8.86 off 3 trades). Set 0 to disable. "
+                        "(default: 6)")
+    p.add_argument("--min-pf", type=float, default=0.0,
+                   help="Hard gate: drop a stock whose best signal profit factor is below "
+                        "this. OFF by default (0.0) — a 2.0 floor also kills borderline "
+                        "winners (e.g. a PF 1.95 stock that was the day's only profit). "
+                        "(default: 0.0 = off)")
+    p.add_argument("--max-gap-pct", type=float, default=5.0,
+                   help="Gap-exhaustion filter: skip a LONG session if the stock gapped UP "
+                        "more than this %% vs prev close (chasing exhaustion), and a SHORT "
+                        "if it gapped DOWN more than this %%. both/auto sessions are skipped "
+                        "on a gap of this magnitude either way. Open-gap = (open-prevclose)/"
+                        "prevclose, same definition nf-morning-scan uses. Set 0 to disable. "
+                        "(default: 5.0)")
 
     # Sizing
     p.add_argument("--quantity", type=int, default=None,
@@ -370,22 +496,27 @@ def main():
     if risk_per_trade is None and args.use_mandate:
         risk_per_trade = _load_mandate_risk(args.verbose)
 
-    selected_cands, skipped = _select(candidates, args)
+    # Stage 1 — intrinsic gates (confidence, min-trades, min-pf). No quotes needed.
+    eligible, skipped = _eligible(candidates, args)
 
-    # Live LTP for sizing the selected set only.
-    ltps = run_async(_fetch_ltps([c["symbol"] for c in selected_cands], args.verbose))
+    # Quotes for ALL eligible — needed for the gap filter AND sizing. Fetching the
+    # full eligible set (not just the post-cap winners) lets a gap-killed stock
+    # free its slot for the next-best candidate.
+    quotes = run_async(_fetch_quotes([c["symbol"] for c in eligible], args.verbose))
+
+    # Stage 2 — gap-exhaustion filter (+ drop anything with no live quote).
+    gap_survivors, gap_skipped = _apply_gap_filter(eligible, quotes, args)
+    skipped.extend(gap_skipped)
+
+    # Stage 3 — concurrency + family diversification caps.
+    selected_cands, cap_skipped = _apply_caps(gap_survivors, args)
+    skipped.extend(cap_skipped)
 
     specs: list[dict] = []
-    no_price: list[dict] = []
     for c in selected_cands:
-        ltp = ltps.get(c["symbol"])
-        if not ltp:
-            c["_skip_reason"] = "no live LTP for sizing"
-            no_price.append(c)
-            continue
+        ltp = float(quotes[c["symbol"]]["ltp"])
         qty = _size(ltp, args, risk_per_trade)
         specs.append(_build_spec(c, ltp, qty, args))
-    skipped.extend(no_price)
 
     # Execute (create live sessions) only when explicitly asked.
     if args.execute:
@@ -401,16 +532,15 @@ def main():
     payload = {
         "scan_date": plan.get("scan_date"),
         "executed": args.execute,
-        "eligible_count": sum(
-            1 for c in candidates
-            if c["classification"] != "untradeable"
-            and _CONF_RANK.get(c["recommended"]["confidence"], 3) <= _CONF_RANK[args.min_confidence]
-        ),
+        "eligible_count": len(eligible),
         "caps": {
             "max_sessions": args.max_sessions,
             "max_family_fraction": args.max_family_fraction,
             "max_per_family": max_per_family,
             "min_confidence": args.min_confidence,
+            "min_trades": args.min_trades,
+            "min_pf": args.min_pf,
+            "max_gap_pct": args.max_gap_pct,
         },
         "sizing": {
             "mode": "fixed" if args.quantity is not None else (
