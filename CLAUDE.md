@@ -44,10 +44,12 @@ cd frontend-v2 && pnpm install && pnpm run dev
 
 SEBI requires each user's order API calls to originate from a static IP registered to that user. Each user gets a thin FastAPI order proxy (`order_node/app.py`) on its own IP. CLI tools (`nf-order`, `nf-options`) check `NF_ORDER_NODE_URL` env var and route order-mutating calls through it. The orchestrator injects this from `User.order_node_url` in the DB. Non-order APIs are unaffected.
 
+**⚠️ 2026-06-05 — Upstox now IP-enforces per-user READS too (UDAPI1154), not just orders** (portfolio/positions/funds/trades/profile/MF, even `GET /v2/user/ip`). Current solution: add users to Pranav's Upstox **family account** (≤5 share one IP) and register the **main box IP** for them via `PUT /v2/user/ip` (both v4 `172.105.40.112` + v6 `2400:8904::2000:e0ff:fee6:fe6c`; outbound defaults to IPv6). All their traffic then runs from the main box — no Nanode. Per-user Nanodes return only for the 6th+ user / non-family users, and must then tunnel reads **and** orders. Full procedure + future plan: `docs/order-node-architecture.md`.
+
 - **Pranav (user 1)**: `http://localhost:8001` (same machine)
-- **Ashok (user 5)**: `http://172.105.40.186:8001` ($5 Linode Nanode, `ns-ordernode-user5`)
-- **Full docs**: `docs/order-node-architecture.md` (includes add-user-node procedure)
-- **Key files**: `order_node/app.py`, `services/order_node_proxy.py`, `monitor/action_executor.py`
+- **Ashok (user 5)**: `http://localhost:8001` — migrated to main box 2026-06-05 (Upstox family-IP share); Nanode `ns-ordernode-user5` decommissioned
+- **Full docs**: `docs/order-node-architecture.md` (static-IP read enforcement, family-IP procedure, add-user-node procedure)
+- **Key files**: `order_node/app.py`, `services/order_node_proxy.py`, `monitor/action_executor.py`, `scripts/probe_static_ip.py`
 - **Auth**: Bearer token (per-request) + `NF_ORDER_NODE_SECRET` (shared). Nanodes firewalled to main NS IP only.
 
 ## Architecture

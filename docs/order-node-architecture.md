@@ -6,6 +6,44 @@ SEBI mandated (effective April 1, 2026) that all broker API order placement must
 
 **Solution:** Each user gets a dedicated "order node" — a thin FastAPI proxy running on its own Linode Nanode ($5/mo) with its own static IP. The main NS instance routes order-mutating API calls through the user's node. Non-order APIs (quotes, holdings, positions, analysis) are unaffected and go direct.
 
+---
+
+## ⚠️ UPDATE 2026-06-05 — Static IP now enforced on per-user READS too
+
+Upstox extended `UDAPI1154` static-IP enforcement beyond orders to **all per-user account-data APIs**: holdings/portfolio, positions, funds, trades, profile, P&L metadata, MF holdings — and even `GET /v2/user/ip` itself. A request from any origin other than the user's registered static IP now returns **403 UDAPI1154**. Only **public/exchange-wide market data** (quotes, OHLC, option chain, greeks, market status — served by the shared **analytics token**, `UPSTOX_ANALYTICS_TOKEN`) remains IP-free.
+
+This breaks the "thin order-only node" model: a per-user node that only proxies orders is no longer enough — the user's *reads* now 403 too because they still run from the main instance.
+
+### Current solution: Upstox family accounts + shared main-box IP
+
+Upstox lets **up to 5 accounts in one family share a single registered static IP**. So instead of one Nanode per user, we add each user to **Pranav's Upstox family** and register the **main box IP** for them — all their traffic (reads *and* orders) then originates from the main box and matches.
+
+**Register the main box for a family member** — `PUT https://api.upstox.com/v2/user/ip`:
+- Auth: the **user's** Upstox access token. Body: `{"primary_ip": "172.105.40.112", "secondary_ip": "2400:8904::2000:e0ff:fee6:fe6c"}`.
+- **Register BOTH the v4 and the v6** of the main box — outbound to Upstox **defaults to IPv6** (`2400:8904::2000:e0ff:fee6:fe6c`), so a v4-only registration still 403s. Mirror exactly what user 1 (Pranav) has.
+- Constraints: changeable **once per calendar week**; a successful change **invalidates the user's access token** (`access_tokens_invalidated: true`).
+- **The PUT endpoint is itself IP-enforced** → it must be issued **from the user's *currently*-registered IP** (their existing Nanode). Chicken-and-egg: you can't move the IP from the new box. Fetch the user's current token on the main box, then `ssh` to the Nanode and `curl` the PUT from there.
+- Helper: `backend/scripts/probe_static_ip.py {get|set} <user_id> [primary] [secondary]` (reads use `get_user_upstox_token`; run from `backend/`).
+
+**Post-change steps:**
+1. Re-auth: `get_user_upstox_token(uid, force_refresh=True)` (clear `users.upstox_totp_last_failed_at` first if a transient failure left a 30-min cooldown — the failure can be spurious right at cutover).
+2. Repoint orders to the main box: `UPDATE users SET order_node_url='http://localhost:8001' WHERE id=<uid>` (same as Pranav). The user's Nanode is now redundant.
+3. Verify a real read (portfolio/profile) succeeds from the main box, and `journalctl` shows 0 new `UDAPI1154`.
+
+**Migrated 2026-06-05:** User 5 (Ashok) moved to the main box IP via this procedure; reads verified; `order_node_url` → `localhost:8001`; **Nanode `ns-ordernode-user5` (Linode 95335107) decommissioned.**
+
+> Note `UDAPI100072` "Funds service accessible 5:30 AM–12:00 AM IST" (HTTP 423) is a nightly maintenance window, **not** an IP error.
+
+### Future direction — beyond the family limit / non-family users (TODO at wider test/demo)
+
+The family-share trick only covers up to **5 accounts** in one family, and only people you can actually add as Upstox family members. For real multi-user (strangers, or the 6th+ user), each user still needs **their own static IP** — but now their node must **tunnel ALL ip-restricted traffic (reads + orders), not just orders**. The current `order_node/app.py` only proxies order writes, so the plan is to turn the per-user node into a **full Upstox account-traffic tunnel** for that user:
+- Simplest: a transport-level **forward proxy** on the node (CONNECT to `api.upstox.com:443` only, auth + firewalled to main NS). The main instance sets that proxy on the user's `UpstoxClient` (SDK `Configuration.proxy` + httpx `proxies=`) for all per-user account calls — no per-endpoint code. Public market data keeps using the analytics token directly.
+- Alternative: explicit read endpoints on the node mirroring the write ones (more code, more brittle given `get_portfolio`'s post-processing).
+
+**Local dev:** per-user account reads now 403 locally (dev origin ≠ registered IP). Plan: **tunnel local dev's Upstox traffic out through the main Linode box** (the registered IP) — e.g. SSH/SOCKS proxy through `172.105.40.112`. Public market data (analytics token) still works locally without a tunnel.
+
+---
+
 ## Architecture
 
 ```
@@ -33,12 +71,14 @@ Only order-mutating Upstox API calls:
 - Exit all positions
 - Place multi-leg order (spreads)
 
-Everything else goes direct from the main instance — no IP restriction on:
+**⚠️ As of 2026-06-05 this list is out of date — see the UPDATE section above.** Per-user account reads (holdings, positions, funds, profile, trades, order book) are now IP-enforced too. Only public/exchange-wide market data is still unrestricted (and we serve it via the analytics token):
 - Quotes, LTP, OHLC, historical data
-- Holdings, positions, funds, profile
 - Option chain, greeks
 - Market status
-- Trade history, order book (read-only)
+
+Per-user reads now require the registered IP (handled today by family-IP sharing on the main box, not the order node):
+- ~~Holdings, positions, funds, profile~~ → 403 UDAPI1154 unless from registered IP
+- ~~Trade history, order book (read-only)~~ → 403 UDAPI1154 unless from registered IP
 
 ## How It Works
 
@@ -69,10 +109,12 @@ Rule fires (price trigger)
 
 ## Current Deployment
 
-| User | ID | Order Node URL | IP | Location |
+| User | ID | Order Node URL | Registered Upstox IP | Location |
 |------|----|----------------|----|----------|
-| Pranav Chavda | 1 | `http://localhost:8001` | 172.105.40.112 | Main instance |
-| Ashok Chavda | 5 | `http://172.105.40.186:8001` | 172.105.40.186 | Nanode `ns-ordernode-user5` |
+| Pranav Chavda | 1 | `http://localhost:8001` | 172.105.40.112 + v6 `2400:8904::2000:e0ff:fee6:fe6c` | Main instance |
+| Ashok Chavda | 5 | `http://localhost:8001` | same as Pranav (Upstox **family member**, shared main-box IP) | Main instance |
+
+> As of 2026-06-05, both active users run entirely from the main box (orders via `localhost:8001`, reads via the shared family IP). No Nanodes are currently deployed — `ns-ordernode-user5` was decommissioned. The per-Nanode procedure below is retained for when we exceed the 5-member family limit or onboard non-family users (see the future-direction note in the UPDATE section — those nodes must tunnel reads **and** orders).
 
 ## Key Files
 
@@ -262,9 +304,9 @@ ssh root@<nanode-ip> "ufw status"
 
 ## Cost
 
-- $5/month per user (Linode Nanode 1GB)
-- Main instance order node: $0 (runs on existing server)
-- Total for 2 users: $5/month
+- **Current (2026-06-05): $0 in Nanodes.** Both users run on the main box via Upstox family-IP sharing; `ns-ordernode-user5` decommissioned.
+- $5/month per user only once we exceed the 5-member family limit or onboard non-family users (each then needs their own Nanode — as a full reads+orders tunnel, see UPDATE section).
+- Main instance order node: $0 (runs on existing server).
 
 ## Future Considerations
 
