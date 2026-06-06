@@ -19,8 +19,9 @@ import {
   type MouseEventParams,
   type WhitespaceData,
 } from 'lightweight-charts';
-import { Search, Plus, X, Loader2, TrendingUp, TrendingDown, Radio, Activity, Building2, Calendar, Settings as SettingsIcon, RotateCcw } from 'lucide-react';
+import { Search, Plus, X, Loader2, TrendingUp, TrendingDown, Radio, Activity, Building2, Calendar, Settings as SettingsIcon, RotateCcw, Info } from 'lucide-react';
 import { requirePermission } from '../utils/route-permissions';
+import { Tooltip } from '../components/Tooltip';
 
 interface AuthContext {
   authToken: string;
@@ -837,7 +838,9 @@ function TechnicalsPanel({
       {sum && (
         <div className="px-3 py-3 border-b border-zinc-200 dark:border-zinc-800">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Verdict</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+              <HelpLabel text="Verdict" help={TECHNICAL_HELP.verdict} />
+            </span>
             <span className={`px-2 py-0.5 text-[11px] font-bold uppercase rounded ${stateBadgeClass(sum.verdict)}`}>
               {sum.verdict}
             </span>
@@ -845,15 +848,21 @@ function TechnicalsPanel({
           <div className="grid grid-cols-3 gap-1.5 text-center">
             <div className="bg-green-50 dark:bg-green-950/30 rounded px-2 py-1.5">
               <div className="text-base font-bold text-green-700 dark:text-green-400 tabular-nums">{sum.bullish}</div>
-              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Bull</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+                <HelpLabel text="Bull" help={TECHNICAL_HELP.bull} />
+              </div>
             </div>
             <div className="bg-zinc-100 dark:bg-zinc-800 rounded px-2 py-1.5">
               <div className="text-base font-bold text-zinc-600 dark:text-zinc-400 tabular-nums">{sum.neutral}</div>
-              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Neut</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+                <HelpLabel text="Neut" help={TECHNICAL_HELP.neut} />
+              </div>
             </div>
             <div className="bg-red-50 dark:bg-red-950/30 rounded px-2 py-1.5">
               <div className="text-base font-bold text-red-700 dark:text-red-400 tabular-nums">{sum.bearish}</div>
-              <div className="text-[9px] uppercase tracking-wider text-zinc-500">Bear</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+                <HelpLabel text="Bear" help={TECHNICAL_HELP.bear} />
+              </div>
             </div>
           </div>
         </div>
@@ -862,35 +871,39 @@ function TechnicalsPanel({
       {ind && (
         <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
           {/* Momentum */}
-          <Row label={ind.rsi.label} value={fmtNum(ind.rsi.value, 1)} state={ind.rsi.state} />
+          <Row label={ind.rsi.label} value={fmtNum(ind.rsi.value, 1)} state={ind.rsi.state} help={TECHNICAL_HELP.rsi} />
           <Row
             label={ind.macd.label}
             value={`${fmtNum(ind.macd.value, 2)} / ${fmtNum(ind.macd.signal, 2)}`}
             sub={`hist ${fmtNum(ind.macd.hist, 2)}`}
             state={ind.macd.state}
+            help={TECHNICAL_HELP.macd}
           />
           <Row
             label={ind.stoch.label}
             value={`%K ${fmtNum(ind.stoch.k, 1)} / %D ${fmtNum(ind.stoch.d, 1)}`}
             state={ind.stoch.state}
+            help={TECHNICAL_HELP.stoch}
           />
 
           {/* Trend */}
-          <Row label={ind.ema_20.label} value={fmtNum(ind.ema_20.value, 2)} state={ind.ema_20.state} />
-          <Row label={ind.ema_50.label} value={fmtNum(ind.ema_50.value, 2)} state={ind.ema_50.state} />
-          <Row label={ind.ema_200.label} value={fmtNum(ind.ema_200.value, 2)} state={ind.ema_200.state} />
-          <Row label={ind.vwap.label} value={fmtNum(ind.vwap.value, 2)} state={ind.vwap.state} />
+          <Row label={ind.ema_20.label} value={fmtNum(ind.ema_20.value, 2)} state={ind.ema_20.state} help={TECHNICAL_HELP.ema_20} />
+          <Row label={ind.ema_50.label} value={fmtNum(ind.ema_50.value, 2)} state={ind.ema_50.state} help={TECHNICAL_HELP.ema_50} />
+          <Row label={ind.ema_200.label} value={fmtNum(ind.ema_200.value, 2)} state={ind.ema_200.state} help={TECHNICAL_HELP.ema_200} />
+          <Row label={ind.vwap.label} value={fmtNum(ind.vwap.value, 2)} state={ind.vwap.state} help={TECHNICAL_HELP.vwap} />
 
           {/* Volatility */}
           <Row
             label={ind.bbands.label}
             value={`${fmtNum(ind.bbands.lower, 2)} – ${fmtNum(ind.bbands.upper, 2)}`}
             sub={ind.bbands.pct_b !== null && ind.bbands.pct_b !== undefined ? `%B ${fmtNum(ind.bbands.pct_b, 2)}` : undefined}
+            help={TECHNICAL_HELP.bbands}
           />
           <Row
             label={ind.atr.label}
             value={fmtNum(ind.atr.value, 2)}
             sub={ind.atr.pct !== null && ind.atr.pct !== undefined ? `${fmtNum(ind.atr.pct, 2)}%` : undefined}
+            help={TECHNICAL_HELP.atr}
           />
         </div>
       )}
@@ -1049,13 +1062,17 @@ function FundamentalsPanel({
             <div className="px-3 py-2 text-[11px]">
               {data.sector && (
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-500 uppercase tracking-wider text-[9px]">Sector</span>
+                  <span className="text-zinc-500 uppercase tracking-wider text-[9px]">
+                    <HelpLabel text="Sector" help={FUNDAMENTAL_HELP.sector} />
+                  </span>
                   <span className="font-semibold text-zinc-700 dark:text-zinc-300">{data.sector}</span>
                 </div>
               )}
               {data.sector_market_cap_inr_formatted && (
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-zinc-500 uppercase tracking-wider text-[9px]">Sector mcap</span>
+                  <span className="text-zinc-500 uppercase tracking-wider text-[9px]">
+                    <HelpLabel text="Sector mcap" help={FUNDAMENTAL_HELP.sector_mcap} />
+                  </span>
                   <span className="font-mono text-zinc-600 dark:text-zinc-400">₹{data.sector_market_cap_inr_formatted}</span>
                 </div>
               )}
@@ -1065,7 +1082,9 @@ function FundamentalsPanel({
           {/* Ratios with sector benchmark */}
           {data.ratios && data.ratios.length > 0 && (
             <div className="px-3 py-2">
-              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">Key Ratios vs Sector</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">
+                <HelpLabel text="Key Ratios vs Sector" help={FUNDAMENTAL_HELP.ratios_section} />
+              </div>
               <div className="space-y-1">
                 {data.ratios.map((r) => {
                   const cv = parseRatioValue(r.company_value);
@@ -1082,7 +1101,9 @@ function FundamentalsPanel({
                       : 'text-zinc-600 dark:text-zinc-400';
                   return (
                     <div key={r.name} className="flex items-center justify-between text-[11px]">
-                      <span className="text-zinc-500 font-medium">{r.name}</span>
+                      <span className="text-zinc-500 font-medium">
+                        <HelpLabel text={r.name} help={FUNDAMENTAL_HELP[r.name]} />
+                      </span>
                       <div className="flex items-center gap-1.5 tabular-nums">
                         <span className={`font-bold ${colorCls}`}>{r.company_value ?? 'n/a'}</span>
                         <span className="text-zinc-400 dark:text-zinc-600">vs</span>
@@ -1099,7 +1120,7 @@ function FundamentalsPanel({
           {data.latest_quarter && Object.keys(data.latest_quarter).length > 0 && (
             <div className="px-3 py-2">
               <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">
-                Latest Quarter
+                <HelpLabel text="Latest Quarter" help={FUNDAMENTAL_HELP.quarter_section} />
                 {(() => {
                   const period = Object.values(data.latest_quarter).find(Boolean)?.period;
                   return period ? <span className="ml-1 normal-case font-normal">({period})</span> : null;
@@ -1113,7 +1134,9 @@ function FundamentalsPanel({
                   const chgNegative = q.change && /^-/.test(q.change);
                   return (
                     <div key={cat} className="flex items-center justify-between">
-                      <span className="text-zinc-500 capitalize">{cat.replace('_', ' ')}</span>
+                      <span className="text-zinc-500 capitalize">
+                        <HelpLabel text={cat.replace('_', ' ')} help={FUNDAMENTAL_HELP[cat]} />
+                      </span>
                       <div className="flex items-center gap-1.5 tabular-nums">
                         <span className="font-mono text-zinc-700 dark:text-zinc-300">₹{q.value.toLocaleString('en-IN')}</span>
                         {q.change && (
@@ -1139,7 +1162,9 @@ function FundamentalsPanel({
           {/* Shareholding deltas */}
           {data.shareholding && (
             <div className="px-3 py-2">
-              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">Shareholding QoQ</div>
+              <div className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1.5">
+                <HelpLabel text="Shareholding QoQ" help={FUNDAMENTAL_HELP.shareholding_section} />
+              </div>
               <div className="space-y-1 text-[11px]">
                 {(['promoter', 'fii', 'mutual_funds'] as const).map((cat) => {
                   const sh = data.shareholding?.[cat];
@@ -1151,7 +1176,9 @@ function FundamentalsPanel({
                   const label = cat === 'mutual_funds' ? 'MF' : cat.toUpperCase();
                   return (
                     <div key={cat} className="flex items-center justify-between">
-                      <span className="text-zinc-500">{label}</span>
+                      <span className="text-zinc-500">
+                        <HelpLabel text={label} help={FUNDAMENTAL_HELP[cat]} />
+                      </span>
                       <div className="flex items-center gap-1.5 tabular-nums">
                         <span className="font-mono text-zinc-700 dark:text-zinc-300">{sh.latest.toFixed(2)}%</span>
                         {delta !== null && (
@@ -1175,7 +1202,7 @@ function FundamentalsPanel({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1.5">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-                      {data.upcoming_action.name}
+                      <HelpLabel text={data.upcoming_action.name ?? 'Corporate action'} help={FUNDAMENTAL_HELP.corporate_action} />
                     </span>
                     <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400 tabular-nums">
                       in {data.upcoming_action.days_until}d
@@ -1215,21 +1242,100 @@ function FundamentalsPanel({
   );
 }
 
+// ─── Plain-English glossary (for the noob-friendly tooltips) ────────────────
+// Keep copy short, accurate, and jargon-light. Technicals are keyed by the
+// indicator key used at the call sites; fundamentals ratios are keyed by the
+// exact `name` the Upstox key-ratios endpoint emits (same strings as
+// RATIO_HIGHER_IS_BETTER). Unknown keys fall back to no tooltip.
+
+const TECHNICAL_HELP: Record<string, string> = {
+  verdict:
+    'Overall read combining all the signals below. Bullish = more indicators point up, Bearish = down, Neutral = mixed. A guide, not a guarantee.',
+  bull: 'How many indicators are currently leaning bullish (price likely to rise).',
+  neut: 'How many indicators are neutral — no clear up or down lean.',
+  bear: 'How many indicators are currently leaning bearish (price likely to fall).',
+  rsi: 'Relative Strength Index (0–100) — a momentum gauge. Above 70 = possibly overbought (may pull back); below 30 = oversold (may bounce).',
+  macd: 'Moving Average Convergence Divergence — trend + momentum. When the MACD line crosses above its signal line it’s bullish, below is bearish. The histogram is the gap between them.',
+  stoch: 'Stochastic oscillator (%K and %D, 0–100) — compares the close to its recent range. Above 80 = overbought, below 20 = oversold.',
+  ema_20: 'Exponential Moving Average over ~20 periods — a short-term trend line, weighted to recent prices. Price above it is bullish; below is bearish.',
+  ema_50: 'Exponential Moving Average over ~50 periods — the medium-term trend. Price above it is bullish; below is bearish.',
+  ema_200: 'Exponential Moving Average over ~200 periods — the long-term trend. Price above it suggests a broad uptrend; below, a downtrend.',
+  vwap: 'Volume-Weighted Average Price — the average price weighted by how much traded, reset each day. Intraday, price above VWAP is bullish; below is bearish.',
+  bbands: 'Bollinger Bands — a band drawn 2 standard deviations above/below a moving average. Price near the upper band is stretched high, near the lower band stretched low. %B shows where price sits in the band (0 = lower, 1 = upper).',
+  atr: 'Average True Range — the typical price move per period, in rupees. A volatility gauge (not direction): higher = bigger swings. Handy for sizing stop-losses.',
+};
+
+const FUNDAMENTAL_HELP: Record<string, string> = {
+  sector: 'The industry group this company belongs to (e.g. Banks, IT). Used to compare it against its peers.',
+  sector_mcap:
+    'Combined market value of every company in this sector. Market cap = share price × shares outstanding.',
+  ratios_section:
+    'Valuation and quality ratios for this company shown next to the sector average, so you can see if it’s cheaper/pricier or stronger/weaker than peers.',
+  // Ratio names — must match the Upstox `name` strings verbatim.
+  ROA: 'Return on Assets — profit earned per rupee of assets the company owns. Higher is better; shows how efficiently it uses what it has.',
+  ROE: 'Return on Equity — profit earned per rupee of shareholders’ money. Higher is better.',
+  ROCE: 'Return on Capital Employed — profit relative to all capital used (debt + equity). Higher is better; a broad efficiency measure.',
+  'Quick Ratio':
+    'Liquid assets vs short-term bills (excludes inventory). Above 1 means it can cover near-term obligations comfortably. Higher is safer.',
+  'P/E': 'Price-to-Earnings — share price ÷ earnings per share. How many rupees you pay per rupee of yearly profit. Lower can mean cheaper — compare within the sector.',
+  'P/B': 'Price-to-Book — share price vs net asset (book) value per share. Lower can mean cheaper relative to what the company owns.',
+  'EV/EBITDA':
+    'Enterprise Value ÷ EBITDA — total company value (including debt) vs its operating earnings. A valuation gauge; lower is generally cheaper.',
+  quarter_section:
+    'Headline numbers from the most recent quarterly results. The % next to each is the change vs the same quarter a year ago (year-on-year).',
+  revenue: 'Total sales booked in the latest reported quarter. The % is the year-on-year change.',
+  operating_profit: 'Profit from core operations before interest and tax. The % is the year-on-year change.',
+  net_profit: 'Bottom-line profit after all costs, interest and tax. The % is the year-on-year change.',
+  shareholding_section:
+    'Who owns the shares and how their stake changed from the previous quarter (QoQ = quarter-on-quarter). Rising institutional stakes can signal confidence.',
+  promoter: 'Promoters — the founders / controlling owners. A rising stake can signal insider confidence.',
+  fii: 'Foreign Institutional Investors — overseas funds. Their buying and selling often moves the price.',
+  mutual_funds: 'Domestic mutual funds’ combined holding. A rising stake shows growing local institutional interest.',
+  corporate_action:
+    'A scheduled company event such as a dividend, bonus, stock split or buyback, with its date. “amount” applies to dividends; “ratio” to bonus/split.',
+};
+
+// Inline label + hover tooltip with a small info icon. When no help text is
+// supplied it renders the plain label (so it's safe to use everywhere).
+function HelpLabel({
+  text,
+  help,
+  className,
+}: {
+  text: string;
+  help?: string;
+  className?: string;
+}) {
+  if (!help) return <span className={className}>{text}</span>;
+  return (
+    <Tooltip content={help} width={260}>
+      <span className={`inline-flex items-center gap-1 cursor-help ${className ?? ''}`}>
+        {text}
+        <Info className="w-3 h-3 opacity-40" />
+      </span>
+    </Tooltip>
+  );
+}
+
 function Row({
   label,
   value,
   sub,
   state,
+  help,
 }: {
   label: string;
   value: string;
   sub?: string;
   state?: string;
+  help?: string;
 }) {
   return (
     <div className="px-3 py-2 flex items-center justify-between gap-2">
       <div className="min-w-0">
-        <div className="text-[10px] uppercase tracking-wider font-semibold text-zinc-500">{label}</div>
+        <div className="text-[10px] uppercase tracking-wider font-semibold text-zinc-500">
+          <HelpLabel text={label} help={help} />
+        </div>
         <div className="text-xs font-bold tabular-nums text-zinc-900 dark:text-zinc-100">{value}</div>
         {sub && <div className="text-[10px] text-zinc-500 tabular-nums">{sub}</div>}
       </div>
