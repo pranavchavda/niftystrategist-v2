@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 from sqlalchemy import select
@@ -285,6 +286,102 @@ async def _keep_typing(bot, chat_id: int) -> None:
         pass
 
 
+class _StatusReporter:
+    """Live 'what the agent is doing' message — the Telegram analog of the web's
+    tool-call pills and reasoning blocks.
+
+    Each tool invocation / reasoning turn appends a line to a single message that
+    is edited in place as the turn progresses, then left in the chat as an audit
+    trail (so the user can eyeball whether the answer was actually backed by tool
+    calls — easier to catch a hallucination). The message is only created once the
+    first activity fires, so trivial text replies stay clean.
+
+    Best-effort throughout: every Telegram call is guarded, so a flood limit or a
+    stale-edit error can never break the actual turn.
+    """
+
+    _MIN_INTERVAL = 1.1  # seconds between edits — Telegram flood guard
+    _MAX_LINES = 12  # cap the trail so the message stays well under 4096 chars
+
+    def __init__(self, bot, chat_id: int) -> None:
+        self._bot = bot
+        self._chat_id = chat_id
+        self._lines: list[str] = []
+        self._message_id: int | None = None
+        self._last_edit = 0.0
+        self._edit_lock = asyncio.Lock()
+        self._pending: asyncio.Task | None = None
+
+    @staticmethod
+    def _format(kind: str, detail: str) -> str | None:
+        if kind == "thinking":
+            return "🧠 Thinking…"
+        if kind == "tool":
+            detail = (detail or "").strip().replace("\n", " ")
+            if not detail:
+                return "⚙️ Working…"
+            if len(detail) > 80:
+                detail = detail[:79] + "…"
+            return f"⚙️ {detail}"
+        return None
+
+    async def on_activity(self, kind: str, detail: str) -> None:
+        line = self._format(kind, detail)
+        if line is None:
+            return
+        # Collapse consecutive duplicates (e.g. repeated reasoning turns).
+        if self._lines and self._lines[-1] == line:
+            return
+        self._lines.append(line)
+        await self._schedule_flush()
+
+    def _render(self) -> str:
+        lines = self._lines[-self._MAX_LINES :]
+        if len(self._lines) > self._MAX_LINES:
+            lines = ["…"] + lines
+        return "\n".join(lines)
+
+    async def _schedule_flush(self) -> None:
+        delay = self._MIN_INTERVAL - (time.monotonic() - self._last_edit)
+        if delay <= 0:
+            await self._do_edit()
+        elif self._pending is None or self._pending.done():
+            self._pending = asyncio.create_task(self._delayed(delay))
+
+    async def _delayed(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        await self._do_edit()
+
+    async def _do_edit(self) -> None:
+        async with self._edit_lock:
+            self._last_edit = time.monotonic()
+            text = self._render()
+            if not text:
+                return
+            try:
+                if self._message_id is None:
+                    msg = await self._bot.send_message(self._chat_id, text)
+                    self._message_id = msg.message_id
+                else:
+                    await self._bot.edit_message_text(
+                        text, chat_id=self._chat_id, message_id=self._message_id
+                    )
+            except Exception:
+                # "message is not modified", flood control, etc. — never surface.
+                logger.debug("status reporter edit failed", exc_info=True)
+
+    async def finish(self) -> None:
+        """Flush the final state; safe to call even if nothing was reported."""
+        if self._pending is not None and not self._pending.done():
+            self._pending.cancel()
+        if not self._lines:
+            return
+        await self._do_edit()
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Phase 2a: route a plain-text DM into the user's daily mandate thread."""
     if not update.effective_chat or not update.effective_message:
@@ -301,15 +398,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = _owning_user_id(context)
 
     typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))
+    reporter = _StatusReporter(context.bot, chat_id)
     try:
         from services.telegram_chat import run_telegram_turn
 
-        reply = await run_telegram_turn(user_id, chat_id, text)
+        reply = await run_telegram_turn(
+            user_id, chat_id, text, on_activity=reporter.on_activity
+        )
     except Exception:
         logger.exception("telegram handle_message failed user=%s", user_id)
         reply = "⚠️ Something went wrong. Try again, or use the NS web app."
     finally:
         typing_task.cancel()
+        await reporter.finish()
 
     # Empty reply == unauthorized chat (not the paired one) or empty input —
     # stay silent rather than leaking that this bot belongs to someone.
@@ -403,6 +504,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return  # silent — same as run_telegram_turn does for unauthorized chats
 
     typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))
+    reporter = _StatusReporter(context.bot, chat_id)
     try:
         from services import voice as voice_service
         from services.telegram_chat import run_telegram_turn
@@ -422,12 +524,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
-        reply = await run_telegram_turn(user_id, chat_id, transcript, is_voice=True)
+        reply = await run_telegram_turn(
+            user_id, chat_id, transcript, is_voice=True, on_activity=reporter.on_activity
+        )
     except Exception:
         logger.exception("telegram handle_voice failed user=%s", user_id)
         reply = "⚠️ Something went wrong with that voice note. Try again, or use the NS web app."
     finally:
         typing_task.cancel()
+        await reporter.finish()
 
     # Empty reply == unauthorized chat — stay silent (don't leak bot ownership).
     if not reply:
