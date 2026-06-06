@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import timedelta
+from typing import Awaitable, Callable, Optional
 
 from sqlalchemy import select, update as sa_update
 
@@ -123,8 +125,86 @@ async def _persist_turn(
     await session.commit()
 
 
+# --- Live activity indicators (tool calls + reasoning) ----------------------
+#
+# The web chat streams tool-call pills and reasoning blocks so the user can see
+# what the agent is actually doing (and catch a hallucinated answer that skipped
+# the tools). Telegram runs `agent.run()` to completion, so we hook pydantic-ai's
+# `event_stream_handler` to surface the same trail: each tool invocation and each
+# reasoning turn is reported to an `on_activity(kind, detail)` callback the caller
+# renders as a live-edited Telegram message.
+
+# Activity callback: (kind, detail) -> awaitable. kind is "tool" or "thinking".
+ActivityCallback = Callable[[str, str], Awaitable[None]]
+
+
+def _clean_command(cmd: str) -> str:
+    """Reduce an execute_bash command to the readable tool invocation.
+
+    `python cli-tools/nf-quote RELIANCE` -> `nf-quote RELIANCE`. Keeps only the
+    first line and strips the python/cli-tools wrapper so the indicator reads like
+    the tool the agent ran.
+    """
+    if not cmd:
+        return ""
+    first = cmd.strip().splitlines()[0].strip()
+    first = re.sub(r"^python3?\s+", "", first)
+    first = re.sub(r"^(\./)?cli-tools/", "", first)
+    return first
+
+
+def _describe_tool_call(part) -> tuple[str, str]:
+    """Map a pydantic-ai ToolCallPart to (kind, detail) for the indicator."""
+    name = getattr(part, "tool_name", "") or "tool"
+    try:
+        args = part.args_as_dict()
+    except Exception:
+        args = {}
+
+    if name == "execute_bash":
+        return "tool", _clean_command(args.get("command") or "") or "command"
+    if name == "call_agent":
+        return "tool", (args.get("agent_name") or "agent").strip() or "agent"
+    if name == "render_ui":
+        return "tool", "preparing confirmation"
+    return "tool", name.replace("_", " ")
+
+
+def _build_event_handler(on_activity: ActivityCallback):
+    """Return a pydantic-ai event_stream_handler that drives `on_activity`.
+
+    Reports a tool invocation on each FunctionToolCallEvent (args are complete by
+    then) and a reasoning turn on each ThinkingPart start. Bulletproof: any error
+    is swallowed so a status-update failure can never abort the actual turn.
+    """
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        PartStartEvent,
+        ThinkingPart,
+    )
+
+    async def handler(ctx, event_stream) -> None:
+        async for event in event_stream:
+            try:
+                if isinstance(event, FunctionToolCallEvent):
+                    kind, detail = _describe_tool_call(event.part)
+                    await on_activity(kind, detail)
+                elif isinstance(event, PartStartEvent) and isinstance(
+                    event.part, ThinkingPart
+                ):
+                    await on_activity("thinking", "")
+            except Exception:
+                logger.debug("telegram activity handler error", exc_info=True)
+
+    return handler
+
+
 async def run_telegram_turn(
-    user_id: int, chat_id: int, text: str, is_voice: bool = False
+    user_id: int,
+    chat_id: int,
+    text: str,
+    is_voice: bool = False,
+    on_activity: Optional[ActivityCallback] = None,
 ) -> str:
     """Process one inbound Telegram message; return the reply text.
 
@@ -226,6 +306,8 @@ async def run_telegram_turn(
             kwargs = {"deps": deps}
             if history:
                 kwargs["message_history"] = history
+            if on_activity is not None:
+                kwargs["event_stream_handler"] = _build_event_handler(on_activity)
             run_result = await asyncio.wait_for(
                 orchestrator.agent.run(text, **kwargs),
                 timeout=_TURN_TIMEOUT_S,
