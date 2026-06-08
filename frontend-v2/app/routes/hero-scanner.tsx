@@ -7,7 +7,7 @@ import {
   Radar, Play, Loader2, TrendingUp, TrendingDown, Info, X,
   Crown, Medal, Award, Newspaper, Rocket, ArrowUpRight,
   ArrowDownRight, AlertTriangle, CheckCircle2, ShoppingCart, LineChart,
-  Target,
+  Target, Bug,
 } from 'lucide-react';
 import { Tooltip } from '../components/Tooltip';
 
@@ -490,6 +490,35 @@ const UNIVERSE_LABELS: Record<'nifty50' | 'nifty100' | 'nifty500' | 'niftytotal'
   niftytotal: 'Nifty Total Market',
 };
 
+// NSE Industry sector labels (sent verbatim to the scanner's --sector flag,
+// which matches them exactly). Empty value = scan all sectors. Smaller
+// universes (e.g. Nifty 50) won't contain every sector — picking one that's
+// absent returns a clear "no stocks in sector" message.
+const SECTORS = [
+  'Automobile and Auto Components',
+  'Capital Goods',
+  'Chemicals',
+  'Construction',
+  'Construction Materials',
+  'Consumer Durables',
+  'Consumer Services',
+  'Diversified',
+  'Fast Moving Consumer Goods',
+  'Financial Services',
+  'Forest Materials',
+  'Healthcare',
+  'Information Technology',
+  'Media Entertainment & Publication',
+  'Metals & Mining',
+  'Oil Gas & Consumable Fuels',
+  'Power',
+  'Realty',
+  'Services',
+  'Telecommunication',
+  'Textiles',
+  'Utilities',
+];
+
 // ─── Deploy signal-session modal ─────────────────────────────────────────────
 
 interface DeploySessionModalProps {
@@ -745,16 +774,21 @@ export default function HeroScannerPage() {
 
   // Scan options
   const [universe, setUniverse] = useState<'nifty50' | 'nifty100' | 'nifty500' | 'niftytotal'>('nifty50');
+  const [sector, setSector] = useState('');  // '' = all sectors
   const [top, setTop] = useState('10');
   const [minScore, setMinScore] = useState('0');
   const [deep, setDeep] = useState('15');
   const [news, setNews] = useState(false);
   const [withSignalMatch, setWithSignalMatch] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugSymbol, setDebugSymbol] = useState('');
 
   // Run state
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
+  // Symbol force-included via debug mode (highlighted + flagged if it dropped out).
+  const [scannedDebug, setScannedDebug] = useState<string | null>(null);
 
   // Order modal
   const [orderFor, setOrderFor] = useState<Candidate | null>(null);
@@ -764,14 +798,17 @@ export default function HeroScannerPage() {
     setRunning(true);
     setError(null);
     setScan(null);
+    const debug = debugMode && debugSymbol.trim() ? debugSymbol.trim().toUpperCase() : null;
     try {
       const payload: any = {
         universe,
+        ...(sector ? { sector } : {}),
         top: parseInt(top) || 10,
         min_score: parseInt(minScore) || 0,
         deep: parseInt(deep) || 15,
         news,
         with_signal_match: withSignalMatch,
+        ...(debug ? { debug } : {}),
       };
       const res = await fetch('/api/hero-scanner/scan', {
         method: 'POST',
@@ -781,6 +818,7 @@ export default function HeroScannerPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Scan failed');
       setScan(data.scan);
+      setScannedDebug(debug);
     } catch (e: any) {
       setError(e.message || 'Network error');
     } finally {
@@ -791,6 +829,9 @@ export default function HeroScannerPage() {
   const candidates = scan?.candidates ?? [];
   const podium = useMemo(() => candidates.slice(0, 3), [candidates]);
   const hasSignalMatch = useMemo(() => candidates.some(c => c.signal_match), [candidates]);
+  // A force-included debug symbol that came back without a quote never makes the
+  // table — flag it so the request doesn't look silently ignored.
+  const debugMissing = !!scan && !!scannedDebug && !candidates.some(c => c.symbol === scannedDebug);
   const niftyUp = (scan?.market_context.nifty_change_pct ?? 0) >= 0;
 
   return (
@@ -850,6 +891,21 @@ export default function HeroScannerPage() {
                 </select>
               </div>
 
+              <div>
+                <label className="mb-1 flex items-center gap-1 text-sm font-medium text-zinc-600 dark:text-zinc-400">
+                  Sector
+                  <Tooltip content="Narrow the scan to a single sector (e.g. Information Technology for tech stocks). Leave on 'All sectors' to scan the whole universe. Smaller universes may not include every sector.">
+                    <Info className="h-3.5 w-3.5 text-zinc-400" />
+                  </Tooltip>
+                </label>
+                <select value={sector} onChange={e => setSector(e.target.value)} className={selectCls}>
+                  <option value="">All sectors</option>
+                  {SECTORS.map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="mb-1 flex items-center gap-1 text-sm font-medium text-zinc-600 dark:text-zinc-400">
@@ -902,6 +958,27 @@ export default function HeroScannerPage() {
                 </span>
                 <input type="checkbox" checked={withSignalMatch} onChange={e => setWithSignalMatch(e.target.checked)} className="h-4 w-4 accent-amber-500" />
               </label>
+
+              {/* Debug single stock — force a symbol into the results */}
+              <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-700/50">
+                <label className="flex cursor-pointer items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-sm font-medium text-zinc-600 dark:text-zinc-400">
+                    <Bug className="h-4 w-4" /> Debug single stock
+                    <Tooltip content="Forces one symbol into the results and deep-analyzes it — even if it's outside the chosen universe/sector or wouldn't otherwise rank. The forced row is highlighted.">
+                      <Info className="h-3.5 w-3.5 text-zinc-400" />
+                    </Tooltip>
+                  </span>
+                  <input type="checkbox" checked={debugMode} onChange={e => setDebugMode(e.target.checked)} className="h-4 w-4 accent-amber-500" />
+                </label>
+                {debugMode && (
+                  <input
+                    value={debugSymbol}
+                    onChange={e => setDebugSymbol(e.target.value.toUpperCase())}
+                    placeholder="e.g. TATAMOTORS"
+                    className={`${selectCls} mt-2 font-mono text-xs`}
+                  />
+                )}
+              </div>
 
               {/* Run */}
               <button
@@ -1009,6 +1086,16 @@ export default function HeroScannerPage() {
                   </div>
                 )}
 
+                {/* Debug symbol couldn't be analyzed (no quote / not tradeable today) */}
+                {debugMissing && (
+                  <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+                    <Bug className="h-4 w-4 shrink-0" />
+                    <span>
+                      <strong className="font-mono">{scannedDebug}</strong> couldn't be analyzed — no live quote returned (illiquid, suspended, or not a tradeable NSE symbol today).
+                    </span>
+                  </div>
+                )}
+
                 {/* Table */}
                 {candidates.length === 0 ? (
                   <div className="rounded-xl border border-zinc-200 py-12 text-center text-sm text-zinc-500 dark:border-zinc-700/50">
@@ -1066,8 +1153,9 @@ export default function HeroScannerPage() {
                               : c.vol_expansion != null
                                 ? `${c.vol_expansion.toFixed(1)}×✻`
                                 : '—';
+                            const isDebug = scannedDebug != null && c.symbol === scannedDebug;
                             return (
-                              <tr key={c.symbol} className={`${rowTint(c.score)} transition hover:bg-amber-500/[0.06]`}>
+                              <tr key={c.symbol} className={`${isDebug ? 'bg-amber-500/[0.12] ring-1 ring-inset ring-amber-400/50' : rowTint(c.score)} transition hover:bg-amber-500/[0.06]`}>
                                 <td className="px-3 py-2.5 font-semibold text-zinc-900 dark:text-zinc-100">
                                   <span className="inline-flex items-center gap-1.5">
                                     {c.symbol}

@@ -42,6 +42,9 @@ from services.instruments_cache import (  # noqa: E402
     ensure_loaded as ensure_instruments,
     get_instrument_key,
     get_universe,
+    get_sector,
+    match_sectors,
+    list_sectors,
     NIFTY_50_SYMBOLS,
 )
 from models.analysis import OHLCVData  # noqa: E402
@@ -57,18 +60,54 @@ import requests  # noqa: E402
 # Batch quote fetching (batched API calls for universe + index)
 # ---------------------------------------------------------------------------
 
-def _build_symbol_universe(universe_name: str = "nifty500") -> list[str]:
-    """Return the symbol list for the given universe, resolved via instruments cache."""
+def _resolve_instrument_key(sym: str) -> str | None:
+    """Resolve an NSE equity symbol to its Upstox instrument key, or None."""
+    # Nifty 50 stocks have hardcoded ISINs; others need a cache lookup.
+    isin = UpstoxClient.SYMBOL_TO_ISIN.get(sym)
+    return get_instrument_key(sym) if not isin else f"NSE_EQ|{isin}"
+
+
+def _build_symbol_universe(universe_name: str = "nifty500",
+                           sector: str | None = None,
+                           force_include: str | None = None) -> list[str]:
+    """Return the symbol list for the given universe, resolved via instruments cache.
+
+    When ``sector`` is given (comma-separated user terms like "tech,pharma"),
+    the universe is narrowed to symbols whose NSE Industry sector matches.
+
+    ``force_include`` appends a symbol to the universe even when it falls
+    outside the named universe or the sector filter — used by debug mode to pull
+    an arbitrary stock into the scan. It's only added if it resolves to a valid
+    instrument; an unresolvable symbol is silently skipped (the caller warns).
+    """
     ensure_instruments()
     symbols = sorted(get_universe(universe_name))
     # Verify all symbols exist in the instruments cache
-    valid = []
-    for sym in symbols:
-        # Nifty 50 stocks have hardcoded ISINs; Next 50 need cache lookup
-        isin = UpstoxClient.SYMBOL_TO_ISIN.get(sym)
-        ikey = get_instrument_key(sym) if not isin else f"NSE_EQ|{isin}"
-        if ikey:
-            valid.append(sym)
+    valid = [sym for sym in symbols if _resolve_instrument_key(sym)]
+
+    if sector:
+        wanted: set[str] = set()
+        for part in sector.split(","):
+            wanted |= match_sectors(part)
+        if not wanted:
+            print_error(
+                f"No sector matched '{sector}'. Available sectors: "
+                + ", ".join(list_sectors())
+            )
+        filtered = [s for s in valid if get_sector(s) in wanted]
+        if not filtered:
+            print_error(
+                f"No {universe_name} stocks found in sector(s): "
+                f"{', '.join(sorted(wanted))}. Try a broader universe "
+                f"(e.g. --universe nifty500 or niftytotal)."
+            )
+        valid = filtered
+
+    if force_include:
+        forced = force_include.upper()
+        if forced not in valid and _resolve_instrument_key(forced):
+            valid.append(forced)
+
     return valid
 
 
@@ -588,17 +627,21 @@ async def run_scan(
     debug_symbol: str | None = None,
     universe_name: str = "nifty500",
     forecast: bool = False,
+    sector: str | None = None,
 ) -> list[dict]:
     """Run the full morning scan."""
     client = init_market_data_client()
     t0 = time.time()
 
-    # Build symbol universe
-    universe = _build_symbol_universe(universe_name)
+    # Build symbol universe (debug symbol is force-included even if it falls
+    # outside the universe / sector — see _build_symbol_universe).
+    universe = _build_symbol_universe(universe_name, sector=sector,
+                                      force_include=debug_symbol)
 
     # Phase 1: Batch fetch all quotes
     if verbose:
-        print(f"Phase 1: Fetching quotes for {len(universe)} {universe_name.upper()} stocks...", file=sys.stderr)
+        scope = f"{universe_name.upper()}" + (f" / {sector}" if sector else "")
+        print(f"Phase 1: Fetching quotes for {len(universe)} {scope} stocks...", file=sys.stderr)
 
     stock_quotes, nifty_quote = await fetch_all_quotes(client, universe)
 
@@ -717,14 +760,23 @@ async def run_scan(
     # Sort by total score, then phase1 score
     analyzed.sort(key=lambda c: (c["total_score"], c["phase1_score"], abs(c["rel_strength"])), reverse=True)
 
-    # Filter by min score
+    debug_sym = debug_symbol.upper() if debug_symbol else None
+
+    # Filter by min score (but never drop a force-included debug symbol)
     if min_score > 0:
-        analyzed = [c for c in analyzed if c["total_score"] >= min_score]
+        analyzed = [c for c in analyzed
+                    if c["total_score"] >= min_score or c["symbol"] == debug_sym]
 
     elapsed = time.time() - t0
 
     # Build final results
     final = analyzed[:top_n]
+
+    # Guarantee the debug symbol is present even if it ranked below top_n.
+    if debug_sym and not any(c["symbol"] == debug_sym for c in final):
+        forced = next((c for c in analyzed if c["symbol"] == debug_sym), None)
+        if forced:
+            final.append(forced)
 
     if verbose:
         print(f"\nScan complete in {elapsed:.1f}s", file=sys.stderr)
@@ -1430,6 +1482,12 @@ Scoring (0-8, or -1..10 with --forecast):
 Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
 """,
     )
+    parser.add_argument("--sector", metavar="NAME", default=None,
+                        help="Narrow the universe to one or more sectors (comma-separated). "
+                             "Accepts aliases like 'tech', 'pharma', 'bank', or full NSE labels "
+                             "like 'Information Technology'. Use --list-sectors to see all.")
+    parser.add_argument("--list-sectors", action="store_true",
+                        help="Print the available sector labels and exit.")
     parser.add_argument("--universe", choices=["nifty50", "nifty100", "nifty500", "niftytotal"], default="nifty500",
                         help="Stock universe to scan (default: nifty500). niftytotal = Nifty Total Market (~750)")
     parser.add_argument("--top", type=int, default=10, metavar="N", help="Number of top candidates to show (default: 10)")
@@ -1437,7 +1495,9 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
     parser.add_argument("--deep", type=int, default=15, metavar="N", help="Number of stocks to deep-analyze (default: 15)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", action="store_true", help="Show scan progress to stderr")
-    parser.add_argument("--debug", metavar="SYMBOL", help="Debug mode: show all indicators for one stock")
+    parser.add_argument("--debug", metavar="SYMBOL",
+                        help="Force a symbol into the results and deep-analyze it, even if it "
+                             "falls outside the universe/sector or ranks below --top/--min-score.")
     parser.add_argument("--news", action="store_true", help="Include Perplexity market-overview briefing (macro/mood). Per-candidate news from Upstox is always included.")
     parser.add_argument("--forecast", action="store_true",
                         help="Run TimesFM price forecasts on deep-analyzed candidates and "
@@ -1463,6 +1523,13 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
 
     args = parser.parse_args()
 
+    # Sector listing is a standalone query — print and exit.
+    if args.list_sectors:
+        ensure_instruments()
+        for s in list_sectors():
+            print(s)
+        return
+
     # Validate auto-deploy requirements
     if args.auto_deploy and not args.capital:
         parser.error("--capital is required when using --auto-deploy")
@@ -1478,6 +1545,7 @@ Requires NF_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN env var.
                 debug_symbol=args.debug,
                 universe_name=args.universe,
                 forecast=args.forecast,
+                sector=args.sector,
             )
         )
     except Exception as e:
