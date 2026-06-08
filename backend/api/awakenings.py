@@ -304,9 +304,17 @@ async def update_mandate(
         if not user:
             raise HTTPException(404, "User not found")
 
-        mandate = body.model_dump(exclude_none=True)
-        mandate["approved_at"] = utc_now().isoformat()
-        user.trading_mandate = mandate
+        # Merge, don't replace: the agent writes rich nested mandates (formula,
+        # rsi_filter, options_scalp, ...) that MandateUpdate doesn't model. A naive
+        # replace would collapse those to the 6 flat UI fields and silently degrade
+        # autonomous trading. Mirror the CLI's merge semantics. Build a fresh dict so
+        # SQLAlchemy detects the mutation on the JSON column.
+        merged = {
+            **(user.trading_mandate or {}),
+            **body.model_dump(exclude_none=True),
+            "approved_at": utc_now().isoformat(),
+        }
+        user.trading_mandate = merged
         await session.commit()
 
         return {"mandate": user.trading_mandate}

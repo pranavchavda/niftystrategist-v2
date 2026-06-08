@@ -56,6 +56,22 @@ const WINDOW_ICONS: Record<string, React.ReactNode> = {
   'Post-Close Review': <Moon className="w-4 h-4" />,
 };
 
+// Mandate values are sometimes stored as nested objects/arrays (the agent writes
+// rich structured mandates directly to the DB). The summary view only renders a
+// curated set of fields, but any of them can be a non-string — coerce defensively
+// so a nested object never reaches React as a child (minified error #31 / white screen).
+function asText(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) return v.map(asText).join(', ');
+  if (typeof v === 'object') {
+    return Object.entries(v as Record<string, unknown>)
+      .map(([k, val]) => `${k}: ${asText(val)}`)
+      .join(', ');
+  }
+  return String(v);
+}
+
 function formatTime(hour: number, minute: number): string {
   const h = hour % 12 || 12;
   const ampm = hour >= 12 ? 'PM' : 'AM';
@@ -439,7 +455,7 @@ export default function MandatesRoute() {
                     <Input
                       type="text"
                       placeholder="e.g., ₹5,000"
-                      value={mandateForm.risk_per_trade || ''}
+                      value={asText(mandateForm.risk_per_trade)}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMandateForm({ ...mandateForm, risk_per_trade: e.target.value })}
                     />
                   </div>
@@ -450,7 +466,7 @@ export default function MandatesRoute() {
                     <Input
                       type="text"
                       placeholder="e.g., ₹10,000"
-                      value={mandateForm.daily_loss_cap || ''}
+                      value={asText(mandateForm.daily_loss_cap)}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMandateForm({ ...mandateForm, daily_loss_cap: e.target.value })}
                     />
                   </div>
@@ -461,7 +477,7 @@ export default function MandatesRoute() {
                     <Input
                       type="text"
                       placeholder="e.g., NIFTY, BANKNIFTY options + Nifty 500 equity"
-                      value={mandateForm.allowed_instruments || ''}
+                      value={asText(mandateForm.allowed_instruments)}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMandateForm({ ...mandateForm, allowed_instruments: e.target.value })}
                     />
                   </div>
@@ -472,7 +488,7 @@ export default function MandatesRoute() {
                     <Input
                       type="text"
                       placeholder="e.g., 3:00 PM IST"
-                      value={mandateForm.cutoff_time || ''}
+                      value={asText(mandateForm.cutoff_time)}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMandateForm({ ...mandateForm, cutoff_time: e.target.value })}
                     />
                   </div>
@@ -483,7 +499,7 @@ export default function MandatesRoute() {
                     <Input
                       type="text"
                       placeholder="e.g., 3:15 PM IST"
-                      value={mandateForm.auto_squareoff_time || ''}
+                      value={asText(mandateForm.auto_squareoff_time)}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMandateForm({ ...mandateForm, auto_squareoff_time: e.target.value })}
                     />
                   </div>
@@ -495,7 +511,7 @@ export default function MandatesRoute() {
                   <textarea
                     className="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm text-zinc-900 dark:text-zinc-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[80px] resize-y"
                     placeholder="e.g., Only use ORB and breakout strategies. Prefer NIFTY 50 stocks. Avoid F&O before lunch."
-                    value={mandateForm.custom_instructions || ''}
+                    value={asText(mandateForm.custom_instructions)}
                     onChange={e => setMandateForm({ ...mandateForm, custom_instructions: e.target.value })}
                     rows={3}
                   />
@@ -528,14 +544,14 @@ export default function MandatesRoute() {
                   ].filter(item => item.value).map(item => (
                     <div key={item.label} className="p-2.5 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
                       <div className="text-xs text-zinc-500 dark:text-zinc-400">{item.label}</div>
-                      <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100 mt-0.5">{item.value}</div>
+                      <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100 mt-0.5">{asText(item.value)}</div>
                     </div>
                   ))}
                 </div>
                 {mandate.custom_instructions && (
                   <div className="mt-3 p-3 rounded-lg bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200/50 dark:border-amber-800/30">
                     <div className="text-xs text-amber-600 dark:text-amber-400 font-medium mb-1">Custom Instructions</div>
-                    <div className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">{mandate.custom_instructions}</div>
+                    <div className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">{asText(mandate.custom_instructions)}</div>
                   </div>
                 )}
               </>
