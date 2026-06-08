@@ -98,6 +98,7 @@ NSE_ETF_SYMBOLS: set[str] = set()
 # In-memory lookup tables (populated by ensure_loaded)
 _symbol_to_instrument_key: dict[str, str] = {}
 _symbol_to_name: dict[str, str] = {}
+_symbol_to_sector: dict[str, str] = {}  # symbol → NSE "Industry" sector label
 _index_alias_to_key: dict[str, str] = {}  # canonicalized alias → instrument_key
 _index_key_to_name: dict[str, str] = {}  # instrument_key → display name
 _index_key_to_tradingsymbol: dict[str, str] = {}  # instrument_key → tradingsymbol
@@ -323,6 +324,25 @@ def _nifty500_cache_is_fresh() -> bool:
         return False
 
 
+def _parse_constituents(reader) -> tuple[set[str], dict[str, str]]:
+    """Parse an NSE constituents CSV reader into (symbols, symbol→sector).
+
+    NSE index CSVs carry ``Symbol`` and ``Industry`` columns; we keep both so
+    callers can filter a universe by sector. Rows without a symbol are skipped.
+    """
+    symbols: set[str] = set()
+    sectors: dict[str, str] = {}
+    for row in reader:
+        sym = (row.get("Symbol") or "").strip().upper()
+        if not sym:
+            continue
+        symbols.add(sym)
+        industry = (row.get("Industry") or "").strip()
+        if industry:
+            sectors[sym] = industry
+    return symbols, sectors
+
+
 def _load_nifty500() -> bool:
     """Download Nifty 500 constituents from NSE and cache to disk."""
     global NIFTY_500_SYMBOLS, _nifty500_loaded
@@ -334,10 +354,10 @@ def _load_nifty500() -> bool:
     if _nifty500_cache_is_fresh() and os.path.exists(_NIFTY_500_CACHE):
         try:
             with open(_NIFTY_500_CACHE, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+                symbols, sectors = _parse_constituents(csv.DictReader(f))
             if symbols:
                 NIFTY_500_SYMBOLS = symbols
+                _symbol_to_sector.update(sectors)
                 _nifty500_loaded = True
                 logger.info(f"Nifty 500 loaded from cache: {len(symbols)} symbols")
                 return True
@@ -360,10 +380,10 @@ def _load_nifty500() -> bool:
         with open(_NIFTY_500_META, "w") as f:
             f.write(str(time.time()))
 
-        reader = csv.DictReader(io.StringIO(data))
-        symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+        symbols, sectors = _parse_constituents(csv.DictReader(io.StringIO(data)))
         if symbols:
             NIFTY_500_SYMBOLS = symbols
+            _symbol_to_sector.update(sectors)
             _nifty500_loaded = True
             logger.info(f"Nifty 500 constituents cached: {len(symbols)} symbols")
             return True
@@ -402,10 +422,10 @@ def _load_nifty_total() -> bool:
     if _nifty_total_cache_is_fresh() and os.path.exists(_NIFTY_TOTAL_CACHE):
         try:
             with open(_NIFTY_TOTAL_CACHE, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+                symbols, sectors = _parse_constituents(csv.DictReader(f))
             if symbols:
                 NIFTY_TOTAL_SYMBOLS = symbols
+                _symbol_to_sector.update(sectors)
                 _nifty_total_loaded = True
                 logger.info(f"Nifty Total Market loaded from cache: {len(symbols)} symbols")
                 return True
@@ -427,10 +447,10 @@ def _load_nifty_total() -> bool:
         with open(_NIFTY_TOTAL_META, "w") as f:
             f.write(str(time.time()))
 
-        reader = csv.DictReader(io.StringIO(data))
-        symbols = {row["Symbol"].strip().upper() for row in reader if row.get("Symbol")}
+        symbols, sectors = _parse_constituents(csv.DictReader(io.StringIO(data)))
         if symbols:
             NIFTY_TOTAL_SYMBOLS = symbols
+            _symbol_to_sector.update(sectors)
             _nifty_total_loaded = True
             logger.info(f"Nifty Total Market constituents cached: {len(symbols)} symbols")
             return True
@@ -678,6 +698,70 @@ def get_universe(name: str = "nifty500") -> set[str]:
             raise ValueError(
                 f"Unknown universe: {name}. Use nifty50, nifty100, nifty500, or niftytotal."
             )
+
+
+# User-friendly sector terms → a substring of the canonical NSE Industry label.
+# Matching is done case-insensitively against the labels actually present in the
+# loaded universe, so these only need to be distinctive substrings.
+_SECTOR_ALIASES: dict[str, str] = {
+    "tech": "information technology",
+    "it": "information technology",
+    "software": "information technology",
+    "pharma": "healthcare",
+    "health": "healthcare",
+    "bank": "financial services",
+    "banking": "financial services",
+    "finance": "financial services",
+    "financial": "financial services",
+    "fmcg": "fast moving consumer goods",
+    "auto": "automobile",
+    "automobile": "automobile",
+    "metal": "metals & mining",
+    "metals": "metals & mining",
+    "mining": "metals & mining",
+    "energy": "oil gas & consumable fuels",
+    "oil": "oil gas & consumable fuels",
+    "gas": "oil gas & consumable fuels",
+    "realty": "realty",
+    "realestate": "realty",
+    "telecom": "telecommunication",
+    "power": "power",
+    "chemical": "chemicals",
+    "chemicals": "chemicals",
+    "media": "media entertainment & publication",
+}
+
+
+def get_sector(symbol: str) -> str | None:
+    """Return the NSE Industry sector label for a symbol, or None if unknown."""
+    ensure_loaded()
+    return _symbol_to_sector.get(symbol.upper())
+
+
+def list_sectors() -> list[str]:
+    """Sorted list of distinct sector labels across the loaded universes."""
+    ensure_loaded()
+    return sorted(set(_symbol_to_sector.values()))
+
+
+def match_sectors(query: str) -> set[str]:
+    """Resolve a user sector term to the set of canonical NSE Industry labels.
+
+    Tries the alias map first, then a case-insensitive exact match, then a
+    substring match. A broad term like "consumer" deliberately unions every
+    matching sector (FMCG, Consumer Durables, Consumer Services). Returns an
+    empty set if nothing matches.
+    """
+    ensure_loaded()
+    q = query.strip().lower().replace("_", " ").replace("-", " ")
+    if not q:
+        return set()
+    labels = set(_symbol_to_sector.values())
+    target = _SECTOR_ALIASES.get(q.replace(" ", ""), q)
+    exact = {lbl for lbl in labels if lbl.lower() == target}
+    if exact:
+        return exact
+    return {lbl for lbl in labels if target in lbl.lower()}
 
 
 def symbol_exists(symbol: str) -> bool:

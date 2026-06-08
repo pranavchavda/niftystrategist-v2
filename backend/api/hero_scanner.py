@@ -51,6 +51,9 @@ _ORDER_TIMEOUT = 45
 
 class ScanRequest(BaseModel):
     universe: Literal["nifty50", "nifty100", "nifty500", "niftytotal"] = "nifty50"
+    # Optional sector filter — comma-separated NSE Industry labels or aliases
+    # (e.g. "Information Technology", "tech", "pharma"). None = all sectors.
+    sector: Optional[str] = None
     top: int = Field(10, ge=1, le=50)
     min_score: int = Field(0, ge=0, le=8)
     deep: int = Field(15, ge=1, le=50)
@@ -215,6 +218,8 @@ async def run_scan(req: ScanRequest, user: User = Depends(get_current_user)):
                         "--top", str(req.top),
                         "--min-score", str(req.min_score),
                         "--deep", str(req.deep)]
+    if req.sector:
+        args += ["--sector", req.sector]
     if req.news:
         args.append("--news")
     if req.with_signal_match:
