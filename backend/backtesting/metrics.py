@@ -36,7 +36,9 @@ def compute_metrics(trades: list[Trade], initial_capital: float) -> dict:
         }
 
     winners = [t for t in trades if t.pnl > 0]
-    losers = [t for t in trades if t.pnl <= 0]
+    losers = [t for t in trades if t.pnl < 0]
+    # Break-even trades (pnl == 0) are neither — counting them as losers gave
+    # them 0 gross loss and pushed profit_factor to inf on otherwise all-win runs.
     total = len(trades)
 
     win_rate = (len(winners) / total) * 100 if total else 0.0
@@ -76,7 +78,7 @@ def compute_metrics(trades: list[Trade], initial_capital: float) -> dict:
     max_consec = 0
     current_consec = 0
     for t in trades:
-        if t.pnl <= 0:
+        if t.pnl < 0:
             current_consec += 1
             max_consec = max(max_consec, current_consec)
         else:

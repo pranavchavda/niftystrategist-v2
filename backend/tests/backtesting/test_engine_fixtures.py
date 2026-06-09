@@ -242,3 +242,58 @@ def test_mean_reversion_template_tags_entry_anchor_only_with_sl_pct():
     absolute = tpl.plan("WIPRO", {"capital": 100_000, "sl": 198.0, "side": "short"})
     sl_abs = [r for r in absolute.rules if r.role == "sl"][0]
     assert "entry_anchor_pct" not in sl_abs.trigger_config
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Last-candle entry / break-even handling (2026-06-09 PF=inf artifact fix)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_no_phantom_trade_from_last_candle_entry():
+    """An entry that fires on the final candle has no bars left to manage and
+    would close same-bar via end_of_data as a 0-duration, 0-P&L phantom that
+    counts as a 'loser' with 0 gross loss → profit_factor=inf. The engine must
+    skip the last-bar entry so no phantom trade is recorded."""
+    from strategies.templates import RuleSpec
+    base = datetime(2026, 5, 1, 9, 15)
+    # Flat bars; a price-gte entry that only triggers on the very last bar.
+    bars = _series(base, [(100, 100, 100, 100), (100, 100, 100, 100), (100, 120, 100, 120)])
+    rules = [
+        RuleSpec(
+            name="entry-last-bar", trigger_type="price",
+            trigger_config={"condition": "gte", "price": 115.0, "reference": "ltp"},
+            action_type="place_order",
+            action_config={"transaction_type": "BUY", "quantity": 1},
+            role="entry",
+        ),
+    ]
+    eng = BacktestEngine(bars, rules, "TEST", "phantom-test", 100_000)
+    result = eng.run()
+    # Entry fires only on the last bar (high 120 >= 115) → skipped → no trade.
+    assert len(result.trades) == 0
+
+
+def test_breakeven_trade_not_counted_as_loser():
+    """A pnl==0 trade is break-even, not a loss — counting it as a loser gave it
+    0 gross loss and inflated profit_factor to inf."""
+    from backtesting.metrics import compute_metrics
+    from backtesting.simulator import Trade
+
+    def _t(pnl, reason="end_of_data"):
+        return Trade(
+            symbol="X", side="short", entry_price=100.0, entry_time="t0",
+            exit_price=100.0 - pnl, exit_time="t1", quantity=1, pnl=pnl,
+            pnl_pct=pnl, exit_reason=reason, holding_minutes=15,
+        )
+
+    m = compute_metrics([_t(50.0), _t(30.0), _t(0.0)], 100_000)
+    # The break-even trade is neither winner nor loser → 0 losers → PF stays
+    # inf ONLY because there are genuinely no losses (correct), not because a
+    # 0-pnl trade was miscounted.
+    assert m["winners"] == 2
+    assert m["losers"] == 0
+    # Add a real loss → PF must be finite and exclude the break-even from losses.
+    m2 = compute_metrics([_t(80.0), _t(0.0), _t(-40.0)], 100_000)
+    assert m2["winners"] == 1
+    assert m2["losers"] == 1
+    assert m2["profit_factor"] == 2.0  # 80 / 40, break-even ignored

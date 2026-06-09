@@ -146,7 +146,15 @@ class BacktestEngine:
 
             # Process fired rules in priority order: entry first, then exits
             # But only process exits if we have a position, entries if we're flat
+            is_last_candle = i == total - 1
             for rs in fired_rules:
+                if is_last_candle and rs.is_entry:
+                    # No bars left to manage a new position — it would close at
+                    # this same candle via end_of_data as a 0-duration, 0-P&L
+                    # phantom that counts as a non-winner with no gross loss and
+                    # inflates profit_factor to inf. Entering on the final bar
+                    # isn't a tradeable event; skip it.
+                    continue
                 self._process_fire(rs, candle, ts)
 
         if self.progress_cb is not None:
