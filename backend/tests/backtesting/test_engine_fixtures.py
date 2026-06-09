@@ -168,3 +168,77 @@ def test_engine_handles_indicator_rule_via_cache():
     # Cache should hold exactly one (indicator, params) entry — both rules share it.
     assert len(eng._indicator_cache) == 1
     assert ("rsi", (("period", 14),)) in eng._indicator_cache
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Mean-reversion SL re-anchoring (2026-06-09 fake-"sl"-profit fix)
+#
+# A % stop was anchored to the day OPEN at rule-build time. A mean-reversion
+# entry fires on an RSI spike away from the open, so the static stop landed on
+# the wrong (profit) side of the fill and triggered as a guaranteed fake "sl"
+# win. The engine now re-anchors entry_anchor_pct price exits to the real fill.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _engine_with(rules: list) -> BacktestEngine:
+    base = datetime(2026, 5, 1, 9, 15)
+    bars = _series(base, [(100, 100, 100, 100), (100, 100, 100, 100)])
+    return BacktestEngine(bars, rules, "TEST", "mr-test", 100_000)
+
+
+def test_reanchor_short_stop_moves_above_fill():
+    from strategies.templates import RuleSpec
+    sl = RuleSpec(
+        name="sl", trigger_type="price",
+        trigger_config={"condition": "gte", "price": 105.0, "reference": "ltp",
+                        "entry_anchor_pct": 1.0},
+        action_type="place_order",
+        action_config={"transaction_type": "BUY", "quantity": 1},
+        role="sl", enabled=False,
+    )
+    # An absolute --sl (no entry_anchor_pct) must be left exactly as given.
+    abs_sl = RuleSpec(
+        name="abs-sl", trigger_type="price",
+        trigger_config={"condition": "gte", "price": 105.0, "reference": "ltp"},
+        action_type="place_order",
+        action_config={"transaction_type": "BUY", "quantity": 1},
+        role="sl", enabled=False,
+    )
+    eng = _engine_with([sl, abs_sl])
+    eng._reanchor_exits_to_entry(110.0)   # spike fill well above the 105 placeholder
+    assert sl.trigger_config["price"] == 111.1     # 110 * 1.01 → above the fill
+    assert abs_sl.trigger_config["price"] == 105.0  # untouched
+
+
+def test_reanchor_long_stop_moves_below_fill():
+    from strategies.templates import RuleSpec
+    sl = RuleSpec(
+        name="sl", trigger_type="price",
+        trigger_config={"condition": "lte", "price": 95.0, "reference": "ltp",
+                        "entry_anchor_pct": -1.0},
+        action_type="place_order",
+        action_config={"transaction_type": "SELL", "quantity": 1},
+        role="sl", enabled=False,
+    )
+    eng = _engine_with([sl])
+    eng._reanchor_exits_to_entry(90.0)
+    assert sl.trigger_config["price"] == round(90.0 * 0.99, 2)  # 89.1 → below the fill
+
+
+def test_mean_reversion_template_tags_entry_anchor_only_with_sl_pct():
+    from strategies.mean_reversion import MeanReversionTemplate
+    tpl = MeanReversionTemplate()
+
+    short = tpl.plan("WIPRO", {"capital": 100_000, "sl": 198.0, "side": "short", "sl_pct": 1.0})
+    sl_short = [r for r in short.rules if r.role == "sl"][0]
+    assert sl_short.trigger_config.get("entry_anchor_pct") == 1.0   # short stop above entry
+
+    lng = tpl.plan("WIPRO", {"capital": 100_000, "sl": 195.0, "side": "long", "sl_pct": 1.0})
+    sl_long = [r for r in lng.rules if r.role == "sl"][0]
+    assert sl_long.trigger_config.get("entry_anchor_pct") == -1.0   # long stop below entry
+
+    # Absolute --sl (live `nf-strategy deploy` path) carries NO anchor tag, so
+    # live rule behaviour is unchanged by this backtest fix.
+    absolute = tpl.plan("WIPRO", {"capital": 100_000, "sl": 198.0, "side": "short"})
+    sl_abs = [r for r in absolute.rules if r.role == "sl"][0]
+    assert "entry_anchor_pct" not in sl_abs.trigger_config

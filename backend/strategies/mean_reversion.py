@@ -26,6 +26,9 @@ class MeanReversionTemplate(StrategyTemplate):
         "rsi_timeframe": "5m",
         "entry_price": None,      # Approximate entry for sizing (uses SL distance)
         "squareoff_time": "15:09",
+        "sl_pct": None,           # If set, the SL is anchored to the actual
+                                  # entry FILL (entry-relative), not a static
+                                  # day-open level — see SL rule below.
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
@@ -47,6 +50,19 @@ class MeanReversionTemplate(StrategyTemplate):
         side_entry = "BUY" if is_long else "SELL"
         side_exit = "SELL" if is_long else "BUY"
         sl_cond = "lte" if is_long else "gte"
+
+        # A percentage stop must be relative to the ENTRY fill, not a static
+        # day-open level. A mean-reversion entry fires on an RSI spike away
+        # from the open, so a day-open-anchored stop can land on the wrong
+        # (profit) side of the entry and fire as a fake "sl" win — every
+        # spike-short booked the reversion as a guaranteed gain. When sl_pct
+        # is given, tag the SL rule so the backtest engine re-anchors its
+        # price to the actual fill on entry: short stop ABOVE entry (+pct),
+        # long stop BELOW entry (-pct).
+        sl_pct = p.get("sl_pct")
+        sl_trigger = {"condition": sl_cond, "price": sl, "reference": "ltp"}
+        if sl_pct is not None:
+            sl_trigger["entry_anchor_pct"] = sl_pct if not is_long else -sl_pct
 
         # For sizing we need an approximate entry price
         entry_price = p.get("entry_price") or sl * (1.02 if is_long else 0.98)
@@ -97,7 +113,7 @@ class MeanReversionTemplate(StrategyTemplate):
             RuleSpec(
                 name=f"{symbol} MeanRev SL @ {sl}",
                 trigger_type="price",
-                trigger_config={"condition": sl_cond, "price": sl, "reference": "ltp"},
+                trigger_config=sl_trigger,
                 action_type="place_order",
                 action_config={
                     "symbol": symbol, "transaction_type": side_exit,

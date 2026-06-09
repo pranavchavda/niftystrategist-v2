@@ -392,6 +392,8 @@ class BacktestEngine:
                 rs.fire_count += 1
                 # Initialize trailing stops with entry price
                 self._init_trailing_on_entry(exec_price, direction)
+                # Re-anchor entry-relative price exits (e.g. % SL) to the fill
+                self._reanchor_exits_to_entry(exec_price)
                 # Enable exit rules for this direction
                 self._enable_exit_rules(direction)
             elif rs.direction and rs.direction != self._sim.position.side:
@@ -400,6 +402,7 @@ class BacktestEngine:
                 self._sim.open_position(direction, exec_price, ts, qty)
                 rs.fire_count += 1
                 self._init_trailing_on_entry(exec_price, direction)
+                self._reanchor_exits_to_entry(exec_price)
                 self._enable_exit_rules(direction)
 
         elif rs.is_exit:
@@ -454,6 +457,26 @@ class BacktestEngine:
                         rs.highest_price = entry_price
                     else:
                         rs.lowest_price = entry_price
+
+    def _reanchor_exits_to_entry(self, entry_price: float) -> None:
+        """Re-anchor entry-relative price exits to the actual entry fill.
+
+        A price exit (e.g. a mean-reversion % stop) may be built with a static
+        placeholder level (day-open-anchored) before the entry price is known.
+        When the entry fires on a spike away from the open, that static stop
+        can sit on the wrong side of the fill and trigger as a fake profit. If
+        the rule carries ``entry_anchor_pct`` we recompute its price from the
+        real fill: ``entry_price * (1 + entry_anchor_pct/100)`` (a short stop
+        is +pct = above entry, a long stop is -pct = below entry).
+        """
+        for rs in self._rules:
+            tc = rs.spec.trigger_config
+            if rs.spec.trigger_type != "price":
+                continue
+            pct = tc.get("entry_anchor_pct")
+            if pct is None:
+                continue
+            tc["price"] = round(entry_price * (1 + pct / 100.0), 2)
 
     def _enable_exit_rules(self, direction: str) -> None:
         """Enable exit rules matching the given direction after entry."""
