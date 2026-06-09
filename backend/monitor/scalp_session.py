@@ -84,6 +84,28 @@ def _exit_backoff_seconds(retry_count: int) -> int:
     return min(30 * (2 ** retry_count), 300)
 
 
+def _seed_backoff_seconds(retry_count: int) -> int:
+    """Backoff between candle-seed retries: 45→90→180→300s cap.
+
+    Floor is >= Upstox's typical 429 retry_after (~30s). A burst of new
+    sessions seeding at the open trips the historical-endpoint rate limit
+    (Cloudflare 1015); the seed then fails and — without a retry — the buffer
+    stays cold and the session can't emit a signal until ~150 live bars
+    accumulate (hours on a 5m timeframe), so its entries fire late and
+    clustered. Retrying with backoff warms it within a poll or two instead.
+    Origin: 2026-06-09 burst-deploy incident (sessions 238–241, user 1).
+    """
+    return min(45 * (2 ** retry_count), 300)
+
+
+# After this many failed seed attempts, stop retrying and let live ticks warm
+# the buffer (the pre-fix behaviour) rather than spinning on a hard failure.
+_MAX_SEED_ATTEMPTS = 6
+# Minimum spacing between live seed API calls so a burst of new sessions in one
+# poll doesn't trip the historical-endpoint rate limit in the first place.
+_SEED_API_GAP_SEC = 0.5
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,6 +140,20 @@ class ScalpSessionManager:
         self._underlying_map: dict[str, list[int]] = {}  # instrument_token → [session.id, ...]
         # Lookup: option_instrument_token → session_id
         self._premium_map: dict[str, int] = {}  # instrument_token → session.id
+
+        # Candle-seed retry bookkeeping per buf_key. A seed that fails (429
+        # throttle, token not yet loaded on the first poll, transient API
+        # error) leaves the buffer un-seeded; we retry on later polls with
+        # backoff rather than leaving the session cold until live ticks warm
+        # it. Readiness is tracked by _seeded (was a historical seed installed)
+        # NOT by buffer length — the tick path feeds the SAME buffer, so a cold
+        # buffer goes non-empty within seconds of subscription and a length
+        # check would falsely declare it warm and cancel the retry.
+        self._seeded: set[str] = set()
+        self._seed_attempts: dict[str, int] = {}
+        self._seed_next_attempt: dict[str, datetime] = {}
+        # Timestamp of the last live seed API call, for inter-call spacing.
+        self._last_seed_api_ts: datetime | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -172,25 +208,12 @@ class ScalpSessionManager:
                 pkey = f"{uid}:{session.runtime.current_instrument_token}"
                 new_premium_map[pkey] = session.id
 
-            # Create candle buffer if not exists, and seed it from history
-            # so indicators are immediately warm after a daemon restart.
-            buf_key = str(session.id)
-            if buf_key not in self._candle_buffers:
-                tf = session.config.indicator_timeframe
-                minutes = _parse_timeframe(tf)
-                new_buf = CandleBuffer(minutes)
-                self._candle_buffers[buf_key] = new_buf
-                try:
-                    client = await self._get_client(session.user_id)
-                    await seed_candle_buffer(
-                        new_buf, client,
-                        session.config.underlying_instrument_token,
-                        minutes,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Session %d: buffer seed failed: %s", session.id, e,
-                    )
+            # Create the candle buffer if missing and seed it from history so
+            # indicators are warm before acting on live ticks. Retried with
+            # backoff on later polls if the seed fails (rate-limit / token not
+            # yet loaded / transient) instead of leaving the buffer cold for
+            # hours. 2026-06-09.
+            await self._ensure_seeded(session)
 
             if session.config.pending_action:
                 pending_actions.append((session, session.config.pending_action))
@@ -273,6 +296,89 @@ class ScalpSessionManager:
         # Handle API-requested pending actions.
         for session, action in pending_actions:
             await self._handle_pending_action(session, action)
+
+    async def _space_seed_call(self) -> None:
+        """Sleep so consecutive live seed API calls are at least
+        ``_SEED_API_GAP_SEC`` apart, keeping a burst of new sessions under the
+        Upstox historical-endpoint rate limit."""
+        last = self._last_seed_api_ts
+        now = datetime.utcnow()
+        if last is not None:
+            elapsed = (now - last).total_seconds()
+            if elapsed < _SEED_API_GAP_SEC:
+                await asyncio.sleep(_SEED_API_GAP_SEC - elapsed)
+        self._last_seed_api_ts = datetime.utcnow()
+
+    async def _ensure_seeded(self, session: ScalpSession) -> None:
+        """Ensure the session's candle buffer is seeded from history.
+
+        Creates an empty buffer on first sight (so the tick path has somewhere
+        to write and provides a slow live-tick fallback). Until a *historical*
+        seed lands, attempts to seed on each poll — retrying with backoff if it
+        fails (429 throttle, token not yet loaded, transient API error) rather
+        than leaving the session cold (it can't emit a signal until ~150 live
+        bars accumulate — hours on a 5m timeframe).
+
+        Readiness is tracked by ``_seeded``, NOT by buffer length: the tick
+        path feeds the same buffer, so a cold buffer goes non-empty within
+        seconds and a length check would falsely cancel the retry. A successful
+        seed builds a fresh buffer and swaps it in atomically — sidestepping
+        both the seeder's non-empty guard and the live-tick trickle, and
+        discarding the few live candles the cold buffer accumulated while we
+        were throttled (worth it to install ~200 converged historical bars).
+        The next tick picks up the swapped buffer (re-fetched per tick).
+        """
+        buf_key = str(session.id)
+        if buf_key in self._seeded:
+            return  # already seeded from history — warm
+
+        # Ensure a buffer exists for the tick path / live-tick fallback.
+        if buf_key not in self._candle_buffers:
+            minutes = _parse_timeframe(session.config.indicator_timeframe)
+            self._candle_buffers[buf_key] = CandleBuffer(minutes)
+
+        attempts = self._seed_attempts.get(buf_key, 0)
+        if attempts >= _MAX_SEED_ATTEMPTS:
+            return  # gave up; live ticks warm it (pre-fix fallback)
+        next_at = self._seed_next_attempt.get(buf_key)
+        if next_at is not None and datetime.utcnow() < next_at:
+            return  # still inside the backoff window
+
+        await self._space_seed_call()
+        minutes = self._candle_buffers[buf_key].tf_minutes
+        fresh = CandleBuffer(minutes)
+        seeded = 0
+        try:
+            client = await self._get_client(session.user_id)
+            seeded = await seed_candle_buffer(
+                fresh, client,
+                session.config.underlying_instrument_token,
+                minutes,
+            )
+        except Exception as e:
+            # _get_client raises if the token isn't loaded yet (first poll for
+            # a scalp-only user); seed_candle_buffer swallows its own errors.
+            logger.warning("Session %d: buffer seed attempt failed: %s", session.id, e)
+
+        if seeded > 0:
+            # Swap in the seeded buffer atomically (single dict assignment, no
+            # await) and clear stale primary values so the first post-seed
+            # candle isn't read as a flip against a pre-seed value.
+            self._candle_buffers[buf_key] = fresh
+            self._primary_values.pop(buf_key, None)
+            self._prev_primary_values.pop(buf_key, None)
+            self._seeded.add(buf_key)
+            self._seed_attempts.pop(buf_key, None)
+            self._seed_next_attempt.pop(buf_key, None)
+        else:
+            attempts += 1
+            self._seed_attempts[buf_key] = attempts
+            backoff = _seed_backoff_seconds(attempts - 1)
+            self._seed_next_attempt[buf_key] = datetime.utcnow() + timedelta(seconds=backoff)
+            logger.info(
+                "Session %d: candle seed failed (attempt %d/%d) — retrying in %ds",
+                session.id, attempts, _MAX_SEED_ATTEMPTS, backoff,
+            )
 
     async def _handle_pending_action(
         self, session: ScalpSession, action: str

@@ -1653,3 +1653,182 @@ class TestShortPremiumExits:
             assert session.runtime.trail_armed is True
             assert session.runtime.highest_premium == 188.0
             mock_exit.assert_not_called()
+
+
+# ── Candle-seed retry / backoff (2026-06-09 burst-deploy 429 fix) ────────
+
+
+class TestCandleSeedRetry:
+    """A burst of new sessions seeding at the open trips the Upstox
+    historical-endpoint rate limit (Cloudflare 1015). The seed then fails and
+    — without a retry — the buffer stays cold, so the session can't emit a
+    signal until ~150 live bars accumulate (hours on a 5m timeframe) and its
+    entries fire late and clustered. These cover the retry-with-backoff fix.
+    """
+
+    @staticmethod
+    def _seed_ok(buf, client, token, minutes):
+        buf.seed([{
+            "timestamp": datetime.utcnow(), "open": 1.0, "high": 1.0,
+            "low": 1.0, "close": 1.0, "volume": 0,
+        }])
+        return 1
+
+    def test_seed_backoff_schedule(self):
+        from monitor.scalp_session import _seed_backoff_seconds
+        assert _seed_backoff_seconds(0) == 45
+        assert _seed_backoff_seconds(1) == 90
+        assert _seed_backoff_seconds(2) == 180
+        assert _seed_backoff_seconds(3) == 300
+        assert _seed_backoff_seconds(10) == 300
+
+    @pytest.mark.asyncio
+    async def test_successful_seed_warms_buffer_and_clears_state(self):
+        mgr = _make_manager()
+        session = _make_session(session_id=7)
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(side_effect=self._seed_ok)) as mock_seed:
+            await mgr._ensure_seeded(session)
+        assert mock_seed.await_count == 1
+        assert len(mgr._candle_buffers["7"].get_candles()) == 1
+        assert "7" not in mgr._seed_attempts
+        assert "7" not in mgr._seed_next_attempt
+
+        # A warm buffer is a no-op on the next poll — no further API call.
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(return_value=5)) as mock_seed2:
+            await mgr._ensure_seeded(session)
+        assert mock_seed2.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_failed_seed_retries_after_backoff_then_succeeds(self):
+        mgr = _make_manager()
+        session = _make_session(session_id=8)
+
+        # Attempt 1: 429 → seeded=0, buffer stays empty, backoff armed.
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(return_value=0)) as mock_fail:
+            await mgr._ensure_seeded(session)
+        assert mock_fail.await_count == 1
+        assert len(mgr._candle_buffers["8"].get_candles()) == 0
+        assert mgr._seed_attempts["8"] == 1
+        assert "8" in mgr._seed_next_attempt
+
+        # Immediate retry within the backoff window → skipped, no API call.
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(return_value=0)) as mock_skip:
+            await mgr._ensure_seeded(session)
+        assert mock_skip.await_count == 0
+        assert mgr._seed_attempts["8"] == 1  # unchanged
+
+        # Backoff window elapses → retry, this time the rate limit has cleared.
+        mgr._seed_next_attempt["8"] = datetime.utcnow() - timedelta(seconds=1)
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(side_effect=self._seed_ok)) as mock_ok:
+            await mgr._ensure_seeded(session)
+        assert mock_ok.await_count == 1
+        assert len(mgr._candle_buffers["8"].get_candles()) == 1
+        assert "8" not in mgr._seed_attempts
+        assert "8" not in mgr._seed_next_attempt
+
+    @pytest.mark.asyncio
+    async def test_token_not_loaded_first_poll_is_retryable(self):
+        # _get_client raises when the token isn't loaded yet (first poll for a
+        # scalp-only user). That must be recorded as a retryable failure, not
+        # crash load_sessions.
+        mgr = _make_manager()
+        mgr._get_client = AsyncMock(side_effect=ValueError("No access token for user 1"))
+        session = _make_session(session_id=9, user_id=1)
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(return_value=0)) as mock_seed:
+            await mgr._ensure_seeded(session)
+        assert mock_seed.await_count == 0  # never reached — client raised first
+        assert mgr._seed_attempts["9"] == 1
+        assert "9" in mgr._seed_next_attempt
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_max_attempts(self):
+        from monitor.scalp_session import _MAX_SEED_ATTEMPTS
+        from monitor.candle_buffer import CandleBuffer
+        mgr = _make_manager()
+        session = _make_session(session_id=10)
+        mgr._candle_buffers["10"] = CandleBuffer(1)  # empty
+        mgr._seed_attempts["10"] = _MAX_SEED_ATTEMPTS
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(return_value=0)) as mock_seed:
+            await mgr._ensure_seeded(session)
+        assert mock_seed.await_count == 0  # no more attempts
+
+    @pytest.mark.asyncio
+    async def test_space_seed_call_enforces_gap_between_api_calls(self):
+        from monitor.scalp_session import _SEED_API_GAP_SEC
+        mgr = _make_manager()
+        with patch("monitor.scalp_session.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await mgr._space_seed_call()           # first call: no prior ts → no sleep
+            assert mock_sleep.await_count == 0
+            await mgr._space_seed_call()           # immediate second call → spaced
+            assert mock_sleep.await_count == 1
+            slept = mock_sleep.await_args[0][0]
+            assert 0 < slept <= _SEED_API_GAP_SEC
+
+    @pytest.mark.asyncio
+    async def test_live_ticks_do_not_cancel_pending_reseed(self):
+        """Regression for the readiness-check race: the tick path feeds the
+        SAME buffer, so a cold buffer goes non-empty within seconds. Readiness
+        must key on _seeded (was a historical seed installed), NOT buffer
+        length — otherwise the live trickle falsely reads as "warm" and cancels
+        the retry before it runs. This is exactly the 238–241 production case.
+        """
+        mgr = _make_manager()
+        session = _make_session(session_id=11)  # 1m timeframe
+
+        # Attempt 1: seed 429s → empty buffer, backoff armed, NOT seeded.
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(return_value=0)) as mock_fail:
+            await mgr._ensure_seeded(session)
+        assert mock_fail.await_count == 1
+        assert "11" not in mgr._seeded
+
+        # Live ticks land on the cold buffer → it becomes non-empty (this is
+        # what a `len > 0` readiness check would have mistaken for "warm").
+        buf = mgr._candle_buffers["11"]
+        buf.add_tick(100.0, 0, datetime.utcnow())
+        buf.add_tick(101.0, 0, datetime.utcnow() + timedelta(minutes=2))
+        assert len(buf.get_candles()) >= 1
+
+        # Backoff elapses → the re-seed MUST still fire despite the live candles.
+        mgr._seed_next_attempt["11"] = datetime.utcnow() - timedelta(seconds=1)
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(side_effect=self._seed_ok)) as mock_ok:
+            await mgr._ensure_seeded(session)
+        assert mock_ok.await_count == 1            # the recovery path actually ran
+        assert "11" in mgr._seeded
+        # Historical seed swapped in, replacing the live-tick buffer object.
+        assert mgr._candle_buffers["11"] is not buf
+        assert len(mgr._candle_buffers["11"].get_candles()) == 1
+
+    @pytest.mark.asyncio
+    async def test_seeded_set_makes_warm_buffer_a_noop(self):
+        mgr = _make_manager()
+        session = _make_session(session_id=12)
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(side_effect=self._seed_ok)) as mock_seed:
+            await mgr._ensure_seeded(session)
+        assert mock_seed.await_count == 1
+        assert "12" in mgr._seeded
+        # Even if live ticks later empty/refill, _seeded short-circuits.
+        with patch.object(mgr, "_space_seed_call", new_callable=AsyncMock), \
+             patch("monitor.scalp_session.seed_candle_buffer",
+                   new=AsyncMock(return_value=1)) as mock_seed2:
+            await mgr._ensure_seeded(session)
+        assert mock_seed2.await_count == 0
