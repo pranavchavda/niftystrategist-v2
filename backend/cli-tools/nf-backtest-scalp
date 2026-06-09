@@ -74,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Optional confirm indicator")
     p.add_argument("--confirm-params", default=None,
                    help="JSON params for confirm")
+    p.add_argument("--entry-side", default="both",
+                   choices=["both", "long", "short"],
+                   help="Restrict entries to one direction (default: both). "
+                        "Mirrors the live session's entry_side: 'long' takes "
+                        "only bullish flips, 'short' only bearish.")
     p.add_argument("--timeframe", default=None,
                    help="Override indicator_timeframe (defaults from --interval)")
 
@@ -142,6 +147,7 @@ def _build_config(args: argparse.Namespace) -> ScalpSessionConfig:
         primary_params=primary_params,
         confirm_indicator=args.confirm,
         confirm_params=confirm_params,
+        entry_side=args.entry_side,
         sl_points=args.sl_points,
         target_points=args.target_points,
         trail_points=args.trail_points,
@@ -250,6 +256,8 @@ def _result_to_json(r: ScalpBacktestResult) -> dict:
             "intra_bar_ambiguity": r.intra_bar_ambiguity,
             "primary_flips": r.primary_flips,
             "confirm_blocks": r.confirm_blocks,
+            "entry_side_blocks": getattr(r, "entry_side_blocks", 0),
+            "post_cutoff_blocks": getattr(r, "post_cutoff_blocks", 0),
             "cooldown_blocks": r.cooldown_blocks,
             "max_trades_blocks": r.max_trades_blocks,
             "squareoff_exits": r.squareoff_exits,
