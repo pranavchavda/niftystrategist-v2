@@ -226,7 +226,7 @@ def build_rules_for_day(
 def run_backtest(args: argparse.Namespace) -> None:
     """Main backtest execution."""
     from backtesting.engine import BacktestEngine, run_backtest_for_day
-    from backtesting.metrics import compute_metrics
+    from backtesting.metrics import compute_metrics, plausibility_warnings
     from backtesting.simulator import Trade
 
     symbols = []
@@ -286,6 +286,7 @@ def run_backtest(args: argparse.Namespace) -> None:
             "interval": args.interval,
             "trades": [_trade_to_dict(t) for t in all_trades],
             "metrics": metrics,
+            "warnings": plausibility_warnings(all_trades, metrics),
         }
 
     if args.json:
@@ -358,6 +359,13 @@ def _print_report(data: dict, capital: float) -> None:
 
     print()
     print(f"Expectancy:          {format_inr(m['expectancy'])} per trade")
+
+    warnings = data.get("warnings") or []
+    if warnings:
+        print()
+        print("⚠️  Plausibility warnings — do NOT act on these numbers as-is:")
+        for w in warnings:
+            print(f"  • {w}")
 
 
 def main():

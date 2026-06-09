@@ -36,6 +36,7 @@ if _backend_dir not in sys.path:
 from base import (  # noqa: E402
     init_market_data_client, print_error, print_json, run_async,
 )
+from backtesting.metrics import plausibility_warnings  # noqa: E402
 from backtesting.scalp_equity import (  # noqa: E402
     run_scalp_equity_backtest, ScalpBacktestResult,
 )
@@ -218,6 +219,13 @@ def _format_summary(r: ScalpBacktestResult) -> str:
         reasons[t.exit_reason] = reasons.get(t.exit_reason, 0) + 1
     for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
         add(f"    {reason:20s} {count}")
+
+    warnings = plausibility_warnings(r.trades, r.metrics_net)
+    if warnings:
+        add("")
+        add("  ⚠️  Plausibility warnings — do NOT act on these numbers as-is:")
+        for w in warnings:
+            add(f"    • {w}")
     add("")
     return "\n".join(lines)
 
@@ -250,6 +258,7 @@ def _result_to_json(r: ScalpBacktestResult) -> dict:
         "trades": [trade(t) for t in r.trades],
         "metrics": r.metrics,
         "metrics_net": r.metrics_net,
+        "warnings": plausibility_warnings(r.trades, r.metrics_net),
         "charges_total": r.charges_total,
         "slippage_total": r.slippage_total,
         "diagnostics": {

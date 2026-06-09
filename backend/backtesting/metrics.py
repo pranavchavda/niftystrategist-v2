@@ -4,6 +4,74 @@ from __future__ import annotations
 import math
 from backtesting.simulator import Trade
 
+# Exit reasons that are time-driven rather than signal-driven (shared by both
+# the rule-based engine and the scalp state machine).
+_TIME_EXIT_REASONS = {"squareoff", "end_of_data"}
+
+
+def plausibility_warnings(trades: list[Trade], metrics: dict) -> list[str]:
+    """Heuristic red flags for backtest results that look too good — or too
+    mechanical — to be real.
+
+    Returned strings are emitted verbatim next to the metrics (human and
+    JSON output) so artifact-driven results can't be quoted as edge without
+    the warning travelling with them. Origin: the 2026-06-09 mean-reversion
+    day-open SL bug reported 100% WR / PF=inf with a straight face and the
+    EOD reflection pivoted strategy allocation on it.
+    """
+    warnings: list[str] = []
+    total = metrics.get("total_trades", 0)
+    if not total:
+        return warnings
+
+    if metrics.get("profit_factor") in ("inf", float("inf")):
+        warnings.append(
+            "PF=inf: zero gross loss across all trades — almost always a "
+            "simulation artifact (misplaced stop, phantom fill), not an "
+            "edge. Inspect individual exit prices before trusting."
+        )
+
+    if total < 10:
+        warnings.append(
+            f"n={total} trades: sample too small to establish an edge — "
+            "treat as anecdote, not statistics."
+        )
+
+    if total >= 5 and metrics.get("win_rate", 0) >= 90:
+        warnings.append(
+            f"win_rate={metrics['win_rate']}%: ≥90% win rates in backtests "
+            "have historically been fill-model or stop-anchoring artifacts. "
+            "Verify losing trades are actually possible before acting."
+        )
+
+    time_exits = sum(1 for t in trades if t.exit_reason in _TIME_EXIT_REASONS)
+    if total >= 4 and time_exits / total > 0.5:
+        pct = round(100 * time_exits / total)
+        warnings.append(
+            f"{pct}% of exits are time-based (squareoff/end_of_data), not "
+            "signal exits — P&L may be directional drift capture in this "
+            "window, not repeatable strategy edge."
+        )
+
+    zero_dur = sum(1 for t in trades if t.holding_minutes == 0)
+    if zero_dur:
+        warnings.append(
+            f"{zero_dur} zero-duration trade(s) (entry and exit on the same "
+            "bar) — possible same-bar fill artifact; inspect those trades."
+        )
+
+    winners = [t for t in trades if t.pnl > 0]
+    if len(winners) >= 5:
+        holds = {t.holding_minutes for t in winners}
+        if len(holds) == 1:
+            warnings.append(
+                f"every winner exits after exactly {holds.pop()} min — "
+                "mechanical exit pattern; check whether a stop/target sits "
+                "on the wrong side of the entry fill."
+            )
+
+    return warnings
+
 
 def compute_metrics(trades: list[Trade], initial_capital: float) -> dict:
     """Compute backtest performance metrics.

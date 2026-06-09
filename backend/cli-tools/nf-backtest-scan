@@ -49,6 +49,7 @@ from base import (  # noqa: E402
     print_json,
     run_async,
 )
+from backtesting.metrics import plausibility_warnings  # noqa: E402
 from backtesting.scalp_equity import run_scalp_equity_backtest  # noqa: E402
 from monitor.scalp_models import ScalpSessionConfig  # noqa: E402
 
@@ -202,7 +203,7 @@ def _run_one(
             "short" if short_pnl > long_pnl else "both")
         direction = "both"
 
-    return {
+    row = {
         "indicator": indicator,
         "profit_factor": _pf_for_json(mn.get("profit_factor", 0.0)),
         "win_rate": round(mn.get("win_rate", 0.0) / 100.0, 4),  # 0-1 in output
@@ -216,6 +217,13 @@ def _run_one(
         # Internal: float PF for sorting; stripped before output.
         "_pf_f": _pf_to_float(mn.get("profit_factor", 0.0)),
     }
+    # Plausibility red flags travel WITH the row so a too-good-to-be-true
+    # signal can't win selection without its warning attached. Omitted when
+    # clean to keep scan rows compact.
+    warns = plausibility_warnings(result.trades, mn)
+    if warns:
+        row["warnings"] = warns
+    return row
 
 
 # ---------------------------------------------------------------------------
