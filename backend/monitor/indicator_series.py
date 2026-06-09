@@ -129,6 +129,31 @@ def _series_rsi(df: pd.DataFrame, params: dict) -> list[float | None]:
     return _mask_warmup(out, period + 1)
 
 
+def _series_rsi_extreme_fade(df: pd.DataFrame, params: dict) -> list[float | None]:
+    # Mirrors compute_indicator's "rsi_extreme_fade": RSI>=overbought → -1,
+    # RSI<=oversold → +1, else 0. Inverse polarity of trend indicators (fade).
+    n = len(df)
+    if n < 3:
+        return [None] * n
+    period = int(params.get("period", 14))
+    overbought = float(params.get("overbought", 70.0))
+    oversold = float(params.get("oversold", 30.0))
+    if n < period + 1:
+        return [None] * n
+    rsi = ta.momentum.RSIIndicator(df["close"], window=period).rsi()
+    out: list[float | None] = []
+    for v in rsi.tolist():
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            out.append(None)
+        elif v >= overbought:
+            out.append(-1.0)
+        elif v <= oversold:
+            out.append(1.0)
+        else:
+            out.append(0.0)
+    return _mask_warmup(out, period + 1)
+
+
 def _series_macd(df: pd.DataFrame, params: dict) -> list[float | None]:
     n = len(df)
     if n < 3:
@@ -575,6 +600,7 @@ def _series_ssl_hybrid(df: pd.DataFrame, params: dict) -> list[float | None]:
 
 _SERIES_REGISTRY: dict[str, _SeriesFn] = {
     "rsi": _series_rsi,
+    "rsi_extreme_fade": _series_rsi_extreme_fade,
     "macd": _series_macd,
     "ema_crossover": _series_ema_crossover,
     "volume_spike": _series_volume_spike,

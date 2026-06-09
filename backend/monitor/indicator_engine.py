@@ -29,6 +29,32 @@ def compute_indicator(indicator: str, candles: list[dict], params: dict[str, Any
             if output == "centered":
                 return float(val) - 50.0
             return float(val)
+        elif indicator == "rsi_extreme_fade":
+            # Mean-reversion fade primary — a signed scalar for the scalp
+            # engine, with the INVERSE polarity of trend indicators:
+            #   RSI >= overbought → -1  (fade the spike → SHORT via bearish flip)
+            #   RSI <= oversold   → +1  (fade the dip   → LONG  via bullish flip)
+            #   otherwise         →  0  (neutral; a valid "no flip", not None)
+            # Pair with the existing `vwap` confirm (output="centered"): a short
+            # then fires only when price is also below VWAP and a long only when
+            # above, so the reversion has the intraday value level agreeing
+            # (filters "still trending, just overbought" false fades). The flip
+            # mechanic also gives free hysteresis — RSI must leave the zone and
+            # re-cross to re-fire, so it won't spam while hovering at 70.
+            period = int(params.get("period", 14))
+            overbought = float(params.get("overbought", 70.0))
+            oversold = float(params.get("oversold", 30.0))
+            if len(df) < period + 1:
+                return None
+            rsi_val = ta.momentum.RSIIndicator(df["close"], window=period).rsi().iloc[-1]
+            if pd.isna(rsi_val):
+                return None
+            rsi_val = float(rsi_val)
+            if rsi_val >= overbought:
+                return -1.0
+            if rsi_val <= oversold:
+                return 1.0
+            return 0.0
         elif indicator == "macd":
             if len(df) < 26:
                 return None

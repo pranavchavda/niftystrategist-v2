@@ -103,6 +103,25 @@ def test_rsi_parity(output):
     _check_parity("rsi", candles, {"period": 14, "output": output})
 
 
+def test_rsi_extreme_fade_parity_overbought():
+    # Sustained uptrend drives RSI >= 70 → fade-short branch (-1).
+    candles = _uptrend(40, step=0.8)
+    _check_parity("rsi_extreme_fade", candles, {"period": 14})
+
+
+def test_rsi_extreme_fade_parity_oversold():
+    # Sustained downtrend drives RSI <= 30 → fade-long branch (+1).
+    candles = _downtrend(40, step=0.8)
+    _check_parity("rsi_extreme_fade", candles, {"period": 14})
+
+
+def test_rsi_extreme_fade_parity_neutral_and_custom_thresholds():
+    # Zigzag keeps RSI mid-range → neutral branch (0); also exercise the
+    # warmup (None) prefixes and non-default thresholds.
+    candles = _zigzag(40)
+    _check_parity("rsi_extreme_fade", candles, {"period": 14, "overbought": 75, "oversold": 25})
+
+
 def test_macd_parity():
     candles = _uptrend(40, step=0.3)
     _check_parity("macd", candles, {})
