@@ -1,0 +1,542 @@
+#!/usr/bin/env python3
+"""nf-backtest-matrix — multi-axis backtest sweep with statistical ranking.
+
+Runs a *grid* of scalp combos — (primary × confirm × interval × exit-variant ×
+side) — against each symbol over a recent window, then ranks survivors with a
+three-layer "best" definition that's honest about overfitting:
+
+  1. HARD GATES   — too few trades / plausibility red flags / single-trade
+                    dominance / a day the live force-squareoff would have
+                    truncated / non-positive net. Fail any → dropped.
+  2. SCORE        — t-stat of per-trade NET P&L (signal-to-noise), with day
+                    consistency reported alongside (not collapsed into one number).
+  3. WALK-FORWARD — select on the earlier ~2/3 of trading days, CONFIRM on the
+                    held-out last ~1/3. The headline ₹/day is the OUT-OF-SAMPLE
+                    validation figure, never the in-sample one.
+
+This is a grid generalization of ``nf-backtest-scan`` (which ranks one indicator
+per stock, in-sample). It runs the backtests in-process via the same engine
+(``run_scalp_equity_backtest``), warm-up-faithful, fetching each (symbol, interval)
+once. All the machinery lives in ``backtesting/sweep.py`` + ``backtesting/ranking.py``
+so it's unit-tested without the network.
+
+Usage examples:
+
+  # Two symbols, solo primaries, one interval, JSON
+  nf-backtest-matrix --symbols RELIANCE,INFY --days 15 --json
+
+  # Add confirm pairs + a trail-percent grid, top-10 nifty50 morning-scan picks
+  nf-backtest-matrix --universe nifty50 --top 10 --confirms all \\
+      --trail-grid 0.8,1.0,1.2 --daily-loss-cap 5000
+
+  # Long-only, RSI-confirmed UTBot/EMA only, 5+15min
+  nf-backtest-matrix --symbols TCS --primaries utbot,ema_crossover \\
+      --confirms macd --intervals 5minute,15minute --entry-side long
+
+  # Regime-gate experiment: ungated baseline + all 3 daily-trend gates, 15min
+  nf-backtest-matrix --symbols TECHM,SBIN --intervals 15minute --htf-gates all
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import subprocess
+import sys
+from datetime import date
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import (  # noqa: E402
+    init_market_data_client,
+    print_error,
+    print_json,
+    run_async,
+)
+from backtesting.htf_trend import HTF_VARIANTS  # noqa: E402
+from backtesting.sweep import (  # noqa: E402
+    ALL_INDICATORS,
+    _INTERVAL_TO_TIMEFRAME,
+    assemble_symbol,
+    expand_grid,
+    sweep_symbol,
+)
+
+# Above this many engine runs, require --yes (or abort) — a runaway grid can
+# spawn tens of thousands of backtests and saturate the box.
+_RUN_COUNT_GUARD = 5000
+
+# Human-readable labels for the categories ``ranking.gate_summary`` emits.
+_GATE_CATEGORY_LABELS = {
+    "net_pnl<=0": "unprofitable net",
+    "single_trade_dominance": "single-trade dominance",
+    "min_trades": "too few trades",
+    "plausibility": "plausibility flag",
+    "daily_loss_cap": "daily loss cap",
+}
+
+
+# ---------------------------------------------------------------------------
+# Side handling (mirrors nf-backtest-scan)
+# ---------------------------------------------------------------------------
+
+def _sides_for(entry_side: str) -> list[str]:
+    """Which entry sides to sweep per combo.
+
+    ``auto`` (default) sweeps long-only AND short-only as separate combos, so the
+    reported stats match the directional config that would be deployed. ``both``
+    runs a combined long+short config. ``long``/``short`` force one side.
+    """
+    if entry_side == "auto":
+        return ["long", "short"]
+    if entry_side == "both":
+        return ["both"]
+    return [entry_side]
+
+
+# ---------------------------------------------------------------------------
+# Exit-variant grid (Cartesian of the SL / target / trail sweeps)
+# ---------------------------------------------------------------------------
+
+def _parse_float_list(raw: str | None) -> list[float | None]:
+    """Parse a comma list of floats; ``None`` raw → ``[None]`` (engine default)."""
+    if not raw:
+        return [None]
+    out: list[float | None] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or part.lower() == "none":
+            out.append(None)
+        else:
+            out.append(float(part))
+    return out
+
+
+def _build_exit_variants(args: argparse.Namespace) -> list[dict]:
+    """Cartesian product of the trail/sl/target grids → exit-variant dicts."""
+    variants = []
+    for trail in _parse_float_list(args.trail_grid):
+        for sl in _parse_float_list(args.sl_grid):
+            for tgt in _parse_float_list(args.target_grid):
+                variants.append({
+                    "trail_percent": trail,
+                    "sl_points": sl,
+                    "target_points": tgt,
+                })
+    return variants
+
+
+# ---------------------------------------------------------------------------
+# Candidate sourcing (reuses the morning-scan subprocess, like nf-backtest-scan)
+# ---------------------------------------------------------------------------
+
+def _get_candidates_from_scan(universe: str, top: int, verbose: bool) -> list[dict]:
+    """Run nf-morning-scan --json and return [{symbol, score}, ...]."""
+    scan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nf-morning-scan")
+    cmd = [sys.executable, scan_path, "--universe", universe, "--top", str(top), "--json"]
+    if verbose:
+        print(f"  running morning scan: {' '.join(cmd)}", file=sys.stderr)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        print_error("morning scan timed out after 300s")
+        return []
+    if proc.returncode != 0:
+        print_error(f"morning scan failed (exit {proc.returncode}): {proc.stderr[-500:]}")
+        return []
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        print_error("morning scan returned non-JSON output")
+        return []
+    return [{"symbol": c["symbol"], "score": c.get("score")}
+            for c in data.get("candidates", [])[:top]]
+
+
+# ---------------------------------------------------------------------------
+# Output formatting (mirrors nf-backtest-scan's _format_human)
+# Per-symbol assembly (gates → plateau → ranking) lives in sweep.assemble_symbol.
+# ---------------------------------------------------------------------------
+
+def _gate_summary_phrase(summary: dict, top_n: int = 3) -> str:
+    """Render the top gate-reason categories as a compact human phrase, e.g.
+    "13 unprofitable net, 4 single-trade dominance, 3 too few trades"."""
+    parts = [
+        f"{n} {_GATE_CATEGORY_LABELS.get(cat, cat)}"
+        for cat, n in list(summary.items())[:top_n]
+    ]
+    return ", ".join(parts)
+
+
+def _truncate(s: str, width: int = 72) -> str:
+    """Trim a verbose gate reason to one compact line."""
+    return s if len(s) <= width else s[: width - 1] + "…"
+
+def _combo_label(r: dict) -> str:
+    confirm = f"+{r['confirm']}" if r.get("confirm") else ""
+    exits = []
+    if r.get("trail_percent") is not None:
+        exits.append(f"trail{r['trail_percent']}")
+    if r.get("sl_points") is not None:
+        exits.append(f"sl{r['sl_points']}")
+    if r.get("target_points") is not None:
+        exits.append(f"tgt{r['target_points']}")
+    exit_s = (" " + "/".join(exits)) if exits else ""
+    gate_s = f", gate={r['htf_gate']}" if r.get("htf_gate") else ""
+    return f"{r['primary']}{confirm} ({r['entry_side']}, {r['interval']}{exit_s}{gate_s})"
+
+
+def _format_human(payload: dict):
+    lines = []
+    add = lines.append
+    s = payload["summary"]
+    add("")
+    add(f"  Backtest Matrix  |  {payload['scan_date']}  |  {payload['lookback_days']}d lookback")
+    add("  " + "=" * 72)
+    add(f"  Symbols: {s['symbols']}   Combos/symbol: {s['combos_per_symbol']}   "
+        f"Engine runs: {s['total_engine_runs']}")
+    add(f"  Tested: {s['tested']}   Gated out: {s['gated_out']}   "
+        f"Failed validation: {s['failed_validation']}   Confirmed: {s['confirmed']}")
+    add("  All ₹/day figures below are OUT-OF-SAMPLE (held-out validation slice).")
+    add("")
+
+    # Per-symbol detail
+    for blk in payload["symbols"]:
+        c = blk["counts"]
+        add(f"  {blk['symbol']:<14} score={blk['scan_score']}  "
+            f"[{c['confirmed']} confirmed / {c['tested']} tested, "
+            f"{c['gated_out']} gated, {c['failed_validation']} failed val]")
+        if not blk["confirmed_combos"]:
+            # Always say WHY nothing survived — the top gate-reason categories
+            # (and the failed-validation count) instead of a bare "0 confirmed".
+            bits = []
+            phrase = _gate_summary_phrase(blk.get("gate_summary") or {})
+            if phrase:
+                bits.append(phrase)
+            if c["failed_validation"]:
+                bits.append(f"{c['failed_validation']} failed validation")
+            detail = f" ({'; '.join(bits)})" if bits else ""
+            add(f"       → no combo survived{detail}")
+        for r in blk["confirmed_combos"][:5]:
+            wf = r["walk_forward"]
+            tr = wf["train"]
+            va = wf["validation"]
+            add(f"       → {_combo_label(r):<46} {r['confidence']:<6} "
+                f"val ₹{r['validation_per_day']:+,.0f}/day")
+            add(f"           train: ₹{tr['net_pnl']:+,.0f} ({tr['n_trades']}t, "
+                f"t={tr['tstat']})   "
+                f"val: ₹{va['net_pnl']:+,.0f} ({va['n_trades']}t, t={va['tstat']})")
+            if r.get("plateau_warning"):
+                add(f"           ⚠ {r['plateau_warning']}")
+        # --show-gated: a compact line per dropped combo so an all-gated run is
+        # debuggable straight from the output.
+        for r in blk.get("gated_combos") or []:
+            reason = r["gate_reasons"][0] if r["gate_reasons"] else "?"
+            add(f"       ✗ {_combo_label(r):<46} {r['total_trades']:>3}t "
+                f"₹{r['total_pnl']:+,.0f}  {_truncate(reason)}")
+        for r in blk.get("failed_validation_combos") or []:
+            va = (r.get("walk_forward") or {}).get("validation") or {}
+            add(f"       ~ {_combo_label(r):<46} {r['total_trades']:>3}t "
+                f"₹{r['total_pnl']:+,.0f}  failed validation "
+                f"(val ₹{va.get('net_pnl', 0):+,.0f} over {va.get('n_trades', 0)}t)")
+    add("")
+
+    # Top-level deployment plan
+    add("  Deployment plan (best confirmed combo per symbol, by validation ₹/day)")
+    add("  " + "-" * 72)
+    plan = payload["deployment_plan"]
+    if not plan:
+        add("    (nothing confirmed out-of-sample — narrow the grid or extend --days)")
+    for p in plan:
+        add(f"    {p['symbol']:<14} {_combo_label(p):<46} {p['confidence']:<6} "
+            f"₹{p['validation_per_day']:+,.0f}/day")
+    add("    (figures are out-of-sample validation expectancy, not in-sample)")
+    add("")
+    print("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="nf-backtest-matrix",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Universe / symbols
+    p.add_argument("--symbols", default=None,
+                   help="Comma-separated symbols — bypasses the morning scan")
+    p.add_argument("--universe", choices=["nifty50", "nifty100", "nifty500", "niftytotal"],
+                   default="nifty50", help="Scan universe when --symbols absent (default: nifty50)")
+    p.add_argument("--top", type=int, default=10,
+                   help="How many morning-scan candidates to sweep (default: 10)")
+
+    # Window
+    p.add_argument("--days", type=int, default=15,
+                   help="Lookback window in days (default: 15)")
+    p.add_argument("--end-offset-days", type=int, default=0,
+                   help="Shift the whole window back N days: test [now-N-days, "
+                        "now-N] instead of the trailing window. Use to REPLICATE "
+                        "a winning grid on a prior period the original selection "
+                        "never saw (default: 0)")
+    p.add_argument("--intervals", default="5minute",
+                   help="Comma list of candle intervals (default: 5minute). "
+                        f"Options: {','.join(_INTERVAL_TO_TIMEFRAME.keys())}")
+
+    # Grid axes
+    p.add_argument("--primaries", default=None,
+                   help=f"Comma list of primary indicators (default: all 10). "
+                        f"Options: {','.join(ALL_INDICATORS)}")
+    p.add_argument("--confirms", default="none",
+                   help="Confirm indicators: 'none' (default, solo only), 'all' "
+                        "(every indicator as a confirm), or a comma list. Solo combos "
+                        "are ALWAYS included; pairs skip confirm==primary.")
+    p.add_argument("--entry-side", default="auto", choices=["auto", "both", "long", "short"],
+                   help="Direction handling. 'auto' (default) sweeps long-only AND "
+                        "short-only as separate combos; 'both' is combined; "
+                        "'long'/'short' force one side.")
+    p.add_argument("--htf-gates", default="none",
+                   help="Higher-timeframe (daily) trend gate axis — the regime-"
+                        "detection hypothesis. The 2026-06 replication run showed "
+                        "bare combos are regime-followers (prior-window rerun killed "
+                        "6 of the top 7); gating entries by an independently-detected "
+                        "DAILY trend (long only when 'up', short only when 'down', "
+                        "flat blocks both; trend for day D uses closes through D-1 — "
+                        "no lookahead) tests whether regime detection is the actual "
+                        "edge. 'none' (default) = ungated only; 'all' = ungated + "
+                        f"{{{','.join(HTF_VARIANTS)}}}; or a comma list (include "
+                        "'none' to keep the ungated baseline). Multiplies the grid.")
+
+    # Exit grids
+    p.add_argument("--trail-grid", default="1.0",
+                   help="Comma list of trailing-stop percents (default: 1.0)")
+    p.add_argument("--sl-grid", default=None,
+                   help="Comma list of stop-loss points (optional; default: engine default = none)")
+    p.add_argument("--target-grid", default=None,
+                   help="Comma list of target points (optional; default: engine default = none)")
+
+    # Discipline (uniform across the grid for fair comparison)
+    p.add_argument("--squareoff", default="15:09", help="Intraday squareoff HH:MM IST (default: 15:09)")
+    p.add_argument("--max-trades", type=int, default=3,
+                   help="Max round-trips per session day (default: 3)")
+    p.add_argument("--cooldown", type=int, default=60,
+                   help="Seconds between trades after an exit (default: 60)")
+
+    # Sizing
+    p.add_argument("--quantity", type=int, default=None,
+                   help="Fixed share quantity for all symbols (overrides --capital-per-trade)")
+    p.add_argument("--capital-per-trade", type=float, default=100_000,
+                   help="Per-trade notional; quantity = capital/price (default: 100000)")
+    p.add_argument("--slippage-bps", type=float, default=5.0,
+                   help="Slippage haircut in bps (DEFAULT 5, not 0). Zero slippage "
+                        "systematically over-states intraday scalp edge — 5bp is a "
+                        "conservative round-trip estimate for liquid NSE equities, so "
+                        "the ranked numbers stay closer to live fills.")
+
+    # Ranking gates
+    p.add_argument("--min-trades", type=int, default=10,
+                   help="Hard gate: drop combos with fewer trades (default: 10). "
+                        "Also kills PF=inf flukes.")
+    p.add_argument("--daily-loss-cap", type=float, default=None,
+                   help="Hard gate: drop combos where any single day's net loss "
+                        "exceeds this ₹ amount — the live daemon would have "
+                        "force-squared-off, so the backtest curve is unreachable (optional)")
+
+    # Performance / caching
+    p.add_argument("--max-workers", type=int, default=8,
+                   help="Concurrent symbol sweeps (default: 8)")
+    p.add_argument("--no-cache", action="store_true", help="Ignore the on-disk backtest cache")
+    p.add_argument("--cache-ttl-hours", type=float, default=24.0,
+                   help="Cache TTL in hours (default: 24)")
+
+    p.add_argument("--yes", action="store_true",
+                   help=f"Skip the >{_RUN_COUNT_GUARD}-engine-run confirmation guard")
+    p.add_argument("--show-gated", action="store_true",
+                   help="Include the dropped combos in the output: JSON gains full "
+                        "per-combo rows for gated and failed-validation combos "
+                        "(spec, net metrics, gate_reasons, train/validation); human "
+                        "output prints a compact line per dropped combo. Use to "
+                        "debug an all-gated sweep.")
+    p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p.add_argument("--verbose", action="store_true", help="Progress to stderr")
+    return p
+
+
+def _resolve_htf_gates(raw: str) -> list[str | None]:
+    """'none' → ungated only; 'all' → ungated + every variant; else comma list
+    ('none' as a list element keeps the ungated baseline alongside gates)."""
+    raw = (raw or "none").strip().lower()
+    if raw == "none":
+        return [None]
+    if raw == "all":
+        return [None] + list(HTF_VARIANTS)
+    gates: list[str | None] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part == "none":
+            gates.append(None)
+        elif part in HTF_VARIANTS:
+            gates.append(part)
+        else:
+            print_error(f"unknown HTF gate variant: {part}. "
+                        f"Valid: none, all, {', '.join(HTF_VARIANTS)}")
+    return gates or [None]
+
+
+def _resolve_confirms(raw: str, primaries: list[str]) -> list[str] | None:
+    """'none' → None (solo only); 'all' → every indicator; else comma list."""
+    raw = (raw or "none").strip().lower()
+    if raw == "none":
+        return None
+    if raw == "all":
+        return list(ALL_INDICATORS)
+    confirms = [s.strip() for s in raw.split(",") if s.strip()]
+    bad = [c for c in confirms if c not in ALL_INDICATORS]
+    if bad:
+        print_error(f"unknown confirm indicator(s): {', '.join(bad)}. "
+                    f"Valid: {', '.join(ALL_INDICATORS)}")
+    return confirms
+
+
+async def _run(args: argparse.Namespace) -> dict:
+    # Resolve axes
+    primaries = (
+        [s.strip() for s in args.primaries.split(",") if s.strip()]
+        if args.primaries else list(ALL_INDICATORS)
+    )
+    bad = [i for i in primaries if i not in ALL_INDICATORS]
+    if bad:
+        print_error(f"unknown primary indicator(s): {', '.join(bad)}. "
+                    f"Valid: {', '.join(ALL_INDICATORS)}")
+
+    intervals = [s.strip() for s in args.intervals.split(",") if s.strip()]
+    bad_iv = [iv for iv in intervals if iv not in _INTERVAL_TO_TIMEFRAME]
+    if bad_iv:
+        print_error(f"unknown interval(s): {', '.join(bad_iv)}. "
+                    f"Valid: {', '.join(_INTERVAL_TO_TIMEFRAME.keys())}")
+
+    confirms = _resolve_confirms(args.confirms, primaries)
+    sides = _sides_for(args.entry_side)
+    exit_variants = _build_exit_variants(args)
+    htf_gates = _resolve_htf_gates(args.htf_gates)
+
+    combos = expand_grid(primaries, confirms, intervals, exit_variants, sides,
+                         htf_gates=htf_gates)
+    if not combos:
+        print_error("empty combo grid — check --primaries/--intervals/--trail-grid")
+
+    # Sourcing
+    if args.symbols:
+        sourced = [{"symbol": s.strip().upper(), "score": None}
+                   for s in args.symbols.split(",") if s.strip()]
+    else:
+        sourced = _get_candidates_from_scan(args.universe, args.top, args.verbose)
+    if not sourced:
+        print_error("no candidates to backtest")
+    score_by_symbol = {c["symbol"]: c["score"] for c in sourced}
+
+    # Matrix-size guard — print the run count to stderr; abort if it's huge.
+    total_runs = len(combos) * len(sourced)
+    print(f"  matrix: {len(sourced)} symbols × {len(combos)} combos = "
+          f"{total_runs} engine runs", file=sys.stderr)
+    if total_runs > _RUN_COUNT_GUARD and not args.yes:
+        print_error(
+            f"matrix is large ({total_runs} engine runs > {_RUN_COUNT_GUARD}). "
+            "Narrow the grid (fewer --primaries / --confirms / --htf-gates / "
+            "exit grid points / symbols) or pass --yes to proceed anyway."
+        )
+
+    scan_date = date.today().isoformat()
+    client = init_market_data_client()
+    sem = asyncio.Semaphore(args.max_workers)
+    tasks = [
+        sweep_symbol(
+            client, c["symbol"], combos,
+            days=args.days, quantity=args.quantity,
+            capital_per_trade=args.capital_per_trade, squareoff=args.squareoff,
+            max_trades=args.max_trades, cooldown=args.cooldown,
+            slippage_bps=args.slippage_bps, min_trades=args.min_trades,
+            max_single_trade_share=0.5, daily_loss_cap=args.daily_loss_cap,
+            sem=sem, use_cache=not args.no_cache,
+            cache_ttl_hours=args.cache_ttl_hours, scan_date=scan_date,
+            end_offset_days=args.end_offset_days,
+            verbose=args.verbose,
+        )
+        for c in sourced
+    ]
+    symbol_results = await asyncio.gather(*tasks)
+
+    blocks = []
+    for sr in symbol_results:
+        if sr is None:
+            continue
+        blocks.append(assemble_symbol(
+            sr["symbol"], score_by_symbol.get(sr["symbol"]), sr["rows"],
+            show_gated=args.show_gated,
+        ))
+
+    # Deployment plan: best confirmed combo per symbol, by validation ₹/day.
+    plan = [b["best"] for b in blocks if b["best"]]
+    plan.sort(key=lambda r: r["validation_per_day"], reverse=True)
+
+    # Roll up counts for the multiple-comparisons context.
+    tested = sum(b["counts"]["tested"] for b in blocks)
+    gated_out = sum(b["counts"]["gated_out"] for b in blocks)
+    failed_validation = sum(b["counts"]["failed_validation"] for b in blocks)
+    confirmed = sum(b["counts"]["confirmed"] for b in blocks)
+
+    # Sort symbol blocks: those with a confirmed best first, by its val ₹/day.
+    blocks.sort(
+        key=lambda b: (b["best"]["validation_per_day"] if b["best"] else float("-inf")),
+        reverse=True,
+    )
+
+    return {
+        "scan_date": scan_date,
+        "lookback_days": args.days,
+        "end_offset_days": args.end_offset_days,
+        "intervals": intervals,
+        "primaries": primaries,
+        "confirms": confirms,
+        "entry_side": args.entry_side,
+        "htf_gates": [g or "none" for g in htf_gates],
+        "slippage_bps": args.slippage_bps,
+        "symbols": blocks,
+        "deployment_plan": plan,
+        "summary": {
+            "symbols": len(blocks),
+            "combos_per_symbol": len(combos),
+            "total_engine_runs": total_runs,
+            "tested": tested,
+            "gated_out": gated_out,
+            "failed_validation": failed_validation,
+            "confirmed": confirmed,
+            "note": (
+                "Confirmed = survived hard gates AND held-out validation "
+                "(net>0, same mean sign as train). ₹/day figures are OUT-OF-SAMPLE "
+                "validation expectancy. Counts expose multiple-comparisons context: "
+                "with this many combos tested, expect some in-sample winners to fail "
+                "validation."
+            ),
+        },
+    }
+
+
+def main():
+    args = build_parser().parse_args()
+    payload = run_async(_run(args))
+    if args.json:
+        print_json(payload)
+    else:
+        _format_human(payload)
+
+
+if __name__ == "__main__":
+    main()

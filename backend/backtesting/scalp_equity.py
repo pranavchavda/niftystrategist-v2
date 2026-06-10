@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from backtesting.metrics import compute_metrics
 from backtesting.simulator import Trade, TradeSimulator
@@ -104,6 +104,7 @@ class ScalpBacktestResult:
     squareoff_exits: int                     # intraday mode only
     post_cutoff_blocks: int = 0              # intraday flips rejected for being at/after squareoff cutoff
     entry_side_blocks: int = 0               # flips rejected by entry_side (long/short-only) gate
+    entry_gate_blocks: int = 0               # flips rejected by the caller's entry_gate hook
 
 
 @dataclass
@@ -261,6 +262,7 @@ def run_scalp_equity_backtest(
     progress_cb=None,
     cancel_check=None,
     warmup_bars: int = 0,
+    entry_gate: Callable[[datetime, str], bool] | None = None,
 ) -> ScalpBacktestResult:
     """Run a scalp-style bar-replay backtest.
 
@@ -284,6 +286,14 @@ def run_scalp_equity_backtest(
             True the bar loop exits cleanly mid-run. The job runner uses
             this to honour user-initiated cancels. Whatever trades have
             already accumulated are returned; partial results are valid.
+        entry_gate: optional callback ``(bar_timestamp, side) -> bool``
+            consulted as the LAST guard before an entry fills (after the
+            confirm/cooldown/max_trades/entry_side/post-cutoff gates).
+            ``side`` is "long" or "short"; returning False blocks the
+            entry (counted in ``entry_gate_blocks``) without touching
+            position state. Used by the backtest sweep's higher-timeframe
+            trend gate. Default None = no behavior change. EXITS are
+            never gated — only fresh entries.
 
     Returns:
         ScalpBacktestResult with trades + gross/net metrics + diagnostics.
@@ -340,6 +350,7 @@ def run_scalp_equity_backtest(
     squareoff_exits = 0
     post_cutoff_blocks = 0
     entry_side_blocks = 0
+    entry_gate_blocks = 0
     slippage_total = 0.0
 
     session_days: set = set()
@@ -541,6 +552,17 @@ def run_scalp_equity_backtest(
                 prev_primary = primary_val
                 continue
 
+            # External entry gate (e.g. the sweep's higher-timeframe trend
+            # filter). Consulted LAST — after every internal guard — so its
+            # block count isolates exactly what the gate alone vetoed, and
+            # placed before any position/sim mutation so a blocked entry
+            # leaves the state machine untouched (next flip evaluates as if
+            # this one never fired).
+            if entry_gate is not None and not entry_gate(ts, direction):
+                entry_gate_blocks += 1
+                prev_primary = primary_val
+                continue
+
             # Open at this bar's close with slippage. Slippage is paid by the
             # taker: long entry pays slippage upward, short entry pays downward.
             raw_entry = bar["close"]
@@ -611,6 +633,7 @@ def run_scalp_equity_backtest(
         squareoff_exits=squareoff_exits,
         post_cutoff_blocks=post_cutoff_blocks,
         entry_side_blocks=entry_side_blocks,
+        entry_gate_blocks=entry_gate_blocks,
     )
 
 

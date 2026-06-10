@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""nf-htf-trend — morning regime check: daily-trend gate verdict per symbol.
+
+Prints, for each symbol, what the HTF trend gate (``backtesting/htf_trend.py``)
+says about TODAY — computed strictly from prior daily closes (no lookahead), so
+the verdict is valid from the open and cannot change intraday.
+
+This is the manual/live counterpart of the sweep's ``--htf-gates`` axis: a
+"gated live session" for one day is identical to deploying only the
+trend-aligned side at the open (long if "up", short if "down", skip if "flat"),
+because the gate's verdict is constant within a day.
+
+Usage:
+
+  # Morning check before deploying gated sessions
+  nf-htf-trend --symbols TECHM,BHARTIARTL,ONGC --variant daily_ema20
+
+  # All three variants side by side (disagreement = weaker regime signal)
+  nf-htf-trend --symbols TECHM,SBIN --all-variants --json
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import sys
+from datetime import date
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import (  # noqa: E402
+    init_market_data_client,
+    print_error,
+    print_json,
+    run_async,
+)
+from backtesting.htf_trend import HTF_VARIANTS, compute_daily_trend  # noqa: E402
+
+# Daily history to fetch: EMA50 needs 50 closes + cushion for holidays/weekends.
+_FETCH_DAYS = 120
+
+_SIDE_FOR_TREND = {"up": "long", "down": "short", "flat": "skip"}
+
+
+async def _check_symbol(client, symbol: str, variants: list[str]) -> dict | None:
+    try:
+        ohlcv = await client.get_historical_data(symbol, interval="day", days=_FETCH_DAYS)
+    except Exception as e:
+        print_error(f"{symbol}: daily fetch failed: {e}")
+        return None
+    if not ohlcv:
+        print_error(f"{symbol}: no daily candles")
+        return None
+
+    today = date.today()
+    out = {"symbol": symbol, "as_of": today.isoformat(), "verdicts": {}}
+    for variant in variants:
+        trend_map = compute_daily_trend(ohlcv, variant)
+        # Today's key if the map has it; else the ghost/most-recent-prior key.
+        keys = sorted(k for k in trend_map if k <= today)
+        trend = trend_map[keys[-1]] if keys else "flat"
+        out["verdicts"][variant] = {
+            "trend": trend,
+            "deploy": _SIDE_FOR_TREND[trend],
+        }
+    trends = {v["trend"] for v in out["verdicts"].values()}
+    out["unanimous"] = len(trends) == 1
+    return out
+
+
+async def _main(args) -> dict:
+    variants = HTF_VARIANTS if args.all_variants else [args.variant]
+    client = init_market_data_client()
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    results = await asyncio.gather(*[_check_symbol(client, s, variants) for s in symbols])
+    return {"as_of": date.today().isoformat(), "variants": variants,
+            "symbols": [r for r in results if r]}
+
+
+def _format_human(payload: dict):
+    variants = payload["variants"]
+    print(f"\n  HTF Trend Gate  |  {payload['as_of']}  |  verdict from prior daily closes")
+    print("  " + "=" * 66)
+    for r in payload["symbols"]:
+        cells = []
+        for v in variants:
+            verdict = r["verdicts"][v]
+            mark = {"up": "▲ up  → long", "down": "▼ down → short",
+                    "flat": "— flat → SKIP"}[verdict["trend"]]
+            cells.append(f"{v}: {mark}" if len(variants) > 1 else mark)
+        flag = "" if r.get("unanimous", True) else "   (variants disagree)"
+        print(f"  {r['symbol']:<14} {'   '.join(cells)}{flag}")
+    print()
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="nf-htf-trend",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--symbols", required=True, help="Comma list of NSE symbols")
+    p.add_argument("--variant", default="daily_ema20", choices=HTF_VARIANTS,
+                   help="Gate variant (default: daily_ema20)")
+    p.add_argument("--all-variants", action="store_true",
+                   help="Show all 3 variants side by side")
+    p.add_argument("--json", action="store_true", help="Machine-readable output")
+    args = p.parse_args()
+
+    payload = run_async(_main(args))
+    if args.json:
+        print_json(payload)
+    else:
+        _format_human(payload)
+
+
+if __name__ == "__main__":
+    main()

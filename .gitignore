@@ -110,3 +110,4 @@ backend/gemma-project.txt
 .claude/skills/*
 !.claude/skills/nifty-strategist-design/
 !.claude/skills/nifty-strategist-design/**
+backend/backtest-results/
