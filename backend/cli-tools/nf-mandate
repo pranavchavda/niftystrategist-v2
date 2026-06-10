@@ -98,8 +98,11 @@ def cmd_set(args):
             if not user:
                 print_error(f"User {user_id} not found")
 
-            # Merge with existing mandate (update, don't replace)
-            mandate = user.trading_mandate or {}
+            # Merge with existing mandate (update, don't replace). Deepcopy so
+            # SQLAlchemy sees a NEW object on reassignment — mutating the dict
+            # returned by user.trading_mandate in place and assigning the same
+            # object back does NOT mark the JSON column dirty (silent no-op).
+            mandate = copy.deepcopy(user.trading_mandate or {})
             mandate.update(updates)
             mandate["approved_at"] = utc_now().isoformat()
             user.trading_mandate = mandate
