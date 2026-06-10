@@ -1120,6 +1120,26 @@ Generate a comprehensive, well-structured summary (3-5 paragraphs) that provides
                     "memories. Use it to personalize your assistance.\n"
                 )
 
+            # Managed memory block — the agent's single, always-present curated
+            # "core memory" (MemGPT/Letta-style). Injected on EVERY request
+            # (chat AND awakenings both flow through this function) so the agent
+            # always sees its own carried-forward context. Distinct from the
+            # auto-surfaced semantic memories above and the per-thread
+            # scratchpad. Always rendered (placeholder when empty).
+            if ctx.deps.user_id:
+                try:
+                    from services.memory_block import (
+                        get_block as _get_memory_block,
+                        build_memory_block_section as _build_memory_block_section,
+                    )
+                    _mb, _mb_updated = await _get_memory_block(ctx.deps.user_id)
+                    sections.append(_build_memory_block_section(_mb, _mb_updated))
+                except Exception as _mb_e:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "memory-block injection failed (non-fatal): %s", _mb_e
+                    )
+
             # Memory capture nudge — agent-driven mid-conversation memory writes.
             # Daily cron extractor still runs on prod, but in-flight context
             # produces higher-quality facts than post-hoc batch extraction.
@@ -1767,6 +1787,12 @@ A signal session places orders continuously without per-trade confirmation, so t
 - The mandate defines risk boundaries for autonomous awakenings. When users say "set my risk to X" or "I want to trade only NIFTY options," update the mandate.
 - When users say "add a morning scan at 9:20" or "disable my mid-day check," use the schedules subcommands.
 - When users say "check on this in 2 hours" or "follow up tomorrow," use the followup subcommand with the current thread ID.
+
+**Managed Memory Block (your core memory):**
+- `python cli-tools/nf-memory-block show [--json]` — View your curated memory block (a single living document that persists across ALL threads, injected into every request).
+- `python cli-tools/nf-memory-block update --text "..."` (or `--stdin`) `[--json]` — REWRITE the entire block (full-rewrite, MemGPT-style — not append). Use whenever durable context changes: strategy stance, active experiments and their tallies (e.g. tagged-trade counts per setup), recent lessons, open loops. Hard cap 6000 chars — over-cap writes are rejected, so prune stale content.
+- `python cli-tools/nf-memory-block clear [--json]` — Empty the block.
+- This is YOUR working memory, NOT a chat scratchpad (that's per-thread) and not for per-session noise. The block is already shown to you in the "🧠 Memory Block" section — only call `update` when something worth remembering across sessions changed.
 
 **Awakening/Workflow Status:**
 - `python cli-tools/nf-awakening status [--json]` — Recent awakening runs (status, duration, errors)

@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""View and manage the agent's managed memory block (MemGPT/Letta-style core memory).
+
+A single, always-present, agent-curated living document per user. Persists
+across ALL threads and is injected into every request. Distinct from the
+per-thread scratchpad and from auto-surfaced semantic memories.
+
+Full-rewrite semantics: `update` replaces the ENTIRE block (the agent
+re-curates the whole document each time). Hard cap of 6000 characters —
+over-cap writes are rejected (condense, not truncated).
+"""
+
+import argparse
+import os
+import sys
+
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from base import print_error, print_json, print_success, run_async  # noqa: E402
+
+
+def _get_user_id() -> int:
+    """Resolve the requesting user, failing closed when unidentified.
+
+    Mirrors the contamination guard in cli-tools/base.py: an agent subprocess
+    (NF_AGENT_SUBPROCESS=1) without a valid NF_USER_ID must NOT default to the
+    owner — that silent default let one user's command touch another user's
+    data (incident 2026-05-26). Direct terminal use (no agent marker) defaults
+    to the owner for convenience.
+    """
+    nf_user_raw = os.environ.get("NF_USER_ID")
+    is_agent = os.environ.get("NF_AGENT_SUBPROCESS") == "1"
+
+    if nf_user_raw and nf_user_raw.isdigit() and int(nf_user_raw) > 0:
+        return int(nf_user_raw)
+    if is_agent:
+        print_error(
+            "USER_UNIDENTIFIED: Could not determine which user this memory-block "
+            "operation belongs to, so it was refused to avoid touching the wrong "
+            "user's memory. Ask the user to reconnect their session and retry."
+        )
+    # Direct terminal/owner usage.
+    from base import OWNER_USER_ID
+    return OWNER_USER_ID
+
+
+def cmd_show(args):
+    """Show the current memory block."""
+    from services.memory_block import get_block, UserNotFoundError
+
+    user_id = _get_user_id()
+
+    async def _show():
+        return await get_block(user_id)
+
+    try:
+        block, updated_at = run_async(_show())
+    except UserNotFoundError as e:
+        print_error(str(e))
+
+    updated_str = updated_at.isoformat() if updated_at else None
+
+    if args.json:
+        print_json({
+            "memory_block": block,
+            "updated_at": updated_str,
+            "length": len(block) if block else 0,
+        })
+        return
+
+    if not block:
+        print("Memory block is empty.")
+        print('Use: nf-memory-block update --text "..."  (or --stdin)')
+        return
+
+    print("🧠 Memory Block")
+    if updated_str:
+        print(f"   (last updated: {updated_str})\n")
+    else:
+        print()
+    print(block)
+
+
+def cmd_update(args):
+    """Replace the ENTIRE memory block (full rewrite)."""
+    from services.memory_block import (
+        set_block,
+        MemoryBlockTooLargeError,
+        UserNotFoundError,
+        MEMORY_BLOCK_MAX_CHARS,
+    )
+
+    user_id = _get_user_id()
+
+    if args.stdin:
+        text = sys.stdin.read()
+    elif args.text is not None:
+        text = args.text
+    else:
+        print_error("Provide the new block via --text \"...\" or --stdin.")
+
+    async def _update():
+        return await set_block(user_id, text)
+
+    try:
+        block, updated_at = run_async(_update())
+    except MemoryBlockTooLargeError as e:
+        print_error(str(e))
+    except UserNotFoundError as e:
+        print_error(str(e))
+
+    if args.json:
+        print_json({
+            "memory_block": block,
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "length": len(block),
+            "max_chars": MEMORY_BLOCK_MAX_CHARS,
+        })
+    else:
+        print_success(
+            f"Memory block updated ({len(block)}/{MEMORY_BLOCK_MAX_CHARS} chars)"
+        )
+
+
+def cmd_clear(args):
+    """Empty the memory block."""
+    from services.memory_block import clear_block, UserNotFoundError
+
+    user_id = _get_user_id()
+
+    async def _clear():
+        await clear_block(user_id)
+
+    try:
+        run_async(_clear())
+    except UserNotFoundError as e:
+        print_error(str(e))
+
+    if args.json:
+        print_json({"memory_block": None})
+    else:
+        print_success("Memory block cleared")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nf-memory-block",
+        description="View and manage the agent's managed memory block (core memory)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  nf-memory-block show                          Show the current block
+  nf-memory-block show --json                   JSON output
+  nf-memory-block update --text "..."           Replace the WHOLE block (rewrite)
+  echo "..." | nf-memory-block update --stdin   Replace from stdin
+  nf-memory-block clear                          Empty the block
+
+Notes:
+  * Full-rewrite semantics — `update` replaces the entire block, not appends.
+  * Hard cap 6000 chars; over-cap writes are REJECTED (condense, not truncated).
+""",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    p_show = sub.add_parser("show", help="Show the current memory block")
+    p_show.add_argument("--json", action="store_true", help="JSON output")
+
+    p_update = sub.add_parser("update", help="Replace the entire memory block")
+    p_update.add_argument("--text", help="New block text (full rewrite)")
+    p_update.add_argument("--stdin", action="store_true", help="Read new block from stdin")
+    p_update.add_argument("--json", action="store_true", help="JSON output")
+
+    p_clear = sub.add_parser("clear", help="Empty the memory block")
+    p_clear.add_argument("--json", action="store_true", help="JSON output")
+
+    args = parser.parse_args()
+
+    if args.command == "show":
+        cmd_show(args)
+    elif args.command == "update":
+        cmd_update(args)
+    elif args.command == "clear":
+        cmd_clear(args)
+    else:
+        # Default to show
+        args.json = False
+        cmd_show(args)
+
+
+if __name__ == "__main__":
+    main()

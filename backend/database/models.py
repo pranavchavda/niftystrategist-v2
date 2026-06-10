@@ -170,6 +170,13 @@ class User(Base):
     # {risk_per_trade, daily_loss_cap, allowed_instruments, cutoff_time, auto_squareoff_time, approved_at}
     trading_mandate = Column(JSON, nullable=True)
 
+    # Managed memory block — a single agent-curated "core memory" (MemGPT/Letta
+    # style). Living document the orchestrator rewrites in full via the
+    # nf-memory-block CLI tool; injected into every request. Bounded to 6000
+    # chars. See migration 047_add_memory_block.sql and services/memory_block.py.
+    memory_block = Column(Text, nullable=True)
+    memory_block_updated_at = Column(DateTime, nullable=True)
+
     # Telegram integration — per-user bot. See docs/plans/2026-05-20-telegram-integration.md.
     telegram_bot_token = Column(Text, nullable=True)  # Fernet-encrypted
     telegram_bot_username = Column(String(100), nullable=True)
