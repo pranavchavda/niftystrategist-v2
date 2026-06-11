@@ -14,7 +14,7 @@ from auth import User, get_current_user
 from strategies.templates import list_templates, get_template
 from backtesting.engine import BacktestEngine, run_backtest_for_day
 from backtesting.fno_engine import run_fno_backtest, LegTrade
-from backtesting.metrics import compute_metrics
+from backtesting.metrics import compute_metrics, plausibility_warnings
 from backtesting.scalp_equity import (
     run_scalp_equity_backtest,
     ScalpBacktestResult,
@@ -367,6 +367,7 @@ async def api_run_backtest(
         "metrics": metrics,
         "equity_curve": equity_curve,
         "initial_capital": capital,
+        "warnings": plausibility_warnings(all_trades, metrics),
     }
 
 
@@ -623,6 +624,7 @@ def _scalp_result_to_dict(r: ScalpBacktestResult) -> dict:
         "slippage_total": r.slippage_total,
         "equity_curve": curve,
         "initial_capital": initial,
+        "warnings": plausibility_warnings(r.trades, r.metrics_net or r.metrics),
         "diagnostics": {
             "intra_bar_ambiguity": r.intra_bar_ambiguity,
             "primary_flips": r.primary_flips,
@@ -670,6 +672,12 @@ def _scalp_options_result_to_dict(r: ScalpOptionsBacktestResult) -> dict:
         "slippage_total": r.slippage_total,
         "equity_curve": curve,
         "initial_capital": initial,
+        "warnings": _options_scalp_warnings(r),
+        # Actual span the trades occupy. For young contracts (e.g. a weekly
+        # listed 3 weeks ago inside a 41d request) this is the real window —
+        # flips before the contract traded are skipped as missing_leg_blocks.
+        "first_trade_date": _ist_iso(r.trades[0].entry_time)[:10] if r.trades else None,
+        "last_trade_date": _ist_iso(r.trades[-1].entry_time)[:10] if r.trades else None,
         "diagnostics": {
             "intra_bar_ambiguity": r.intra_bar_ambiguity,
             "primary_flips": r.primary_flips,
@@ -683,6 +691,22 @@ def _scalp_options_result_to_dict(r: ScalpOptionsBacktestResult) -> dict:
             "entry_side_blocks": getattr(r, "entry_side_blocks", 0),
         },
     }
+
+
+def _options_scalp_warnings(r: ScalpOptionsBacktestResult) -> list[str]:
+    """Plausibility flags + options-specific red flags for the UI."""
+    warns = plausibility_warnings(r.trades, r.metrics_net or r.metrics)
+    flips = r.primary_flips or 0
+    if flips and r.missing_leg_blocks and r.missing_leg_blocks / flips > 0.2:
+        pct = round(100 * r.missing_leg_blocks / flips)
+        warns.append(
+            f"{pct}% of signal flips had no option candle data "
+            f"({r.missing_leg_blocks}/{flips}) — the contract likely didn't "
+            "trade for part of the requested window, so the effective "
+            "backtest span is shorter than the nominal days. Check the "
+            "first/last trade dates before annualizing anything."
+        )
+    return warns
 
 
 async def _run_options_scalp_sync(

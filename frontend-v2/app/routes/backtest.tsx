@@ -90,6 +90,11 @@ interface BacktestResult {
   metrics_net?: BacktestMetrics;
   charges_total?: number;
   slippage_total?: number;
+  // Plausibility flags computed server-side (backtesting/metrics.py) — render
+  // verbatim so artifact-shaped results can't be read without the caveats.
+  warnings?: string[];
+  first_trade_date?: string;
+  last_trade_date?: string;
   diagnostics?: {
     intra_bar_ambiguity: number;
     primary_flips: number;
@@ -1602,6 +1607,28 @@ export default function BacktestPage() {
 
             {result && m && (
               <div className="space-y-6">
+                {/* Plausibility warnings — server-computed red flags, shown
+                    first so a 10+ Sharpe never renders without its caveats. */}
+                {result.warnings && result.warnings.length > 0 && (
+                  <div className="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 p-4">
+                    <div className="flex items-center gap-2 font-semibold text-amber-800 dark:text-amber-300 mb-2">
+                      <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                      Plausibility check — read before believing the numbers
+                    </div>
+                    <ul className="space-y-1.5 text-sm text-amber-800 dark:text-amber-200 list-disc pl-5">
+                      {result.warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
+                    {result.first_trade_date && result.last_trade_date && (
+                      <div className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                        Effective trade span: {result.first_trade_date} → {result.last_trade_date}
+                        {result.days ? ` (requested window: ${result.days}d)` : ''}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Strategy summary — what produced this run. Renders from the
                     saved config so a historic run reloaded from the sidebar
                     shows its indicator / confirm / position / squareoff. */}
