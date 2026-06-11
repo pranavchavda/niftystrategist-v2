@@ -70,6 +70,76 @@ class LegFetchPlan:
     instrument_key: str
     tradingsymbol: str = ""
     lot_size: int = 0        # resolved per-contract lot (varies by expiry for stocks)
+    expiry: str = ""         # ISO expiry the leg resolved against (rolling-aware)
+
+
+@dataclass
+class RollingExpiryData:
+    """Pre-fetched contract metadata for rolling front-weekly resolution.
+
+    expiries: sorted ISO dates covering the window (and the current front
+    weekly if the window extends to today).
+    contracts_by_expiry: expiry -> list of contract dicts, each with at least
+    strike_price (float), instrument_type ("CE"/"PE"), instrument_key (str),
+    trading_symbol (str), lot_size (int).
+    """
+    expiries: list[str]
+    contracts_by_expiry: dict[str, list[dict]]
+
+
+def front_expiry_for_date(d: str, expiries: list[str]) -> str | None:
+    """Smallest expiry >= d (the weekly that is front-of-book on date ``d``).
+
+    Tiny duplicated helper kept local so the backtest engine stays free of a
+    ``services/`` import. ``expiries`` need not be pre-sorted.
+    """
+    candidates = [e for e in expiries if e >= d]
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def _atm_strike(strikes: list[float], underlying_price: float) -> float:
+    """ATM strike = the listed strike nearest the underlying price.
+
+    Shared by both passes and both expiry modes so the strike selection rule
+    is byte-identical everywhere (a pass-1/pass-2 divergence would orphan
+    every planned leg into ``missing_leg_blocks``).
+    """
+    return min(strikes, key=lambda s: abs(s - underlying_price))
+
+
+def _rolling_resolve(
+    rolling: RollingExpiryData,
+    option_type: str,
+    bar_date_iso: str,
+    underlying_price: float,
+) -> dict | None:
+    """Resolve a single flip against the rolling front-weekly contract set.
+
+    Returns a contract dict (strike_price/instrument_type/instrument_key/
+    trading_symbol/lot_size) for the ATM strike on the contract that was
+    front-of-book on ``bar_date_iso``, or ``None`` when no expiry covers the
+    date or the front contract lists no strikes of this option_type.
+
+    Both passes call this so the per-flip resolution is identical; a divergence
+    would mean pass-1 plans legs pass-2 never looks up (missing_leg_blocks).
+    """
+    expiry = front_expiry_for_date(bar_date_iso, rolling.expiries)
+    if expiry is None:
+        return None
+    contracts = [
+        c for c in rolling.contracts_by_expiry.get(expiry, [])
+        if c.get("instrument_type") == option_type
+    ]
+    if not contracts:
+        return None
+    strikes = sorted(float(c["strike_price"]) for c in contracts)
+    atm = _atm_strike(strikes, underlying_price)
+    for c in contracts:
+        if float(c["strike_price"]) == atm:
+            return {**c, "_expiry": expiry, "_strike": atm}
+    return None
 
 
 @dataclass
@@ -101,6 +171,7 @@ class ScalpOptionsBacktestResult:
     no_strike_blocks: int        # flips where the F&O cache returned no strikes
     post_cutoff_blocks: int = 0  # flips rejected for being at/after squareoff cutoff
     entry_side_blocks: int = 0   # flips rejected by entry_side (CE/PE-only) gate
+    expiries_used: list[str] = field(default_factory=list)  # distinct expiries traded, sorted
 
 
 @dataclass
@@ -136,6 +207,7 @@ def plan_atm_legs(
     config: ScalpSessionConfig,
     interval: str,
     warmup_bars: int = 0,
+    rolling: RollingExpiryData | None = None,
 ) -> list[LegFetchPlan]:
     """Scan the underlying primary signal once, return every (date, ATM, type)
     leg the replay will need to BUY.
@@ -144,12 +216,17 @@ def plan_atm_legs(
     and max_trades are NOT applied here — they're cheap, deterministic, and
     keeping them out of the planner avoids replicating the bar-loop's full
     state machine. Over-fetching a few legs is preferable to a stale plan.
+
+    When ``rolling`` is supplied, each flip resolves against the weekly
+    contract that was front-of-book on that bar's date (via the pre-fetched
+    ``RollingExpiryData``) instead of the single fixed ``config.expiry``. The
+    fixed-expiry path is unchanged.
     """
     if config.session_mode != SessionMode.OPTIONS_SCALP.value:
         raise ValueError(
             f"plan_atm_legs only supports options_scalp; got {config.session_mode!r}"
         )
-    if not config.expiry:
+    if rolling is None and not config.expiry:
         raise ValueError("config.expiry is required for options_scalp planning")
 
     expected_tf = _INTERVAL_TO_TIMEFRAME.get(interval)
@@ -217,6 +294,33 @@ def plan_atm_legs(
 
         # Resolve ATM at this bar's underlying close (same anchor live uses).
         underlying_price = float(bar["close"])
+        ts = _parse_candle_ts(bar["timestamp"])
+        day = ts.date().isoformat()
+
+        if rolling is not None:
+            # Rolling front-weekly: resolve against the contract front-of-book
+            # on this date. instrument_key/tradingsymbol/lot_size come straight
+            # off the matched contract dict (NOT resolve_option_instrument).
+            contract = _rolling_resolve(rolling, option_type, day, underlying_price)
+            if contract is None:
+                continue
+            atm = contract["_strike"]
+            ident = (day, atm, option_type)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            plans.append(LegFetchPlan(
+                date=day,
+                strike=atm,
+                option_type=option_type,
+                instrument_key=contract["instrument_key"],
+                tradingsymbol=contract.get("trading_symbol", ""),
+                lot_size=int(contract.get("lot_size") or 0),
+                expiry=contract["_expiry"],
+            ))
+            continue
+
+        # Fixed-expiry path (unchanged).
         cache_key = option_type
         strikes = strikes_cache.get(cache_key)
         if strikes is None:
@@ -228,9 +332,7 @@ def plan_atm_legs(
         if not strikes:
             continue
 
-        atm = min(strikes, key=lambda s: abs(s - underlying_price))
-        ts = _parse_candle_ts(bar["timestamp"])
-        day = ts.date().isoformat()
+        atm = _atm_strike(strikes, underlying_price)
         ident = (day, atm, option_type)
         if ident in seen:
             continue
@@ -250,6 +352,7 @@ def plan_atm_legs(
             instrument_key=inst["instrument_key"],
             tradingsymbol=inst.get("tradingsymbol", ""),
             lot_size=int(inst.get("lot_size") or 0),
+            expiry=config.expiry,
         ))
 
     return plans
@@ -269,6 +372,7 @@ def run_scalp_options_backtest(
     progress_cb=None,
     cancel_check=None,
     warmup_bars: int = 0,
+    rolling: RollingExpiryData | None = None,
 ) -> ScalpOptionsBacktestResult:
     """Bar-replay the options scalp state machine.
 
@@ -289,7 +393,7 @@ def run_scalp_options_backtest(
         raise ValueError(
             f"run_scalp_options_backtest requires options_scalp; got {config.session_mode!r}"
         )
-    if not config.expiry:
+    if rolling is None and not config.expiry:
         raise ValueError("config.expiry is required for options_scalp backtest")
     if not config.lots or config.lots <= 0:
         raise ValueError("config.lots must be > 0 for options_scalp backtest")
@@ -311,8 +415,15 @@ def run_scalp_options_backtest(
     # Lot-aware sizing — option legs trade in multiples of lot_size. Pass the
     # expiry: stock (OPTSTK) lots can differ across expiries, and the whole
     # replay is anchored to config.expiry (the same contract plan_atm_legs
-    # resolved), so this matches the legs being replayed.
-    lot_size = get_lot_size(config.underlying, config.expiry)
+    # resolved), so this matches the legs being replayed. In rolling mode the
+    # config.expiry is the "rolling" sentinel (not a real date), so the lookup
+    # is best-effort and serves only as a per-trade fallback when a resolved
+    # contract lacks lot_size; the per-trade lot comes off the contract.
+    fallback_expiry = None if rolling is not None else config.expiry
+    try:
+        lot_size = get_lot_size(config.underlying, fallback_expiry)
+    except Exception:
+        lot_size = get_lot_size(config.underlying)
     quantity = int(config.lots) * lot_size
 
     # Build per-leg timestamp index for O(1) lookup. The replay aligns
@@ -344,9 +455,12 @@ def run_scalp_options_backtest(
             config.confirm_indicator, normalised, config.confirm_params or {}
         )
 
-    # Cache of (date, type) → strike list for ATM resolution at flip.
-    strikes_cache: dict[tuple[str, str], list[float]] = {}
-    inst_resolve_cache: dict[tuple[float, str], dict] = {}
+    # Cache of (date, type) → strike list for ATM resolution at flip. Keys
+    # carry the expiry too so rolling mode (front weekly changes across the
+    # window) doesn't collide a strike list from one expiry onto another.
+    strikes_cache: dict[tuple[str, str, str], list[float]] = {}
+    inst_resolve_cache: dict[tuple[str, float, str], dict] = {}
+    expiries_used: set[str] = set()
 
     pos = _OptionPositionState()
     trades: list[Trade] = []
@@ -551,38 +665,62 @@ def run_scalp_options_backtest(
                 prev_primary = primary_val
                 continue
 
-            # ATM resolution at this bar's underlying close
-            cache_key = (bar_date.isoformat(), option_type)
-            strikes = strikes_cache.get(cache_key)
-            if strikes is None:
-                try:
-                    strikes = list_strikes(
-                        config.underlying, config.expiry, option_type,
-                    )
-                except Exception:
-                    strikes = []
-                strikes_cache[cache_key] = strikes
-            if not strikes:
-                no_strike_blocks += 1
-                prev_primary = primary_val
-                continue
+            # ATM resolution at this bar's underlying close. Pass-2 MUST mirror
+            # pass-1 exactly (same per-flip expiry + ATM + contract) or the leg
+            # candles fetched off pass-1 plans won't match these lookups and
+            # every flip would fall to missing_leg_blocks.
+            underlying_price = float(bar["close"])
+            bar_date_iso = bar_date.isoformat()
+            entry_lot_size = lot_size  # fixed-mode default; overridden in rolling
 
-            atm = min(strikes, key=lambda s: abs(s - float(bar["close"])))
-            inst_key = (atm, option_type)
-            inst = inst_resolve_cache.get(inst_key)
-            if inst is None:
-                try:
-                    inst = resolve_option_instrument(
-                        config.underlying, config.expiry, atm, option_type,
-                    )
-                    inst_resolve_cache[inst_key] = inst
-                except Exception:
+            if rolling is not None:
+                contract = _rolling_resolve(
+                    rolling, option_type, bar_date_iso, underlying_price,
+                )
+                if contract is None:
+                    no_strike_blocks += 1
+                    prev_primary = primary_val
+                    continue
+                atm = contract["_strike"]
+                entry_expiry = contract["_expiry"]
+                instrument_key = contract["instrument_key"]
+                tradingsymbol = contract.get("trading_symbol", "")
+                contract_lot = int(contract.get("lot_size") or 0)
+                if contract_lot > 0:
+                    entry_lot_size = contract_lot
+            else:
+                cache_key = (bar_date_iso, option_type, config.expiry)
+                strikes = strikes_cache.get(cache_key)
+                if strikes is None:
+                    try:
+                        strikes = list_strikes(
+                            config.underlying, config.expiry, option_type,
+                        )
+                    except Exception:
+                        strikes = []
+                    strikes_cache[cache_key] = strikes
+                if not strikes:
                     no_strike_blocks += 1
                     prev_primary = primary_val
                     continue
 
-            instrument_key = inst["instrument_key"]
-            tradingsymbol = inst.get("tradingsymbol", "")
+                atm = _atm_strike(strikes, underlying_price)
+                entry_expiry = config.expiry
+                inst_key = (config.expiry, atm, option_type)
+                inst = inst_resolve_cache.get(inst_key)
+                if inst is None:
+                    try:
+                        inst = resolve_option_instrument(
+                            config.underlying, config.expiry, atm, option_type,
+                        )
+                        inst_resolve_cache[inst_key] = inst
+                    except Exception:
+                        no_strike_blocks += 1
+                        prev_primary = primary_val
+                        continue
+
+                instrument_key = inst["instrument_key"]
+                tradingsymbol = inst.get("tradingsymbol", "")
 
             # Fill: option close at next underlying bar's timestamp.
             if i + 1 >= total_bars:
@@ -616,9 +754,14 @@ def run_scalp_options_backtest(
                 prev_primary = primary_val
                 continue
 
+            # Per-trade lot: rolling mode takes lot_size off the resolved
+            # contract (index lots can change across expiries); fixed mode and
+            # the rolling fallback use the single get_lot_size() above.
+            trade_quantity = int(config.lots) * entry_lot_size
+
             raw_entry = float(fill_bar["close"])
             entry_price = raw_entry * (1 + slip_frac)
-            slippage_total += abs(raw_entry - entry_price) * quantity
+            slippage_total += abs(raw_entry - entry_price) * trade_quantity
 
             pos.option_type = option_type
             pos.strike = atm
@@ -626,9 +769,10 @@ def run_scalp_options_backtest(
             pos.tradingsymbol = tradingsymbol
             pos.entry_price = entry_price
             pos.entry_time = next_ts
-            pos.quantity = quantity
+            pos.quantity = trade_quantity
             pos.trail_armed = False
             pos.highest_premium = entry_price
+            expiries_used.add(entry_expiry)
 
         prev_primary = primary_val if primary_val is not None else prev_primary
 
@@ -681,6 +825,7 @@ def run_scalp_options_backtest(
         no_strike_blocks=no_strike_blocks,
         post_cutoff_blocks=post_cutoff_blocks,
         entry_side_blocks=entry_side_blocks,
+        expiries_used=sorted(expiries_used),
     )
 
 

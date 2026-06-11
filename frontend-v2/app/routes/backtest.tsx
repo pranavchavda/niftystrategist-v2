@@ -95,6 +95,10 @@ interface BacktestResult {
   warnings?: string[];
   first_trade_date?: string;
   last_trade_date?: string;
+  // For options_scalp runs with expiry === "rolling": ISO dates actually
+  // traded (the front-of-book weekly resolved per signal flip). Absent on
+  // fixed-expiry runs and on pre-rolling historic runs.
+  expiries_used?: string[];
   diagnostics?: {
     intra_bar_ambiguity: number;
     primary_flips: number;
@@ -533,6 +537,9 @@ export default function BacktestPage() {
   const [scalpExpiry, setScalpExpiry] = useState<string>('');
   const [scalpLots, setScalpLots] = useState<string>('1');
   const [scalpExpiries, setScalpExpiries] = useState<string[]>([]);
+  // Fixed expiry (pick one date) vs rolling front weekly (engine resolves the
+  // front-of-book weekly per signal flip → sends sentinel expiry "rolling").
+  const [scalpExpiryMode, setScalpExpiryMode] = useState<'fixed' | 'rolling'>('fixed');
 
   // Results + job state
   const [result, setResult] = useState<BacktestResult | null>(null);
@@ -910,7 +917,8 @@ export default function BacktestPage() {
     if (isOptions) {
       // Options-scalp uses underlying/expiry/lots; the engine resolves ATM
       // dynamically at each flip and fetches the matching CE/PE leg.
-      if (!scalpUnderlying || !scalpExpiry) {
+      const rolling = scalpExpiryMode === 'rolling';
+      if (!scalpUnderlying || (!rolling && !scalpExpiry)) {
         setError('Underlying and expiry are required for options scalp');
         return;
       }
@@ -919,7 +927,9 @@ export default function BacktestPage() {
       // populate both so result-rendering paths that key off `symbol` keep
       // working without a frontend code change.
       config.symbol = scalpUnderlying;
-      config.expiry = scalpExpiry;
+      // Rolling sends the sentinel; the engine resolves the front-of-book
+      // weekly that was live on each signal-flip date.
+      config.expiry = rolling ? 'rolling' : scalpExpiry;
       config.lots = parseInt(scalpLots) || 1;
     } else {
       if (!symbol) {
@@ -931,7 +941,7 @@ export default function BacktestPage() {
     }
 
     const labelLeft = isOptions
-      ? `${scalpUnderlying} ${scalpExpiry}`
+      ? `${scalpUnderlying} ${scalpExpiryMode === 'rolling' ? 'rolling' : scalpExpiry}`
       : symbol;
     const name = `scalp · ${labelLeft} · ${interval} · ${days}d · ${scalpPrimary}`;
     await startJob('scalp', name, config);
@@ -1216,25 +1226,65 @@ export default function BacktestPage() {
 
                 {/* Instrument — equity uses Symbol, options uses Underlying + Expiry. */}
                 {scalpSessionMode === 'options_scalp' ? (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-3">
+                    {/* Fixed expiry vs rolling front weekly. Rolling sends the
+                        sentinel expiry "rolling" — the engine resolves the
+                        front-of-book weekly per signal-flip date. */}
                     <div>
-                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Underlying</label>
-                      <FnoUnderlyingPicker
-                        authToken={authToken}
-                        value={scalpUnderlying}
-                        onSelect={(s) => { setScalpUnderlying(s); setScalpExpiry(''); }}
-                      />
+                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Expiry resolution</label>
+                      <div className="flex items-center gap-1 rounded-lg bg-zinc-100 dark:bg-zinc-800/50 p-1 w-fit">
+                        <button
+                          type="button"
+                          onClick={() => setScalpExpiryMode('fixed')}
+                          className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                            scalpExpiryMode === 'fixed'
+                              ? 'bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-100 shadow-sm'
+                              : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                          }`}
+                        >
+                          Fixed expiry
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setScalpExpiryMode('rolling')}
+                          className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                            scalpExpiryMode === 'rolling'
+                              ? 'bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-100 shadow-sm'
+                              : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                          }`}
+                        >
+                          Rolling front weekly
+                        </button>
+                      </div>
+                      {scalpExpiryMode === 'rolling' && (
+                        <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">
+                          Each signal resolves to the weekly that was front-of-book on that date — spans
+                          multiple expiries, no young-contract truncation. Requires Upstox Plus.
+                        </p>
+                      )}
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Expiry</label>
-                      <select
-                        className={selectClassName}
-                        value={scalpExpiry}
-                        onChange={e => setScalpExpiry(e.target.value)}
-                      >
-                        {scalpExpiries.length === 0 && <option value="">Loading…</option>}
-                        {scalpExpiries.map(e => <option key={e} value={e}>{e}</option>)}
-                      </select>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Underlying</label>
+                        <FnoUnderlyingPicker
+                          authToken={authToken}
+                          value={scalpUnderlying}
+                          onSelect={(s) => { setScalpUnderlying(s); setScalpExpiry(''); }}
+                        />
+                      </div>
+                      {scalpExpiryMode === 'fixed' && (
+                        <div>
+                          <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-1">Expiry</label>
+                          <select
+                            className={selectClassName}
+                            value={scalpExpiry}
+                            onChange={e => setScalpExpiry(e.target.value)}
+                          >
+                            {scalpExpiries.length === 0 && <option value="">Loading…</option>}
+                            {scalpExpiries.map(e => <option key={e} value={e}>{e}</option>)}
+                          </select>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -1433,7 +1483,8 @@ export default function BacktestPage() {
                   disabled={
                     running
                     || (scalpSessionMode === 'options_scalp'
-                        ? (!scalpUnderlying || !scalpExpiry || !scalpLots)
+                        ? (!scalpUnderlying || !scalpLots
+                           || (scalpExpiryMode === 'fixed' && !scalpExpiry))
                         : (!symbol || !scalpQuantity))
                   }
                 >
@@ -1636,8 +1687,25 @@ export default function BacktestPage() {
                   const cfg = result.config!;
                   const mode = cfg.session_mode || result.session_mode;
                   const isOpt = mode === 'options_scalp';
+                  // Rolling runs carry expiry === "rolling"; show the weeklies
+                  // span from expiries_used when present (absent on old runs).
+                  const expiriesUsed = result.expiries_used;
+                  let expiryLabel = '';
+                  if (isOpt) {
+                    if (cfg.expiry === 'rolling') {
+                      expiryLabel = ' · rolling weeklies';
+                      if (expiriesUsed?.length) {
+                        const span = expiriesUsed.length > 1
+                          ? ` (${expiriesUsed[0]} → ${expiriesUsed[expiriesUsed.length - 1]})`
+                          : ` (${expiriesUsed[0]})`;
+                        expiryLabel += ` · ${expiriesUsed.length} expir${expiriesUsed.length === 1 ? 'y' : 'ies'}${span}`;
+                      }
+                    } else if (cfg.expiry) {
+                      expiryLabel = ` · ${cfg.expiry}`;
+                    }
+                  }
                   const instrument = isOpt
-                    ? `${cfg.underlying || cfg.symbol || result.symbol || '?'}${cfg.expiry ? ` · ${cfg.expiry}` : ''}`
+                    ? `${cfg.underlying || cfg.symbol || result.symbol || '?'}${expiryLabel}`
                     : (cfg.symbol || cfg.underlying || result.symbol || '?');
                   const sizing = isOpt
                     ? `${cfg.lots ?? '?'} lot${(cfg.lots ?? 0) === 1 ? '' : 's'}`

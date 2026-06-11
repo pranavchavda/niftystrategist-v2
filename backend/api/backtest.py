@@ -90,6 +90,11 @@ class ScalpBacktestRequest(BaseModel):
 
     # Options-mode fields. Required when session_mode=options_scalp.
     underlying: str | None = None
+    # ISO expiry (``YYYY-MM-DD``) for a fixed-expiry run, or the sentinel
+    # ``"rolling"`` (case-insensitive) to resolve each flip against the weekly
+    # contract that was front-of-book on that bar's date — letting a
+    # multi-week window roll forward through successive weeklies. Rolling mode
+    # requires a valid Upstox token (Plus plan) for the expired-instruments API.
     expiry: str | None = None
     lots: int | None = None
 
@@ -673,6 +678,9 @@ def _scalp_options_result_to_dict(r: ScalpOptionsBacktestResult) -> dict:
         "equity_curve": curve,
         "initial_capital": initial,
         "warnings": _options_scalp_warnings(r),
+        # Distinct expiries the replay actually traded against. Single-element
+        # for a fixed-expiry run; multi-element for a rolling-expiry run.
+        "expiries_used": list(getattr(r, "expiries_used", []) or []),
         # Actual span the trades occupy. For young contracts (e.g. a weekly
         # listed 3 weeks ago inside a 41d request) this is the real window —
         # flips before the contract traded are skipped as missing_leg_blocks.
@@ -707,6 +715,202 @@ def _options_scalp_warnings(r: ScalpOptionsBacktestResult) -> list[str]:
             "first/last trade dates before annualizing anything."
         )
     return warns
+
+
+# ---------------------------------------------------------------------------
+# Rolling-expiry support
+#
+# When ``expiry == "rolling"`` the options-scalp backtest resolves each flip
+# against the weekly contract that was front-of-book on that bar's date,
+# instead of pinning one fixed expiry. This lets a multi-week window backtest
+# realistically — each week trades its own front weekly, rolling forward.
+#
+# The expired-contract + expired-candle data come from the Upstox "expired
+# instruments" API (Plus plan), wrapped in ``services.expired_instruments``.
+# The current/unexpired front weekly isn't in that API yet, so for any needed
+# expiry that is today-or-later we synthesize the contract dicts from the live
+# F&O cache (``strategies.fno_utils``), shaped identically to the expired ones.
+# ---------------------------------------------------------------------------
+
+_ROLLING_SENTINEL = "rolling"
+
+
+def _is_rolling_expiry(expiry: str | None) -> bool:
+    return bool(expiry) and expiry.strip().lower() == _ROLLING_SENTINEL
+
+
+def _is_expired_instrument_key(instrument_key: str) -> bool:
+    """True for the expired-contract key format (two pipes + date suffix).
+
+    Expired keys look like ``NSE_FO|72172|26-05-2026``; live-cache keys for
+    current contracts look like ``NSE_FO|72172`` (single pipe, no date). The
+    leg-candle fetcher uses this to route between ``fetch_expired_candles`` and
+    the live ``client.get_historical_data`` path.
+    """
+    return instrument_key.count("|") >= 2
+
+
+def _replay_dates(underlying_candles: list[dict], warmup_bars: int) -> list[str]:
+    """Sorted unique ISO dates of the post-warmup (tradable) underlying candles."""
+    from backtesting.scalp_equity import _parse_candle_ts
+
+    dates: set[str] = set()
+    for c in underlying_candles[warmup_bars:]:
+        ts = _parse_candle_ts(c["timestamp"])
+        dates.add(ts.date().isoformat())
+    return sorted(dates)
+
+
+def _live_cache_contracts(underlying: str, expiry: str) -> list[dict]:
+    """Build expired-contract-shaped dicts for a CURRENT front weekly from the
+    live F&O cache.
+
+    The expired-instruments API only knows past expiries; the in-flight front
+    weekly (expiry >= today) must come from the live cache. We reshape each
+    listed strike/type into the same dict the expired endpoint returns so the
+    engine's rolling resolver treats both identically.
+    """
+    from strategies.fno_utils import (
+        get_lot_size,
+        list_strikes,
+        resolve_option_instrument,
+    )
+
+    out: list[dict] = []
+    for option_type in ("CE", "PE"):
+        try:
+            strikes = list_strikes(underlying, expiry, option_type)
+        except Exception:
+            strikes = []
+        for strike in strikes:
+            try:
+                inst = resolve_option_instrument(
+                    underlying, expiry, strike, option_type,
+                )
+            except Exception:
+                continue
+            lot = int(inst.get("lot_size") or 0) or get_lot_size(underlying, expiry)
+            out.append({
+                "instrument_key": inst["instrument_key"],
+                "trading_symbol": inst.get("tradingsymbol", ""),
+                "strike_price": float(strike),
+                "instrument_type": option_type,
+                "lot_size": int(lot),
+                "expiry": expiry,
+            })
+    return out
+
+
+async def _build_rolling_expiry_data(
+    token: str,
+    underlying: str,
+    underlying_candles: list[dict],
+    warmup_bars: int,
+):
+    """Assemble a ``RollingExpiryData`` for the replay window.
+
+    1. Pull all known expiries for the underlying.
+    2. Map each tradable replay date to its front-of-book expiry.
+    3. Fetch contracts for the needed PAST expiries concurrently via the
+       expired-instruments service; synthesize the current/future front weekly
+       from the live F&O cache (the expired API doesn't have it yet).
+    """
+    from services.expired_instruments import (
+        front_expiry_for_date,
+        get_expired_contracts,
+        get_expiries,
+        _today_iso,
+    )
+    from backtesting.scalp_options import RollingExpiryData
+
+    expiries = await get_expiries(token, underlying)
+    dates = _replay_dates(underlying_candles, warmup_bars)
+    needed = sorted(
+        {front_expiry_for_date(d, expiries) for d in dates} - {None}
+    )
+
+    today = _today_iso()
+    past_needed = [e for e in needed if e < today]
+    live_needed = [e for e in needed if e >= today]
+
+    contracts_by_expiry: dict[str, list[dict]] = {}
+
+    if past_needed:
+        fetched = await asyncio.gather(
+            *[get_expired_contracts(token, underlying, e) for e in past_needed]
+        )
+        for e, contracts in zip(past_needed, fetched):
+            contracts_by_expiry[e] = contracts or []
+
+    for e in live_needed:
+        # Live cache lookup is sync + cheap; offload so we don't stall the loop
+        # if the cache has to load from disk on first touch.
+        contracts_by_expiry[e] = await asyncio.to_thread(
+            _live_cache_contracts, underlying, e,
+        )
+
+    return RollingExpiryData(
+        expiries=needed,
+        contracts_by_expiry=contracts_by_expiry,
+    )
+
+
+async def _fetch_rolling_leg(
+    token: str,
+    client,
+    underlying: str,
+    instrument_key: str,
+    interval: str,
+    from_date: str,
+    to_date: str,
+    days: int,
+) -> tuple[str, list[dict]]:
+    """Fetch one planned leg's candles, routing by instrument-key format.
+
+    Expired-format keys (two pipes + date suffix) → ``fetch_expired_candles``
+    spanning the replay window (``from_date`` clamped to window start,
+    ``to_date`` = the leg's expiry — candles stop at expiry anyway). Plain
+    live keys → the existing ``client.get_historical_data`` (days-based) path.
+    """
+    from services.expired_instruments import fetch_expired_candles
+
+    try:
+        if _is_expired_instrument_key(instrument_key):
+            candles = await fetch_expired_candles(
+                token, instrument_key, interval, from_date, to_date,
+            )
+            return instrument_key, [
+                {"timestamp": c["timestamp"], "open": c["open"], "high": c["high"],
+                 "low": c["low"], "close": c["close"], "volume": c.get("volume", 0)}
+                for c in candles
+            ]
+        leg_ohlcv = await client.get_historical_data(
+            symbol=underlying, interval=interval,
+            days=days, instrument_key=instrument_key,
+        )
+        return instrument_key, [
+            {"timestamp": c.timestamp, "open": c.open, "high": c.high,
+             "low": c.low, "close": c.close, "volume": c.volume}
+            for c in leg_ohlcv
+        ]
+    except Exception as e:
+        logger.warning("rolling leg fetch failed for %s: %s", instrument_key, e)
+        return instrument_key, []
+
+
+def _plan_leg_dates(plans, instrument_key: str) -> tuple[str | None, str | None]:
+    """(earliest plan date, leg expiry date) for one instrument_key across the
+    plan list. The leg's candles never exist past its expiry, so we clamp
+    ``to_date`` to the expiry rather than the window end."""
+    dates = [p.date for p in plans if p.instrument_key == instrument_key]
+    expiries = [
+        getattr(p, "expiry", None) for p in plans
+        if p.instrument_key == instrument_key
+    ]
+    expiries = [e for e in expiries if e]
+    from_date = min(dates) if dates else None
+    to_date = max(expiries) if expiries else None
+    return from_date, to_date
 
 
 async def _run_options_scalp_sync(
@@ -758,6 +962,22 @@ async def _run_options_scalp_sync(
         for c in ohlcv
     ]
 
+    rolling_mode = _is_rolling_expiry(body.expiry)
+    rolling = None
+    token: str | None = None
+    if rolling_mode:
+        from api.upstox_oauth import get_user_upstox_token
+
+        token = await get_user_upstox_token(user.id)
+        if not token:
+            raise HTTPException(
+                status_code=400,
+                detail="Rolling-expiry backtests need a valid Upstox token (Plus plan)",
+            )
+        rolling = await _build_rolling_expiry_data(
+            token, underlying, underlying_candles, warmup_bars,
+        )
+
     tf = body.indicator_timeframe or _INTERVAL_TO_TIMEFRAME[body.interval]
     cfg = ScalpSessionConfig(
         name=f"backtest-{underlying}",
@@ -785,6 +1005,7 @@ async def _run_options_scalp_sync(
     try:
         plans = await asyncio.to_thread(
             plan_atm_legs, underlying_candles, cfg, body.interval, warmup_bars,
+            rolling,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -792,6 +1013,7 @@ async def _run_options_scalp_sync(
     leg_candles_by_key: dict[str, list[dict]] = {}
     if plans:
         unique_keys = {p.instrument_key for p in plans}
+        window_start = (_replay_dates(underlying_candles, warmup_bars) or [None])[0]
 
         async def _fetch_leg(ik: str) -> tuple[str, list[dict]]:
             try:
@@ -808,7 +1030,17 @@ async def _run_options_scalp_sync(
                 logger.warning("options scalp: fetch failed for %s: %s", ik, e)
                 return ik, []
 
-        fetched = await asyncio.gather(*[_fetch_leg(ik) for ik in unique_keys])
+        async def _fetch_leg_rolling(ik: str) -> tuple[str, list[dict]]:
+            _from, leg_expiry = _plan_leg_dates(plans, ik)
+            from_date = window_start or _from
+            to_date = leg_expiry or _from
+            return await _fetch_rolling_leg(
+                token, client, underlying, ik, body.interval,
+                from_date, to_date, body.days,
+            )
+
+        fetcher = _fetch_leg_rolling if rolling_mode else _fetch_leg
+        fetched = await asyncio.gather(*[fetcher(ik) for ik in unique_keys])
         leg_candles_by_key = {ik: data for ik, data in fetched}
 
     try:
@@ -818,6 +1050,7 @@ async def _run_options_scalp_sync(
             interval=body.interval,
             slippage_bps=body.slippage_bps,
             warmup_bars=warmup_bars,
+            rolling=rolling,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

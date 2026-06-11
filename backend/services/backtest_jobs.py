@@ -439,6 +439,26 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
         for c in ohlcv
     ]
 
+    # Rolling-expiry mode: resolve each flip against the front-of-book weekly
+    # for that bar's date instead of a single fixed expiry. Needs a token
+    # (Plus plan) for the expired-instruments API.
+    from api.backtest import (
+        _is_rolling_expiry, _build_rolling_expiry_data, _replay_dates,
+        _fetch_rolling_leg, _plan_leg_dates,
+    )
+
+    rolling_mode = _is_rolling_expiry(expiry)
+    rolling = None
+    if rolling_mode:
+        if not token:
+            raise ValueError(
+                "Rolling-expiry backtests need a valid Upstox token (Plus plan)"
+            )
+        await _update_progress(job_id, message="Building rolling front-weekly contract set")
+        rolling = await _build_rolling_expiry_data(
+            token, underlying, underlying_candles, warmup_bars,
+        )
+
     tf = config.get("indicator_timeframe") or _INTERVAL_TO_TIMEFRAME[interval]
     cfg = ScalpSessionConfig(
         name=f"backtest-{underlying}",
@@ -466,7 +486,7 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
     # Pass 1 — plan which option legs the replay will need.
     await _update_progress(job_id, message="Planning ATM legs from underlying signal")
     plans = await asyncio.to_thread(
-        plan_atm_legs, underlying_candles, cfg, interval, warmup_bars,
+        plan_atm_legs, underlying_candles, cfg, interval, warmup_bars, rolling,
     )
     if not plans:
         # No flips that pass confirm gate — return empty result so the user
@@ -477,6 +497,7 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
             interval=interval,
             slippage_bps=float(config.get("slippage_bps", 0.0)),
             warmup_bars=warmup_bars,
+            rolling=rolling,
         )
         return _scalp_options_result_to_dict(empty)
 
@@ -488,6 +509,8 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
         job_id, total=len(unique_keys), done=0,
         message=f"Fetching {len(unique_keys)} option legs in parallel",
     )
+
+    window_start = (_replay_dates(underlying_candles, warmup_bars) or [None])[0]
 
     async def _fetch_leg(ik: str) -> tuple[str, list[dict]]:
         try:
@@ -504,7 +527,16 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
             logger.warning("scalp options: fetch failed for %s: %s", ik, e)
             return ik, []
 
-    fetched = await asyncio.gather(*[_fetch_leg(ik) for ik in unique_keys])
+    async def _fetch_leg_rolling(ik: str) -> tuple[str, list[dict]]:
+        _from, leg_expiry = _plan_leg_dates(plans, ik)
+        from_date = window_start or _from
+        to_date = leg_expiry or _from
+        return await _fetch_rolling_leg(
+            token, client, underlying, ik, interval, from_date, to_date, days,
+        )
+
+    fetcher = _fetch_leg_rolling if rolling_mode else _fetch_leg
+    fetched = await asyncio.gather(*[fetcher(ik) for ik in unique_keys])
     leg_candles_by_key = {ik: data for ik, data in fetched}
 
     if await _check_cancel(job_id):
@@ -525,6 +557,7 @@ async def _run_scalp_options(job_id: int, user_id: int, config: dict) -> dict | 
             slippage_bps=float(config.get("slippage_bps", 0.0)),
             progress_cb=progress, cancel_check=cancel,
             warmup_bars=warmup_bars,
+            rolling=rolling,
         )
 
     result = await asyncio.to_thread(_go)
