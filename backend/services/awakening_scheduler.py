@@ -492,10 +492,28 @@ async def _write_partial_summary_on_crash(
                 marker = "✓" if status == "success" else ("✗" if status == "failed" else "·")
                 lines.append(f"{marker} `{a.tool_name}` ({status}): `{args_str[:300]}`")
 
+        # Crash relay: include the dead awakening's mission so the next pulse
+        # can triage it — without this the pulse sees THAT something crashed
+        # but not WHAT job was lost (the 9:20 deploy crash on 2026-06-11 left
+        # the whole day entry-less because no later awakening knew the
+        # mission). The next awakening continues it or explicitly passes it
+        # forward; its completion text is thread history for the one after.
+        if schedule.prompt:
+            lines.append("")
+            lines.append("**The crashed awakening's mission was:**")
+            for pl in schedule.prompt[:2000].splitlines():
+                lines.append(f"> {pl}")
+
         lines.append("")
         lines.append(
-            "_Next awakening: re-fetch portfolio + active rules to confirm true state. "
-            "Tool calls listed above may have committed broker-side; verify before acting._"
+            "_Next awakening: this orphaned mission is yours to triage. "
+            "First re-fetch portfolio + active rules to confirm true state — "
+            "tool calls listed above may have committed broker-side. Then "
+            "either (a) CONTINUE the mission above if it still makes sense at "
+            "your pulse time (your own pulse duties and the mandate's caps "
+            "still apply), or (b) PASS it forward: state explicitly in your "
+            "completion what remains undone so the next awakening picks it up "
+            "from thread history._"
         )
 
         await engine._write_followup_to_thread(
