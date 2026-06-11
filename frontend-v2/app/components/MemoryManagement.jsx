@@ -54,6 +54,15 @@ export default function MemoryManagement({ authToken }) {
   const [similarModalLoading, setSimilarModalLoading] = useState(false);
   const [originalMemory, setOriginalMemory] = useState(null);
 
+  // Managed memory block state (agent-curated core memory)
+  const [memoryBlock, setMemoryBlock] = useState('');
+  const [memoryBlockDraft, setMemoryBlockDraft] = useState('');
+  const [memoryBlockUpdatedAt, setMemoryBlockUpdatedAt] = useState(null);
+  const [memoryBlockMaxChars, setMemoryBlockMaxChars] = useState(6000);
+  const [memoryBlockSaving, setMemoryBlockSaving] = useState(false);
+  const [memoryBlockError, setMemoryBlockError] = useState(null);
+  const [memoryBlockExpanded, setMemoryBlockExpanded] = useState(false);
+
   // Sort options
   const sortOptions = [
     { value: 'newest', label: 'Most Recent' },
@@ -104,6 +113,54 @@ export default function MemoryManagement({ authToken }) {
       console.error('Failed to load memories:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Load the managed memory block
+  useEffect(() => {
+    if (!authToken) return;
+    (async () => {
+      try {
+        const response = await fetch('/api/memory-block', {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setMemoryBlock(data.block || '');
+          setMemoryBlockDraft(data.block || '');
+          setMemoryBlockUpdatedAt(data.updated_at);
+          setMemoryBlockMaxChars(data.max_chars || 6000);
+        }
+      } catch (error) {
+        console.error('Failed to load memory block:', error);
+      }
+    })();
+  }, [authToken]);
+
+  const saveMemoryBlock = async () => {
+    setMemoryBlockSaving(true);
+    setMemoryBlockError(null);
+    try {
+      const response = await fetch('/api/memory-block', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ text: memoryBlockDraft })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setMemoryBlock(data.block || '');
+        setMemoryBlockDraft(data.block || '');
+        setMemoryBlockUpdatedAt(data.updated_at);
+      } else {
+        setMemoryBlockError(data.detail || `Save failed (${response.status})`);
+      }
+    } catch (error) {
+      setMemoryBlockError(String(error));
+    } finally {
+      setMemoryBlockSaving(false);
     }
   };
 
@@ -452,6 +509,69 @@ export default function MemoryManagement({ authToken }) {
               )}
             </div>
           </div>
+        </div>
+
+        {/* Managed Memory Block (agent-curated core memory) */}
+        <div className="mb-6 rounded-lg border border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/20">
+          <button
+            onClick={() => setMemoryBlockExpanded(!memoryBlockExpanded)}
+            className="w-full flex items-center justify-between px-4 py-3 text-left"
+          >
+            <div className="flex items-center gap-2">
+              <ChevronRight className={`w-4 h-4 text-indigo-500 transition-transform ${memoryBlockExpanded ? 'rotate-90' : ''}`} />
+              <span className="font-semibold text-zinc-900 dark:text-zinc-100">Memory Block</span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                agent-curated core memory — injected into every chat &amp; awakening
+              </span>
+            </div>
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              {memoryBlockUpdatedAt
+                ? `Updated ${new Date(memoryBlockUpdatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' })} IST`
+                : 'empty'}
+            </span>
+          </button>
+          {memoryBlockExpanded && (
+            <div className="px-4 pb-4 space-y-2">
+              <textarea
+                value={memoryBlockDraft}
+                onChange={(e) => setMemoryBlockDraft(e.target.value)}
+                rows={14}
+                spellCheck={false}
+                placeholder="(empty — the agent maintains this; edits here are full-rewrite, same as nf-memory-block)"
+                className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 p-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:focus:ring-indigo-600"
+              />
+              <div className="flex items-center justify-between">
+                <span className={`text-xs ${memoryBlockDraft.length > memoryBlockMaxChars ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-zinc-500 dark:text-zinc-400'}`}>
+                  {memoryBlockDraft.length.toLocaleString()} / {memoryBlockMaxChars.toLocaleString()} chars
+                  {memoryBlockDraft.length > memoryBlockMaxChars && ' — over cap, save will be rejected'}
+                </span>
+                <div className="flex items-center gap-2">
+                  {memoryBlockDraft !== memoryBlock && (
+                    <Button
+                      plain
+                      onClick={() => { setMemoryBlockDraft(memoryBlock); setMemoryBlockError(null); }}
+                    >
+                      Reset
+                    </Button>
+                  )}
+                  <Button
+                    onClick={saveMemoryBlock}
+                    disabled={memoryBlockSaving || memoryBlockDraft === memoryBlock}
+                    className="bg-indigo-600 text-white hover:bg-indigo-700"
+                  >
+                    <Save className="w-4 h-4 mr-2" />
+                    {memoryBlockSaving ? 'Saving…' : 'Save Block'}
+                  </Button>
+                </div>
+              </div>
+              {memoryBlockError && (
+                <div className="flex items-start gap-2 text-sm text-red-600 dark:text-red-400">
+                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  {memoryBlockError}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Search and Filters */}

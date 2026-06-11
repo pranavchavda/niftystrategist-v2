@@ -4,7 +4,7 @@ API endpoints for conversation management
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request as FastAPIRequest
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 import uuid
@@ -73,6 +73,14 @@ class ConversationResponse(BaseModel):
     summary: Optional[str]
     message_count: Optional[int] = 0
 
+    @field_serializer('created_at', 'updated_at')
+    def _serialize_utc(self, dt: Optional[datetime], _info):
+        # DB datetimes are naive UTC; without the Z suffix, JS Date() parses
+        # them as browser-local and every displayed time is offset-shifted.
+        if dt is None:
+            return None
+        return dt.isoformat() + 'Z' if dt.tzinfo is None else dt.isoformat()
+
 
 class MessageResponse(BaseModel):
     """Message response model"""
@@ -85,6 +93,12 @@ class MessageResponse(BaseModel):
     tool_calls: List
     reasoning: Optional[str] = None  # Include reasoning/thinking content
     edited_at: Optional[datetime] = None  # Timestamp when message was edited
+
+    @field_serializer('timestamp', 'edited_at')
+    def _serialize_utc(self, dt: Optional[datetime], _info):
+        if dt is None:
+            return None
+        return dt.isoformat() + 'Z' if dt.tzinfo is None else dt.isoformat()
 
 
 class UpdateMessageRequest(BaseModel):

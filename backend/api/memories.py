@@ -471,3 +471,60 @@ async def extract_memories(
         "summary": extraction_result.summary,
         "memories": stored_memories
     }
+
+
+# ---------------------------------------------------------------------------
+# Managed memory block (agent-curated core memory; services/memory_block.py)
+# ---------------------------------------------------------------------------
+
+class MemoryBlockUpdateRequest(BaseModel):
+    """Full-rewrite update of the managed memory block"""
+    text: str
+
+
+@router.get("/memory-block")
+async def get_memory_block(user: User = Depends(get_current_user)):
+    """Get the user's managed memory block."""
+    from services.memory_block import get_block, MEMORY_BLOCK_MAX_CHARS
+
+    block, updated_at = await get_block(user.id)
+    return {
+        "block": block or "",
+        "updated_at": (updated_at.isoformat() + "Z") if updated_at else None,
+        "max_chars": MEMORY_BLOCK_MAX_CHARS,
+    }
+
+
+@router.put("/memory-block")
+async def update_memory_block(
+    body: MemoryBlockUpdateRequest,
+    user: User = Depends(get_current_user),
+):
+    """Replace the memory block (full-rewrite semantics, same as the agent's CLI).
+
+    An empty/whitespace-only text clears the block. Over-cap text is rejected
+    with 422 — no silent truncation, matching nf-memory-block behavior.
+    """
+    from services.memory_block import (
+        MEMORY_BLOCK_MAX_CHARS,
+        MemoryBlockTooLargeError,
+        clear_block,
+        get_block,
+        set_block,
+    )
+
+    text = body.text
+    try:
+        if not text.strip():
+            await clear_block(user.id)
+            block, updated_at = await get_block(user.id)
+        else:
+            block, updated_at = await set_block(user.id, text)
+    except MemoryBlockTooLargeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {
+        "block": block or "",
+        "updated_at": (updated_at.isoformat() + "Z") if updated_at else None,
+        "max_chars": MEMORY_BLOCK_MAX_CHARS,
+    }

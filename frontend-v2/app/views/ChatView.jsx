@@ -13,7 +13,6 @@ import ProcessingStatus from "../components/ProcessingStatus";
 import ReasoningDisplay from "../components/ReasoningDisplay";
 import ChatInput from "../components/ChatInput";
 import TodoPanel from "../components/TodoPanel";
-import TokenUsageBanner from "../components/TokenUsageBanner";
 import ToolsSidebar from "../components/ToolsSidebar";
 import ModelSelector from "../components/ModelSelector";
 import ActionsDropdown from "../components/ActionsDropdown";
@@ -74,8 +73,6 @@ function ChatView({ authToken, onConversationChange }) {
   const [interruptReason, setInterruptReason] = useState("");
   const [isForkingConversation, setIsForkingConversation] = useState(false);
   const [isCompactingThread, setIsCompactingThread] = useState(false);
-  // Token usage tracking
-  const [tokenUsage, setTokenUsage] = useState(null);
   // TODO mode toggle
   const [useTodo, setUseTodo] = useState(false);
   // Mobile controls visibility
@@ -128,31 +125,6 @@ function ChatView({ authToken, onConversationChange }) {
     };
   }, []);
 
-  // Fetch token usage for a conversation
-  const fetchTokenUsage = useCallback(
-    async (convId) => {
-      try {
-        const response = await fetch(`/api/conversations/${convId}/token-usage`, {
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-          },
-        });
-
-        if (response.ok) {
-          const usage = await response.json();
-          setTokenUsage(usage);
-        } else {
-          console.warn("Failed to fetch token usage:", response.status);
-          setTokenUsage(null);
-        }
-      } catch (error) {
-        console.error("Error fetching token usage:", error);
-        setTokenUsage(null);
-      }
-    },
-    [authToken]
-  );
-
   // Ref for aborting loadConversation requests
   const loadConversationAbortRef = useRef(null);
 
@@ -172,7 +144,6 @@ function ChatView({ authToken, onConversationChange }) {
       setStreamingContent("");
       setActiveToolCall(null);
       setToolCallHistory([]);
-      setTokenUsage(null); // Clear old usage while loading
 
       try {
         const response = await fetch(`/api/conversations/${convId}/messages`, {
@@ -255,9 +226,6 @@ function ChatView({ authToken, onConversationChange }) {
             setA2uiSurfaces(restoredSurfaces);
             console.log(`[A2UI] Restored ${Object.keys(restoredSurfaces).length} message(s) with A2UI surfaces`);
           }
-
-          // Fetch token usage after loading messages
-          fetchTokenUsage(convId);
         } else {
           console.error("Failed to load conversation:", response.status);
           setThreadId(convId);
@@ -279,7 +247,7 @@ function ChatView({ authToken, onConversationChange }) {
         }
       }
     },
-    [authToken, fetchTokenUsage],
+    [authToken],
   );
 
   // Load conversation when URL threadId changes
@@ -835,11 +803,6 @@ function ChatView({ authToken, onConversationChange }) {
                 setCurrentReasoning("");
                 setIsReasoningStreaming(false);
                 setCurrentTodos([]);
-
-                // Refresh token usage after message completes
-                if (currentThreadId) {
-                  fetchTokenUsage(currentThreadId);
-                }
 
                 // Refresh sidebar to show new/updated conversation
                 onConversationChange?.();
@@ -1821,16 +1784,6 @@ function ChatView({ authToken, onConversationChange }) {
             <div className="mb-3">
               <TodoPanel todos={currentTodos} />
             </div>
-          )}
-
-          {/* Token Usage Banner - shows when approaching context limit */}
-          {tokenUsage && messages.length > 0 && !isLoading && (
-            <TokenUsageBanner
-              tokenUsage={tokenUsage}
-              onFork={handleForkConversation}
-              isForkingConversation={isForkingConversation}
-              isLoading={isLoading}
-            />
           )}
 
           {(attachedFiles.length > 0 || attachedImages.length > 0) && (

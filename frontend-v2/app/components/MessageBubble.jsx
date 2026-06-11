@@ -421,7 +421,7 @@ function MessageBubble({
                       hour: '2-digit',
                       minute: '2-digit',
                       timeZone: 'Asia/Kolkata'
-                    })}
+                    })}{' IST'}
                   </div>
                 )}
                 {/* Edit/Delete buttons for user messages */}
