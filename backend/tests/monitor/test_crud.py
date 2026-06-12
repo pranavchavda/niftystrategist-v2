@@ -167,11 +167,32 @@ async def test_sync_rule_fire_state(db_session):
     from monitor.crud import create_rule, sync_rule_fire_state, get_rule
 
     r = await create_rule(db_session, **_rule_kwargs(max_fires=2))
-    await sync_rule_fire_state(db_session, r.id, fire_count=1, enabled=True)
+    await sync_rule_fire_state(
+        db_session, r.id, fire_count=1, enabled=True, stamp_fired_at=True
+    )
     r = await get_rule(db_session, r.id)
     assert r.fire_count == 1
     assert r.fired_at is not None
     assert r.enabled is True  # Still enabled (1 < 2)
+
+
+@pytest.mark.asyncio
+async def test_sync_rule_fire_state_sibling_not_stamped(db_session):
+    """Chain/OCO-sibling syncs must NOT stamp fired_at on a never-fired rule.
+
+    Regression: when an OCO SL fired, the cancelled target sibling got
+    fired_at stamped via the chain sync, making it look like the target
+    hit (2026-06-12 JBMA incident).
+    """
+    from monitor.crud import create_rule, sync_rule_fire_state, get_rule
+
+    r = await create_rule(db_session, **_rule_kwargs(max_fires=1))
+    # Default stamp_fired_at=False — the sibling-cancel path.
+    await sync_rule_fire_state(db_session, r.id, fire_count=0, enabled=False)
+    r = await get_rule(db_session, r.id)
+    assert r.fire_count == 0
+    assert r.enabled is False
+    assert r.fired_at is None  # never fired, must not look fired
 
 
 @pytest.mark.asyncio

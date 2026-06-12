@@ -323,17 +323,25 @@ async def sync_rule_fire_state(
     rule_id: int,
     fire_count: int,
     enabled: bool,
+    stamp_fired_at: bool = False,
 ) -> None:
     """Persist the daemon's authoritative fire_count/enabled/fired_at to DB.
 
     Called from the background fire-and-forget task after order placement.
     The daemon is the single source of truth for fire_count; this just
     syncs the DB so restarts pick up where we left off.
+
+    stamp_fired_at must only be True for the rule that actually fired.
+    OCO siblings and kill/activate-chain rules are synced through here too,
+    and stamping fired_at on them makes a never-fired rule (e.g. the
+    cancelled target of an OCO pair whose SL fired) look like it fired —
+    which misleads anything reading rule state downstream.
     """
     rule = await session.get(MonitorRuleDB, rule_id)
     if rule:
         rule.fire_count = fire_count
-        rule.fired_at = utc_now()
+        if stamp_fired_at:
+            rule.fired_at = utc_now()
         rule.enabled = enabled
         await session.commit()
 

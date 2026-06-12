@@ -143,6 +143,7 @@ class ActionExecutor:
                 rule_id=rule.id,
                 fire_count=rule.fire_count,
                 enabled=rule.enabled,
+                stamp_fired_at=True,
             )
         except Exception as e:
             logger.error("Failed to sync rule fire state for rule %d: %s", rule.id, e, exc_info=True)
