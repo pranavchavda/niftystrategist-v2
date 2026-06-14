@@ -609,3 +609,41 @@ async def api_manual_exit(
             await session.refresh(row)
             logger.info("Manual exit (IDLE) for session %d — disabled directly", session_id)
         return _serialize_session(row)
+
+
+# ---------------------------------------------------------------------------
+# POST /sessions/{session_id}/force-entry — force a bullish entry
+# ---------------------------------------------------------------------------
+@router.post("/sessions/{session_id}/force-entry")
+async def api_force_entry(
+    session_id: int,
+    user: User = Depends(get_current_user),
+):
+    """Force a bullish ("buy") entry on a scalp session, bypassing the signal.
+
+    Sets pending_action=entry_forced; the daemon enters a CE (options) or LONG
+    (equity) position on its next poll, regardless of whether the indicator has
+    flipped. Requires the session to be enabled and IDLE — a disabled session
+    isn't loaded by the daemon, and a HOLDING one is already in a position.
+    """
+    async with get_db_context() as session:
+        row = await scalp_crud.get_session(session, session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if row.user_id != user.id:
+            raise HTTPException(status_code=403, detail="Not your session")
+        if not row.enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="Enable the session before forcing an entry",
+            )
+        if row.state != ScalpState.IDLE.value:
+            raise HTTPException(
+                status_code=400,
+                detail="Session is already holding a position",
+            )
+
+        await scalp_crud.set_pending_action(session, session_id, "entry_forced")
+        await session.refresh(row)
+        logger.info("Force entry for session %d — scheduled", session_id)
+        return _serialize_session(row)

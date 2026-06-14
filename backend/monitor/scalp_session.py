@@ -293,9 +293,14 @@ class ScalpSessionManager:
                 await self._subscribe_instrument(s.user_id, s.runtime.current_instrument_token)
             # exists is None → API error; leave as-is, next poll will retry.
 
-        # Handle API-requested pending actions.
+        # Handle API-requested pending actions. entry_forced is a one-shot
+        # manual entry (IDLE → HOLDING) and takes a different path from the
+        # exit/disable/delete actions, which all start from a HOLDING position.
         for session, action in pending_actions:
-            await self._handle_pending_action(session, action)
+            if action == "entry_forced":
+                await self._handle_forced_entry(session)
+            else:
+                await self._handle_pending_action(session, action)
 
     async def _space_seed_call(self) -> None:
         """Sleep so consecutive live seed API calls are at least
@@ -423,6 +428,91 @@ class ScalpSessionManager:
                     await clear_pending_action(db, session.id)
             except Exception:
                 pass
+
+    async def _handle_forced_entry(self, session: ScalpSession) -> None:
+        """Process an API-set ``entry_forced`` action: enter a bullish position
+        ("buy") immediately, bypassing the signal flip + confirm-indicator
+        gates. The user clicked Force Entry, so we act on their intent even
+        when the strategy hasn't signalled.
+
+        The flag is cleared up front: a forced entry is a single deliberate
+        click, so a transient failure (no price, guard block) must NOT re-fire
+        on every 30s poll. The user can click again if they still want in.
+
+        Order-validity guards still apply via ``_try_enter(forced=True)``
+        (IDLE, persist_healthy, max_trades, past-squareoff, market-hours) —
+        only the signal and the pacing gates (cooldown, active windows) are
+        bypassed.
+        """
+        from database.session import get_db_context
+        from monitor.scalp_crud import clear_pending_action
+
+        try:
+            async with get_db_context() as db:
+                await clear_pending_action(db, session.id)
+            session.config.pending_action = None
+        except Exception as e:
+            logger.error(
+                "Session %d: failed to clear entry_forced flag: %s", session.id, e
+            )
+
+        if session.runtime.state != ScalpState.IDLE:
+            logger.info(
+                "Session %d: entry_forced ignored — already holding (state=%s)",
+                session.id, session.runtime.state.value,
+            )
+            return
+
+        direction = self._bullish_direction(session.config.session_mode)
+        if not direction:
+            logger.warning(
+                "Session %d: entry_forced — no bullish direction for mode %s",
+                session.id, session.config.session_mode,
+            )
+            return
+
+        price = await self._current_underlying_price(session)
+        if price is None:
+            logger.warning(
+                "Session %d: entry_forced — underlying price unknown, skipping",
+                session.id,
+            )
+            await self._log_event(
+                session, "order_failed",
+                trigger_snapshot={"reason": "forced_entry_no_price"},
+            )
+            return
+
+        logger.info(
+            "Session %d: FORCED ENTRY %s @ underlying=%.2f (signal bypassed)",
+            session.id, direction, price,
+        )
+        await self._try_enter(session, direction, price, forced=True)
+
+    async def _current_underlying_price(
+        self, session: ScalpSession
+    ) -> float | None:
+        """Best-effort current price of the session's underlying.
+
+        Prefers the in-memory candle buffer's latest close — the live tick
+        value the daemon is already streaming for this session — and falls
+        back to a fresh quote only when the buffer is cold (e.g. forced entry
+        moments after the session was created, before the first tick lands).
+        """
+        buf = self._candle_buffers.get(str(session.id))
+        if buf:
+            candles = buf.get_candles()
+            if candles:
+                return candles[-1].get("close")
+        try:
+            client = await self._get_client(session.user_id)
+            quote = await client.get_quote(session.config.underlying)
+            return quote.get("ltp")
+        except Exception as e:
+            logger.warning(
+                "Session %d: underlying quote fetch failed: %s", session.id, e
+            )
+            return None
 
     def _drop_session_from_memory(self, session: ScalpSession) -> None:
         """Remove a session from in-memory maps after it's disabled/deleted."""
@@ -775,9 +865,20 @@ class ScalpSessionManager:
     # ── Entry ────────────────────────────────────────────────────────
 
     async def _try_enter(
-        self, session: ScalpSession, direction: str, underlying_price: float
+        self,
+        session: ScalpSession,
+        direction: str,
+        underlying_price: float,
+        forced: bool = False,
     ) -> None:
-        """Attempt to enter a position. Guards: cooldown, max_trades, mutual exclusion."""
+        """Attempt to enter a position. Guards: cooldown, max_trades, mutual exclusion.
+
+        ``forced=True`` (user clicked Force Entry) bypasses the pacing gates —
+        cooldown and active windows — since the entry is a deliberate manual
+        override, not a strategy-paced signal. The hard guards (IDLE,
+        persist_healthy, max_trades, past-squareoff, market-hours) still apply:
+        they protect order validity and the user's own risk cap.
+        """
         rt = session.runtime
         cfg = session.config
 
@@ -823,7 +924,8 @@ class ScalpSessionManager:
         # Active windows guard — block new entries outside any configured
         # IST window. None / empty = always active. Existing positions are
         # NOT affected (SL/target/trail/squareoff continue evaluating).
-        if cfg.active_windows and not _in_active_window(cfg.active_windows):
+        # Forced entries bypass this: the user is overriding the schedule.
+        if not forced and cfg.active_windows and not _in_active_window(cfg.active_windows):
             logger.info(
                 "Session %d: outside active windows %s — skip entry",
                 session.id, cfg.active_windows,
@@ -841,8 +943,8 @@ class ScalpSessionManager:
             )
             return
 
-        # Cooldown guard
-        if rt.last_exit_time:
+        # Cooldown guard — forced entries bypass it (deliberate manual click).
+        if not forced and rt.last_exit_time:
             elapsed = (datetime.utcnow() - rt.last_exit_time).total_seconds()
             if elapsed < cfg.cooldown_seconds:
                 logger.debug(
@@ -850,6 +952,17 @@ class ScalpSessionManager:
                     session.id, elapsed, cfg.cooldown_seconds,
                 )
                 return
+
+        # Audit marker so a forced entry is distinguishable from a signal
+        # entry in the log timeline. The real entry_{ce,pe,long,short} row
+        # (with order id / strike / fill) is logged next by _enter_position;
+        # this row is inert for P&L pairing (not in the entry_ce/entry_pe set).
+        if forced:
+            await self._log_event(
+                session, "entry_forced",
+                underlying_price=underlying_price,
+                trigger_snapshot={"direction": direction, "reason": "user_forced_entry"},
+            )
 
         await self._enter_position(session, direction, underlying_price)
 

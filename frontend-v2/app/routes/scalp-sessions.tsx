@@ -4,7 +4,7 @@ import { requirePermission } from '../utils/route-permissions';
 import {
   Flame, Plus, Trash2, Loader2, Power, PowerOff, ChevronDown, ChevronUp,
   AlertTriangle, X, TrendingUp, TrendingDown, CircleDot, Square, Clock,
-  Activity, Pencil, Copy,
+  Activity, Pencil, Copy, Zap,
 } from 'lucide-react';
 import { Button } from '../components/catalyst/button';
 import { Dialog, DialogTitle, DialogBody, DialogActions } from '../components/catalyst/dialog';
@@ -635,6 +635,20 @@ export default function ScalpSessionsRoute() {
     } catch { setError('Failed to exit'); }
   };
 
+  const forceEntry = async (id: number) => {
+    if (!confirm('Force a buy entry now, ignoring the signal?')) return;
+    try {
+      const res = await fetch(`/api/scalp/sessions/${id}/force-entry`, { method: 'POST', headers });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail || 'Failed to force entry');
+        return;
+      }
+      showAction('Entry scheduled — daemon will buy on its next poll');
+      await fetchSessions();
+    } catch { setError('Failed to force entry'); }
+  };
+
   const toggleExpand = async (id: number) => {
     if (expandedId === id) { setExpandedId(null); return; }
     setExpandedId(id);
@@ -756,7 +770,9 @@ export default function ScalpSessionsRoute() {
                       {s.session_mode && s.session_mode !== 'options_scalp' && (
                         <Badge color="indigo">{s.session_mode === 'equity_swing' ? 'swing' : 'intraday'}</Badge>
                       )}
-                      {s.pending_action && <Badge color="amber">exit pending</Badge>}
+                      {s.pending_action && (
+                        <Badge color="amber">{s.pending_action === 'entry_forced' ? 'entry pending' : 'exit pending'}</Badge>
+                      )}
                       {!s.enabled && <Badge color="zinc">disabled</Badge>}
                     </div>
                     <div className="text-xs text-zinc-500 flex items-center gap-3 flex-wrap">
@@ -787,6 +803,11 @@ export default function ScalpSessionsRoute() {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
+                    {s.state === 'IDLE' && s.enabled && !s.pending_action && (
+                      <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); forceEntry(s.id); }} title="Force entry (buy now, ignore signal)">
+                        <Zap className="w-4 h-4 text-green-500" />
+                      </Button>
+                    )}
                     {s.state !== 'IDLE' && (
                       <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); manualExit(s.id); }} title="Manual exit">
                         <Square className="w-4 h-4 text-red-500" />

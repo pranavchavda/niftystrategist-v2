@@ -173,6 +173,95 @@ class TestEntryGuards:
             mock_enter.assert_not_called()
 
 
+# ── Forced entry (user clicks "Force Entry") ────────────────────────
+
+
+class TestForcedEntry:
+    @pytest.mark.asyncio
+    async def test_forced_bypasses_cooldown(self):
+        mgr = _make_manager()
+        session = _make_session(
+            last_exit_time=datetime.utcnow() - timedelta(seconds=5),
+        )
+        session.config.cooldown_seconds = 60
+
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+            await mgr._try_enter(session, "CE", 24350.0, forced=True)
+            mock_enter.assert_called_once_with(session, "CE", 24350.0)
+
+    @pytest.mark.asyncio
+    async def test_forced_bypasses_active_window(self):
+        mgr = _make_manager()
+        session = _make_session()
+        session.config.active_windows = [{"start": "09:15", "end": "10:00"}]
+
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True), \
+             patch("monitor.scalp_session._in_active_window", return_value=False), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+            # Non-forced is blocked outside the window…
+            await mgr._try_enter(session, "CE", 24350.0)
+            mock_enter.assert_not_called()
+            # …but a forced entry proceeds.
+            await mgr._try_enter(session, "CE", 24350.0, forced=True)
+            mock_enter.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_forced_still_respects_max_trades(self):
+        """Force Entry overrides the signal, not the user's own risk cap."""
+        mgr = _make_manager()
+        session = _make_session(trade_count=20)
+        session.config.max_trades = 20
+
+        with patch("monitor.scalp_session._is_nse_market_open", return_value=True), \
+             patch.object(mgr, '_log_event', new_callable=AsyncMock), \
+             patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+            await mgr._try_enter(session, "CE", 24350.0, forced=True)
+            mock_enter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_forced_still_blocked_while_holding(self):
+        mgr = _make_manager()
+        session = _make_session(state=ScalpState.HOLDING_CE)
+
+        with patch.object(mgr, '_enter_position', new_callable=AsyncMock) as mock_enter:
+            await mgr._try_enter(session, "CE", 24350.0, forced=True)
+            mock_enter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_forced_entry_enters_bullish(self):
+        mgr = _make_manager()
+        session = _make_session()
+
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("database.session.get_db_context", return_value=cm), \
+             patch("monitor.scalp_crud.clear_pending_action", new_callable=AsyncMock), \
+             patch.object(mgr, '_current_underlying_price', new_callable=AsyncMock, return_value=24350.0), \
+             patch.object(mgr, '_try_enter', new_callable=AsyncMock) as mock_try:
+            await mgr._handle_forced_entry(session)
+            mock_try.assert_called_once_with(session, "CE", 24350.0, forced=True)
+
+    @pytest.mark.asyncio
+    async def test_handle_forced_entry_skips_when_holding(self):
+        mgr = _make_manager()
+        session = _make_session(state=ScalpState.HOLDING_CE)
+
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("database.session.get_db_context", return_value=cm), \
+             patch("monitor.scalp_crud.clear_pending_action", new_callable=AsyncMock), \
+             patch.object(mgr, '_try_enter', new_callable=AsyncMock) as mock_try:
+            await mgr._handle_forced_entry(session)
+            mock_try.assert_not_called()
+
+
 # ── Premium exit conditions ──────────────────────────────────────────
 
 
