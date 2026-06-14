@@ -397,11 +397,12 @@ export default function ScalpSessionsRoute() {
     setTimeout(() => setActionMsg(null), 3000);
   };
 
-  const handleCreate = async () => {
+  const handleCreate = async (startNow = false) => {
     setCreating(true);
     setError(null);
     try {
       const body: any = { ...formData };
+      body.start_now = startNow;
       body.sl_points = body.sl_points ? Number(body.sl_points) : null;
       body.target_points = body.target_points ? Number(body.target_points) : null;
       body.trail_percent = body.trail_percent ? Number(body.trail_percent) : null;
@@ -447,8 +448,15 @@ export default function ScalpSessionsRoute() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to create');
       }
+      const data = await res.json().catch(() => ({}));
       setShowCreate(false);
-      showAction('Session created');
+      if (startNow) {
+        showAction(data.started
+          ? 'Session created — entering now'
+          : 'Session created — market closed, will trade on next signal');
+      } else {
+        showAction('Session created');
+      }
       await fetchSessions();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create');
@@ -948,7 +956,6 @@ export default function ScalpSessionsRoute() {
           else setShowCreate(false);
         };
         const submitting = isEditing ? savingEdit : creating;
-        const onSubmit = isEditing ? handleSave : handleCreate;
         const submitDisabled = submitting || !formData.name || (
           !isEditing &&
           formData.session_mode !== 'equity_intraday' &&
@@ -1259,7 +1266,17 @@ export default function ScalpSessionsRoute() {
         </DialogBody>
         <DialogActions>
           <Button plain onClick={closeDialog}>Cancel</Button>
-          <Button onClick={onSubmit} disabled={submitDisabled}>
+          {!isEditing && (
+            <Button
+              variant="outline"
+              onClick={() => handleCreate(true)}
+              disabled={submitDisabled}
+              title="Create and buy now if the market is open (ignores the signal)"
+            >
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : (<><Zap className="w-4 h-4 text-green-500" /> Create & Start</>)}
+            </Button>
+          )}
+          <Button onClick={isEditing ? handleSave : () => handleCreate(false)} disabled={submitDisabled}>
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (isEditing ? 'Save' : 'Create')}
           </Button>
         </DialogActions>

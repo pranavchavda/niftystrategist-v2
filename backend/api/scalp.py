@@ -86,6 +86,10 @@ class CreateSessionRequest(BaseModel):
     primary_params: Optional[dict] = None
     confirm_indicator: Optional[str] = None
     confirm_params: Optional[dict] = None
+    # "Create and start": force an immediate bullish entry on creation, but
+    # only when the market is open. Ignored (no-op) outside market hours — the
+    # session is still created and trades on its next signal.
+    start_now: bool = False
 
 
 class UpdateSessionRequest(BaseModel):
@@ -353,7 +357,26 @@ async def api_create_session(
             max_trades=body.max_trades,
             cooldown_seconds=body.cooldown_seconds,
         )
-        return _serialize_session(row)
+
+        result = _serialize_session(row)
+
+        # "Create and start": queue an immediate forced entry so the daemon
+        # buys on its next poll — but only during market hours (entries placed
+        # outside the 09:15–15:30 IST session are rejected/AMO'd). A fresh
+        # session is enabled + IDLE, so no further state checks are needed.
+        if body.start_now:
+            from utils.market_status import get_market_status
+            market_open = get_market_status().get("status") == "open"
+            if market_open:
+                await scalp_crud.set_pending_action(session, row.id, "entry_forced")
+                result["pending_action"] = "entry_forced"
+                result["started"] = True
+                logger.info("Session %d created with start_now — entry queued", row.id)
+            else:
+                result["started"] = False
+                logger.info("Session %d created with start_now but market closed — not started", row.id)
+
+        return result
 
 
 # ---------------------------------------------------------------------------
