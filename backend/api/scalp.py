@@ -92,6 +92,13 @@ class CreateSessionRequest(BaseModel):
     start_now: bool = False
 
 
+class ForceEntryRequest(BaseModel):
+    # Direction to force. None defers to the session's entry_side (and defaults
+    # to "long"/buy when that is "both"). "long" = buy (CE/LONG), "short" =
+    # sell (PE/SHORT).
+    side: Optional[str] = None
+
+
 class UpdateSessionRequest(BaseModel):
     name: Optional[str] = None
     session_mode: Optional[str] = None
@@ -183,6 +190,44 @@ def _validate_entry_side(entry_side: str | None, session_mode: str) -> str:
             detail="entry_side='short' is not valid for equity_swing (no shorting in delivery)",
         )
     return side
+
+
+def _resolve_forced_side(
+    cfg_side: str | None, session_mode: str, requested: str | None
+) -> tuple[str, str]:
+    """Resolve a forced-entry side into ("long"|"short", pending_action).
+
+    Rules:
+    - A side-restricted session (entry_side long/short) always forces that
+      side; an explicit request for the other side is a 400.
+    - A "both" session needs an explicit side; defaults to "long" (buy) when
+      none is given (back-compatible with the original buy-only button).
+    - "short" is rejected for equity_swing (no shorting in delivery).
+
+    Returns the pending_action string the daemon reads: "entry_forced" (buy)
+    or "entry_forced_short" (sell).
+    """
+    cfg = (cfg_side or "both").lower()
+    req = requested.lower() if requested else None
+    if req not in (None, "long", "short"):
+        raise HTTPException(status_code=400, detail="side must be 'long' or 'short'")
+
+    if cfg == "both":
+        side = req or "long"
+    else:
+        if req and req != cfg:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Session is configured {cfg}-only; cannot force a {req} entry",
+            )
+        side = cfg
+
+    if side == "short" and session_mode == SessionMode.EQUITY_SWING.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Shorting isn't supported for equity_swing (delivery) sessions",
+        )
+    return side, ("entry_forced" if side == "long" else "entry_forced_short")
 
 
 def _iso_utc(dt: datetime | None) -> str | None:
@@ -366,12 +411,17 @@ async def api_create_session(
         # session is enabled + IDLE, so no further state checks are needed.
         if body.start_now:
             from utils.market_status import get_market_status
+            # Side follows the configured entry_side (both → buy).
+            side, pending = _resolve_forced_side(
+                row.entry_side, row.session_mode or "options_scalp", None
+            )
             market_open = get_market_status().get("status") == "open"
             if market_open:
-                await scalp_crud.set_pending_action(session, row.id, "entry_forced")
-                result["pending_action"] = "entry_forced"
+                await scalp_crud.set_pending_action(session, row.id, pending)
+                result["pending_action"] = pending
                 result["started"] = True
-                logger.info("Session %d created with start_now — entry queued", row.id)
+                result["side"] = side
+                logger.info("Session %d created with start_now (%s) — entry queued", row.id, side)
             else:
                 result["started"] = False
                 logger.info("Session %d created with start_now but market closed — not started", row.id)
@@ -635,19 +685,22 @@ async def api_manual_exit(
 
 
 # ---------------------------------------------------------------------------
-# POST /sessions/{session_id}/force-entry — force a bullish entry
+# POST /sessions/{session_id}/force-entry — force an entry (buy or sell)
 # ---------------------------------------------------------------------------
 @router.post("/sessions/{session_id}/force-entry")
 async def api_force_entry(
     session_id: int,
+    body: ForceEntryRequest = ForceEntryRequest(),
     user: User = Depends(get_current_user),
 ):
-    """Force a bullish ("buy") entry on a scalp session, bypassing the signal.
+    """Force an entry on a scalp session, bypassing the signal.
 
-    Sets pending_action=entry_forced; the daemon enters a CE (options) or LONG
-    (equity) position on its next poll, regardless of whether the indicator has
-    flipped. Requires the session to be enabled and IDLE — a disabled session
-    isn't loaded by the daemon, and a HOLDING one is already in a position.
+    The side follows the request when given, else the session's entry_side
+    (defaulting to buy when that is "both"). Sets pending_action so the daemon
+    enters CE/LONG (buy) or PE/SHORT (sell) on its next poll, regardless of
+    whether the indicator has flipped. Requires the session to be enabled and
+    IDLE — a disabled session isn't loaded by the daemon, and a HOLDING one is
+    already in a position.
     """
     async with get_db_context() as session:
         row = await scalp_crud.get_session(session, session_id)
@@ -666,7 +719,12 @@ async def api_force_entry(
                 detail="Session is already holding a position",
             )
 
-        await scalp_crud.set_pending_action(session, session_id, "entry_forced")
+        side, pending = _resolve_forced_side(
+            getattr(row, "entry_side", None), row.session_mode or "options_scalp", body.side
+        )
+        await scalp_crud.set_pending_action(session, session_id, pending)
         await session.refresh(row)
-        logger.info("Force entry for session %d — scheduled", session_id)
-        return _serialize_session(row)
+        logger.info("Force entry (%s) for session %d — scheduled", side, session_id)
+        result = _serialize_session(row)
+        result["side"] = side
+        return result

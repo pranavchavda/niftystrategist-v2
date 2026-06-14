@@ -247,6 +247,22 @@ class TestForcedEntry:
             mock_try.assert_called_once_with(session, "CE", 24350.0, forced=True)
 
     @pytest.mark.asyncio
+    async def test_handle_forced_entry_bearish_enters_pe(self):
+        mgr = _make_manager()
+        session = _make_session()
+
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("database.session.get_db_context", return_value=cm), \
+             patch("monitor.scalp_crud.clear_pending_action", new_callable=AsyncMock), \
+             patch.object(mgr, '_current_underlying_price', new_callable=AsyncMock, return_value=24350.0), \
+             patch.object(mgr, '_try_enter', new_callable=AsyncMock) as mock_try:
+            await mgr._handle_forced_entry(session, bearish=True)
+            mock_try.assert_called_once_with(session, "PE", 24350.0, forced=True)
+
+    @pytest.mark.asyncio
     async def test_handle_forced_entry_skips_when_holding(self):
         mgr = _make_manager()
         session = _make_session(state=ScalpState.HOLDING_CE)

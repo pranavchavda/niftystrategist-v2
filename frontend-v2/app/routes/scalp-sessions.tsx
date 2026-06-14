@@ -643,16 +643,19 @@ export default function ScalpSessionsRoute() {
     } catch { setError('Failed to exit'); }
   };
 
-  const forceEntry = async (id: number) => {
-    if (!confirm('Force a buy entry now, ignoring the signal?')) return;
+  const forceEntry = async (id: number, side: 'long' | 'short') => {
+    const verb = side === 'short' ? 'sell (short)' : 'buy';
+    if (!confirm(`Force a ${verb} entry now, ignoring the signal?`)) return;
     try {
-      const res = await fetch(`/api/scalp/sessions/${id}/force-entry`, { method: 'POST', headers });
+      const res = await fetch(`/api/scalp/sessions/${id}/force-entry`, {
+        method: 'POST', headers, body: JSON.stringify({ side }),
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data.detail || 'Failed to force entry');
         return;
       }
-      showAction('Entry scheduled — daemon will buy on its next poll');
+      showAction(`Entry scheduled — daemon will ${verb} on its next poll`);
       await fetchSessions();
     } catch { setError('Failed to force entry'); }
   };
@@ -811,11 +814,24 @@ export default function ScalpSessionsRoute() {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {s.state === 'IDLE' && s.enabled && !s.pending_action && (
-                      <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); forceEntry(s.id); }} title="Force entry (buy now, ignore signal)">
-                        <Zap className="w-4 h-4 text-green-500" />
-                      </Button>
-                    )}
+                    {s.state === 'IDLE' && s.enabled && !s.pending_action && (() => {
+                      const side = (s.entry_side || 'both').toLowerCase();
+                      const canSell = s.session_mode !== 'equity_swing';
+                      const showBuy = side === 'both' || side === 'long';
+                      const showSell = (side === 'both' || side === 'short') && canSell;
+                      return (<>
+                        {showBuy && (
+                          <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); forceEntry(s.id, 'long'); }} title="Force buy (long) now, ignore signal">
+                            <TrendingUp className="w-4 h-4 text-green-500" />
+                          </Button>
+                        )}
+                        {showSell && (
+                          <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); forceEntry(s.id, 'short'); }} title="Force sell (short) now, ignore signal">
+                            <TrendingDown className="w-4 h-4 text-red-500" />
+                          </Button>
+                        )}
+                      </>);
+                    })()}
                     {s.state !== 'IDLE' && (
                       <Button plain onClick={(e: React.MouseEvent) => { e.stopPropagation(); manualExit(s.id); }} title="Manual exit">
                         <Square className="w-4 h-4 text-red-500" />

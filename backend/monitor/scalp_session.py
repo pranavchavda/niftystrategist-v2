@@ -293,12 +293,16 @@ class ScalpSessionManager:
                 await self._subscribe_instrument(s.user_id, s.runtime.current_instrument_token)
             # exists is None → API error; leave as-is, next poll will retry.
 
-        # Handle API-requested pending actions. entry_forced is a one-shot
-        # manual entry (IDLE → HOLDING) and takes a different path from the
-        # exit/disable/delete actions, which all start from a HOLDING position.
+        # Handle API-requested pending actions. entry_forced[_short] is a
+        # one-shot manual entry (IDLE → HOLDING) and takes a different path
+        # from the exit/disable/delete actions, which all start from a
+        # HOLDING position. The _short suffix forces a bearish (sell) entry;
+        # plain entry_forced is bullish (buy) — back-compatible default.
         for session, action in pending_actions:
-            if action == "entry_forced":
-                await self._handle_forced_entry(session)
+            if action in ("entry_forced", "entry_forced_short"):
+                await self._handle_forced_entry(
+                    session, bearish=action == "entry_forced_short"
+                )
             else:
                 await self._handle_pending_action(session, action)
 
@@ -429,11 +433,14 @@ class ScalpSessionManager:
             except Exception:
                 pass
 
-    async def _handle_forced_entry(self, session: ScalpSession) -> None:
-        """Process an API-set ``entry_forced`` action: enter a bullish position
-        ("buy") immediately, bypassing the signal flip + confirm-indicator
-        gates. The user clicked Force Entry, so we act on their intent even
-        when the strategy hasn't signalled.
+    async def _handle_forced_entry(
+        self, session: ScalpSession, bearish: bool = False
+    ) -> None:
+        """Process an API-set ``entry_forced[_short]`` action: enter a position
+        immediately, bypassing the signal flip + confirm-indicator gates. The
+        user clicked Force Entry, so we act on their intent even when the
+        strategy hasn't signalled. ``bearish`` picks the sell side (PE / SHORT)
+        instead of the buy side (CE / LONG).
 
         The flag is cleared up front: a forced entry is a single deliberate
         click, so a transient failure (no price, guard block) must NOT re-fire
@@ -463,11 +470,14 @@ class ScalpSessionManager:
             )
             return
 
-        direction = self._bullish_direction(session.config.session_mode)
+        mode = session.config.session_mode
+        direction = (
+            self._bearish_direction(mode) if bearish else self._bullish_direction(mode)
+        )
         if not direction:
             logger.warning(
-                "Session %d: entry_forced — no bullish direction for mode %s",
-                session.id, session.config.session_mode,
+                "Session %d: entry_forced — no %s direction for mode %s",
+                session.id, "bearish" if bearish else "bullish", mode,
             )
             return
 

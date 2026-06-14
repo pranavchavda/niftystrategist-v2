@@ -201,8 +201,12 @@ def cmd_create(args):
 
     # --now: queue an immediate forced entry on creation, but only during
     # market hours (entries outside 09:15–15:30 IST are rejected/AMO'd). The
-    # daemon picks up the entry_forced flag on its next poll and buys.
+    # daemon picks up the entry_forced flag on its next poll. The side follows
+    # --side (both → buy); _short suffix forces a bearish (sell) entry.
     start_now = getattr(args, "now", False)
+    cfg_side = kwargs.get("entry_side", "both")
+    forced_side = "short" if cfg_side == "short" else "long"
+    forced_pending = "entry_forced" if forced_side == "long" else "entry_forced_short"
     market_open = False
     if start_now:
         from utils.market_status import get_market_status
@@ -220,7 +224,7 @@ def cmd_create(args):
                 **kwargs,
             )
             if start_now and market_open:
-                await scalp_crud.set_pending_action(session, row.id, "entry_forced")
+                await scalp_crud.set_pending_action(session, row.id, forced_pending)
             return row
 
     row = run_async(_create())
@@ -228,7 +232,7 @@ def cmd_create(args):
     started = start_now and market_open
 
     if args.json:
-        print_json({"created": _session_to_dict(row), "started": started})
+        print_json({"created": _session_to_dict(row), "started": started, "side": forced_side})
     else:
         print_success(f"Scalp session #{row.id} created: {row.name}")
         print(f"  Underlying:   {underlying} ({instrument_token})")
@@ -252,8 +256,9 @@ def cmd_create(args):
         print(f"  Max trades:   {args.max_trades}")
         print(f"  Cooldown:     {args.cooldown}s")
         if start_now:
+            verb = "sell (short)" if forced_side == "short" else "buy"
             if market_open:
-                print("  Start now:    ✓ entry queued — daemon will buy on its next poll")
+                print(f"  Start now:    ✓ entry queued — daemon will {verb} on its next poll")
             else:
                 print("  Start now:    market closed — not started; will trade on next signal")
 
@@ -611,9 +616,10 @@ Examples:
     p_create.add_argument("--cooldown", type=int, default=60,
                           help="Cooldown seconds between trades (default: 60)")
     p_create.add_argument("--now", action="store_true",
-                          help="Start immediately: force a bullish entry on "
-                               "creation if the market is open (buys now, "
-                               "ignoring the signal). No-op outside market hours.")
+                          help="Start immediately: force an entry on creation "
+                               "if the market is open, ignoring the signal. "
+                               "Side follows --side (both → buy; short → sell). "
+                               "No-op outside market hours.")
     p_create.add_argument("--json", action="store_true", help="Output as JSON")
 
     # ---- list ----
