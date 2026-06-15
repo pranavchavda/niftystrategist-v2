@@ -5,6 +5,12 @@
 
 set -e  # Exit on error
 
+# Always operate relative to this script's location, regardless of where it's
+# invoked from. This makes the project portable across machines (no hardcoded
+# absolute paths).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -17,6 +23,9 @@ NC='\033[0m' # No Color
 BACKEND_PORT=${BACKEND_PORT:-8000}
 FRONTEND_PORT=${FRONTEND_PORT:-5173}
 LOG_DIR="logs"
+# Minimum Python the backend needs (upstox-totp requires >=3.12). uv will fetch
+# a managed interpreter of this version if the system doesn't have one.
+PYTHON_PIN=${PYTHON_PIN:-3.12}
 
 # Print colored output
 print_color() {
@@ -124,9 +133,8 @@ echo ""
 
 # Check if we're in the project root
 if [ ! -f "backend/main.py" ] || [ ! -f "frontend-v2/package.json" ]; then
-    print_color "Error: Must run from project root directory" "$RED"
-    print_color "   Current directory: $(pwd)" "$YELLOW"
-    print_color "   Expected: /home/pranav/niftystrategist-v2/" "$YELLOW"
+    print_color "Error: backend/main.py or frontend-v2/package.json not found" "$RED"
+    print_color "   Script directory: $SCRIPT_DIR" "$YELLOW"
     exit 1
 fi
 
@@ -134,12 +142,114 @@ fi
 mkdir -p "$LOG_DIR"
 
 # Check Python version
+# Note: this only inspects the system python3 for an informational warning.
+# The actual venv is created by uv pinned to $PYTHON_PIN regardless, so a stale
+# or missing system python3 won't block startup.
 PYTHON_VERSION=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+')
-REQUIRED_PYTHON="3.11"
-
-if [ "$(printf '%s\n' "$REQUIRED_PYTHON" "$PYTHON_VERSION" | sort -V | head -n1)" != "$REQUIRED_PYTHON" ]; then
-    print_color "Python $REQUIRED_PYTHON or higher is required (found $PYTHON_VERSION)" "$YELLOW"
+if [ -n "$PYTHON_VERSION" ] && [ "$(printf '%s\n' "$PYTHON_PIN" "$PYTHON_VERSION" | sort -V | head -n1)" != "$PYTHON_PIN" ]; then
+    print_color "System python3 is $PYTHON_VERSION; backend uses uv-managed Python $PYTHON_PIN" "$BLUE"
 fi
+
+# Ensure `uv` is available, installing it if missing.
+ensure_uv() {
+    if command -v uv &> /dev/null; then
+        return 0
+    fi
+
+    # uv may be installed but not on PATH (common install locations)
+    for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+        if [ -x "$candidate" ]; then
+            export PATH="$(dirname "$candidate"):$PATH"
+            return 0
+        fi
+    done
+
+    print_color "uv not found. Installing uv..." "$YELLOW"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # The installer drops uv into ~/.local/bin (newer) or ~/.cargo/bin (older)
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+    if ! command -v uv &> /dev/null; then
+        print_color "Failed to install uv automatically." "$RED"
+        print_color "   Install it manually: https://docs.astral.sh/uv/getting-started/installation/" "$BLUE"
+        exit 1
+    fi
+    print_color "Installed $(uv --version)" "$GREEN"
+}
+
+# Create/repair the backend venv (relative to the current dir) and install deps.
+# $1 = python module to probe for, $2 = friendly name, $3 = fallback packages.
+setup_python_env() {
+    local probe_module="$1"
+    local friendly_name="$2"
+    local fallback_packages="$3"
+
+    ensure_uv
+
+    # Decide whether to (re)create the venv. Recreate if it's:
+    #   - missing
+    #   - broken/stale (e.g. synced from another machine via Syncthing, so its
+    #     interpreter symlinks no longer resolve)
+    #   - built on a Python older than $PYTHON_PIN (deps like upstox-totp need >=3.12)
+    local recreate_reason=""
+    if [ ! -x "venv/bin/python" ] || ! venv/bin/python -c "" 2>/dev/null; then
+        [ -d "venv" ] && recreate_reason="broken or from another machine"
+    elif ! venv/bin/python -c "import sys; req=tuple(int(x) for x in '${PYTHON_PIN}'.split('.')); sys.exit(0 if sys.version_info[:len(req)] >= req else 1)" 2>/dev/null; then
+        recreate_reason="Python older than $PYTHON_PIN"
+    else
+        # venv is present and satisfies the version pin — nothing to do here.
+        recreate_reason="keep"
+    fi
+
+    if [ "$recreate_reason" != "keep" ]; then
+        if [ -d "venv" ]; then
+            print_color "Existing venv unusable ($recreate_reason). Recreating with uv (Python $PYTHON_PIN)..." "$YELLOW"
+            rm -rf venv
+        else
+            print_color "Creating Python virtual environment with uv (Python $PYTHON_PIN)..." "$YELLOW"
+        fi
+        uv venv --python "$PYTHON_PIN" venv
+    fi
+
+    # Activate virtual environment
+    print_color "Activating virtual environment..." "$BLUE"
+    source venv/bin/activate
+
+    # Install dependencies if the probe import fails
+    if ! venv/bin/python -c "import ${probe_module}" 2>/dev/null; then
+        print_color "${friendly_name} not found in venv. Installing dependencies with uv..." "$YELLOW"
+        if [ -f "requirements.txt" ]; then
+            uv pip install -r requirements.txt
+        else
+            uv pip install ${fallback_packages}
+        fi
+    fi
+}
+
+# Ensure `pnpm` is available, bootstrapping it if missing. Call after any nvm
+# switch so corepack/npm resolve to the active Node.
+ensure_pnpm() {
+    if command -v pnpm &> /dev/null; then
+        return 0
+    fi
+
+    # Prefer corepack (ships with modern Node); fall back to a global npm install
+    if command -v corepack &> /dev/null; then
+        print_color "Enabling pnpm via corepack..." "$YELLOW"
+        corepack enable pnpm 2>/dev/null || corepack prepare pnpm@latest --activate 2>/dev/null || true
+    fi
+    if ! command -v pnpm &> /dev/null; then
+        print_color "Installing pnpm globally via npm..." "$YELLOW"
+        npm install -g pnpm
+    fi
+
+    if ! command -v pnpm &> /dev/null; then
+        print_color "Failed to install pnpm automatically." "$RED"
+        print_color "   Install it manually: https://pnpm.io/installation" "$BLUE"
+        exit 1
+    fi
+    print_color "Using pnpm $(pnpm --version)" "$GREEN"
+}
 
 # Function to start backend
 start_backend() {
@@ -150,25 +260,8 @@ start_backend() {
 
     cd backend
 
-    # Set up virtual environment
-    if [ ! -d "venv" ]; then
-        print_color "Creating Python virtual environment..." "$YELLOW"
-        python3 -m venv venv
-    fi
-
-    # Activate virtual environment
-    print_color "Activating virtual environment..." "$BLUE"
-    source venv/bin/activate
-
-    # Check if key dependencies are installed (use venv python explicitly)
-    if ! venv/bin/python -c "import fastapi" 2>/dev/null; then
-        print_color "FastAPI not found in venv. Installing dependencies..." "$YELLOW"
-        if [ -f "requirements.txt" ]; then
-            venv/bin/pip install -r requirements.txt
-        else
-            venv/bin/pip install fastapi uvicorn pydantic-ai sqlalchemy asyncpg
-        fi
-    fi
+    # Set up / repair virtual environment and install deps (via uv)
+    setup_python_env fastapi "FastAPI" "fastapi uvicorn pydantic-ai sqlalchemy asyncpg"
 
     # Load environment variables
     if [ -f ".env" ]; then
@@ -264,26 +357,52 @@ start_frontend() {
         exit 1
     fi
 
-    # Install dependencies if needed
+    # Install / repair frontend dependencies (via pnpm — project standard).
+    # node_modules holds platform-specific native binaries (rollup, esbuild, …).
+    # If it was installed on another OS/arch (e.g. synced from the Linux dev box
+    # via Syncthing) those binaries won't load here, so we stamp a platform
+    # marker on install and reinstall whenever it doesn't match this machine.
+    ensure_pnpm
+    PLATFORM_TAG="$(uname -sm)"
+    PLATFORM_MARKER="node_modules/.dev-platform"
     if [ ! -d "node_modules" ]; then
-        print_color "Installing frontend dependencies with npm..." "$YELLOW"
-        npm install
+        print_color "Installing frontend dependencies with pnpm..." "$YELLOW"
+        pnpm install
+        echo "$PLATFORM_TAG" > "$PLATFORM_MARKER"
+    elif [ "$(cat "$PLATFORM_MARKER" 2>/dev/null)" != "$PLATFORM_TAG" ]; then
+        print_color "node_modules was built for a different platform ($(cat "$PLATFORM_MARKER" 2>/dev/null || echo unknown)). Reinstalling with pnpm for $PLATFORM_TAG..." "$YELLOW"
+        rm -rf node_modules
+        pnpm install
+        echo "$PLATFORM_TAG" > "$PLATFORM_MARKER"
     fi
 
     # Start frontend server
     if [ "$VERBOSE" = true ]; then
         print_color "Starting frontend in verbose mode..." "$YELLOW"
-        VITE_API_URL="http://localhost:$BACKEND_PORT" npm run dev 2>&1 | tee "../$LOG_DIR/frontend.log" &
+        VITE_API_URL="http://localhost:$BACKEND_PORT" pnpm run dev 2>&1 | tee "../$LOG_DIR/frontend.log" &
     else
-        VITE_API_URL="http://localhost:$BACKEND_PORT" npm run dev > "../$LOG_DIR/frontend.log" 2>&1 &
+        VITE_API_URL="http://localhost:$BACKEND_PORT" pnpm run dev > "../$LOG_DIR/frontend.log" 2>&1 &
     fi
 
     FRONTEND_PID=$!
 
-    # Wait for frontend to be ready
+    # Wait for frontend to actually respond (not just a fixed sleep — a crashed
+    # dev server would otherwise be reported as "ready").
     print_color "Waiting for frontend to be ready..." "$YELLOW"
-    sleep 3
-    print_color "Frontend is ready at http://localhost:$FRONTEND_PORT" "$GREEN"
+    for i in {1..30}; do
+        if curl -s "http://localhost:$FRONTEND_PORT" > /dev/null 2>&1; then
+            print_color "Frontend is ready at http://localhost:$FRONTEND_PORT" "$GREEN"
+            break
+        fi
+        if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+            print_color "Frontend process exited during startup. Check $LOG_DIR/frontend.log" "$RED"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            print_color "Frontend not responding after 30s. Check $LOG_DIR/frontend.log" "$YELLOW"
+        fi
+        sleep 1
+    done
 
     cd ..
 }
@@ -294,25 +413,8 @@ start_cli() {
 
     cd backend
 
-    # Set up virtual environment
-    if [ ! -d "venv" ]; then
-        print_color "Creating Python virtual environment..." "$YELLOW"
-        python3 -m venv venv
-    fi
-
-    # Activate virtual environment
-    print_color "Activating virtual environment..." "$BLUE"
-    source venv/bin/activate
-
-    # Check if key dependencies are installed (use venv python explicitly)
-    if ! venv/bin/python -c "import pydantic_ai" 2>/dev/null; then
-        print_color "pydantic-ai not found in venv. Installing dependencies..." "$YELLOW"
-        if [ -f "requirements.txt" ]; then
-            venv/bin/pip install -r requirements.txt
-        else
-            venv/bin/pip install pydantic-ai
-        fi
-    fi
+    # Set up / repair virtual environment and install deps (via uv)
+    setup_python_env pydantic_ai "pydantic-ai" "pydantic-ai"
 
     # Load environment variables
     if [ -f ".env" ]; then
