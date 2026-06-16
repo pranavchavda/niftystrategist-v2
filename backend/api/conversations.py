@@ -1039,6 +1039,13 @@ async def check_auto_compaction_needed(
     from sqlalchemy import select, func
     from database.models import Message, Conversation
 
+    # Daily / awakening threads are the day's permanent record — never auto-compact.
+    is_daily = await db.execute(
+        select(Conversation.is_daily_thread).where(Conversation.id == conversation_id)
+    )
+    if is_daily.scalar():
+        return False
+
     # Count messages in conversation
     count_result = await db.execute(
         select(func.count(Message.id)).where(

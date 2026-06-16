@@ -358,10 +358,15 @@ async def save_assistant_message_to_db(
                 )
                 msg_count = count_result.scalar()
                 if msg_count >= COMPACTION_THRESHOLD:
-                    logger.info(f"Auto-compaction triggered for {thread_id}: {msg_count} messages >= {COMPACTION_THRESHOLD} threshold")
-                    asyncio.create_task(
-                        _auto_compact_conversation(thread_id, conv.user_id, msg_count)
-                    )
+                    # Daily / awakening threads are the day's permanent record —
+                    # never auto-compact them (lossy summary shreds the reasoning).
+                    if getattr(conv, "is_daily_thread", False):
+                        logger.info(f"Auto-compaction skipped for daily thread {thread_id} ({msg_count} messages)")
+                    else:
+                        logger.info(f"Auto-compaction triggered for {thread_id}: {msg_count} messages >= {COMPACTION_THRESHOLD} threshold")
+                        asyncio.create_task(
+                            _auto_compact_conversation(thread_id, conv.user_id, msg_count)
+                        )
             except Exception as compact_err:
                 logger.warning(f"Auto-compaction check failed (non-fatal): {compact_err}")
 
@@ -386,6 +391,13 @@ async def _auto_compact_conversation(thread_id: str, user_id: str, message_count
 
             if not conversation or not conversation.messages:
                 logger.warning(f"[AUTO-COMPACT] Conversation {thread_id} not found or empty, skipping")
+                return
+
+            # Daily / awakening threads are the day's permanent record. Auto-compaction
+            # hard-deletes messages and replaces them with a lossy summary, destroying the
+            # day's reasoning. Authoritative guard — covers any caller, not just the trigger.
+            if getattr(conversation, "is_daily_thread", False):
+                logger.info(f"[AUTO-COMPACT] Skipping daily thread {thread_id} — exempt from auto-compaction")
                 return
 
             # Skip if already recently compacted (within last hour — prevents rapid re-compaction)
