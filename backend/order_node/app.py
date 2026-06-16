@@ -144,6 +144,42 @@ async def _reconcile_by_tag(api_client, tag: str) -> dict | None:
         return None
 
 
+async def _live_legs_by_tag(api_client, tag: str) -> set[tuple[str, str]]:
+    """Return the set of (instrument_token, transaction_type) already working
+    under ``tag`` in today's order book — used to make basket placement
+    idempotent across retries.
+
+    A leg counts as "already placed" unless it's in a terminal-failed state
+    (cancelled/rejected), which should be re-placed. Open/pending/complete legs
+    are skipped so a retry of the same basket never re-fires a leg that landed
+    (the 2026-06-16 duplicate-naked-short failure mode). Errors return an empty
+    set — fail open to placement rather than silently skipping legs.
+    """
+    if not tag:
+        return set()
+    try:
+        order_api = upstox_client.OrderApi(api_client)
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(order_api.get_order_book, api_version="2"),
+            timeout=_RECONCILE_TIMEOUT_SEC,
+        )
+        live: set[tuple[str, str]] = set()
+        for o in (resp.data or []):
+            if getattr(o, "tag", None) != tag:
+                continue
+            status = (getattr(o, "status", None) or "").lower()
+            if status in ("cancelled", "rejected"):
+                continue
+            tok = getattr(o, "instrument_token", None)
+            side = getattr(o, "transaction_type", None)
+            if tok and side:
+                live.add((tok, side))
+        return live
+    except Exception as e:
+        logger.warning("Live-legs-by-tag scan failed for %s: %r", tag, e)
+        return set()
+
+
 def _is_market_open() -> bool:
     """Check if NSE is currently open (simple time-based heuristic)."""
     from datetime import datetime, timezone, timedelta
@@ -614,9 +650,38 @@ async def place_multi_order(
 
     is_amo = not _is_market_open()
 
+    # Idempotency guard: all legs of a basket share one `tag`. On a retry of the
+    # same basket, skip legs already working in the order book so a partial fill
+    # is *completed*, never duplicated (2026-06-16 naked-short incident). The tag
+    # is durable (survives process/agent retries), unlike the request-scoped
+    # correlation_id or the 25s in-memory dedup window.
+    basket_tag = next((o.get("tag") for o in req.orders if o.get("tag")), None)
+    skipped = []
+    orders_to_place = req.orders
+    if basket_tag:
+        live = await _live_legs_by_tag(_make_client(token), basket_tag)
+        if live:
+            orders_to_place = []
+            for o in req.orders:
+                if (o["instrument_token"], o["transaction_type"]) in live:
+                    skipped.append(o.get("correlation_id") or o["instrument_token"])
+                else:
+                    orders_to_place.append(o)
+            if not orders_to_place:
+                logger.info("Multi-order idempotent no-op: all %d legs already live under tag=%s",
+                            len(req.orders), basket_tag)
+                return OrderResult(
+                    success=True,
+                    status="DUPLICATE",
+                    message=f"All {len(req.orders)} legs already placed under tag {basket_tag} (idempotent)",
+                    data={"placed": [], "failed": [], "skipped": skipped, "partial": False},
+                )
+            logger.warning("Multi-order retry: %d/%d legs already live under tag=%s, placing %d remaining",
+                           len(skipped), len(req.orders), basket_tag, len(orders_to_place))
+
     try:
         order_payloads = []
-        for o in req.orders:
+        for o in orders_to_place:
             payload = {
                 "quantity": o["quantity"],
                 "product": o.get("product", "D"),
@@ -629,18 +694,46 @@ async def place_multi_order(
                 "disclosed_quantity": 0,
                 "is_amo": is_amo,
                 "tag": o.get("tag"),
+                # Per-leg id so the caller can map results back to legs. Request-
+                # scoped per the API contract; dropped previously, which is why
+                # partial fills couldn't be attributed to specific legs.
+                "correlation_id": o.get("correlation_id"),
                 "market_protection": -1,
             }
             order_payloads.append(payload)
         r = await api.place_multi_order(order_payloads)
-        if r.get("success"):
-            logger.info("Multi-order placed: %d legs", len(order_payloads))
+
+        breakdown = {
+            "placed": r.get("placed", []),
+            "failed": r.get("failed", []),
+            "skipped": skipped,
+            "summary": r.get("summary", {}),
+            "partial": bool(r.get("partial")),
+        }
+        n_placed = len(breakdown["placed"])
+        n_failed = len(breakdown["failed"])
+
+        if r.get("success") and not skipped:
+            logger.info("Multi-order placed: %d legs (tag=%s)", n_placed, basket_tag)
+            return OrderResult(success=True, message=f"Multi-order placed ({n_placed} legs)", data=breakdown)
+        if r.get("success") and skipped:
+            # Retry that completed a previously-partial basket.
+            logger.info("Multi-order completed: +%d legs, %d already live (tag=%s)", n_placed, len(skipped), basket_tag)
             return OrderResult(
                 success=True,
-                message=f"Multi-order placed ({len(order_payloads)} legs)",
-                data=r.get("data"),
+                message=f"Basket completed: {n_placed} placed, {len(skipped)} already live",
+                data=breakdown,
             )
-        return OrderResult(success=False, message=f"Multi-order failed: {r.get('message')}")
+        # Partial or full failure — surface per-leg truth so the caller can
+        # finish or unwind rather than blindly retry.
+        logger.error("Multi-order %s: %d placed, %d failed (tag=%s): %s",
+                     "partial" if breakdown["partial"] else "failed", n_placed, n_failed, basket_tag, r.get("message"))
+        return OrderResult(
+            success=False,
+            status="PARTIAL" if breakdown["partial"] else "REJECTED",
+            message=f"Multi-order {'partial' if breakdown['partial'] else 'failed'}: {r.get('message')}",
+            data=breakdown,
+        )
     except Exception as e:
         logger.error("Multi-order error: %r", e, exc_info=True)
         return OrderResult(success=False, message=f"Multi-order failed: {e}")

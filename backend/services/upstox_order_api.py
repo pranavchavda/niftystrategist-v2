@@ -34,6 +34,7 @@ rarely hit it.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 import httpx
@@ -43,8 +44,12 @@ logger = logging.getLogger(__name__)
 # api-hft.upstox.com for orders (V3 path), api.upstox.com for V2 multi/exit.
 # Per SDK Configuration: self.host = "https://api.upstox.com",
 # self.order_host = "https://api-hft.upstox.com".
-HFT_HOST = "https://api-hft.upstox.com"
-MAIN_HOST = "https://api.upstox.com"
+# Both are env-overridable so the order stack can be pointed at the Upstox
+# sandbox (https://api-sandbox.upstox.com) for end-to-end smoke tests. Sandbox
+# supports place/multi-place/modify/cancel (but not order-book retrieval).
+# Defaults are production; set UPSTOX_API_HOST + UPSTOX_HFT_HOST to switch.
+HFT_HOST = os.environ.get("UPSTOX_HFT_HOST", "https://api-hft.upstox.com")
+MAIN_HOST = os.environ.get("UPSTOX_API_HOST", "https://api.upstox.com")
 
 # Default read timeout. Upstox HFT endpoint normally responds in <50ms;
 # 10s is generous. Caller can override per-call.
@@ -126,6 +131,76 @@ def _flatten_v3_action_response(resp_json: dict) -> dict:
         "success": False,
         "status": "REJECTED",
         "message": err_msgs,
+        "raw": resp_json,
+    }
+
+
+def _flatten_multi_order_response(resp_json: dict) -> dict:
+    """Parse Upstox ``/v2/order/multi/place`` — which is NOT atomic.
+
+    Per the API contract, top-level ``status`` is one of ``success`` /
+    ``partial_success`` / ``error``, with a ``summary`` (total/success/error/
+    payload_error), a per-leg ``data`` array ({correlation_id, order_id}) and a
+    per-leg ``errors`` array ({correlation_id, error_code, message}).
+
+    The single-order flattener treats anything but ``status == "success"`` as a
+    total failure — which mis-classifies ``partial_success`` as "nothing
+    placed", the bug that turned a partial Iron Condor fill into a duplicate
+    naked short on 2026-06-16. This parser preserves the per-leg truth so the
+    caller can finish (or unwind) a partial basket instead of blindly retrying.
+
+    Returns:
+        {success, partial, status, summary, placed[], failed[], order_ids[],
+         message, raw}
+        - success: every requested leg was accepted (no errors, no payload errors)
+        - partial: some legs accepted AND some failed (the dangerous state)
+    """
+    status = resp_json.get("status")
+    data = resp_json.get("data") or []
+    if isinstance(data, dict):
+        data = [data]
+    errors = resp_json.get("errors") or []
+    summary = resp_json.get("summary") or {}
+
+    placed = [
+        {"correlation_id": d.get("correlation_id"), "order_id": d.get("order_id")}
+        for d in data if isinstance(d, dict)
+    ]
+    failed = [
+        {
+            "correlation_id": e.get("correlation_id"),
+            "error_code": e.get("error_code") or e.get("errorCode"),
+            "message": e.get("message", ""),
+        }
+        for e in errors if isinstance(e, dict)
+    ]
+
+    n_err = summary.get("error", len(failed))
+    n_payload_err = summary.get("payload_error", 0)
+    ok = status == "success" and not failed and not n_err and not n_payload_err
+    partial = bool(placed) and (status == "partial_success" or bool(failed))
+
+    if ok:
+        message = "OK"
+    elif partial:
+        message = (
+            f"Partial fill — {len(placed)} placed, {len(failed)} failed: "
+            + "; ".join(f"{f['correlation_id']}: {f['error_code']} {f['message']}".strip() for f in failed)
+        )
+    else:
+        message = "; ".join(
+            f"{f['correlation_id']}: {f['error_code']} {f['message']}".strip() for f in failed
+        ) or str(resp_json)
+
+    return {
+        "success": ok,
+        "partial": partial,
+        "status": status,
+        "summary": summary,
+        "placed": placed,
+        "failed": failed,
+        "order_ids": [d.get("order_id") for d in data if isinstance(d, dict) and d.get("order_id")],
+        "message": message,
         "raw": resp_json,
     }
 
@@ -284,11 +359,15 @@ class AsyncUpstoxOrderApi:
         Each item is a dict with the same keys as ``place_order`` body.
         Returns a flattened response with ``order_ids``.
         """
+        # Body is a RAW JSON ARRAY of order objects — NOT wrapped in {"orders": …}.
+        # Wrapping it returns UDAPI100036 "Invalid input" (verified against the
+        # Upstox sandbox 2026-06-16); the previous wrapper meant multi-leg/spread
+        # placement never actually worked.
         result = await self._call(
             "POST", MAIN_HOST, "/v2/order/multi/place",
-            json={"orders": orders},
+            json=orders,
         )
-        return _flatten_v3_action_response(result)
+        return _flatten_multi_order_response(result)
 
     # ── GTT orders ──────────────────────────────────────────────────────────
 
@@ -484,11 +563,12 @@ class SyncUpstoxOrderApi:
         return _flatten_v3_action_response(result)
 
     def place_multi_order(self, orders: list[dict]) -> dict:
+        # Raw array body, not {"orders": …} — see async note above.
         result = self._call(
             "POST", MAIN_HOST, "/v2/order/multi/place",
-            json={"orders": orders},
+            json=orders,
         )
-        return _flatten_v3_action_response(result)
+        return _flatten_multi_order_response(result)
 
     def place_gtt_order(
         self,

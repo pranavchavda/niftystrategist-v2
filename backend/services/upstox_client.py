@@ -2174,29 +2174,25 @@ class UpstoxClient:
                     "trigger_price": 0,
                     "is_amo": False,
                     "tag": o.get("tag"),
+                    "correlation_id": o.get("correlation_id"),
                     "slice": o.get("slice", False),
                 })
             api = AsyncUpstoxOrderApi(self.access_token)
             r = await api.place_multi_order(payloads)
-            if r.get("success"):
-                # Multi-order data may be a list of {order_id, ...} or a single dict.
-                raw = r.get("raw") or {}
-                data = raw.get("data") or []
-                if not isinstance(data, list):
-                    data = [data]
-                order_ids = []
-                for item in data:
-                    if isinstance(item, dict):
-                        oid = item.get("order_id") or item.get("order_ids")
-                        order_ids.append(oid)
-                return {
-                    "success": True,
-                    "order_ids": order_ids,
-                    "message": f"Multi-order placed ({len(orders)} legs)",
-                }
-            return {"success": False, "message": f"Multi-order failed: {r.get('message')}"}
+            # `/v2/order/multi/place` is non-atomic — pass the per-leg breakdown
+            # (placed/failed/partial) straight through so the caller can finish or
+            # unwind a partial basket instead of treating it as total failure.
+            return {
+                "success": r.get("success", False),
+                "partial": r.get("partial", False),
+                "order_ids": r.get("order_ids", []),
+                "placed": r.get("placed", []),
+                "failed": r.get("failed", []),
+                "summary": r.get("summary", {}),
+                "message": r.get("message", ""),
+            }
         except Exception as e:
-            return {"success": False, "message": f"Multi-order failed: {e}"}
+            return {"success": False, "partial": False, "message": f"Multi-order failed: {e}"}
 
     async def modify_order(
         self,

@@ -21,7 +21,9 @@ pre-approved trading mandate skip the card.
 import argparse
 import sys
 import os
-from datetime import datetime
+import math
+import hashlib
+from datetime import datetime, timedelta
 
 _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
@@ -1387,6 +1389,31 @@ def _compute_payoff(legs: list[dict], lot_size: int) -> dict:
     }
 
 
+# Spread leg fill pricing. A passive limit at the LTP routinely doesn't fill —
+# LTP is the last *traded* price, not the touch — which leaves partial baskets
+# (the 2026-06-16 Iron Condor mess). We cross the spread with a marketable limit
+# (LTP ± buffer, tick-rounded) so legs fill as a unit, while keeping a price cap
+# (unlike bare MARKET, which can fill on a gamma spike on a thin strike). Partial
+# fills are still handled truthfully by the order node + the per-leg renderer.
+_SPREAD_FILL_BUFFER = 0.025   # 2.5% past LTP
+_OPTION_TICK = 0.05
+
+
+def _marketable_limit(side: str, ltp: float) -> float:
+    """Limit price that crosses the spread so the leg fills immediately.
+
+    BUY rounds UP to the next tick, SELL rounds DOWN — so the price stays
+    marketable after tick-rounding. Returns ltp unchanged if ltp is missing.
+    """
+    if not ltp or ltp <= 0:
+        return ltp or 0
+    if side == "BUY":
+        px = math.ceil(ltp * (1 + _SPREAD_FILL_BUFFER) / _OPTION_TICK) * _OPTION_TICK
+    else:
+        px = math.floor(ltp * (1 - _SPREAD_FILL_BUFFER) / _OPTION_TICK) * _OPTION_TICK
+    return round(px, 2)
+
+
 def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
                  product: str, dry_run: bool, as_json: bool):
     """Place a multi-leg spread/basket option order.
@@ -1441,6 +1468,7 @@ def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
             "lots": lots,
             "premium": premium,
             "live_ltp": live_ltp,
+            "limit_price": _marketable_limit(leg["side"], premium),
             "instrument_key": instrument_key,
             "tradingsymbol": option["tradingsymbol"],
             "lot_size": lot_size,
@@ -1495,6 +1523,7 @@ def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
                 "option_type": l["option_type"],
                 "premium": l["premium"],
                 "live_ltp": l["live_ltp"],
+                "limit_price": l["limit_price"],
                 "tradingsymbol": l["tradingsymbol"],
                 "instrument_key": l["instrument_key"],
                 "charges": l["charges"],
@@ -1506,7 +1535,12 @@ def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
         "estimated_margin": margin_info.get("required_margin") or margin_info.get("final_margin") if margin_info else None,
     }
 
-    if dry_run or as_json:
+    # NOTE: `--json` controls OUTPUT FORMAT only — it must NOT gate placement.
+    # The old `if dry_run or as_json:` silently turned every `--json` call into a
+    # dry-run (the agent's default flag), so spreads were never placed, then
+    # mis-diagnosed and retried into duplicate fills. Only `--dry-run` skips
+    # placement now.
+    if dry_run:
         if as_json:
             print_json(result)
             return
@@ -1539,25 +1573,65 @@ def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
             if margin_val:
                 print(f"  Est. Margin:      {format_inr(margin_val)}")
 
-        if dry_run:
-            print(f"\n  🔍 Dry Run — orders NOT placed")
+        print(f"\n  Legs placed as marketable limits (LTP ±{_SPREAD_FILL_BUFFER*100:.1f}%):")
+        for i, l in enumerate(resolved_legs):
+            print(f"    Leg {i+1}: {l['side']} {l['strike']:.0f} {l['option_type']} "
+                  f"LTP {format_inr(l['premium'])} → limit {format_inr(l['limit_price'])}")
+        print(f"\n  🔍 Dry Run — orders NOT placed")
         return
 
-    # Place multi-leg order
-    import uuid
-    basket_tag = f"spread_{uuid.uuid4().hex[:8]}"
+    # Place multi-leg order as marketable limits under a DETERMINISTIC basket tag.
+    # The tag is derived from the spread definition + trading date, so re-running
+    # the SAME spread the same day reuses the tag — the order node then dedups
+    # legs already live (true idempotency across separate invocations, not just a
+    # 25s window). This is the guard that prevents the 2026-06-16 duplicate.
+    leg_sig = "|".join(sorted(f"{l['side']}:{l['strike']}:{l['option_type']}" for l in resolved_legs))
+    today_ist = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    sig = f"{symbol.upper()}|{expiry}|{leg_sig}|{lots}|{product}|{today_ist}"
+    basket_hex = hashlib.sha1(sig.encode()).hexdigest()[:8]
+    basket_tag = f"spread_{basket_hex}"
     orders = []
     for i, l in enumerate(resolved_legs):
         orders.append({
             "instrument_token": l["instrument_key"],
             "transaction_type": l["side"],
             "quantity": quantity,
-            "price": l["premium"],
+            "price": l["limit_price"],
             "order_type": "LIMIT",
             "product": product,
             "tag": basket_tag,
-            "correlation_id": f"{basket_tag}_leg{i+1}",
+            "correlation_id": f"{basket_hex}_{i+1}",  # <=20 chars per API contract
         })
+
+    def _render_spread_result(success: bool, partial: bool, message: str, breakdown: dict):
+        """Print a truthful per-leg outcome — never a flat 'Placed' on a partial."""
+        breakdown = breakdown or {}
+        placed = breakdown.get("placed") or []
+        failed = breakdown.get("failed") or []
+        skipped = breakdown.get("skipped") or []
+        if success and not partial:
+            print_success(f"{payoff.get('strategy', 'Spread')} Placed [{basket_tag}]")
+            print(f"\n  {symbol.upper()} | {resolved_legs[0]['expiry']} | {lots} lot(s)")
+            for i, l in enumerate(resolved_legs):
+                print(f"  Leg {i+1}: {l['side']} {l['strike']:.0f} {l['option_type']} @ {format_inr(l['limit_price'])} (marketable)")
+            if skipped:
+                print(f"  ({len(skipped)} leg(s) already live — idempotent retry)")
+            if payoff.get("net_debit"):
+                print(f"  Net Debit: {format_inr(payoff['net_debit'])}")
+            elif payoff.get("net_credit"):
+                print(f"  Net Credit: {format_inr(payoff['net_credit'])}")
+        else:
+            print_error(f"Spread {'PARTIAL' if partial else 'FAILED'} [{basket_tag}] — {message}")
+            if placed:
+                print(f"  ✅ {len(placed)} leg(s) placed")
+            if failed:
+                print(f"  ❌ {len(failed)} leg(s) failed:")
+                for f in failed:
+                    print(f"     {f.get('correlation_id')}: {f.get('error_code')} {f.get('message', '')}".rstrip())
+            if partial:
+                print(f"  ⚠️  PARTIAL BASKET — a SELL leg may be unhedged. Verify with "
+                      f"`nf-options positions`. Re-run the SAME command to complete missing "
+                      f"legs (idempotent), or unwind the placed legs.")
 
     # Route through order node if configured
     order_client = init_order_client()
@@ -1566,21 +1640,20 @@ def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
             proxy_result = order_client.place_multi_order(orders)
         except Exception as e:
             print_error(f"Spread order failed: {e}")
-
+            return
+        breakdown = proxy_result.data if isinstance(proxy_result.data, dict) else {}
         if as_json:
-            result["order_result"] = {"success": proxy_result.success, "message": proxy_result.message}
+            result["order_result"] = {
+                "success": proxy_result.success,
+                "status": proxy_result.status,
+                "message": proxy_result.message,
+                "tag": basket_tag,
+                "breakdown": breakdown,
+            }
             print_json(result)
-        elif proxy_result.success:
-            print_success(f"{payoff.get('strategy', 'Spread')} Placed [{basket_tag}]")
-            print(f"\n  {symbol.upper()} | {resolved_legs[0]['expiry']} | {lots} lot(s)")
-            for i, l in enumerate(resolved_legs):
-                print(f"  Leg {i+1}: {l['side']} {l['strike']:.0f} {l['option_type']} @ {format_inr(l['premium'])}")
-            if payoff.get("net_debit"):
-                print(f"  Net Debit: {format_inr(payoff['net_debit'])}")
-            elif payoff.get("net_credit"):
-                print(f"  Net Credit: {format_inr(payoff['net_credit'])}")
-        else:
-            print_error(f"Spread order failed: {proxy_result.message}")
+            return
+        _render_spread_result(proxy_result.success, breakdown.get("partial", False),
+                              proxy_result.message, breakdown)
         return
 
     # Direct path (no order node configured)
@@ -1588,24 +1661,14 @@ def spread_order(symbol: str, expiry: str, legs_raw: list[str], lots: int,
         place_result = run_async(client.place_multi_order(orders))
     except Exception as e:
         print_error(f"Spread order failed: {e}")
+        return
 
     if as_json:
-        result["order_result"] = place_result
+        result["order_result"] = {**place_result, "tag": basket_tag}
         print_json(result)
-    elif place_result.get("success"):
-        print_success(f"{payoff.get('strategy', 'Spread')} Placed [{basket_tag}]")
-        print(f"\n  {symbol.upper()} | {resolved_legs[0]['expiry']} | {lots} lot(s)")
-        for i, l in enumerate(resolved_legs):
-            print(f"  Leg {i+1}: {l['side']} {l['strike']:.0f} {l['option_type']} @ {format_inr(l['premium'])}")
-        oids = place_result.get("order_ids", [])
-        if oids:
-            print(f"\n  Order IDs: {', '.join(str(o) for o in oids)}")
-        if payoff.get("net_debit"):
-            print(f"  Net Debit: {format_inr(payoff['net_debit'])}")
-        elif payoff.get("net_credit"):
-            print(f"  Net Credit: {format_inr(payoff['net_credit'])}")
-    else:
-        print_error(f"Spread order failed: {place_result.get('message', 'Unknown error')}")
+        return
+    _render_spread_result(place_result.get("success", False), place_result.get("partial", False),
+                          place_result.get("message", "Unknown error"), place_result)
 
 
 def main():
