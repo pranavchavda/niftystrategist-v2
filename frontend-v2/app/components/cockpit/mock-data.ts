@@ -27,6 +27,16 @@ export interface Position {
   stopLoss?: number;
   target?: number;
   charges?: PositionCharges;
+  // F&O-specific (present only on F&O positions)
+  product?: string;
+  side?: string;
+  lots?: number | null;
+  lotSize?: number | null;
+  underlying?: string | null;
+  strike?: number | null;
+  optionType?: string | null;
+  expiry?: string | null;
+  instrumentType?: string | null;
 }
 
 export interface WatchlistItem {

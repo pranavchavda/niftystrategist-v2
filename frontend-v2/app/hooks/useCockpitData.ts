@@ -25,6 +25,7 @@ export interface CockpitData {
   portfolio: PortfolioSummary | null;
   positions: Position[];
   holdings: Position[];
+  fnoPositions: Position[];
   watchlists: Record<string, WatchlistItem[]>;
   indices: MarketIndex[];
   scorecard: DailyScorecard | null;
@@ -52,6 +53,7 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [holdings, setHoldings] = useState<Position[]>([]);
+  const [fnoPositions, setFnoPositions] = useState<Position[]>([]);
   const [watchlists, setWatchlists] = useState<Record<string, WatchlistItem[]>>({});
   const [indices, setIndices] = useState<MarketIndex[]>([]);
   const [scorecard, setScorecard] = useState<DailyScorecard | null>(null);
@@ -112,6 +114,7 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
     if (results[2].status === 'fulfilled') {
       setPositions(results[2].value.positions || []);
       setHoldings(results[2].value.holdings || []);
+      setFnoPositions(results[2].value.fnoPositions || []);
     }
 
     // Indices
@@ -190,6 +193,7 @@ export function useCockpitData(authToken: string, autoRefresh: boolean): Cockpit
     portfolio,
     positions,
     holdings,
+    fnoPositions,
     watchlists,
     indices,
     scorecard,

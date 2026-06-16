@@ -296,12 +296,43 @@ async def cockpit_positions(user: User = Depends(get_current_user)):
                     "charges": charges,
                 })
 
+            fno_positions = []
+            for pos in getattr(portfolio, "fno_positions", []) or []:
+                # Human-readable contract label for the F&O tab
+                if pos.underlying and pos.strike and pos.option_type:
+                    label = f"{pos.underlying} {int(pos.strike)} {pos.option_type}"
+                elif pos.underlying:
+                    label = pos.underlying
+                else:
+                    label = pos.tradingsymbol
+                fno_positions.append({
+                    "symbol": pos.tradingsymbol,
+                    "company": label,
+                    "qty": pos.quantity,
+                    "avgPrice": pos.average_price,
+                    "ltp": pos.current_price,
+                    "pnl": pos.pnl,
+                    "pnlPct": pos.pnl_percentage,
+                    "dayChange": pos.day_change,
+                    "dayChangePct": pos.day_change_percentage,
+                    "holdDays": None,
+                    "product": pos.product,
+                    "side": pos.side,
+                    "lots": pos.lots,
+                    "lotSize": pos.lot_size,
+                    "underlying": pos.underlying,
+                    "strike": pos.strike,
+                    "optionType": pos.option_type,
+                    "expiry": pos.expiry_hint,
+                    "instrumentType": pos.instrument_type,
+                })
+
             # In paper mode, all positions are simulated (treat as intraday/positions)
             if client.paper_trading and not positions and holdings:
                 positions = holdings
                 holdings = []
 
-            return {"positions": positions, "holdings": holdings}
+            return {"positions": positions, "holdings": holdings, "fnoPositions": fno_positions}
         return await _with_401_retry(user, _fetch)
     except Exception as e:
         logger.error(f"Error fetching positions: {e}")

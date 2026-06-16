@@ -18,23 +18,24 @@ const fmtDecimal = (n: number) =>
 interface PositionsTableProps {
   positions: Position[];
   holdings: Position[];
+  fnoPositions?: Position[];
   trades: TradesData | null;
   mfHoldings: MFHoldingsData | null;
   onSymbolSelect: (symbol: string) => void;
   onAskAI: (symbol: string, context: object) => void;
 }
 
-type Tab = 'positions' | 'holdings' | 'trades' | 'mf';
+type Tab = 'positions' | 'fno' | 'holdings' | 'trades' | 'mf';
 type SortKey = 'symbol' | 'pnl' | 'pnlPct' | 'dayChangePct' | 'holdDays';
 type SortDir = 'asc' | 'desc';
 
-export default function PositionsTable({ positions, holdings, trades, mfHoldings, onSymbolSelect, onAskAI }: PositionsTableProps) {
+export default function PositionsTable({ positions, holdings, fnoPositions = [], trades, mfHoldings, onSymbolSelect, onAskAI }: PositionsTableProps) {
   const [activeTab, setActiveTab] = useState<Tab>('positions');
   const [sortKey, setSortKey] = useState<SortKey>('pnlPct');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
-  const data = activeTab === 'positions' ? positions : holdings;
+  const data = activeTab === 'fno' ? fnoPositions : activeTab === 'holdings' ? holdings : positions;
 
   const sorted = [...data].sort((a, b) => {
     const aVal = a[sortKey] ?? 0;
@@ -86,6 +87,18 @@ export default function PositionsTable({ positions, holdings, trades, mfHoldings
           >
             Holdings ({holdings.length})
           </button>
+          {fnoPositions.length > 0 && (
+            <button
+              onClick={() => setActiveTab('fno')}
+              className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
+                activeTab === 'fno'
+                  ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                  : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              F&O ({fnoPositions.length})
+            </button>
+          )}
           {trades && trades.count > 0 && (
             <button
               onClick={() => setActiveTab('trades')}
@@ -246,8 +259,8 @@ export default function PositionsTable({ positions, holdings, trades, mfHoldings
           /* Positions / Holdings Table */
           sorted.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-zinc-400">
-              <p className="text-sm">No {activeTab === 'positions' ? 'open positions' : 'holdings'}</p>
-              <p className="text-xs mt-1">Start trading to see your {activeTab} here</p>
+              <p className="text-sm">No {activeTab === 'positions' ? 'open positions' : activeTab === 'fno' ? 'F&O positions' : 'holdings'}</p>
+              <p className="text-xs mt-1">Start trading to see your {activeTab === 'fno' ? 'F&O positions' : activeTab} here</p>
             </div>
           ) : (
             <table className="w-full text-xs">
@@ -347,7 +360,19 @@ export default function PositionsTable({ positions, holdings, trades, mfHoldings
                         <tr>
                           <td colSpan={10} className="px-8 py-2.5 bg-zinc-50/50 dark:bg-zinc-800/20 border-b border-zinc-200/50 dark:border-zinc-800/50 animate-slide-in-bottom">
                             <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px]">
-                              <span className="text-zinc-500">Company: <span className="text-zinc-700 dark:text-zinc-300 font-medium">{pos.company}</span></span>
+                              <span className="text-zinc-500">{pos.optionType || pos.instrumentType ? 'Contract' : 'Company'}: <span className="text-zinc-700 dark:text-zinc-300 font-medium">{pos.company}</span></span>
+                              {pos.side && (pos.optionType || pos.instrumentType) && (
+                                <span className="text-zinc-500">Side: <Badge color={pos.side === 'SHORT' ? 'red' : 'green'}>{pos.side}</Badge></span>
+                              )}
+                              {pos.lots != null && (
+                                <span className="text-zinc-500">Lots: <span className="text-zinc-700 dark:text-zinc-300 font-semibold tabular-nums">{pos.lots}{pos.lotSize ? ` × ${pos.lotSize}` : ''}</span></span>
+                              )}
+                              {pos.product && (pos.optionType || pos.instrumentType) && (
+                                <span className="text-zinc-500">Product: <span className="text-zinc-700 dark:text-zinc-300 font-medium">{pos.product === 'I' ? 'Intraday' : pos.product === 'D' ? 'Carry-forward' : pos.product}</span></span>
+                              )}
+                              {pos.expiry && (
+                                <span className="text-zinc-500">Expiry: <span className="text-zinc-700 dark:text-zinc-300 font-medium">{pos.expiry}</span></span>
+                              )}
                               {pos.stopLoss && (
                                 <span className="text-zinc-500">SL: <span className="text-red-500 font-semibold tabular-nums">{fmtDecimal(pos.stopLoss)}</span></span>
                               )}

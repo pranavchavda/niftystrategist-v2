@@ -104,6 +104,32 @@ class PortfolioPosition(BaseModel):
     )
 
 
+class FnoPosition(BaseModel):
+    """An F&O (options/futures) position held with the broker."""
+
+    tradingsymbol: str
+    instrument_token: str | None = None
+    exchange: str | None = None
+    instrument_type: str | None = None
+    product: str | None = Field(
+        default=None, description="Product type: 'D' for NRML/carry-forward, 'I' for intraday/MIS"
+    )
+    quantity: int = Field(description="Net signed quantity — negative for short positions")
+    lots: int | None = None
+    lot_size: int | None = None
+    average_price: float
+    current_price: float
+    pnl: float
+    pnl_percentage: float
+    day_change: float = 0.0
+    day_change_percentage: float = 0.0
+    side: str = Field(default="LONG", description="Position side: 'LONG' or 'SHORT'")
+    underlying: str | None = None
+    strike: float | None = None
+    option_type: str | None = Field(default=None, description="'CE', 'PE', or None for futures")
+    expiry_hint: str | None = None
+
+
 class Portfolio(BaseModel):
     """User's portfolio summary."""
 
@@ -119,4 +145,7 @@ class Portfolio(BaseModel):
     )
     intraday_positions: list[PortfolioPosition] = Field(
         default_factory=list, description="List of intraday/MIS positions for today"
+    )
+    fno_positions: list[FnoPosition] = Field(
+        default_factory=list, description="List of open F&O (options/futures) positions"
     )

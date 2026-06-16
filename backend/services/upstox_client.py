@@ -12,7 +12,7 @@ import upstox_client
 from upstox_client.rest import ApiException
 
 from models.analysis import OHLCVData
-from models.trading import Portfolio, PortfolioPosition, TradeResult
+from models.trading import FnoPosition, Portfolio, PortfolioPosition, TradeResult
 
 logger = logging.getLogger(__name__)
 
@@ -1056,12 +1056,31 @@ class UpstoxClient:
             # Intraday (MIS) positions are collected separately.
             sell_qty_map: dict[str, int] = {}
             intraday_positions: list[PortfolioPosition] = []
+            fno_positions: list[FnoPosition] = []
             try:
                 pos_response = await asyncio.to_thread(portfolio_api.get_positions, api_version="v2")
                 for pos in (pos_response.data or []):
                     qty = getattr(pos, 'quantity', 0) or 0
                     product = getattr(pos, 'product', '')
                     sym = (getattr(pos, 'tradingsymbol', None) or getattr(pos, 'trading_symbol', '') or '').upper()
+
+                    # F&O (options/futures) positions are handled separately — they
+                    # must NOT fall through to the equity holdings/intraday logic
+                    # below (which would mis-bucket a carry-forward short as a
+                    # delivery sell, or hide a long NRML contract entirely).
+                    exchange = getattr(pos, 'exchange', '') or ''
+                    instrument_type = getattr(pos, 'instrument_type', '') or ''
+                    inst_token_raw = str(getattr(pos, 'instrument_token', '') or '')
+                    is_fno = (
+                        'FO' in exchange
+                        or instrument_type in ('OPTIDX', 'OPTSTK', 'FUTIDX', 'FUTSTK')
+                        or 'NSE_FO' in inst_token_raw
+                        or 'BSE_FO' in inst_token_raw
+                    )
+                    if is_fno:
+                        if qty != 0:  # only open contracts
+                            fno_positions.append(self._build_fno_position(pos, sym, qty))
+                        continue
 
                     if product == 'D' and qty < 0:
                         # Delivery sell today — subtract from holdings
@@ -1214,12 +1233,104 @@ class UpstoxClient:
                 total_pnl_percentage=(total_pnl / invested * 100) if invested > 0 else 0,
                 positions=positions,
                 intraday_positions=intraday_positions,
+                fno_positions=fno_positions,
             )
 
         except ApiException as e:
             raise ValueError(f"Failed to fetch portfolio: {e.status} - {e.reason}. {e.body}")
         except Exception as e:
             raise ValueError(f"Failed to fetch portfolio: {e}")
+
+    @staticmethod
+    def _parse_option_tradingsymbol(tradingsymbol: str) -> dict | None:
+        """Parse an option tradingsymbol like BANKNIFTY26MAR48000CE into parts.
+
+        Returns dict with underlying/expiry_hint/strike/option_type, or None for
+        futures / unparseable symbols. Mirrors nf-options' parser.
+        """
+        import re
+        m = re.match(r'^([A-Z&-]+?)(\d{2}\w+?)(\d{3,})(CE|PE)$', tradingsymbol)
+        if m:
+            return {
+                "underlying": m.group(1),
+                "expiry_hint": m.group(2),
+                "strike": float(m.group(3)),
+                "option_type": m.group(4),
+            }
+        return None
+
+    def _build_fno_position(self, pos, sym: str, qty: int) -> FnoPosition:
+        """Build an FnoPosition from a raw Upstox PositionData object."""
+        avg_price = getattr(pos, 'average_price', 0) or getattr(pos, 'buy_price', 0) or 0
+        last_price = getattr(pos, 'last_price', 0) or 0
+        close_price = getattr(pos, 'close_price', 0) or 0
+        product = getattr(pos, 'product', '') or ''
+        exchange = getattr(pos, 'exchange', '') or ''
+        instrument_type = getattr(pos, 'instrument_type', '') or ''
+        inst_token = getattr(pos, 'instrument_token', None)
+        multiplier = getattr(pos, 'multiplier', 1) or 1
+
+        # Cache instrument_token for chart/quote lookups
+        if sym and inst_token:
+            self._dynamic_symbols[sym] = inst_token
+
+        side = "SHORT" if qty < 0 else "LONG"
+
+        # Upstox's own pnl field handles long/short sign correctly.
+        upstox_pnl = getattr(pos, 'pnl', None)
+        if upstox_pnl is not None:
+            pnl = float(upstox_pnl)
+        elif avg_price and last_price:
+            pnl = (avg_price - last_price) * abs(qty) if side == "SHORT" else (last_price - avg_price) * abs(qty)
+            pnl *= multiplier
+        else:
+            pnl = 0.0
+
+        invested = avg_price * abs(qty) * multiplier
+        pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+
+        if close_price and last_price:
+            day_chg = last_price - close_price
+            day_chg_pct = (day_chg / close_price * 100)
+        else:
+            day_chg = 0.0
+            day_chg_pct = 0.0
+
+        parsed = self._parse_option_tradingsymbol(sym)
+
+        # Best-effort lot size → number of lots
+        lot_size = None
+        lots = None
+        try:
+            from strategies.fno_utils import get_lot_size
+            underlying = (parsed or {}).get("underlying") or sym
+            lot_size = get_lot_size(underlying)
+            if lot_size and lot_size > 0:
+                lots = abs(qty) // lot_size
+        except Exception:
+            pass
+
+        return FnoPosition(
+            tradingsymbol=sym,
+            instrument_token=str(inst_token) if inst_token else None,
+            exchange=exchange,
+            instrument_type=instrument_type,
+            product=product,
+            quantity=qty,
+            lots=lots,
+            lot_size=lot_size,
+            average_price=avg_price,
+            current_price=last_price,
+            pnl=pnl,
+            pnl_percentage=pnl_pct,
+            day_change=day_chg,
+            day_change_percentage=day_chg_pct,
+            side=side,
+            underlying=(parsed or {}).get("underlying"),
+            strike=(parsed or {}).get("strike"),
+            option_type=(parsed or {}).get("option_type"),
+            expiry_hint=(parsed or {}).get("expiry_hint"),
+        )
 
     def _cash_cache_path(self) -> Path:
         """Path for the per-user available cash cache file."""

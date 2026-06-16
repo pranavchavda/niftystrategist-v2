@@ -220,6 +220,7 @@ const Dashboard = ({ authToken }) => {
             <PositionsTable
               positions={cockpitData.positions}
               holdings={cockpitData.holdings}
+              fnoPositions={cockpitData.fnoPositions}
               trades={cockpitData.trades}
               mfHoldings={cockpitData.mfHoldings}
               onSymbolSelect={handleSymbolSelect}
