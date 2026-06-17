@@ -67,6 +67,51 @@ def _interval_and_days(timeframe: str, override_days: Optional[int]) -> tuple[st
     return interval, override_days or default_days
 
 
+# ---------------------------------------------------------------------------
+# Historical-candle cache
+# ---------------------------------------------------------------------------
+# A live chart tab re-pulls its full history on every candle close (every 60s
+# on a 1m chart). The multi-day pull (often 1500 + 3000 warm-up bars) is
+# immutable intraday — Upstox only revises today, which `_fetch_candles`
+# always re-fetches separately via days=1. Caching the multi-day prefix per
+# (symbol, interval, days, date) stops an open chart from hammering the
+# historical endpoint (the 429 → event-loop-freeze risk). Today's tail stays
+# live; only the unchanging prefix is served from memory.
+_HIST_TTL = 1800.0  # 30 min — bounds memory + cross-session staleness
+_hist_cache: dict[tuple, tuple[float, list]] = {}
+_hist_locks: dict[tuple, asyncio.Lock] = {}
+
+
+async def _cached_historical(client, symbol: str, interval: str, days: int) -> list:
+    """Multi-day historical pull with a short TTL cache (see module note).
+
+    Keyed by the current date so the cache rolls over naturally at the day
+    boundary (yesterday becomes part of the immutable prefix). A per-key lock
+    collapses the reconnect stampede — when a chart tab reopens, concurrent
+    fetches for the same key wait on one Upstox call instead of N.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = (symbol.upper(), interval, days, today)
+
+    hit = _hist_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _HIST_TTL:
+        return hit[1]
+
+    lock = _hist_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        # Re-check under lock — a concurrent caller may have just filled it.
+        hit = _hist_cache.get(key)
+        if hit and time.monotonic() - hit[0] < _HIST_TTL:
+            return hit[1]
+        data = await client.get_historical_data(symbol.upper(), interval=interval, days=days)
+        _hist_cache[key] = (time.monotonic(), data)
+        # Evict prior-day / stale keys so the cache can't grow unbounded.
+        for k in [k for k in _hist_cache if k[3] != today]:
+            _hist_cache.pop(k, None)
+            _hist_locks.pop(k, None)
+        return data
+
+
 async def _fetch_candles(user: User, symbol: str, interval: str, days: int) -> list[dict]:
     """Fetch OHLC candles normalized to the shape the frontend expects.
 
@@ -83,7 +128,8 @@ async def _fetch_candles(user: User, symbol: str, interval: str, days: int) -> l
     # analytics token, which doesn't expire daily, over the caller's per-user
     # token. Falls back to user token automatically when env var isn't set.
     client = await cockpit_api.get_market_data_client(user)
-    raw = await client.get_historical_data(symbol.upper(), interval=interval, days=days)
+    # Copy the cached prefix — local sort/reassign below must not mutate it.
+    raw = list(await _cached_historical(client, symbol, interval, days))
     raw.sort(key=lambda c: c.timestamp)
     intraday = interval in ("1minute", "5minute", "15minute", "30minute")
 
