@@ -576,6 +576,45 @@ async def _build(user_id, user_email, now, built_at, thread_id, scan_rows,
             if intent_tag:
                 L.append(f"    intent: {intent_tag}")
 
+    # ── EXECUTED TODAY but NOT an open intraday position ─────────────────
+    # Net today's fills per symbol; surface any net-nonzero name that isn't
+    # already shown above. This catches same-day DELIVERY buys (T+1: invisible
+    # in the positions API until settlement) and any cross-thread fill — the
+    # exact blind spot behind the HCLTECH 06-17 orphan-trail mistake. These are
+    # NOT intraday orphans: cross-reference rules/threads before acting.
+    # Normalize NSE series suffix (trades report "HCLTECH-EQ", positions/rules
+    # use "HCLTECH") so symbol matching across the three sources lines up.
+    def _norm(x: str) -> str:
+        return (x or "").upper().removesuffix("-EQ")
+    shown_syms = {_norm(p.symbol) for p in open_positions}
+    if _ok(trades):
+        net: dict[str, dict] = {}
+        for t in trades:
+            s = _norm(t.get("symbol") or "")
+            if not s:
+                continue
+            qty = t.get("quantity", 0) or 0
+            txn = (t.get("transaction_type") or "").upper()
+            signed = qty if txn == "BUY" else -qty
+            d = net.setdefault(s, {"net": 0, "product": t.get("product"), "buy_val": 0.0, "buy_qty": 0})
+            d["net"] += signed
+            d["product"] = t.get("product") or d["product"]
+            if txn == "BUY":
+                d["buy_val"] += qty * (t.get("average_price", 0) or 0)
+                d["buy_qty"] += qty
+        unshown = {s: d for s, d in net.items() if d["net"] != 0 and s not in shown_syms}
+        if unshown:
+            L.append("")
+            L.append("--- EXECUTED TODAY (not in intraday positions — incl. pre-settlement / cross-thread) ---")
+            for s, d in sorted(unshown.items()):
+                avg = (d["buy_val"] / d["buy_qty"]) if d["buy_qty"] else None
+                avg_s = f" @ ~{_inr(avg)}" if avg else ""
+                protectors = [r for r in rules if r.enabled and _norm(_rule_symbol(r)) == s]
+                prot = f" — protected by rule#{protectors[0].id}" if protectors else " — NO active rule found"
+                L.append(f"• {s} [{d['product'] or '?'}] net {d['net']:+d}{avg_s}{prot}")
+                L.append("    ↳ executed today; may be delivery (T+1 unsettled) or from another thread. "
+                         "Verify via rules/threads — do NOT treat as an intraday orphan.")
+
     # ── PRIOR INTENT (agent's own notes — intent only, verify vs live) ───
     if thread_id:
         L.append("")
@@ -593,12 +632,25 @@ async def _build(user_id, user_email, now, built_at, thread_id, scan_rows,
     if not active_rules:
         L.append("(none active)")
     else:
+        any_persistent = False
         for r in active_rules:
             sym = _rule_symbol(r) or "?"
             tp = _rule_trigger_price(r)
             lvl = f" @ {_inr(tp)}" if tp else ""
+            # A rule with no expiry, or expiring more than a day out, protects a
+            # long-term / delivery / cross-thread position — never an intraday
+            # orphan. Flag it so it is never disabled as "stale" (HCLTECH 06-17).
+            persistent = (r.expires_at is None) or ((r.expires_at - datetime.utcnow()).days >= 1)
+            flag = ""
+            if persistent:
+                any_persistent = True
+                exp = r.expires_at.strftime("%Y-%m-%d") if r.expires_at else "never"
+                flag = f"  🔒 PERSISTENT (expires {exp})"
             L.append(f"• #{r.id} {sym} {r.trigger_type}/{_rule_side(r) or r.action_type}"
-                     f"{lvl}  [{r.role or 'rule'}]")
+                     f"{lvl}  [{r.role or 'rule'}]{flag}")
+        if any_persistent:
+            L.append("  🔒 PERSISTENT rules guard long-term/delivery or cross-thread positions — "
+                     "do NOT disable without confirming via cross-thread search (recall / nf threads).")
     disabled_armed = [r for r in rules if not r.enabled]
     if disabled_armed:
         L.append(f"(+{len(disabled_armed)} disabled/armed rules)")
@@ -762,24 +814,39 @@ async def _run_live_scan(universe: str, top_n: int) -> tuple[list[dict], str]:
 _INJECT_CACHE: dict[int, tuple[float, str | None]] = {}
 
 
-async def _has_open_intraday(user_id: int, access_token: str | None) -> bool:
-    """Cheap gate: does the user hold any open intraday (product I) position?
+async def _has_managed_state(user_id: int, access_token: str | None) -> bool:
+    """Gate: is there ANY trading state worth surfacing across threads?
 
-    One get_positions call. Avoids building the full snapshot (incl. scan)
-    when the user is flat — the snapshot is only worth injecting when there's
-    a live intraday position to manage.
+    True if the user holds an open position (intraday OR delivery), has any
+    active monitor rule, or executed a trade today. Broadened 2026-06-17 from
+    intraday-only so cross-thread / delivery state — e.g. a long-term holding
+    protected by a persistent trail, or a same-day delivery buy from another
+    thread — is visible in every thread, not just when an intraday position is
+    open (this is what the HCLTECH 06-17 orphan-trail incident exposed).
+    Short-circuits on the cheapest signal first; the 30s TTL cache absorbs the
+    extra cost for chatty interactive sessions.
     """
     if not access_token:
         return False
+    client = UpstoxClient(access_token=access_token, paper_trading=False, user_id=user_id)
     try:
-        client = UpstoxClient(access_token=access_token, paper_trading=False, user_id=user_id)
         positions = await client.get_positions()
+        for p in positions or []:
+            if (getattr(p, "quantity", 0) or 0) != 0:
+                return True
     except Exception as e:
-        logger.debug(f"intraday gate check failed for user {user_id}: {e}")
-        return False
-    for p in positions or []:
-        if (getattr(p, "product", "") == "I") and (getattr(p, "quantity", 0) or 0) != 0:
+        logger.debug(f"managed-state gate (positions) failed for user {user_id}: {e}")
+    try:
+        async with get_db_context() as session:
+            if await list_rules(session, user_id, enabled_only=True):
+                return True
+    except Exception as e:
+        logger.debug(f"managed-state gate (rules) failed for user {user_id}: {e}")
+    try:
+        if await client.get_trades_for_day():
             return True
+    except Exception as e:
+        logger.debug(f"managed-state gate (trades) failed for user {user_id}: {e}")
     return False
 
 
@@ -804,7 +871,7 @@ async def get_snapshot_for_injection(
     if hit and (now - hit[0]) < ttl_seconds:
         return hit[1]
 
-    if not await _has_open_intraday(user_id, access_token):
+    if not await _has_managed_state(user_id, access_token):
         _INJECT_CACHE[user_id] = (now, None)
         return None
 
