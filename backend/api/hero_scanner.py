@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth import User, get_current_user, requires_permission
@@ -147,6 +148,76 @@ async def _build_env(user: User) -> dict[str, str]:
     return env
 
 
+def _sse(payload: dict[str, Any]) -> str:
+    """Format one SSE `data:` event (JSON payload, blank-line terminated)."""
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+async def _run_cli_streaming(args: list[str], env: dict[str, str], timeout: int):
+    """Run a cli-tools/ command as an SSE generator.
+
+    The scan can run for several minutes (deep analysis, signal-match, news).
+    A plain request would be killed by Cloudflare's ~100s proxy timeout (524,
+    served as an HTML error page → the UI's `res.json()` blows up). Streaming
+    `text/event-stream` keeps the connection alive: a `progress` event every
+    15s feeds the proxy so it never idles out, then a terminal `result` or
+    `error` event carries the payload. Mirrors the chat / backtest SSE path,
+    which already survives Cloudflare on this box.
+    """
+    cmd = [str(_VENV_BIN / "python"), *args]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(_BACKEND_DIR),
+        env=env,
+    )
+    comm = asyncio.ensure_future(proc.communicate())
+    waited = 0
+    try:
+        while True:
+            try:
+                # shield so a heartbeat timeout doesn't cancel the subprocess.
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    asyncio.shield(comm), timeout=15)
+                break
+            except asyncio.TimeoutError:
+                waited += 15
+                if waited >= timeout:
+                    proc.kill()
+                    await comm
+                    yield _sse({"type": "error",
+                                "detail": f"Scan timed out after {timeout}s"})
+                    return
+                yield _sse({"type": "progress", "elapsed": waited})
+    except asyncio.CancelledError:
+        # Client disconnected (closed tab / navigated away) — don't orphan the CLI.
+        proc.kill()
+        raise
+
+    stdout = stdout_b.decode("utf-8", "replace")
+    stderr = stderr_b.decode("utf-8", "replace")
+
+    if proc.returncode != 0:
+        msg = stderr.strip() or stdout.strip() or "CLI command failed"
+        msg = msg.replace("❌", "").strip()
+        logger.warning("hero-scanner CLI failed (%s): %s", args, msg[:300])
+        yield _sse({"type": "error", "detail": msg[:400]})
+        return
+
+    objs = _parse_json_objects(stdout)
+    if not objs:
+        yield _sse({"type": "error", "detail": "Scanner returned no parseable output"})
+        return
+
+    result: dict[str, Any] = {"type": "result", "scan": objs[0]}
+    # Second object (if present) is the auto-deploy summary.
+    for obj in objs[1:]:
+        if "auto_deploy" in obj:
+            result["auto_deploy"] = obj["auto_deploy"]
+    yield _sse(result)
+
+
 async def _run_cli(args: list[str], env: dict[str, str], timeout: int) -> str:
     """Run a cli-tools/ command, return stdout. Raises HTTPException on error."""
     cmd = [str(_VENV_BIN / "python"), *args]
@@ -207,10 +278,21 @@ def _parse_json_objects(text: str) -> list[dict[str, Any]]:
 
 @router.post("/scan")
 async def run_scan(req: ScanRequest, user: User = Depends(get_current_user)):
-    """Run nf-morning-scan with the requested options and return parsed JSON."""
+    """Run nf-morning-scan and stream the result over SSE.
+
+    Returns `text/event-stream`: zero or more `{"type": "progress", ...}`
+    heartbeat events while the CLI runs, then exactly one terminal event —
+    `{"type": "result", "scan": {...}}` or `{"type": "error", "detail": ...}`.
+    Streaming (not a single blocking JSON response) is what keeps Cloudflare's
+    ~100s proxy timeout from 524-ing long scans. Setup errors (bad request,
+    expired token) still surface as ordinary JSON HTTP errors before the
+    stream opens, so the frontend's `!res.ok` branch handles them.
+    """
     if req.auto_deploy and not req.capital:
         raise HTTPException(400, "capital is required when auto_deploy is set")
 
+    # Resolve the token/env up front so a 401 is a normal JSON error, not an
+    # SSE event the client would have to special-case.
     env = await _build_env(user)
 
     args: list[str] = [str(_CLI_DIR / "nf-morning-scan"), "--json",
@@ -233,17 +315,15 @@ async def run_scan(req: ScanRequest, user: User = Depends(get_current_user)):
         if req.dry_run:
             args.append("--dry-run")
 
-    stdout = await _run_cli(args, env, _SCAN_TIMEOUT)
-    objs = _parse_json_objects(stdout)
-    if not objs:
-        raise HTTPException(502, "Scanner returned no parseable output")
-
-    result: dict[str, Any] = {"scan": objs[0]}
-    # Second object (if present) is the auto-deploy summary.
-    for obj in objs[1:]:
-        if "auto_deploy" in obj:
-            result["auto_deploy"] = obj["auto_deploy"]
-    return result
+    return StreamingResponse(
+        _run_cli_streaming(args, env, _SCAN_TIMEOUT),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/order")

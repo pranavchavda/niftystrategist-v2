@@ -789,6 +789,8 @@ export default function HeroScannerPage() {
   const [scan, setScan] = useState<ScanResult | null>(null);
   // Symbol force-included via debug mode (highlighted + flagged if it dropped out).
   const [scannedDebug, setScannedDebug] = useState<string | null>(null);
+  // Seconds elapsed during a streaming scan (from SSE `progress` heartbeats).
+  const [scanElapsed, setScanElapsed] = useState<number>(0);
 
   // Order modal
   const [orderFor, setOrderFor] = useState<Candidate | null>(null);
@@ -812,17 +814,57 @@ export default function HeroScannerPage() {
       };
       const res = await fetch('/api/hero-scanner/scan', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Scan failed');
-      setScan(data.scan);
-      setScannedDebug(debug);
+      // Setup errors (bad request / expired token) come back as plain JSON
+      // before the stream opens.
+      if (!res.ok || !res.body) {
+        let detail = 'Scan failed';
+        try { detail = (await res.json()).detail || detail; } catch { /* non-JSON */ }
+        throw new Error(detail);
+      }
+      // The scan streams SSE: `progress` heartbeats keep Cloudflare's ~100s
+      // proxy timeout at bay, then a terminal `result` or `error` event. We
+      // parse `data: {...}` lines ourselves (EventSource can't POST + set headers).
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let done = false;
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) break;
+        buf += decoder.decode(value, { stream: true });
+        let sep;
+        while ((sep = buf.indexOf('\n\n')) !== -1) {
+          const raw = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          for (const line of raw.split('\n')) {
+            if (!line.startsWith('data: ')) continue; // ignore `:` heartbeats
+            let evt: any;
+            try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+            if (evt.type === 'progress') {
+              setScanElapsed(evt.elapsed);
+            } else if (evt.type === 'result') {
+              setScan(evt.scan);
+              setScannedDebug(debug);
+              done = true;
+            } else if (evt.type === 'error') {
+              throw new Error(evt.detail || 'Scan failed');
+            }
+          }
+        }
+      }
+      if (!done) throw new Error('Scan ended without a result');
     } catch (e: any) {
       setError(e.message || 'Network error');
     } finally {
       setRunning(false);
+      setScanElapsed(0);
     }
   };
 
@@ -987,7 +1029,7 @@ export default function HeroScannerPage() {
                 className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-600 disabled:opacity-60"
               >
                 {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                {running ? 'Scanning…' : 'Run Scan'}
+                {running ? (scanElapsed ? `Scanning… ${scanElapsed}s` : 'Scanning…') : 'Run Scan'}
               </button>
               {running && (
                 <p className="text-center text-xs text-zinc-400">
