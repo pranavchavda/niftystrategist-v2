@@ -771,6 +771,66 @@ def cmd_add_trailing(args):
             print(f"  Expires:      {_fmt_ist(expires_at)}")
 
 
+def cmd_update_trail(args):
+    """Change the trail_percent on an existing trailing-stop rule, in place.
+
+    Preserves the ratchet state (highest_price for longs / lowest_price for
+    shorts) — only the trail width changes. Use this from a pulse to TIGHTEN as
+    profit accrues or WIDEN when the thesis is intact but the tape is whippy.
+    Because the high/low-water mark is kept, tightening locks in gains already
+    captured; the stop never loosens below where it has already ratcheted.
+    """
+    from database.session import get_db_context
+    from monitor.crud import get_rule, update_rule
+
+    new_pct = args.trail_percent
+    if new_pct <= 0:
+        print_error("--trail-percent must be > 0")
+
+    async def _update():
+        async with get_db_context() as session:
+            rule = await get_rule(session, args.rule_id)
+            if not rule:
+                return None, "not_found"
+            if rule.trigger_type != "trailing_stop":
+                return rule, "not_trailing"
+            cfg = dict(rule.trigger_config or {})
+            old_pct = cfg.get("trail_percent")
+            cfg["trail_percent"] = new_pct
+            updated = await update_rule(session, args.rule_id, trigger_config=cfg)
+            return updated, old_pct
+
+    rule, info = run_async(_update())
+    if rule is None:
+        print_error(f"Rule #{args.rule_id} not found")
+    if info == "not_trailing":
+        print_error(f"Rule #{rule.id} is a '{rule.trigger_type}' rule, not trailing_stop")
+
+    old_pct = info
+    cfg = rule.trigger_config or {}
+    direction = cfg.get("direction", "long")
+    if direction == "short":
+        anchor = cfg.get("lowest_price") or cfg.get("initial_price")
+        new_stop = anchor * (1 + new_pct / 100) if anchor else None
+    else:
+        anchor = cfg.get("highest_price") or cfg.get("initial_price")
+        new_stop = anchor * (1 - new_pct / 100) if anchor else None
+
+    if args.json:
+        print_json({
+            "updated": _rule_to_dict(rule),
+            "old_trail_percent": old_pct,
+            "new_trail_percent": new_pct,
+            "anchor_price": anchor,
+            "new_stop_price": round(new_stop, 2) if new_stop else None,
+        })
+    else:
+        print_success(f"Rule #{rule.id} trail updated: {old_pct}% → {new_pct}%")
+        print(f"  {'Lowest' if direction == 'short' else 'Highest'} tracked: {anchor}")
+        if new_stop is not None:
+            print(f"  New stop:     {new_stop:.2f}")
+
+
 def cmd_list(args):
     """List monitoring rules."""
     from database.session import get_db_context
@@ -1254,6 +1314,14 @@ Option contract example:
                          help="Bypass exit-rule stacking guard (allow stacking with existing different-type exits like SL/target)")
     p_trail.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # ---- update-trail ----
+    p_uptrail = sub.add_parser("update-trail",
+                               help="Change trail_percent on an existing trailing-stop rule (preserves ratchet state)")
+    p_uptrail.add_argument("rule_id", type=int, help="Trailing-stop rule ID to adjust")
+    p_uptrail.add_argument("--trail-percent", type=float, required=True,
+                           help="New trail width %% (tighten to lock gains, widen to give room)")
+    p_uptrail.add_argument("--json", action="store_true", help="Output as JSON")
+
     # ---- list ----
     p_list = sub.add_parser("list", help="List monitoring rules")
     p_list.add_argument("--active", action="store_true", help="Show only active (enabled) rules")
@@ -1305,6 +1373,8 @@ Option contract example:
         cmd_add_oco(args)
     elif args.command == "add-trailing":
         cmd_add_trailing(args)
+    elif args.command == "update-trail":
+        cmd_update_trail(args)
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "enable":
