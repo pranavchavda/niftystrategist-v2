@@ -1,0 +1,12 @@
+# Single-package "workspace". The `packages` field is REQUIRED by pnpm 10.x
+# (CI pins 10.4.0 in .github/workflows/deploy.yml) — without it pnpm 10 errors
+# "packages field missing or empty". `allowBuilds` is honored by pnpm >=10.26/11
+# and replaces package.json's pnpm.onlyBuiltDependencies, which pnpm 11 ignores.
+# Both keys are needed so install+build work on CI (10.4.0) AND modern pnpm (11.x).
+packages:
+  - '.'
+allowBuilds:
+  '@scarf/scarf': true
+  '@tailwindcss/oxide': true
+  esbuild: true
+  protobufjs: true
