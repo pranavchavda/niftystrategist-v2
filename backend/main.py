@@ -969,6 +969,10 @@ app.include_router(upstox_webhooks_router)
 from api.telegram import router as telegram_router
 app.include_router(telegram_router)
 
+# Web Push (PWA) subscriptions. See docs/plans/2026-06-19-web-push-notifications.md.
+from api.push import router as push_router
+app.include_router(push_router)
+
 # Passkey (WebAuthn) authentication routes
 from routes.passkey_routes import router as passkey_router
 app.include_router(passkey_router)

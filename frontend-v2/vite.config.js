@@ -153,6 +153,10 @@ export default defineConfig({
         ],
         navigateFallback: null,
         cleanupOutdatedCaches: true,
+        // Custom push + notificationclick handlers. generateSW can't host them
+        // directly, so we importScripts a hand-written file from /public.
+        // See docs/plans/2026-06-19-web-push-notifications.md.
+        importScripts: ["push-sw.js"],
       },
       devOptions: {
         enabled: true,

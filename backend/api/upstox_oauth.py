@@ -723,9 +723,9 @@ async def _notify_totp_failure(user_id: int, error: str) -> None:
     errors, but a stray import-time bug here would be catastrophic.
     """
     try:
-        from services.telegram_notifier import notify
+        from services.notifier import notify_user
         truncated = error[:300] if error else "unknown"
-        await notify(
+        await notify_user(
             user_id=user_id,
             category="system",
             text=f"⚠️ Upstox TOTP refresh failed.\n\n{truncated}\n\n30 min cooldown active. Re-OAuth manually if it persists.",

@@ -329,8 +329,8 @@ class MonitorDaemon:
                     user_id,
                 )
                 try:
-                    from services.telegram_notifier import notify
-                    await notify(
+                    from services.notifier import notify_user
+                    await notify_user(
                         user_id=user_id,
                         category="monitor_failure",
                         text=(

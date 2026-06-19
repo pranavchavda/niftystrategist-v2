@@ -170,7 +170,7 @@ class ActionExecutor:
         (more important; users typically want this even when they've muted
         the chatty success category).
         """
-        from services.telegram_notifier import notify
+        from services.notifier import notify_user
 
         success = bool(action_result.get("success"))
         category = "monitor_fire" if success else "monitor_failure"
@@ -196,7 +196,7 @@ class ActionExecutor:
         detail = action_result.get("error") if not success else ""
         text = head if not detail else f"{head}\n{detail[:300]}"
 
-        await notify(user_id=rule.user_id, category=category, text=text)
+        await notify_user(user_id=rule.user_id, category=category, text=text)
 
     async def _execute_place_order(self, rule: MonitorRule, config: dict) -> dict:
         """Place an order, routing through the user's order node if configured.

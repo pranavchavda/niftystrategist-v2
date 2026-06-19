@@ -190,6 +190,36 @@ class User(Base):
     trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")
     watchlist_items = relationship("WatchlistItem", back_populates="user", cascade="all, delete-orphan")
     passkeys = relationship("UserPasskey", back_populates="user", cascade="all, delete-orphan")
+    web_push_subscriptions = relationship(
+        "WebPushSubscription", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class WebPushSubscription(Base):
+    """A single browser/device Web Push subscription for a user.
+
+    Native PWA push — outbound notification channel that replaces Telegram while
+    it's banned in India. A user may have several rows (one per device/browser).
+    Pruned automatically when the push service reports the endpoint is gone
+    (HTTP 404/410). Category muting reuses User.notification_prefs.
+    See docs/plans/2026-06-19-web-push-notifications.md.
+    """
+    __tablename__ = "web_push_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    endpoint = Column(Text, nullable=False)
+    p256dh = Column(Text, nullable=False)
+    auth = Column(Text, nullable=False)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+    last_used_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="web_push_subscriptions")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "endpoint", name="uq_web_push_user_endpoint"),
+    )
 
 
 class UserBrokerAccount(Base):

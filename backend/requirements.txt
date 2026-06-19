@@ -178,6 +178,7 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.1
 python-multipart==0.0.20
 python-telegram-bot[ext]==22.7
+pywebpush==2.0.0
 telegramify-markdown==1.1.5
 pytokens==0.3.0
 pytz==2025.2

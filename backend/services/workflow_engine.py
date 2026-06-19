@@ -890,16 +890,22 @@ ensure to think carefully about the classification before making a decision.
             # only send a preview.
             if is_followup and orchestrator_result:
                 try:
-                    from services.telegram_notifier import notify
+                    from services.notifier import notify_user
                     preview = orchestrator_result.strip().splitlines()[0][:300] \
                         if orchestrator_result.strip() else ""
                     name = workflow_def.name or "awakening"
                     text = f"🌅 {name}\n\n{preview}\n\nFull details in your daily thread."
-                    await notify(
+                    # Deep link so a tapped push opens the daily thread directly.
+                    thread_url = (
+                        f"/chat/{workflow_def.thread_id}"
+                        if workflow_def.thread_id else "/"
+                    )
+                    await notify_user(
                         user_id=user_id,
                         category="awakening",
                         text=text,
                         markdown=True,  # preview may contain agent markdown
+                        url=thread_url,
                     )
                 except Exception:
                     logger.exception("Awakening telegram notify raised; ignoring")

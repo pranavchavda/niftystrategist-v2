@@ -82,6 +82,20 @@ export default function Settings({ authToken, user, setUser }) {
   const [isSavingTelegram, setIsSavingTelegram] = useState(false);
   const [isClearingTelegram, setIsClearingTelegram] = useState(false);
 
+  // Web Push state (native PWA notifications)
+  const [push, setPush] = useState({
+    enabled: false,
+    device_count: 0,
+    vapid_public_key: null,
+    notification_prefs: {},
+  });
+  const [isPushBusy, setIsPushBusy] = useState(false);
+  const pushSupported =
+    typeof window !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window &&
+    'Notification' in window;
+
   // Fetch available models and user preference
   useEffect(() => {
     const fetchModels = async () => {
@@ -557,6 +571,124 @@ export default function Settings({ authToken, user, setUser }) {
     }
   };
 
+  // Web Push fetch + handlers
+  // Notification category prefs are shared with Telegram (same server column),
+  // so the category toggles below reuse `telegram.notification_prefs` +
+  // `handleToggleCategory`. /api/push/status is only for device/enable state.
+  const urlBase64ToUint8Array = (base64String) => {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  };
+
+  const fetchPushStatus = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/push/status', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) setPush(await res.json());
+    } catch (err) {
+      console.error('Failed to fetch push status:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchPushStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken]);
+
+  const handleEnablePush = async () => {
+    if (!pushSupported) {
+      showSaveStatus('Push notifications are not supported in this browser', 'error');
+      return;
+    }
+    setIsPushBusy(true);
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        showSaveStatus('Notification permission denied', 'error');
+        return;
+      }
+
+      // Fetch the app VAPID public key (so we don't bake it into the build).
+      const keyRes = await fetch('/api/push/vapid-public-key', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!keyRes.ok) {
+        showSaveStatus('Web Push is not configured on the server', 'error');
+        return;
+      }
+      const { key } = await keyRes.json();
+
+      const registration = await navigator.serviceWorker.ready;
+      // Reuse an existing subscription if present, else create one.
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(key),
+        });
+      }
+
+      const json = subscription.toJSON();
+      const res = await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          endpoint: json.endpoint,
+          keys: json.keys,
+          user_agent: navigator.userAgent,
+        }),
+      });
+      if (res.ok) {
+        showSaveStatus('Push notifications enabled on this device', 'success');
+        await fetchPushStatus();
+      } else {
+        showSaveStatus('Failed to register device', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to enable push:', err);
+      showSaveStatus('Failed to enable push notifications', 'error');
+    } finally {
+      setIsPushBusy(false);
+    }
+  };
+
+  const handleDisablePush = async () => {
+    setIsPushBusy(true);
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      const endpoint = subscription?.endpoint;
+      if (subscription) await subscription.unsubscribe();
+
+      if (endpoint) {
+        await fetch('/api/push/subscribe', {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ endpoint }),
+        });
+      }
+      showSaveStatus('Push notifications disabled on this device', 'success');
+      await fetchPushStatus();
+    } catch (err) {
+      console.error('Failed to disable push:', err);
+      showSaveStatus('Failed to disable push notifications', 'error');
+    } finally {
+      setIsPushBusy(false);
+    }
+  };
+
   // Model selection handler
   const handleModelChange = async (modelId) => {
     try {
@@ -1016,6 +1148,86 @@ export default function Settings({ authToken, user, setUser }) {
                         'Save TOTP Credentials'
                       )}
                     </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Web Push (PWA) Notifications */}
+              <div className="p-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
+                <div className="flex items-center gap-2 mb-3">
+                  <Smartphone className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
+                  <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                    Push Notifications
+                  </div>
+                  {push.enabled && (
+                    <span className="ml-auto px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
+                      {push.device_count} device{push.device_count === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">
+                  Get monitor fires, awakening digests, and system alerts as
+                  notifications on this device — no third-party app needed.
+                  Enable per device you want notified.
+                </p>
+
+                {!pushSupported ? (
+                  <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300">
+                    This browser doesn't support web push. On iOS, add Nifty
+                    Strategist to your Home Screen first, then enable here.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <Button
+                      onClick={push.enabled ? handleDisablePush : handleEnablePush}
+                      disabled={isPushBusy}
+                      variant={push.enabled ? 'outline' : undefined}
+                    >
+                      {isPushBusy ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      ) : push.enabled ? (
+                        <X className="w-4 h-4 mr-2" />
+                      ) : (
+                        <Bell className="w-4 h-4 mr-2" />
+                      )}
+                      {push.enabled ? 'Disable on this device' : 'Enable on this device'}
+                    </Button>
+
+                    <div>
+                      <div className="flex items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-2">
+                        <Bell className="w-3.5 h-3.5" />
+                        Notification categories
+                        <span className="text-zinc-400 dark:text-zinc-500 font-normal">
+                          (shared with Telegram)
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {TELEGRAM_CATEGORIES.map((cat) => {
+                          const enabled = telegram.notification_prefs?.[cat.key] !== false;
+                          return (
+                            <label
+                              key={cat.key}
+                              className="flex items-start gap-3 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={enabled}
+                                onChange={() => handleToggleCategory(cat.key)}
+                                className="mt-0.5"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm text-zinc-900 dark:text-zinc-100">
+                                  {cat.label}
+                                </div>
+                                <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                  {cat.desc}
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

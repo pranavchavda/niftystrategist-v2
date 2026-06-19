@@ -134,6 +134,9 @@ ENCRYPTION_KEY=...                   # Fernet key for Upstox token encryption
 UPSTOX_API_KEY=...                   # Default Upstox app credentials (owner's)
 UPSTOX_API_SECRET=...                # Other users provide their own via Settings page
 UPSTOX_REDIRECT_URI=http://localhost:5173/auth/upstox/callback
+VAPID_PUBLIC_KEY=...                 # Web Push (PWA notifications); generate once via `vapid --gen`
+VAPID_PRIVATE_KEY=...                # Web Push signing key (server-only)
+VAPID_SUBJECT=mailto:you@example.com # Web Push contact (mailto: or https:)
 ```
 
 ### Trade Monitor (IFTTT-style rules engine)
@@ -192,6 +195,16 @@ Unlike forking (which creates a new thread), compaction replaces all messages in
 - `backend/migrations/016_add_thread_compaction.sql` — `last_compacted_at` column
 
 **Constants:** `COMPACTION_THRESHOLD = 100` (messages). Auto-compaction cooldown: 1 hour.
+
+## Outbound Notifications (multi-channel)
+
+All outbound notifications (monitor fires, awakening digests, TOTP/system alerts, the agent's `message_user` tool) flow through a single dispatcher: `notify_user(user_id, category, text, *, markdown=False, url=None)` in `backend/services/notifier.py`. It fans out best-effort to every configured channel; each is independent and never raises.
+
+**Channels:**
+- **Web Push** (`services/webpush_notifier.py`) — native PWA notifications, no third party. The current primary channel. Needs `VAPID_*` env vars. Per-device subscriptions in `web_push_subscriptions` (migration `048`). Dead endpoints (HTTP 404/410) auto-pruned. Frontend: `public/push-sw.js` (importScripts'd into the Workbox `generateSW` build via `vite.config.js`), subscribe UI in `Settings.jsx`, API in `api/push.py`.
+- **Telegram** (`services/telegram_notifier.py` + `telegram_bot/`) — per-user bots. **Dormant: banned in India as of 2026-06.** Code left intact (no-ops for unpaired users); returns when the ban lifts. See `docs/plans/2026-05-20-telegram-integration.md`.
+
+Both channels share `users.notification_prefs` (a `{category: bool}` map, opt-out semantics) so muting a category mutes it everywhere. Categories: `monitor_fire`, `monitor_failure`, `awakening`, `order_fill`, `system` (`api/telegram.py::NOTIFICATION_CATEGORIES`). Full plan: `docs/plans/2026-06-19-web-push-notifications.md`.
 
 ## Thread Awakening (Scheduled Follow-Ups)
 

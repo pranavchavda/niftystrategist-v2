@@ -4681,7 +4681,10 @@ The note has been permanently removed from your second brain."""
             text: str,
             category: str = "system",
         ) -> str:  # pyright: ignore[reportUnusedFunction]
-            """Send a one-way Telegram message to the current user.
+            """Send a one-way push notification to the current user.
+
+            Delivered to whatever notification channel the user has configured
+            (native Web Push and/or Telegram). One-way regardless of channel.
 
             Use this when you have important information the user should see
             *outside* the current chat surface — e.g. an awakening discovered
@@ -4725,20 +4728,22 @@ The note has been permanently removed from your second brain."""
                 return "not_sent: empty message"
 
             try:
-                from services.telegram_notifier import notify
-                delivered = await notify(
+                from services.notifier import notify_user
+                result = await notify_user(
                     user_id=user_id,
                     category=category,
                     text=text.strip(),
-                    markdown=True,  # agent-authored: render markdown, fall back to plain
+                    markdown=True,  # agent-authored: render markdown where supported
                 )
             except Exception as e:
                 logger.exception("message_user notify raised")
                 return f"not_sent: {e!r}"
 
+            delivered = bool(result.get("telegram")) or int(result.get("webpush") or 0) > 0
             return "sent" if delivered else (
-                "not_sent: user is unpaired, category disabled, "
-                "or telegram delivery failed (check server logs)"
+                "not_sent: user has no notification channel configured "
+                "(no Telegram pairing or push subscription), category disabled, "
+                "or delivery failed (check server logs)"
             )
 
     def register_agent(self, name: str, agent: Any):
