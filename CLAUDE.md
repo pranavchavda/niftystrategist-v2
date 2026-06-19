@@ -202,7 +202,7 @@ All outbound notifications (monitor fires, awakening digests, TOTP/system alerts
 
 **Channels:**
 - **Web Push** (`services/webpush_notifier.py`) — native PWA notifications, no third party. The current primary channel. Needs `VAPID_*` env vars. Per-device subscriptions in `web_push_subscriptions` (migration `048`). Dead endpoints (HTTP 404/410) auto-pruned. Frontend: `public/push-sw.js` (importScripts'd into the Workbox `generateSW` build via `vite.config.js`), subscribe UI in `Settings.jsx`, API in `api/push.py`.
-- **Telegram** (`services/telegram_notifier.py` + `telegram_bot/`) — per-user bots. **Dormant: banned in India as of 2026-06.** Code left intact (no-ops for unpaired users); returns when the ban lifts. See `docs/plans/2026-05-20-telegram-integration.md`.
+- **Telegram** (`services/telegram_notifier.py` + `telegram_bot/`) — per-user bots. Telegram is banned in India (2026-06), so **prod reaches `api.telegram.org` via an outbound tunnel through a Canadian server** — the channel is live in production. **Local dev has no tunnel**, so Telegram sends fail there (`network error`) and only Web Push delivers; this is expected and not a prod issue. See `docs/plans/2026-05-20-telegram-integration.md`.
 
 Both channels share `users.notification_prefs` (a `{category: bool}` map, opt-out semantics) so muting a category mutes it everywhere. Categories: `monitor_fire`, `monitor_failure`, `awakening`, `order_fill`, `system` (`api/telegram.py::NOTIFICATION_CATEGORIES`). Full plan: `docs/plans/2026-06-19-web-push-notifications.md`.
 
