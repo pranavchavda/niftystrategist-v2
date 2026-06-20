@@ -90,6 +90,11 @@ export default function Settings({ authToken, user, setUser }) {
     notification_prefs: {},
   });
   const [isPushBusy, setIsPushBusy] = useState(false);
+  // Whether THIS browser/device has a live push subscription. Distinct from
+  // `push.enabled`, which is account-wide (any device). The enable/disable
+  // button must be per-device, else a 2nd device sees device-1's subscription
+  // and can never reach the Enable path.
+  const [thisDeviceSubscribed, setThisDeviceSubscribed] = useState(false);
   const pushSupported =
     typeof window !== 'undefined' &&
     'serviceWorker' in navigator &&
@@ -596,8 +601,26 @@ export default function Settings({ authToken, user, setUser }) {
     }
   };
 
+  // Reflect THIS device's actual browser subscription, independent of the
+  // account-wide count, so the button enables/disables the current device only.
+  const checkLocalSubscription = async () => {
+    if (!pushSupported) {
+      setThisDeviceSubscribed(false);
+      return;
+    }
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      setThisDeviceSubscribed(!!subscription);
+    } catch (err) {
+      console.error('Failed to read local push subscription:', err);
+      setThisDeviceSubscribed(false);
+    }
+  };
+
   useEffect(() => {
     fetchPushStatus();
+    checkLocalSubscription();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authToken]);
 
@@ -649,6 +672,7 @@ export default function Settings({ authToken, user, setUser }) {
       });
       if (res.ok) {
         showSaveStatus('Push notifications enabled on this device', 'success');
+        setThisDeviceSubscribed(true);
         await fetchPushStatus();
       } else {
         showSaveStatus('Failed to register device', 'error');
@@ -680,6 +704,7 @@ export default function Settings({ authToken, user, setUser }) {
         });
       }
       showSaveStatus('Push notifications disabled on this device', 'success');
+      setThisDeviceSubscribed(false);
       await fetchPushStatus();
     } catch (err) {
       console.error('Failed to disable push:', err);
@@ -1179,18 +1204,18 @@ export default function Settings({ authToken, user, setUser }) {
                 ) : (
                   <div className="space-y-3">
                     <Button
-                      onClick={push.enabled ? handleDisablePush : handleEnablePush}
+                      onClick={thisDeviceSubscribed ? handleDisablePush : handleEnablePush}
                       disabled={isPushBusy}
-                      variant={push.enabled ? 'outline' : undefined}
+                      variant={thisDeviceSubscribed ? 'outline' : undefined}
                     >
                       {isPushBusy ? (
                         <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                      ) : push.enabled ? (
+                      ) : thisDeviceSubscribed ? (
                         <X className="w-4 h-4 mr-2" />
                       ) : (
                         <Bell className="w-4 h-4 mr-2" />
                       )}
-                      {push.enabled ? 'Disable on this device' : 'Enable on this device'}
+                      {thisDeviceSubscribed ? 'Disable on this device' : 'Enable on this device'}
                     </Button>
 
                     <div>
