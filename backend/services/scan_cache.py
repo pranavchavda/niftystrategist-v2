@@ -63,7 +63,23 @@ async def run_and_store(universe: str = "nifty500") -> dict:
     from services.trading_snapshot import _run_live_scan
 
     rows, _source = await _run_live_scan(universe, top_n=10)
+
+    # Fold the full nf-analyze technical read (signal/MACD/supertrend/UTBot/
+    # Renko/BB/ATR/S-R) into the top candidates so the snapshot can render it
+    # inline — sparing NS the per-candidate `nf-analyze` tool calls it would
+    # otherwise hand-run (~40 on a busy session). Off the request path here, so
+    # the cost is hidden from interactive latency. Best-effort: a failure leaves
+    # rows un-enriched, the agent just falls back to fetching them itself.
+    try:
+        from services.candidate_analysis import enrich_rows_with_analysis
+        await enrich_rows_with_analysis(rows, deep_n=10)
+    except Exception as e:
+        logger.warning("scan_cache: candidate-analysis enrichment failed: %s", e)
+
     nifty_pct = None
     row_id = await save_scan(universe, rows, nifty_pct, None)
-    logger.info("scan_cache: stored %d rows for %s (row #%d)", len(rows), universe, row_id)
-    return {"universe": universe, "rows": len(rows), "row_id": row_id}
+    n_enriched = sum(1 for r in rows if r.get("analysis"))
+    logger.info("scan_cache: stored %d rows (%d deep-analyzed) for %s (row #%d)",
+                len(rows), n_enriched, universe, row_id)
+    return {"universe": universe, "rows": len(rows),
+            "analyzed": n_enriched, "row_id": row_id}
