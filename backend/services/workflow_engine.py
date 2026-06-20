@@ -860,12 +860,19 @@ ensure to think carefully about the classification before making a decision.
             _lock_ctx = thread_lock(thread_id) if is_followup else nullcontext()
             async with _lock_ctx:
                 try:
-                    kwargs = {}
-                    if message_history:
-                        kwargs["message_history"] = message_history
-
+                    # Order-safe retry-once on transient OpenRouter partial/blip
+                    # errors surfacing inside pydantic-ai (past transport retries).
+                    from services.resilient_agent_run import run_agent_with_retry
                     run_result = await asyncio.wait_for(
-                        orchestrator.agent.run(effective_prompt, deps=deps, **kwargs),
+                        run_agent_with_retry(
+                            orchestrator.agent,
+                            effective_prompt,
+                            deps=deps,
+                            message_history=message_history if message_history else None,
+                            session=self.db,
+                            run_id=run.id,
+                            label=f"workflow:{workflow_def.name}",
+                        ),
                         timeout=workflow_def.timeout_seconds
                     )
                     orchestrator_result = run_result.output if run_result.output else ""

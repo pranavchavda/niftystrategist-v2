@@ -347,9 +347,20 @@ async def execute_awakening(
             action_logger=action_logger,
         )
 
-        # Execute
+        # Execute — order-safe retry-once on transient OpenRouter partial/blip
+        # errors that surface inside pydantic-ai (past the transport retries).
+        # The wait_for still bounds all attempts to the schedule timeout.
+        from services.resilient_agent_run import run_agent_with_retry
         run_result = await asyncio.wait_for(
-            orchestrator.agent.run(effective_prompt, deps=deps, message_history=message_history),
+            run_agent_with_retry(
+                orchestrator.agent,
+                effective_prompt,
+                deps=deps,
+                message_history=message_history,
+                session=session,
+                run_id=run.id,
+                label=f"awakening:{schedule.name}",
+            ),
             timeout=schedule.timeout_seconds,
         )
         orchestrator_result = run_result.output if run_result.output else ""
