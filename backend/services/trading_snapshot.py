@@ -208,6 +208,41 @@ async def _tape_read(market: UpstoxClient, symbol: str) -> str:
     return " · ".join(parts)
 
 
+def _analysis_line(a: dict | None) -> str:
+    """One-line render of a candidate's precomputed deep analysis.
+
+    Mirrors what NS would read off ``nf-analyze`` — overall signal + confidence,
+    supertrend, MACD, UT Bot, Renko, VWAP position, Bollinger %B, ATR, S/R — so
+    it no longer needs to run the tool per candidate. Empty string when absent.
+    """
+    if not a:
+        return ""
+    bits: list[str] = []
+    sig = a.get("signal")
+    if sig:
+        conf = a.get("conf")
+        bits.append(sig.upper() + (f" {conf:.0%}" if isinstance(conf, (int, float)) else ""))
+    if a.get("supertrend"):
+        bits.append("ST " + a["supertrend"])
+    if a.get("macd_hist") is not None:
+        bits.append(f"MACD {a['macd_hist']:+.1f}")
+    if a.get("utbot"):
+        bits.append("UTBot " + ("LONG" if a["utbot"] == "long" else "SHORT"))
+    if a.get("renko"):
+        bits.append("Renko " + a["renko"])
+    if a.get("vwap_pos"):
+        bits.append((">" if a["vwap_pos"] == "above" else "<") + "VWAP")
+    if a.get("bb_pctb") is not None:
+        bits.append(f"BB%B {a['bb_pctb']:.2f}")
+    if a.get("atr") is not None:
+        bits.append(f"ATR {a['atr']}")
+    if a.get("sup") is not None and a.get("res") is not None:
+        # Plain levels, not _inr — abbreviation (₹1.5k) collapses the S/R gap
+        # that's the whole point of showing them.
+        bits.append(f"S/R {a['sup']:.0f}/{a['res']:.0f}")
+    return " · ".join(bits)
+
+
 # ── rule helpers ─────────────────────────────────────────────────────────────
 
 def _rule_symbol(rule) -> str:
@@ -260,6 +295,32 @@ def _is_protective(rule, pos_symbol: str, pos_side: str) -> bool:
         return False
     closing = "SELL" if pos_side == "LONG" else "BUY"
     return _rule_side(rule) == closing
+
+
+def _norm_symbol(x: str) -> str:
+    """Normalize an NSE symbol for cross-source matching (drop the -EQ series).
+
+    Trades report "HCLTECH-EQ"; positions/rules use "HCLTECH". Normalizing here
+    lets delivery positions, monitor rules, and trade fills line up.
+    """
+    return (x or "").upper().removesuffix("-EQ")
+
+
+def _classify_delivery_carries(delivery, rules):
+    """Split delivery positions into (managed, untracked).
+
+    *managed* = the symbol has an enabled monitor rule — an actively-carried
+    position (a same-day intraday→delivery conversion, or a multi-day carry
+    under a persistent trail). *untracked* = a parked long-term holding with no
+    active rule. Each entry is ``(position, [protecting_rules])``.
+    """
+    managed, untracked = [], []
+    for p in delivery:
+        psym = _norm_symbol(p.symbol)
+        prot = [r for r in rules
+                if getattr(r, "enabled", False) and _norm_symbol(_rule_symbol(r)) == psym]
+        (managed if prot else untracked).append((p, prot))
+    return managed, untracked
 
 
 def _is_holding(session) -> bool:
@@ -576,17 +637,52 @@ async def _build(user_id, user_email, now, built_at, thread_id, scan_rows,
             if intent_tag:
                 L.append(f"    intent: {intent_tag}")
 
+    # Alias the shared normalizer for the executed-today section below.
+    _norm = _norm_symbol
+
+    # ── DELIVERY CARRIES (managed — has an active rule) ──────────────────
+    # Long-term holdings are deliberately NOT dumped here (noise + cost). But a
+    # delivery position the agent is ACTIVELY carrying — one that has an active
+    # monitor rule, whether a same-day intraday→delivery conversion (COFORGE
+    # 06-19) or a multi-day carry under a persistent trail (HCLTECH/ITC) — must
+    # stay visible every pulse with live P&L and its protector. Untracked
+    # holdings collapse to a one-line count so the agent knows capital is parked
+    # without re-listing investments (and without mis-flagging them unprotected).
+    delivery_shown: set[str] = set()
+    delivery = list(portfolio.positions) if _ok(portfolio) else []
+    if delivery:
+        managed, untracked = _classify_delivery_carries(delivery, rules)
+        if managed:
+            L.append("")
+            L.append("--- DELIVERY CARRIES (managed — active rule) ---")
+            for p, prot in managed:
+                delivery_shown.add(_norm(p.symbol))
+                r = prot[0]
+                lvl = _rule_trigger_price(r)
+                lvl_s = f" @ {_inr(lvl)}" if lvl else ""
+                L.append(
+                    f"• {p.symbol} [D] qty {p.quantity} @ {_inr(p.average_price)} "
+                    f"→ LTP {_inr(p.current_price)} | P&L {_inr(p.pnl)} "
+                    f"({_signed(p.pnl_percentage, '%')}) — rule#{r.id} "
+                    f"{r.trigger_type}{lvl_s}"
+                )
+        if untracked:
+            ordered = sorted(_norm(p.symbol) for p, _ in untracked)
+            names = ", ".join(ordered[:8])
+            more = "" if len(ordered) <= 8 else f" +{len(ordered) - 8} more"
+            L.append("")
+            L.append(
+                f"--- DELIVERY HOLDINGS (no active rule): {len(untracked)} "
+                f"({names}{more}) ---"
+            )
+
     # ── EXECUTED TODAY but NOT an open intraday position ─────────────────
     # Net today's fills per symbol; surface any net-nonzero name that isn't
     # already shown above. This catches same-day DELIVERY buys (T+1: invisible
     # in the positions API until settlement) and any cross-thread fill — the
     # exact blind spot behind the HCLTECH 06-17 orphan-trail mistake. These are
     # NOT intraday orphans: cross-reference rules/threads before acting.
-    # Normalize NSE series suffix (trades report "HCLTECH-EQ", positions/rules
-    # use "HCLTECH") so symbol matching across the three sources lines up.
-    def _norm(x: str) -> str:
-        return (x or "").upper().removesuffix("-EQ")
-    shown_syms = {_norm(p.symbol) for p in open_positions}
+    shown_syms = {_norm(p.symbol) for p in open_positions} | delivery_shown
     if _ok(trades):
         net: dict[str, dict] = {}
         for t in trades:
@@ -743,6 +839,11 @@ async def _build(user_id, user_email, now, built_at, thread_id, scan_rows,
             if ob:
                 bits.append(ob)
             L.append(f"• {sym}{churn}: " + " · ".join(bits))
+            # Precomputed deep read (folded in by the scan-cache cron) — saves
+            # the agent a per-candidate nf-analyze call.
+            aline = _analysis_line(c.get("analysis"))
+            if aline:
+                L.append(f"    deep: {aline}")
         if traded_today & {(c.get("symbol") or "").upper() for c in shown}:
             alerts.append("⟲ some candidates already traded today — avoid impulse re-entry")
 

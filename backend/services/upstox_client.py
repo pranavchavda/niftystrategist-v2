@@ -1056,6 +1056,12 @@ class UpstoxClient:
             # Intraday (MIS) positions are collected separately.
             sell_qty_map: dict[str, int] = {}
             intraday_positions: list[PortfolioPosition] = []
+            # Same-day delivery BUYS / intraday→delivery conversions (product=D,
+            # qty>0). These are NOT in the holdings API yet (holdings only picks
+            # them up after T+1 settlement), so without capturing them here a
+            # carry like COFORGE (converted I→D mid-session) vanishes from the
+            # portfolio until the next day. Keyed by symbol → built PortfolioPosition.
+            delivery_conversions: dict[str, PortfolioPosition] = {}
             fno_positions: list[FnoPosition] = []
             try:
                 pos_response = await asyncio.to_thread(portfolio_api.get_positions, api_version="v2")
@@ -1086,6 +1092,45 @@ class UpstoxClient:
                         # Delivery sell today — subtract from holdings
                         if sym:
                             sell_qty_map[sym] = sell_qty_map.get(sym, 0) + abs(qty)
+                    elif product == 'D' and qty > 0:
+                        # Same-day delivery buy / intraday→delivery conversion.
+                        # Invisible in the holdings API until T+1 settlement, so
+                        # build it from the live position here. Reconciled against
+                        # holdings below (skipped if the symbol is already a
+                        # settled holding, to avoid double-counting a fresh buy).
+                        if sym:
+                            inst_token = getattr(pos, 'instrument_token', None)
+                            if inst_token:
+                                self._dynamic_symbols[sym] = inst_token
+                            avg_price = getattr(pos, 'average_price', 0) or getattr(pos, 'buy_price', 0) or 0
+                            last_price = getattr(pos, 'last_price', 0) or 0
+                            close_price = getattr(pos, 'close_price', 0) or 0
+                            upstox_pnl = getattr(pos, 'pnl', None)
+                            if upstox_pnl is not None:
+                                conv_pnl = float(upstox_pnl)
+                            elif avg_price and last_price:
+                                conv_pnl = (last_price - avg_price) * qty
+                            else:
+                                conv_pnl = 0.0
+                            invested_c = avg_price * qty
+                            conv_pnl_pct = (conv_pnl / invested_c * 100) if invested_c > 0 else 0.0
+                            if close_price and last_price:
+                                conv_day_chg = last_price - close_price
+                                conv_day_chg_pct = (conv_day_chg / close_price * 100)
+                            else:
+                                conv_day_chg = 0.0
+                                conv_day_chg_pct = 0.0
+                            delivery_conversions[sym] = PortfolioPosition(
+                                symbol=sym,
+                                quantity=qty,
+                                average_price=avg_price,
+                                current_price=last_price,
+                                pnl=conv_pnl,
+                                pnl_percentage=conv_pnl_pct,
+                                day_change=conv_day_chg,
+                                day_change_percentage=conv_day_chg_pct,
+                                product='D',
+                            )
                     elif product == 'I' and qty != 0:
                         # Intraday (MIS) position — collect it
                         # Determine side from raw qty sign: negative = SHORT
@@ -1156,12 +1201,15 @@ class UpstoxClient:
                 logger.warning(f"Failed to fetch positions: {e}")
 
             positions = []
+            holding_syms: set[str] = set()
             for holding in holdings:
                 # Cache instrument_token so chart/quote can look up any holding
                 tsym = holding.tradingsymbol or holding.trading_symbol
                 inst_token = getattr(holding, 'instrument_token', None)
                 if tsym and inst_token:
                     self._dynamic_symbols[tsym.upper()] = inst_token
+                if tsym:
+                    holding_syms.add(tsym.upper())
 
                 # Adjust quantity for today's sells (unsettled T+1)
                 adj_qty = holding.quantity - sell_qty_map.get(tsym.upper(), 0)
@@ -1197,6 +1245,16 @@ class UpstoxClient:
                         product='D',
                     )
                 )
+
+            # Add same-day delivery conversions not yet reflected in holdings.
+            # Skip any symbol that IS already a settled holding (a fresh delivery
+            # buy shows up in BOTH holdings and positions — adding it again would
+            # double-count; the conversion case, e.g. COFORGE, is absent from
+            # holdings and so is surfaced here).
+            for sym, conv_pos in delivery_conversions.items():
+                if sym in holding_syms:
+                    continue
+                positions.append(conv_pos)
 
             invested = sum(p.average_price * p.quantity for p in positions)
             current = sum(p.current_price * p.quantity for p in positions)
