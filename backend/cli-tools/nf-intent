@@ -14,8 +14,16 @@ timestamped trail (the intra-day log).
   ONGC: short gap-fill, cover ~270.
   watch: HINDALCO if it reclaims VWAP. do NOT re-enter TATAMOTORS today."
 
+  # Multi-line theses are easiest via --stdin + a heredoc (no shell-quoting pain):
+  cat <<'EOF' | nf-intent set --stdin
+  COALINDIA: long breakout, hold for 472, dead below 455.
+  ONGC: short gap-fill, cover ~270.
+  EOF
+
   nf-intent latest          # what the snapshot will show
   nf-intent log             # the full intra-day trail (newest first)
+
+  # --json and --thread-id work on EITHER side of the subcommand.
 
 Thread id comes from --thread-id or the NF_THREAD_ID env var (the awakening
 job injects it). User id from NF_USER_ID (defaults to owner for terminal use).
@@ -53,9 +61,16 @@ def cmd_set(args):
     from services.trading_intent import set_intent
 
     thread_id = _resolve_thread_id(args)
-    content = args.content.strip()
+    # Content from --stdin (heredoc-friendly for multi-line theses) or the
+    # positional arg. --stdin wins; otherwise fall back to stdin when no
+    # positional was given.
+    if getattr(args, "stdin", False) or args.content is None:
+        content = sys.stdin.read()
+    else:
+        content = args.content
+    content = (content or "").strip()
     if not content:
-        print_error("Empty intent. Provide the thesis text to record.")
+        print_error("Empty intent. Provide the thesis text (positional arg or --stdin).")
     user_id = _resolve_user_id()
     row_id = run_async(set_intent(user_id, thread_id, content))
     if args.json:
@@ -106,16 +121,32 @@ def main():
     )
     parser.add_argument("--thread-id", help="Daily thread id (else NF_THREAD_ID env)")
     parser.add_argument("--json", action="store_true", help="JSON output")
+
+    # Accept --thread-id / --json on EITHER side of the subcommand. The
+    # subparser copies use SUPPRESS defaults so an absent flag never clobbers a
+    # value already set on the top-level parser (argparse subparser footgun).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--thread-id", default=argparse.SUPPRESS,
+                        help="Daily thread id (else NF_THREAD_ID env)")
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="JSON output")
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_set = sub.add_parser("set", help="Record intent (full rewrite — newest wins)")
-    p_set.add_argument("content", help="The complete current thesis text")
+    p_set = sub.add_parser("set", parents=[common],
+                           help="Record intent (full rewrite — newest wins)")
+    p_set.add_argument("content", nargs="?", default=None,
+                       help="The complete current thesis text (omit to read --stdin)")
+    p_set.add_argument("--stdin", action="store_true",
+                       help="Read the thesis from stdin (heredoc-friendly for multi-line)")
     p_set.set_defaults(func=cmd_set)
 
-    p_latest = sub.add_parser("latest", help="Show the intent the snapshot will inject")
+    p_latest = sub.add_parser("latest", parents=[common],
+                              help="Show the intent the snapshot will inject")
     p_latest.set_defaults(func=cmd_latest)
 
-    p_log = sub.add_parser("log", help="Show the full intra-day intent trail")
+    p_log = sub.add_parser("log", parents=[common],
+                           help="Show the full intra-day intent trail")
     p_log.add_argument("--limit", type=int, default=50, help="Max rows (default 50)")
     p_log.set_defaults(func=cmd_log)
 

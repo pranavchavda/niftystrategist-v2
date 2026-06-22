@@ -25,7 +25,7 @@ class EMACrossLongTemplate(StrategyTemplate):
         "slow_ema": 21,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
@@ -106,7 +106,7 @@ class EMACrossShortTemplate(StrategyTemplate):
         "slow_ema": 21,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
@@ -184,7 +184,7 @@ class EMACrossPairTemplate(StrategyTemplate):
         "slow_ema": 21,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:

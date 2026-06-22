@@ -244,7 +244,7 @@ def run_combo(
     combo: dict,
     *,
     quantity: int,
-    squareoff: str = "15:09",
+    squareoff: str = "15:15",
     max_trades: int = 3,
     cooldown: int = 60,
     slippage_bps: float = 5.0,

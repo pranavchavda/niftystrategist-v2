@@ -36,7 +36,7 @@ class EMAStochasticScalperTemplate(StrategyTemplate):
         "rsi_timeframe": "1m",
         "lots": 1,
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:

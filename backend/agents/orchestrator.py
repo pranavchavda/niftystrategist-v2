@@ -1625,7 +1625,7 @@ Do NOT rely on the forecast's bullish/bearish signal for trade direction. Use nf
 - `python cli-tools/nf-order trades ORDER_ID [--json]` — Trade fills for a specific order
 - `python cli-tools/nf-order exit-all [--json]` — EXIT ALL open positions (panic button — use with caution)
   - `--product D` = Delivery (full margin, hold overnight) — DEFAULT
-  - `--product I` = Intraday (lower margin, auto-squared-off at 3:15-3:25 PM IST)
+  - `--product I` = Intraday (lower margin; Upstox blocks new MIS orders/manual exits after 3:18 PM IST and auto-squares-off ~3:20 PM. We self-squareoff at 3:15 to stay ahead of that window.)
 
 **Account & Funds:**
 - `python cli-tools/nf-profile [--json]` — User profile, active segments, exchanges
@@ -1705,7 +1705,7 @@ NOTE: Fundamentals are ISIN-keyed via the instruments cache. Indices and ETFs re
 
 Three modes share the same engine — pick via `--mode`:
 - `options_scalp` (default) — ATM CE/PE on an index, strike resolved at entry from live spot, intraday only
-- `equity_intraday` — LONG/SHORT equity, product=I, daily squareoff at 15:09
+- `equity_intraday` — LONG/SHORT equity, product=I, daily squareoff at 15:15
 - `equity_swing` — LONG-only delivery (product=D), holds across days, no daily squareoff, supports 1d timeframe
 
 Observability (safe to run anytime):
@@ -1908,8 +1908,8 @@ When analyzing:
 4. For discretionary / custom setups (or after manual order placement), set up protective rules individually. **First check for existing exit rules on the symbol** (SAFETY-3): run `nf-monitor list --active --json` and disable any pre-existing SL/target/trail/squareoff for that symbol before adding new ones — stacking two same-side exits on one position will double-fire and flip the direction.
    - OCO pair (stop-loss + target): `nf-monitor add-oco --symbol SYM --qty QTY --product I --sl SL_PRICE --target TARGET_PRICE [--side SELL|BUY] --expires today --json`
    - Trailing stop-loss: `nf-monitor add-trailing --symbol SYM --qty QTY --trail-percent 15 --product I [--side SELL|BUY] --expires today --json`
-   - Auto-square-off at 15:09 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:09 --action place_order --symbol SYM --side SELL|BUY --qty QTY --product I --max-fires 1 --expires today --json`
-5. Warn the user: Upstox auto-squares-off intraday positions starting 15:10 IST (charges a fee), so always exit before that
+   - Auto-square-off at 15:15 IST: `nf-monitor add-rule --name "SYM auto-squareoff" --trigger time --at 15:15 --action place_order --symbol SYM --side SELL|BUY --qty QTY --product I --max-fires 1 --expires today --json`
+5. Warn the user: Upstox blocks new MIS orders/manual exits after 15:18 IST and auto-squares-off intraday positions ~15:20 IST (charges a penalty), so always exit before 15:18 (we target 15:15)
 6. Recommend risk-reward ratio of at least 2:1 for intraday trades
 6. Use 15-minute candles for intraday analysis (`--interval 15minute`)
 
@@ -2154,20 +2154,11 @@ Permissions vary by user. Always read the **CURRENT USER** block injected dynami
                     if script_name not in ctx.deps.state.tools_called_history:
                         ctx.deps.state.tools_called_history.append(script_name)
 
-                    # ENFORCEMENT: Check if docs were looked up before execution
-                    docs_checked = script_name in ctx.deps.docs_checked_scripts
+                    # NS tools are self-describing (terse --help, --json); the
+                    # old EspressoBot "docs-first" reminder added noise to every
+                    # first-use tool result without value. Dropped (2026-06-22).
+                    # We still auto-inject the help text on first use below.
                     first_use = script_name not in ctx.deps.used_bash_tools
-
-                    if first_use and not docs_checked:
-                        # First use without docs lookup - this is the anti-pattern we want to prevent
-                        docs_warning = (
-                            f"\n⚠️ DOCS-FIRST REMINDER: Executing {script_name} without prior docs lookup.\n"
-                            f"For reliable results, always search_docs() or run --help before executing scripts.\n"
-                            f"This helps avoid syntax errors and ensures correct parameter usage.\n"
-                        )
-                        logger.warning(
-                            f"⚠️ Enforcement: {script_name} executed without prior docs lookup"
-                        )
 
                     # Check if this is the first time using this script
                     if first_use:

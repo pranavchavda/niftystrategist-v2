@@ -37,7 +37,7 @@ class ConvictionAccumulateTemplate(StrategyTemplate):
         "dip_levels": [],          # add-on buy prices below entry (e.g. VWAP, support)
         "risk_percent": 2.0,       # worst-case risk if ALL tranches fill
         "trail_percent": 0.0,      # 0 = no trail (pure hold-to-close); e.g. 5.0
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
         "product": "I",
     }
 

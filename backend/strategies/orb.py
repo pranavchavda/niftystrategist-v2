@@ -37,7 +37,7 @@ class ORBTemplate(StrategyTemplate):
         "range_minutes": 15,
         "product": "I",
         "trail_percent": 1.5,
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
         "side": "both",       # "long", "short", or "both"
         "enable_reversal": False,  # When target hits, re-enable opposite entry
         # If provided, these override auto-detection (for pre-market planning)

@@ -25,7 +25,7 @@ class ScalpTemplate(StrategyTemplate):
         "trail_percent": 0.5,      # Tight trail for scalps
         "max_entries": 3,           # Allow re-entries
         "target": None,
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:

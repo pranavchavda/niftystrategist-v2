@@ -78,7 +78,7 @@ class ScalpBacktestRequest(BaseModel):
     trail_points: float | None = None
     trail_percent: float | None = None
     trail_arm_points: float | None = None
-    squareoff_time: str = "15:09"
+    squareoff_time: str = "15:15"
     max_trades: int = 20
     cooldown_seconds: int = 60
     # Direction gate for new entries: "both" | "long" | "short". For options

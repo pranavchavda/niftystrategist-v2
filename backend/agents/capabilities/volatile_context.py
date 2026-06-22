@@ -86,7 +86,7 @@ def build_datetime_section() -> str:
     s = "\n\n## ⏰ CURRENT DATE & TIME\n\n"
     s += f"**Right now it is: {ist_now.strftime('%I:%M %p IST')}** on {ist_now.strftime('%A, %B %d, %Y')}\n"
     s += f"**ISO:** {ist_now.isoformat()}\n"
-    s += "\nNSE market hours: 9:15 AM – 3:30 PM IST. Broker auto-square-off: 3:15–3:25 PM IST.\n"
+    s += "\nNSE market hours: 9:15 AM – 3:30 PM IST. Upstox MIS cutoff (no new orders/manual exits): 3:18 PM; broker auto-square-off ~3:20 PM. We self-squareoff at 3:15 PM.\n"
     s += "DO NOT place exit/square-off orders before 3:00 PM unless a stop-loss is hit.\n"
     return s
 

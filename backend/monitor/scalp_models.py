@@ -75,7 +75,7 @@ class ScalpSessionConfig(BaseModel):
     trail_percent: float | None = None
     trail_points: float | None = None
     trail_arm_points: float | None = None
-    squareoff_time: str = "15:09"
+    squareoff_time: str = "15:15"
 
     # Optional IST time windows during which new entries may fire. None /
     # empty = always active (current behavior). Format:

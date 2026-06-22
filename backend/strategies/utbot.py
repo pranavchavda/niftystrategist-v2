@@ -70,7 +70,7 @@ class UTBotLongTemplate(StrategyTemplate):
         "sensitivity": 1.0,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
@@ -127,7 +127,7 @@ class UTBotShortTemplate(StrategyTemplate):
         "sensitivity": 1.0,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
@@ -184,7 +184,7 @@ class UTBotPairTemplate(StrategyTemplate):
         "sensitivity": 1.0,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
     }
 
     def plan(self, symbol: str, params: dict[str, Any]) -> StrategyPlan:
@@ -282,7 +282,7 @@ class UTBotScalpTemplate(StrategyTemplate):
         "sensitivity": 1.0,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
         "cycles": 20,
         "cooldown_seconds": 60,
         "lr_exit_enabled": False,
@@ -622,7 +622,7 @@ class UTBotScalpOptionsTemplate(StrategyTemplate):
         "sensitivity": 1.0,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
         "cycles": 20,
         "cooldown_seconds": 60,
         "lr_period": 20,
@@ -699,7 +699,7 @@ class UTBotScalpOptionsLadderTemplate(StrategyTemplate):
         "sensitivity": 1.0,
         "timeframe": "5m",
         "product": "I",
-        "squareoff_time": "15:09",
+        "squareoff_time": "15:15",
         "cycles": 20,
         "cooldown_seconds": 60,
         "lr_period": 20,

@@ -103,7 +103,7 @@ class DeploySessionRequest(BaseModel):
     stop_pct: float = Field(1.0, gt=0, le=20)              # SL distance as % of price
     trail: bool = True                                      # also trail winners at stop_pct
     max_trades: int = Field(3, ge=1, le=20)
-    squareoff_time: str = "15:09"
+    squareoff_time: str = "15:15"
     timeframe: Literal["1m", "3m", "5m", "10m", "15m", "30m"] = "5m"
     confirm_indicator: Optional[str] = None
     # enabled=False ⇒ created paused (must be enabled on the Sessions page);
