@@ -111,6 +111,122 @@ def size_equity(args) -> dict:
     }
 
 
+def _fetch_atr14(client, symbol: str, *, interval: str = "15minute", days: int = 10):
+    """Intraday ATR-14 via the same TA engine / candle source nf-analyze uses.
+
+    Returns (atr_14, n_candles) or (None, n) when data is too thin (<50 candles)
+    or the fetch fails — caller turns that into a clear error.
+    """
+    from services.technical_analysis import TechnicalAnalysisService
+    try:
+        candles = run_async(client.get_historical_data(symbol, interval=interval, days=days))
+    except Exception:
+        return None, 0
+    n = len(candles or [])
+    if n < 50:
+        return None, n
+    ind = TechnicalAnalysisService().calculate_indicators(candles)
+    atr = getattr(ind, "atr_14", None)
+    return (atr if (atr and atr > 0) else None), n
+
+
+def _auto_regime() -> tuple[str, str]:
+    """Best-effort market regime via nf-regime --json. Returns (regime, source).
+
+    Falls back to 'mixed' on any failure/timeout — NS should normally pass
+    --regime explicitly (it has it from the regime-gate pulse), this is the
+    convenience path. nf-regime runs a market scan, so it is not free.
+    """
+    import json as _json
+    import subprocess
+    try:
+        out = subprocess.run(
+            [sys.executable, os.path.join(_backend_dir, "cli-tools", "nf-regime"), "--json"],
+            capture_output=True, text=True, timeout=30, cwd=_backend_dir,
+        )
+        data = _json.loads(out.stdout)
+        reg = data.get("regime")
+        if reg:
+            return reg, "nf-regime"
+    except Exception:
+        pass
+    return "mixed", "fallback"
+
+
+def size_atr_trail(args) -> dict:
+    """ATR/regime-aware trail width + risk-invariant sizing (spec 2026-06-22)."""
+    from services.atr_trail import compute_atr_trail
+
+    client = init_client()
+    symbol = args.symbol.upper()
+
+    # Entry: explicit --entry or live LTP.
+    if args.entry and str(args.entry).lower() != "auto":
+        entry = float(args.entry)
+    else:
+        quote = run_async(client.get_quote(symbol))
+        entry = float(quote.get("ltp") or 0)
+    if entry <= 0:
+        return {"error": f"Could not resolve entry price for {symbol}"}
+
+    atr, n_candles = _fetch_atr14(client, symbol)
+    if atr is None:
+        return {"error": (f"No stable ATR-14 for {symbol} "
+                          f"({n_candles} candles; need ≥50). Cannot size a trail.")}
+
+    # Regime: explicit wins; 'auto'/omitted falls back to nf-regime.
+    regime_source = "explicit"
+    regime = args.regime
+    if not regime or str(regime).lower() == "auto":
+        regime, regime_source = _auto_regime()
+
+    # Risk budget: --risk (absolute ₹) or risk-pct of capital.
+    if args.risk is not None:
+        risk_budget = float(args.risk)
+        capital = None
+    else:
+        risk_pct = float(args.risk_pct or DEFAULT_RISK_PCT)
+        capital = _resolve_capital(client, args.capital)
+        if capital <= 0:
+            return {"error": "Available capital is 0 — fund the account or pass --capital/--risk."}
+        risk_budget = capital * (risk_pct / 100.0)
+
+    leverage = float(args.leverage or 1.0)
+    try:
+        res = compute_atr_trail(
+            atr=atr, entry_price=entry, setup=args.setup, regime=regime,
+            risk_budget=risk_budget, capital=capital, leverage=leverage,
+            opening=bool(args.opening), k_override=args.k,
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+
+    warnings = []
+    if regime_source == "fallback":
+        warnings.append("Regime auto-detect failed → assumed 'mixed'. Pass --regime for accuracy.")
+    elif regime_source == "nf-regime":
+        warnings.append("Regime auto-detected via nf-regime (slower). Pass --regime to skip.")
+    if res["recommended_qty"] == 0:
+        warnings.append("No qty — even 1 unit exceeds the risk/capital limit at this trail width.")
+    if res["clamped"]:
+        warnings.append(f"Trail width clamped to [{res['trail_percent']}%] bound.")
+
+    return {
+        "kind": "equity_atr_trail",
+        "symbol": symbol,
+        "entry_price": round(entry, 2),
+        "direction": args.direction,
+        "candles": n_candles,
+        "regime_source": regime_source,
+        "risk_budget": round(risk_budget, 2),
+        "available_capital": round(capital, 2) if capital is not None else None,
+        "leverage": leverage,
+        "product": args.product,
+        "warnings": warnings,
+        **res,
+    }
+
+
 def _lookup_option(tradingsymbol: str) -> dict | None:
     """Look up an option contract from the F&O instruments cache."""
     sys.path.insert(0, os.path.join(_backend_dir, "cli-tools"))
@@ -214,6 +330,23 @@ def _print_human(result: dict) -> None:
         print_error(result["error"])
         return
 
+    if result["kind"] == "equity_atr_trail":
+        print(f"\n📐 ATR trail size — {result['symbol']} ({result['direction']})")
+        print(f"   Entry:      ₹{result['entry_price']:.2f}")
+        print(f"   ATR-14:     {result['atr_14']} ({result['atr_pct']}% of price)")
+        print(f"   Regime:     {result['regime']} · setup {result['setup_class']} "
+              f"→ k={result['k']} ({result['k_source']})")
+        print(f"   ➜ trail = {result['trail_percent']}%  "
+              f"(stop ~₹{result['sl_points']} away)")
+        print(f"   ➜ qty   = {result['recommended_qty']}  "
+              f"(risk ₹{result['actual_risk_amount']:,.0f} of ₹{result['risk_budget']:,.0f}, "
+              f"binds on {result['binding_constraint']})")
+        print(f"   ℹ baseline to TUNE — a floor against blind flat-%, not a verdict. "
+              f"The width judgment is yours (esp. runners in trending).")
+        for w in result.get("warnings", []):
+            print(f"   ⚠ {w}")
+        return
+
     print(f"\n📐 Position size — {result['symbol']}")
     print(f"   Risk:       {result['risk_pct']}% of ₹{result['available_capital']:,.0f} "
           f"= ₹{result['max_risk_amount']:,.0f}")
@@ -254,6 +387,26 @@ def main():
     p.add_argument("symbol", help="Equity symbol or option tradingsymbol")
     p.add_argument("--option", action="store_true",
                    help="Treat symbol as an option contract (use --sl-premium).")
+    p.add_argument("--atr-trail", action="store_true",
+                   help="ATR/regime-aware trail width + sizing (computes trail_percent "
+                        "from intraday ATR-14 × setup × regime; see docs/plans/"
+                        "2026-06-22-atr-regime-trail-width.md).")
+    p.add_argument("--direction", choices=["long", "short"], default="long",
+                   help="--atr-trail: trade direction (default long).")
+    p.add_argument("--setup", default=None,
+                   help="--atr-trail: setup (e.g. 'gap_fade', 'ORB breakout', 'vwap_pullback'). "
+                        "Maps to a noise-tolerance class.")
+    p.add_argument("--regime", default=None,
+                   help="--atr-trail: trending|mixed|range_bound (or 'auto' → nf-regime). "
+                        "Pass explicitly (from the regime gate) to skip the auto scan.")
+    p.add_argument("--k", type=float, default=None,
+                   help="--atr-trail: override the ATR multiple (skips the k-table).")
+    p.add_argument("--risk", type=float, default=None,
+                   help="--atr-trail: absolute risk budget in ₹ (else --risk-pct of capital).")
+    p.add_argument("--entry", default=None,
+                   help="--atr-trail: entry price, or 'auto' (default) for live LTP.")
+    p.add_argument("--opening", action="store_true",
+                   help="--atr-trail: flag the first ~30 min (opening-volatility k nudge).")
     p.add_argument("--sl-points", type=float, default=None,
                    help="Equity stop-loss distance in points.")
     p.add_argument("--sl-premium", type=float, default=None,
@@ -271,7 +424,9 @@ def main():
     p.add_argument("--json", action="store_true", help="Output JSON.")
     args = p.parse_args()
 
-    if args.option:
+    if args.atr_trail:
+        result = size_atr_trail(args)
+    elif args.option:
         if args.sl_premium is None:
             print_error("--sl-premium required for --option")
             sys.exit(2)

@@ -714,6 +714,21 @@ def cmd_add_trailing(args):
             "reference": args.reference or "ltp",
         }
 
+    # Optional ATR-trail provenance for the iteration loop (tuned vs baseline).
+    prov = {}
+    if getattr(args, "atr", None) is not None:
+        prov["atr"] = args.atr
+    if getattr(args, "k", None) is not None:
+        prov["k"] = args.k
+    if getattr(args, "regime", None):
+        prov["regime"] = args.regime
+    if getattr(args, "baseline_trail", None) is not None:
+        prov["baseline_trail_pct"] = args.baseline_trail
+        prov["tuned"] = abs(args.baseline_trail - trail_pct) > 0.01
+    if prov:
+        prov["actual_trail_pct"] = trail_pct
+        trigger_config["width_provenance"] = prov
+
     action_config = {
         "symbol": symbol,
         "transaction_type": exit_side,
@@ -1312,6 +1327,14 @@ Option contract example:
     p_trail.add_argument("--expires", help="Expiry: 'today', YYYY-MM-DD (= market close 15:30 IST that day), or ISO datetime in UTC")
     p_trail.add_argument("--force", action="store_true",
                          help="Bypass exit-rule stacking guard (allow stacking with existing different-type exits like SL/target)")
+    # Optional ATR-trail provenance — lets us later compare a tuned width vs the
+    # ATR baseline on actual results (the iteration loop). Stored on the rule;
+    # the daemon ignores it. Populate from nf-size --atr-trail output.
+    p_trail.add_argument("--atr", type=float, help="ATR-14 at entry (provenance)")
+    p_trail.add_argument("--k", type=float, help="ATR multiple used (provenance)")
+    p_trail.add_argument("--regime", help="Regime at entry: trending|mixed|range_bound (provenance)")
+    p_trail.add_argument("--baseline-trail", type=float, dest="baseline_trail",
+                         help="The nf-size baseline trail %% before NS's tuning (provenance)")
     p_trail.add_argument("--json", action="store_true", help="Output as JSON")
 
     # ---- update-trail ----
