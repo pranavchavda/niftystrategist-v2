@@ -89,10 +89,13 @@ def _fmt_sectors(sectors):
         dc = (f"▲{d['peak_rel_decisiveness']:.2f}@{d['peak_rel_at']}" if d["decoupling_now"]
               else f"(pk {d['peak_rel_decisiveness']:.2f})")
         tag = "  ⟵ LEADER" if d["bias"] == "leader" else ("  ⟵ laggard" if d["bias"] == "laggard" else "")
-        print(f"   {label:30} {d['n']:>3} {d['bias']:>8} {d['avg_rel_median']:>+7.2f} "
+        thin = " ·thin" if d.get("thin") else ""
+        name = f"{label}{thin}"
+        print(f"   {name:30} {d['n']:>3} {d['bias']:>8} {d['avg_rel_median']:>+7.2f} "
               f"{d['last_rel_median']:>+7.2f} {dc:>9}{tag}")
     print(f"\n   laggards = short vehicles for a down tape · leaders = long vehicles for an up tape")
-    print(f"   (relative strips beta; persistent bias = selection, decoupling = a live event)")
+    print(f"   (relative strips beta; persistent bias = selection, decoupling = a live event;")
+    print(f"    ·thin = <14 names, decouples ~2x as often — discount its signal)")
 
 
 def _fmt_market_full(market_timeline):

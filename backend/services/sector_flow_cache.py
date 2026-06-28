@@ -32,10 +32,14 @@ logger = logging.getLogger(__name__)
 
 _PRUNE_AFTER = timedelta(hours=3)
 MIN_SECTOR_NAMES = 8          # breadth needs names; thinner sectors are too noisy
+THIN_SECTOR_NAMES = 14        # below this a sector decouples ~2x as often (vol/few
+                              # names) → tagged "thin" so its signal is discounted
 FETCH_CONCURRENCY = 6         # gentler than scan_cache to ease Upstox rate-limiting
-# PROVISIONAL thresholds (06-24/06-25 calibration; tune from more tape):
-MARKET_ROLL_DECIS = 0.06
-DECOUPLE_DECIS = 0.08
+# Thresholds from a 14-session characterization (2026-06-28): the prior 2-day
+# eyeball (0.06/0.08) fired far too often (roll 12.7% of bars, decouple 16.8% of
+# sector-bars). These sit near p90 — the genuine tail. Refine with more tape.
+MARKET_ROLL_DECIS = 0.07      # ~p90 of market bar decisiveness (~2.6 rolling bars/day)
+DECOUPLE_DECIS = 0.12         # ~p89 of sector-bar rel_decisiveness (keeps the strong events)
 
 
 # ── fetch boundary (normalizes SDK objects → plain (ts, open, close) tuples) ──
@@ -119,6 +123,7 @@ def _shape_snapshot(results: dict[str, list[tuple]], universe_name: str,
         peak = max(rel_tl, key=lambda s: s.rel_decisiveness or 0)
         sectors[label] = {
             "n": len(s_open), "bias": bias["bias"],
+            "thin": len(s_open) < THIN_SECTOR_NAMES,
             "avg_rel_median": bias["avg_rel_median"],
             "last_rel_median": round(rel_last.rel_median, 3),
             "decoupling_now": (rel_last.rel_decisiveness or 0) >= DECOUPLE_DECIS,

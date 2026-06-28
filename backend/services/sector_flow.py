@@ -237,17 +237,24 @@ def relative_timeline(sector_tl: list[SectorSnapshot], market_tl: list[SectorSna
     return out
 
 
-def persistent_bias(rel_tl: list[RelativeSnapshot]) -> dict:
+# |avg_rel_median| band for a laggard/leader label. Set from a 14-session
+# characterization (2026-06-28): ±0.15 flagged ~70% of (day,sector) — meaningless;
+# ±0.35 isolates the notable tails (~top/bottom 3-4 of 17 sectors = the real
+# selection set). Refine with more tape.
+BIAS_BAND = 0.35
+
+
+def persistent_bias(rel_tl: list[RelativeSnapshot], *, band: float = BIAS_BAND) -> dict:
     """Session-level relative bias for laggard/leader SELECTION (not timing).
 
-    Returns the average and last `rel_median` plus a label. A sector with a
-    consistently negative `rel_median` is the laggard (short vehicle for a bearish
-    tape); consistently positive is the leader (long vehicle for a bullish one).
+    Returns the average and last `rel_median` plus a label. A sector averaging
+    more than ``band`` below the market is the laggard (short vehicle for a bearish
+    tape); more than ``band`` above is the leader (long vehicle for a bullish one).
     """
     if not rel_tl:
         return {"avg_rel_median": 0.0, "last_rel_median": 0.0, "bias": "neutral", "n_bars": 0}
     vals = [s.rel_median for s in rel_tl]
     avg = statistics.fmean(vals)
-    bias = "laggard" if avg <= -0.15 else ("leader" if avg >= 0.15 else "neutral")
+    bias = "laggard" if avg <= -band else ("leader" if avg >= band else "neutral")
     return {"avg_rel_median": round(avg, 3), "last_rel_median": round(vals[-1], 3),
             "bias": bias, "n_bars": len(rel_tl)}
