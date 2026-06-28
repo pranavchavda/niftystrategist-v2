@@ -153,6 +153,44 @@ def _auto_regime() -> tuple[str, str]:
     return "mixed", "fallback"
 
 
+def _build_add_trailing_command(result: dict) -> str | None:
+    """Emit the ready-to-paste `nf-monitor add-trailing` command for an
+    --atr-trail result, with the trail width + provenance flags pre-filled.
+
+    Collapses "run the tool → copy a width → separately stamp provenance" into
+    one action. Pasting the line as-is creates a trail-only stop whose
+    `width_provenance` is COMPLETE (tuned=false). To TUNE the width, edit ONLY
+    `--trail-percent` and leave `--baseline-trail` at the nf-size value — the
+    provenance then records tuned=true with the baseline preserved. Either way
+    `width_provenance` can never come back null (the Post-Close audit's false-
+    positive source).
+
+    Returns None when there's no qty to deploy (the caller surfaces a warning
+    instead of a broken command).
+    """
+    qty = result.get("recommended_qty") or 0
+    if qty <= 0:
+        return None
+    # Long position exits on a SELL; short position exits on a BUY.
+    side = "SELL" if result.get("direction") == "long" else "BUY"
+    trail = result["trail_percent"]
+    parts = [
+        "nf-monitor add-trailing",
+        f"--symbol {result['symbol']}",
+        f"--qty {qty}",
+        f"--side {side}",
+        f"--trail-percent {trail}",
+        f"--product {result.get('product') or 'I'}",
+        # provenance — pre-filled from this same computation so the rule's
+        # width_provenance is always populated (atr/k/regime + baseline anchor).
+        f"--atr {result['atr_14']}",
+        f"--k {result['k']}",
+        f"--regime {result['regime']}",
+        f"--baseline-trail {trail}",
+    ]
+    return " ".join(parts)
+
+
 def size_atr_trail(args) -> dict:
     """ATR/regime-aware trail width + risk-invariant sizing (spec 2026-06-22)."""
     from services.atr_trail import compute_atr_trail
@@ -211,7 +249,7 @@ def size_atr_trail(args) -> dict:
     if res["clamped"]:
         warnings.append(f"Trail width clamped to [{res['trail_percent']}%] bound.")
 
-    return {
+    result = {
         "kind": "equity_atr_trail",
         "symbol": symbol,
         "entry_price": round(entry, 2),
@@ -225,6 +263,9 @@ def size_atr_trail(args) -> dict:
         "warnings": warnings,
         **res,
     }
+    # Ready-to-paste deploy command (provenance pre-filled) — see helper docstring.
+    result["add_trailing_command"] = _build_add_trailing_command(result)
+    return result
 
 
 def _lookup_option(tradingsymbol: str) -> dict | None:
@@ -345,6 +386,11 @@ def _print_human(result: dict) -> None:
               f"The width judgment is yours (esp. runners in trending).")
         for w in result.get("warnings", []):
             print(f"   ⚠ {w}")
+        cmd = result.get("add_trailing_command")
+        if cmd:
+            print(f"\n   ▶ Deploy (provenance pre-filled — paste as-is, or TUNE by editing")
+            print(f"     ONLY --trail-percent; --baseline-trail stays as the anchor):")
+            print(f"       {cmd}")
         return
 
     print(f"\n📐 Position size — {result['symbol']}")
