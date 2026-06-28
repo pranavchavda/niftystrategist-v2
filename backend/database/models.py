@@ -1319,6 +1319,27 @@ class ScanSnapshot(Base):
     created_at = Column(DateTime, default=utc_now, nullable=False, index=True)
 
 
+class SectorFlowSnapshot(Base):
+    """Cached intraday sector-flow reading, refreshed on its own ~5-min cron.
+
+    The sensor's full-universe fetch (500 names of 15-min candles) is the wrong
+    shape for the request path — a concurrent burst trips Upstox's per-token rate
+    limit and stalls. So a cron computes the two-layer snapshot (market regime-roll
+    + per-sector relative strength) as an isolated subprocess and stores it here;
+    the live `nf-sector-flow` tool and any awakening read the newest fresh row
+    instead of fetching inline. Mirrors ScanSnapshot. ``snapshot`` holds the full
+    serialized result (market summary + market timeline + sector summaries).
+    """
+    __tablename__ = "sector_flow_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    universe = Column(String, nullable=False, index=True)
+    snapshot = Column(JSON, nullable=False)
+    session_date = Column(String, nullable=True)
+    elapsed_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False, index=True)
+
+
 # ==============================================================================
 # Database Connection Manager
 # ==============================================================================

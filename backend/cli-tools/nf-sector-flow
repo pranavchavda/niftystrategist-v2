@@ -8,180 +8,76 @@ WHAT IT ANSWERS
      what to SHORT / LONG to express a regime call — and is any sector DECOUPLING
      from the tape right now? (relative layer — strips market beta.)
 
-WHY RELATIVE: on a broad-down day every sector reads "decisive down" (it's just
-beta). The sector edge only survives net of the market. Built + validated against
-the 06-24/06-25 tape (2026-06-28): the market layer flagged the 06-25 back-half
-roll-over; the relative layer pegged IT as the laggard inside that selloff and
-isolated Realty decoupling on the flat 06-24 tape. See services/sector_flow.py.
+WHY RELATIVE: on a broad-down day every sector reads "decisive down" (just beta).
+The sector edge only survives net of the market. Validated against the 06-24/06-25
+tape: the market layer flagged the 06-25 back-half roll-over; the relative layer
+pegged IT as the laggard inside it and isolated Realty decoupling on the flat 06-24
+tape. See services/sector_flow.py.
 
-This tool MEASURES — it never places an order. Thresholds below are PROVISIONAL
-(eyeballed from two days); treat the numbers as situational awareness, not a
-standalone entry trigger.
+DATA SOURCE: by default reads the CACHED snapshot written by the ~5-min cron
+(services/sector_flow_cache.py) — instant, no inline fetch. The live full-universe
+fetch trips Upstox's per-token rate limit, so it's precomputed. `--date` replays a
+past session inline; `--fresh` forces an inline recompute of the latest session
+(slower, may rate-limit).
+
+This tool MEASURES — it never places an order. Thresholds are PROVISIONAL; treat
+the numbers as situational awareness, not a standalone entry trigger.
 
 Examples:
-  nf-sector-flow                         # latest session: market state + sector ranking
-  nf-sector-flow --date 2026-06-25       # replay a past session
+  nf-sector-flow                         # latest cached: market state + sector ranking
   nf-sector-flow --sector it --full      # one sector's full relative timeline
+  nf-sector-flow --date 2026-06-25       # replay a past session (inline)
+  nf-sector-flow --fresh                 # force inline recompute of latest session
   nf-sector-flow --json                  # structured output
 """
 import argparse
 import asyncio
 import os
 import sys
-from collections import defaultdict
-from datetime import datetime, timedelta
 
 _BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (_BACKEND, os.path.join(_BACKEND, "cli-tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from base import init_market_data_client, print_json, print_error, run_async  # noqa: E402
+from base import print_json, print_error, run_async  # noqa: E402
 from services import instruments_cache as ic  # noqa: E402
-from services.sector_flow import (  # noqa: E402
-    sector_timeline, relative_timeline, persistent_bias,
+from services.sector_flow_cache import (  # noqa: E402
+    compute_snapshot, get_latest_snapshot, MARKET_ROLL_DECIS, DECOUPLE_DECIS,
 )
 
-MIN_SECTOR_NAMES = 8       # breadth needs names; thinner sectors are too noisy to read
-# PROVISIONAL thresholds (06-25/06-24 calibration; tune from more tape):
-MARKET_ROLL_DECIS = 0.06   # market decisiveness flagging an intraday regime roll
-DECOUPLE_DECIS = 0.08      # sector rel_decisiveness flagging a live decoupling event
+# Cached snapshot is "fresh" within this age for default reads (cron runs ~5 min).
+CACHE_MAX_AGE_S = 15 * 60
 
 
-def _shape_for_day(candles, day):
-    day_c = sorted((c for c in candles if c.timestamp[:10] == day), key=lambda c: c.timestamp)
-    if not day_c:
-        return None
-    closes = {c.timestamp[11:16]: c.close for c in day_c}
-    prior = [c for c in candles if c.timestamp[:10] < day]
-    prev_close = sorted(prior, key=lambda c: c.timestamp)[-1].close if prior else None
-    return day_c[0].open, closes, prev_close
+def _resolve_snapshot(args):
+    """Return (snapshot, source_note). Cache by default; inline for --date/--fresh."""
+    if args.date or args.fresh:
+        snap = run_async(compute_snapshot(args.universe, date=args.date,
+                                          threshold=args.threshold, window=args.window))
+        return snap, ("inline replay" if args.date else "inline fresh")
+    snap, age = run_async(get_latest_snapshot(args.universe, CACHE_MAX_AGE_S))
+    if snap is None:
+        # No fresh cache (cron hasn't run / off-hours / dev). Fall back to inline,
+        # but tell the user it may be slow + rate-limited.
+        print_error("No fresh cached snapshot — computing inline (may be slow / rate-limited). "
+                    "The ~5-min cron populates the cache during market hours.")
+        snap = run_async(compute_snapshot(args.universe, threshold=args.threshold, window=args.window))
+        return snap, "inline fallback (no cache)"
+    return snap, f"cache age {int(age)}s"
 
 
-def _build(symbols, results, day):
-    per_open, per_closes, per_prev, times = {}, {}, {}, set()
-    for sym in symbols:
-        shaped = _shape_for_day(results.get(sym, []), day)
-        if not shaped:
-            continue
-        per_open[sym], per_closes[sym], per_prev[sym] = shaped
-        times |= set(per_closes[sym].keys())
-    return sorted(times), per_open, per_closes, per_prev
-
-
-async def _fetch(client, symbols, days):
-    sem = asyncio.Semaphore(10)
-    async def one(sym):
-        async with sem:
-            try:
-                return sym, await client.get_historical_data(sym, interval="15minute", days=days)
-            except Exception:
-                return sym, []
-    return dict(await asyncio.gather(*[one(s) for s in symbols]))
-
-
-def _market_gap(per_open, per_prev):
-    """Median open-vs-prev-close gap across the universe (context: a green-on-close
-    tape that gapped up then bled is a SHORT-from-open day, not an up day)."""
-    import statistics
-    gaps = []
-    for sym, op in per_open.items():
-        pc = per_prev.get(sym)
-        if pc and pc > 0:
-            gaps.append((op - pc) / pc * 100.0)
-    return round(statistics.median(gaps), 2) if gaps else None
-
-
-def compute(universe_name: str, date: str | None, threshold: float, window: int):
-    ic.ensure_loaded()
-    universe = sorted(ic.get_universe(universe_name))
-    by_sector = defaultdict(list)
-    for s in universe:
-        sec = ic.get_sector(s)
-        if sec:
-            by_sector[sec].append(s)
-
-    # Fetch a window wide enough to cover the target date + a prior session.
-    if date:
-        delta = (datetime.now() - datetime.strptime(date, "%Y-%m-%d")).days
-        days = max(4, delta + 3)
-    else:
-        days = 4
-    client = init_market_data_client()
-    results = run_async(_fetch(client, universe, days))
-
-    # Target session = explicit --date, else the latest date present in the data.
-    present = sorted({c.timestamp[:10] for cs in results.values() for c in cs})
-    if not present:
-        return {"error": "No candle data returned (market data token / connectivity?)."}
-    target = date or present[-1]
-
-    m_times, m_open, m_closes, m_prev = _build(universe, results, target)
-    if not m_open:
-        return {"error": f"No market data for {target}."}
-    market_tl = sector_timeline("MARKET", m_times, m_closes, m_open,
-                                threshold=threshold, window=window)
-    m_last = market_tl[-1]
-    recent = market_tl[-window:] if len(market_tl) >= window else market_tl
-    rolling = any((s.decisiveness or 0) >= MARKET_ROLL_DECIS for s in recent)
-    m_peak = max(market_tl, key=lambda s: s.decisiveness or 0)
-
-    sectors = {}
-    for label, members in by_sector.items():
-        if len(members) < MIN_SECTOR_NAMES:
-            continue
-        s_times, s_open, s_closes, _ = _build(members, results, target)
-        if len(s_open) < MIN_SECTOR_NAMES:
-            continue
-        sector_tl = sector_timeline(label, s_times, s_closes, s_open,
-                                    threshold=threshold, window=window)
-        rel_tl = relative_timeline(sector_tl, market_tl, window=window)
-        if not rel_tl:
-            continue
-        bias = persistent_bias(rel_tl)
-        rel_last = rel_tl[-1]
-        peak = max(rel_tl, key=lambda s: s.rel_decisiveness or 0)
-        sectors[label] = {
-            "n": len(s_open), "bias": bias["bias"],
-            "avg_rel_median": bias["avg_rel_median"], "last_rel_median": rel_last.rel_median,
-            "decoupling_now": (rel_last.rel_decisiveness or 0) >= DECOUPLE_DECIS,
-            "peak_rel_decisiveness": round(peak.rel_decisiveness or 0, 4),
-            "peak_rel_at": peak.as_of,
-            "_rel_tl": rel_tl,  # stripped before JSON; used for --full
-        }
-
-    return {
-        "date": target,
-        "universe": universe_name,
-        "as_of": m_last.as_of,
-        "market": {
-            "median_move": round(m_last.median_move, 2),
-            "net_breadth": round(m_last.net_breadth, 2),
-            "n": m_last.n,
-            "gap": _market_gap(m_open, m_prev),
-            "decisiveness": round(m_last.decisiveness or 0, 4),
-            "rolling": rolling,
-            "peak_decisiveness": round(m_peak.decisiveness or 0, 4),
-            "peak_at": m_peak.as_of,
-            "direction": "down" if m_last.median_move < 0 else "up",
-        },
-        "sectors": sectors,
-        "_market_tl": market_tl,
-    }
-
-
-def _fmt_market(m, as_of, date):
+def _fmt_market(m, as_of, date, source):
     arrow = "▼" if m["direction"] == "down" else "▲"
     state = (f"ROLLING {m['direction'].upper()}" if m["rolling"] else "quiet")
-    gap = "" if m["gap"] is None else f" · gapped {m['gap']:+.2f}% at open"
-    print(f"\n══ MARKET {date} (as of {as_of}) ══")
+    gap = "" if m.get("gap") is None else f" · gapped {m['gap']:+.2f}% at open"
+    peaked = (f"; day peak {m['peak_decisiveness']:.3f}@{m['peak_at']}"
+              if m.get("peak_decisiveness", 0) >= MARKET_ROLL_DECIS and not m["rolling"] else "")
+    print(f"\n══ MARKET {date} (as of {as_of}) ══   [{source}]")
     print(f"   {arrow} median {m['median_move']:+.2f}%  net {m['net_breadth']:+.2f}  "
           f"({m['n']} names){gap}")
-    peaked = (f"; day peak {m['peak_decisiveness']:.3f}@{m['peak_at']}"
-              if m["peak_decisiveness"] >= MARKET_ROLL_DECIS and not m["rolling"] else "")
-    print(f"   regime: {state}  (decisiveness {m['decisiveness']:.3f}, "
-          f"roll≥{MARKET_ROLL_DECIS}{peaked})")
-    if m["gap"] is not None and m["gap"] > 0.3 and m["median_move"] < 0:
+    print(f"   regime: {state}  (decisiveness {m['decisiveness']:.3f}, roll≥{MARKET_ROLL_DECIS}{peaked})")
+    if m.get("gap") is not None and m["gap"] > 0.3 and m["median_move"] < 0:
         print(f"   ⚠ gapped UP then bled — a short-from-open tape even if it closes green")
 
 
@@ -190,8 +86,8 @@ def _fmt_sectors(sectors):
     print(f"\n── SECTORS (relative to market, ranked by persistent bias) ──")
     print(f"   {'sector':30} {'n':>3} {'bias':>8} {'avgRel':>7} {'nowRel':>7} {'decouple':>9}")
     for label, d in ranked:
-        dc = f"▲{d['peak_rel_decisiveness']:.2f}@{d['peak_rel_at']}" if d["decoupling_now"] else (
-            f"(pk {d['peak_rel_decisiveness']:.2f})")
+        dc = (f"▲{d['peak_rel_decisiveness']:.2f}@{d['peak_rel_at']}" if d["decoupling_now"]
+              else f"(pk {d['peak_rel_decisiveness']:.2f})")
         tag = "  ⟵ LEADER" if d["bias"] == "leader" else ("  ⟵ laggard" if d["bias"] == "laggard" else "")
         print(f"   {label:30} {d['n']:>3} {d['bias']:>8} {d['avg_rel_median']:>+7.2f} "
               f"{d['last_rel_median']:>+7.2f} {dc:>9}{tag}")
@@ -199,86 +95,82 @@ def _fmt_sectors(sectors):
     print(f"   (relative strips beta; persistent bias = selection, decoupling = a live event)")
 
 
-def _fmt_full_sector(label, rel_tl):
-    print(f"\n── {label}: full relative timeline ──")
-    print(f"   {'time':>5}  {'secMed':>7} {'mktMed':>7} {'rel':>6} {'Δrel':>6} {'relDec':>6}")
-    for s in rel_tl:
-        drel = "" if s.d_rel_median is None else f"{s.d_rel_median:+.2f}"
-        dec = "" if s.rel_decisiveness is None else f"{s.rel_decisiveness:.3f}"
-        mark = "  ⟵ decoupling" if (s.rel_decisiveness or 0) >= DECOUPLE_DECIS else ""
-        print(f"   {s.as_of:>5}  {s.sector_median:>+7.2f} {s.market_median:>+7.2f} "
-              f"{s.rel_median:>+6.2f} {drel:>6} {dec:>6}{mark}")
-
-
-def _fmt_market_full(market_tl):
+def _fmt_market_full(market_timeline):
     print(f"\n── MARKET: full timeline ──")
     print(f"   {'time':>5}  {'n':>3}  {'net':>6}  {'med%':>6}  {'Δmed':>6}  {'decis':>6}")
-    for s in market_tl:
-        dmed = "" if s.d_median is None else f"{s.d_median:+.2f}"
-        dec = "" if s.decisiveness is None else f"{s.decisiveness:.3f}"
-        mark = "  ⟵ roll" if (s.decisiveness or 0) >= MARKET_ROLL_DECIS else ""
-        print(f"   {s.as_of:>5}  {s.n:>3}  {s.net_breadth:+.2f}  {s.median_move:+.2f}  "
+    for s in market_timeline:
+        dmed = "" if s.get("d_median") is None else f"{s['d_median']:+.2f}"
+        dec = "" if s.get("decisiveness") is None else f"{s['decisiveness']:.3f}"
+        mark = "  ⟵ roll" if (s.get("decisiveness") or 0) >= MARKET_ROLL_DECIS else ""
+        print(f"   {s['as_of']:>5}  {s['n']:>3}  {s['net_breadth']:+.2f}  {s['median_move']:+.2f}  "
               f"{dmed:>6}  {dec:>6}{mark}")
+
+
+def _fmt_full_sector(label, timeline):
+    print(f"\n── {label}: full relative timeline ──")
+    print(f"   {'time':>5}  {'secMed':>7} {'mktMed':>7} {'rel':>6} {'Δrel':>6} {'relDec':>6}")
+    for s in timeline:
+        drel = "" if s.get("d_rel_median") is None else f"{s['d_rel_median']:+.2f}"
+        dec = "" if s.get("rel_decisiveness") is None else f"{s['rel_decisiveness']:.3f}"
+        mark = "  ⟵ decoupling" if (s.get("rel_decisiveness") or 0) >= DECOUPLE_DECIS else ""
+        print(f"   {s['as_of']:>5}  {s['sector_median']:>+7.2f} {s['market_median']:>+7.2f} "
+              f"{s['rel_median']:>+6.2f} {drel:>6} {dec:>6}{mark}")
 
 
 def main():
     p = argparse.ArgumentParser(
         description="Intraday sector-flow sensor (market regime-roll + sector relative strength)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__,
     )
     p.add_argument("--sector", help="Focus one sector (term like 'it','bank','pharma').")
-    p.add_argument("--date", help="Replay a past session YYYY-MM-DD (default: latest available).")
+    p.add_argument("--date", help="Replay a past session YYYY-MM-DD (inline compute).")
+    p.add_argument("--fresh", action="store_true", help="Force inline recompute of the latest session.")
     p.add_argument("--universe", default="nifty500", help="nifty50|nifty100|nifty500|niftytotal.")
-    p.add_argument("--threshold", type=float, default=0.3, help="Per-name move threshold %% (default 0.3).")
-    p.add_argument("--window", type=int, default=2, help="Acceleration window in bars (default 2 = 30min).")
+    p.add_argument("--threshold", type=float, default=0.3, help="Per-name move threshold %% (inline only).")
+    p.add_argument("--window", type=int, default=2, help="Acceleration window in bars (inline only).")
     p.add_argument("--full", action="store_true", help="Print full timelines, not just the summary.")
     p.add_argument("--json", action="store_true", help="Structured JSON output.")
     args = p.parse_args()
 
-    result = compute(args.universe, args.date, args.threshold, args.window)
-    if "error" in result:
+    snapshot, source = _resolve_snapshot(args)
+    if not snapshot or "error" in snapshot:
+        msg = (snapshot or {}).get("error", "No snapshot available.")
         if args.json:
-            print_json(result)
+            print_json({"error": msg})
         else:
-            print_error(result["error"])
+            print_error(msg)
         sys.exit(1)
 
-    # Resolve a --sector term to a canonical label, if given.
     focus = None
     if args.sector:
         matched = ic.match_sectors(args.sector)
-        focus = next((lbl for lbl in matched if lbl in result["sectors"]), None)
+        focus = next((lbl for lbl in matched if lbl in snapshot["sectors"]), None)
         if not focus:
-            avail = ", ".join(sorted(result["sectors"]))
+            avail = ", ".join(sorted(snapshot["sectors"]))
             print_error(f"No readable sector matched '{args.sector}'. Available: {avail}")
             sys.exit(1)
 
     if args.json:
-        market_tl = result.pop("_market_tl")
-        out = {**result, "market": result["market"]}
-        out["sectors"] = {
-            lbl: {k: v for k, v in d.items() if k != "_rel_tl"}
-            for lbl, d in result["sectors"].items()
-        }
-        if args.full:
-            out["market_timeline"] = [s.as_dict() for s in market_tl]
-            out["sectors_timelines"] = {
-                lbl: [s.as_dict() for s in d["_rel_tl"]] for lbl, d in result["sectors"].items()
-            }
+        out = dict(snapshot)
+        out["source"] = source
+        if not args.full:
+            # Drop the bulky timelines from the default JSON (summaries only).
+            out.pop("market_timeline", None)
+            out["sectors"] = {lbl: {k: v for k, v in d.items() if k != "timeline"}
+                              for lbl, d in snapshot["sectors"].items()}
         print_json(out)
         return
 
-    _fmt_market(result["market"], result["as_of"], result["date"])
+    _fmt_market(snapshot["market"], snapshot["as_of"], snapshot["date"], source)
     if focus:
-        _fmt_full_sector(focus, result["sectors"][focus]["_rel_tl"])
+        _fmt_full_sector(focus, snapshot["sectors"][focus].get("timeline", []))
     else:
-        _fmt_sectors(result["sectors"])
+        _fmt_sectors(snapshot["sectors"])
     if args.full:
-        _fmt_market_full(result.pop("_market_tl"))
+        _fmt_market_full(snapshot.get("market_timeline", []))
         if not focus:
-            for lbl, d in result["sectors"].items():
-                _fmt_full_sector(lbl, d["_rel_tl"])
+            for lbl, d in snapshot["sectors"].items():
+                _fmt_full_sector(lbl, d.get("timeline", []))
 
 
 if __name__ == "__main__":

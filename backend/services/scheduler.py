@@ -102,6 +102,12 @@ class WorkflowScheduler:
         # scan as an isolated subprocess (memory freed each cycle — prod swaps).
         self._add_scan_cache_job()
 
+        # Sector-flow sensor cache refresh every 5 min during market hours. The
+        # full-universe candle fetch trips Upstox's per-token rate limit on the
+        # request path, so it's precomputed here (isolated subprocess) and read
+        # from cache by nf-sector-flow / awakenings.
+        self._add_sector_flow_cache_job()
+
         # Thread embedding is now event-driven (triggered on message save)
         # instead of polling every 60s. See thread_embedder.schedule_debounced_embed()
 
@@ -555,6 +561,8 @@ class WorkflowScheduler:
 
     # Universe the cached candidate scan covers. nifty500 = full Hero Scanner.
     SCAN_CACHE_UNIVERSE = "nifty500"
+    # Universe the sector-flow sensor covers (broad = de-saturated breadth).
+    SECTOR_FLOW_UNIVERSE = "nifty500"
 
     def _add_scan_cache_job(self):
         """Refresh the cached candidate scan every 3 min during market hours.
@@ -630,6 +638,62 @@ class WorkflowScheduler:
                 pass
         except Exception as e:
             logger.error("scan cache refresh failed: %s", e)
+
+    def _add_sector_flow_cache_job(self):
+        """Refresh the cached sector-flow snapshot every 5 min during market hours.
+
+        Runs as an isolated subprocess (clean memory + a rate-limit stall can't
+        wedge the main loop). 5-min cadence (vs scan_cache's 3) both eases Upstox
+        rate-limiting and suits the signal — a regime roll develops over 15-30 min.
+        Market-hours gating lives in ``_run_sector_flow_cache``.
+        """
+        job_id = "sector_flow_cache_refresh"
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+        self.scheduler.add_job(
+            func=self._run_sector_flow_cache,
+            trigger=IntervalTrigger(minutes=5),
+            id=job_id,
+            name="Sector-flow sensor cache refresh (5 min, market hours)",
+            max_instances=1,
+            replace_existing=True,
+        )
+        logger.info("Scheduled sector-flow cache refresh every 5 min (market hours)")
+
+    async def _run_sector_flow_cache(self):
+        """Spawn the sector-flow cache writer as an isolated subprocess (market hours only)."""
+        if not self._market_open_ist():
+            return
+        import sys
+        from pathlib import Path
+
+        backend = Path(__file__).resolve().parent.parent
+        script = backend / "scripts" / "sector_flow_cache_writer.py"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, str(script), self.SECTOR_FLOW_UNIVERSE,
+                cwd=str(backend),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            # Gentler concurrency means the 500-name fetch can run a few minutes
+            # under rate-limiting; 240s gives margin. On overrun the cache simply
+            # serves the prior snapshot (graceful staleness, never blocks a request).
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=240)
+            if proc.returncode != 0:
+                logger.warning("sector-flow cache writer exited %s: %s", proc.returncode,
+                               (err or b"").decode()[-500:])
+            else:
+                logger.debug("sector-flow cache refreshed: %s", (out or b"").decode().strip()[-200:])
+        except asyncio.TimeoutError:
+            logger.warning("sector-flow cache writer timed out (>240s); killing orphan")
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error("sector-flow cache refresh failed: %s", e)
 
     def _add_totp_refresh_job(self):
         """Add a daily job to proactively refresh Upstox tokens via TOTP.
