@@ -78,6 +78,11 @@ class MonitorDaemon:
             os.getenv("NF_FEED_OWNER_USER_ID", "1")
         )
         self._market_pool: MarketStreamPool | None = None
+        # Sector-flow streamer (opt-in via NF_SECTOR_FLOW_FEED=1). Rides the
+        # shared pool to accumulate nifty500 15-min candles off the live feed
+        # and compute the sector-flow snapshot — replaces the old historical-
+        # fetch cron that hung prod on 2026-06-29. None unless enabled below.
+        self._sector_flow = None
 
         if self._shared_feed_enabled:
             from monitor.streams.market_stream_pool import MarketStreamPool
@@ -96,6 +101,13 @@ class MonitorDaemon:
                 )
 
             async def _pool_tick_handler(user_id: int, tick_data: dict) -> None:
+                # Sector-flow feed rides the same pool under a sentinel uid.
+                # Branch BEFORE the per-user path so the money path (rule
+                # evaluation / orders) is never touched by sector ticks.
+                sf = self._sector_flow
+                if sf is not None and user_id == sf.SENTINEL_UID:
+                    await sf.on_tick(tick_data)
+                    return
                 # Hand the pool's fan-out tick to UserManager so candle
                 # buffers and indicator engine still run per-user.
                 await self._user_manager._on_market_tick(user_id, tick_data)
@@ -110,6 +122,13 @@ class MonitorDaemon:
                 tick_handler=_pool_tick_handler,
                 mode="ltpc",
             )
+
+            # Opt-in sector-flow streamer on the shared pool. Off by default;
+            # enabled in prod via NF_SECTOR_FLOW_FEED=1.
+            if os.getenv("NF_SECTOR_FLOW_FEED", "0").lower() in ("1", "true", "yes"):
+                from monitor.sector_flow_streamer import SectorFlowStreamer
+
+                self._sector_flow = SectorFlowStreamer(self._market_pool)
 
         self._user_manager = UserManager(
             on_tick=self._on_tick,
@@ -174,6 +193,15 @@ class MonitorDaemon:
                     "Will retry on next owner-token rotation.", e,
                 )
 
+        # Start the sector-flow streamer (registers its 500-name interest with
+        # the pool — even if the pool itself deferred its connection, the
+        # interest is recorded and resubscribed on the pool's next start/rotate).
+        if self._sector_flow is not None:
+            try:
+                await self._sector_flow.start()
+            except Exception as e:
+                logger.error("Sector-flow streamer failed to start: %s", e)
+
         # Initial rule load + scalp session load. Order matters:
         # _poll_rules must run first because it loads access tokens, which
         # load_sessions() needs to seed candle buffers. Scalp-only users
@@ -195,6 +223,8 @@ class MonitorDaemon:
     async def stop(self) -> None:
         """Graceful shutdown — stops all user sessions."""
         self._running = False
+        if self._sector_flow is not None:
+            await self._sector_flow.stop()
         await self._user_manager.stop_all()
         if self._market_pool is not None:
             await self._market_pool.stop()
