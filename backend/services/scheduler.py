@@ -102,11 +102,12 @@ class WorkflowScheduler:
         # scan as an isolated subprocess (memory freed each cycle — prod swaps).
         self._add_scan_cache_job()
 
-        # Sector-flow sensor cache refresh every 5 min during market hours. The
-        # full-universe candle fetch trips Upstox's per-token rate limit on the
-        # request path, so it's precomputed here (isolated subprocess) and read
-        # from cache by nf-sector-flow / awakenings.
-        self._add_sector_flow_cache_job()
+        # Sector-flow sensor cache refresh — DISABLED 2026-06-29: the writer's
+        # full-universe burst saturated Upstox's per-token rate limit during live
+        # market hours, starving the main app's market-data reads and hanging the
+        # system. Re-enable only after the writer is made rate-safe (much lower
+        # concurrency / paced fetch / off-peak). See _add_sector_flow_cache_job.
+        # self._add_sector_flow_cache_job()
 
         # Thread embedding is now event-driven (triggered on message save)
         # instead of polling every 60s. See thread_embedder.schedule_debounced_embed()
