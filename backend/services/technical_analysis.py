@@ -477,15 +477,20 @@ class TechnicalAnalysisService:
         # RSI explanation
         rsi_val = indicators.rsi_14
         if rsi_val is not None:
+            # State the reading; do NOT editorialize direction. "Oversold → due
+            # for a bounce" is regime-blind: in a downtrend oversold persists and
+            # the short keeps working, so that canned line became a manufactured
+            # reason to PASS on trend-aligned setups (see 2026-06-30 EoD review).
+            # The agent is an expert operator — it interprets the level in context
+            # and adds plain-language framing for chat users when needed.
             if rsi_signal == "oversold":
                 parts.append(
-                    f"The RSI (Relative Strength Index) is at {rsi_val:.1f}, which is below 30. "
-                    "This suggests the stock may be oversold and could be due for a bounce."
+                    f"The RSI (Relative Strength Index) is at {rsi_val:.1f}, "
+                    "in oversold territory (below 30)."
                 )
             elif rsi_signal == "overbought":
                 parts.append(
-                    f"The RSI is at {rsi_val:.1f}, which is above 70. "
-                    "This suggests the stock may be overbought and could see a pullback."
+                    f"The RSI is at {rsi_val:.1f}, in overbought territory (above 70)."
                 )
             else:
                 parts.append(f"The RSI is at {rsi_val:.1f}, in neutral territory.")
