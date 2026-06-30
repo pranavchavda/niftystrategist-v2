@@ -1,6 +1,8 @@
 """Cockpit dashboard API endpoints — live data for the trading cockpit UI."""
 
+import asyncio
 import logging
+import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone, date
@@ -27,6 +29,36 @@ router = APIRouter()
 # Module-level references set by main.py
 _db_manager = None
 _upstox_client: UpstoxClient | None = None
+
+# Watchlist sparklines are 7 daily closes — they change at most once a day, so
+# there is no reason to re-pull them on every 30s dashboard poll. Caching them
+# removes ~N historical-candle REST calls per poll (the load that saturated the
+# shared analytics token and, with the DB session held open across it, exhausted
+# the connection pool — incident 2026-06-30). Per-symbol, ~30min TTL, serve-stale
+# on fetch failure.
+_SPARKLINE_CACHE: dict[str, tuple[float, list]] = {}
+_SPARKLINE_TTL = 1800.0
+_UPSTOX_CALL_TIMEOUT = 8.0  # hard cap so a throttled token can't hang the request
+
+
+async def _get_sparkline_cached(client, symbol: str) -> list:
+    """7-day daily-close sparkline for `symbol`, cached ~30min, never blocking
+    longer than `_UPSTOX_CALL_TIMEOUT`. Serves the last good value on failure."""
+    hit = _SPARKLINE_CACHE.get(symbol)
+    now = time.monotonic()
+    if hit is not None and now - hit[0] < _SPARKLINE_TTL:
+        return hit[1]
+    try:
+        candles = await asyncio.wait_for(
+            client.get_historical_data(symbol, interval="day", days=10),
+            timeout=_UPSTOX_CALL_TIMEOUT,
+        )
+        spark = [c.close for c in candles[-7:]]
+        _SPARKLINE_CACHE[symbol] = (now, spark)
+        return spark
+    except Exception as e:
+        logger.warning(f"Sparkline fetch failed for {symbol}: {e}")
+        return hit[1] if hit is not None else []
 
 
 def _get_upstox_client() -> UpstoxClient:
@@ -357,79 +389,83 @@ async def cockpit_indices(user: User = Depends(get_current_user)):
 # GET /watchlist
 # ---------------------------------------------------------------------------
 @router.get("/watchlist")
-async def cockpit_watchlist(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(_get_db),
-):
-    """Return user's watchlists with live quotes and sparkline data."""
+async def cockpit_watchlist(user: User = Depends(get_current_user)):
+    """Return user's watchlists with live quotes and sparkline data.
+
+    The DB session is opened ONLY to read the watchlist rows and is released
+    before any Upstox I/O. Holding a pooled connection across the per-symbol
+    quote/sparkline fan-out exhausted the pool under 30s dashboard polling
+    (incident 2026-06-30). Sparklines are cached (_get_sparkline_cached) and
+    every Upstox call is timeout-bounded.
+    """
     client = await _get_client_for_user(user)
 
+    # 1) Read watchlist rows in a short-lived session, copy out the fields we
+    #    need, then let the session close — NO network I/O while it's held.
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="Database not initialized")
     try:
-        # Fetch watchlist items from DB
-        result = await db.execute(
-            select(WatchlistItemDB)
-            .where(WatchlistItemDB.user_id == user.id)
-            .order_by(WatchlistItemDB.watchlist_name, WatchlistItemDB.sort_order)
-        )
-        db_items = result.scalars().all()
-
-        if not db_items:
-            return {}
-
-        # Group by watchlist name
-        grouped: dict[str, list] = {}
-        for item in db_items:
-            wl_name = item.watchlist_name or "Default"
-            if wl_name not in grouped:
-                grouped[wl_name] = []
-
-            company = item.company_name or UpstoxClient.SYMBOL_TO_COMPANY.get(item.symbol) or cache_get_company_name(item.symbol) or item.symbol
-
-            # Fetch live quote
-            quote_data = {"ltp": 0, "volume": 0, "close": 0, "net_change": 0, "pct_change": 0}
-            try:
-                quote = await client.get_quote(item.symbol)
-                quote_data = {
-                    "ltp": quote.get("ltp", 0),
-                    "volume": quote.get("volume", 0),
-                    "close": quote.get("close", 0),
-                    "net_change": quote.get("net_change", 0),
-                    "pct_change": quote.get("pct_change", 0),
+        async with _db_manager.async_session() as db:
+            result = await db.execute(
+                select(WatchlistItemDB)
+                .where(WatchlistItemDB.user_id == user.id)
+                .order_by(WatchlistItemDB.watchlist_name, WatchlistItemDB.sort_order)
+            )
+            items = [
+                {
+                    "symbol": i.symbol,
+                    "watchlist_name": i.watchlist_name,
+                    "company_name": i.company_name,
+                    "alert_above": i.alert_above,
+                    "alert_below": i.alert_below,
                 }
-            except Exception as qe:
-                logger.warning(f"Quote fetch failed for {item.symbol}: {qe}")
-
-            ltp = quote_data["ltp"] or 0
-            change = quote_data["net_change"]
-            change_pct = quote_data["pct_change"]
-
-            # Fetch sparkline (7 days of closing prices)
-            sparkline = []
-            try:
-                candles = await client.get_historical_data(item.symbol, interval="day", days=10)
-                sparkline = [c.close for c in candles[-7:]]
-            except Exception:
-                pass
-
-            grouped[wl_name].append({
-                "symbol": item.symbol,
-                "company": company,
-                "ltp": ltp,
-                "change": round(change, 2),
-                "changePct": round(change_pct, 2),
-                "volume": quote_data["volume"] or 0,
-                "sparkline": sparkline,
-                "alertAbove": item.alert_above,
-                "alertBelow": item.alert_below,
-            })
-
-        return grouped
-
-    except HTTPException:
-        raise
+                for i in result.scalars().all()
+            ]
     except Exception as e:
-        logger.error(f"Error fetching watchlist: {e}")
+        logger.error(f"Error fetching watchlist rows: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+    if not items:
+        return {}
+
+    # 2) Session is closed. Fan out to Upstox (each call timeout-bounded; a
+    #    per-symbol failure degrades that row, never the whole response).
+    grouped: dict[str, list] = {}
+    for it in items:
+        symbol = it["symbol"]
+        wl_name = it["watchlist_name"] or "Default"
+        grouped.setdefault(wl_name, [])
+
+        company = it["company_name"] or UpstoxClient.SYMBOL_TO_COMPANY.get(symbol) or cache_get_company_name(symbol) or symbol
+
+        quote_data = {"ltp": 0, "volume": 0, "close": 0, "net_change": 0, "pct_change": 0}
+        try:
+            quote = await asyncio.wait_for(client.get_quote(symbol), timeout=_UPSTOX_CALL_TIMEOUT)
+            quote_data = {
+                "ltp": quote.get("ltp", 0),
+                "volume": quote.get("volume", 0),
+                "close": quote.get("close", 0),
+                "net_change": quote.get("net_change", 0),
+                "pct_change": quote.get("pct_change", 0),
+            }
+        except Exception as qe:
+            logger.warning(f"Quote fetch failed for {symbol}: {qe}")
+
+        sparkline = await _get_sparkline_cached(client, symbol)
+
+        grouped[wl_name].append({
+            "symbol": symbol,
+            "company": company,
+            "ltp": quote_data["ltp"] or 0,
+            "change": round(quote_data["net_change"], 2),
+            "changePct": round(quote_data["pct_change"], 2),
+            "volume": quote_data["volume"] or 0,
+            "sparkline": sparkline,
+            "alertAbove": it["alert_above"],
+            "alertBelow": it["alert_below"],
+        })
+
+    return grouped
 
 
 # ---------------------------------------------------------------------------
