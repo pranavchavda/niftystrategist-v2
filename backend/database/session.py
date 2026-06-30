@@ -22,13 +22,28 @@ connect_args = {}
 if "akamaidb.net" in DATABASE_URL or "supabase.co" in DATABASE_URL:
     connect_args = {"ssl": "require"}
 
-engine = create_async_engine(
-    DATABASE_URL,
+# Connection-pool sizing for the background/awakening engine (separate from the
+# API engine in database/models.py DatabaseManager). Explicitly sized + env-
+# tunable: this pool backs awakenings/workflows/embedder, so it needs headroom
+# for a busy fire-window (e.g. several users awakening at 09:20) without blocking.
+# Kept modest because all pools share Supabase's max_connections=60 (direct
+# conn) — see the 2026-06-30 pool-exhaustion incident. pool_recycle drops
+# connections Supabase may have closed server-side. NOTE: only applied to
+# Postgres — the sqlite dev/test fallback uses its own pool and rejects these.
+_engine_kwargs = dict(
     echo=False,
     future=True,
     pool_pre_ping=True,
-    connect_args=connect_args
+    connect_args=connect_args,
 )
+if DATABASE_URL.startswith("postgresql"):
+    _engine_kwargs.update(
+        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+        pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+    )
+
+engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
