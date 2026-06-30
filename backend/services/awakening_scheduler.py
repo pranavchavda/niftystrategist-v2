@@ -288,7 +288,10 @@ async def execute_awakening(
     run = WorkflowRun(
         workflow_config_id=None,
         user_id=user_id,
-        workflow_type=f"awakening_{schedule.id}_{schedule.name.lower().replace(' ', '_')}",
+        # workflow_runs.workflow_type is varchar(50); long/emoji schedule names
+        # (e.g. "🚀 Autonomous Hero Scanner — 10-Day Experiment") overflow it and
+        # crash the run at this commit. Cap at 50 — the id keeps it unique.
+        workflow_type=f"awakening_{schedule.id}_{schedule.name.lower().replace(' ', '_')}"[:50],
         status="running",
         trigger_type="scheduled",
         started_at=start_time,
