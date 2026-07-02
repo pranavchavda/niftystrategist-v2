@@ -300,3 +300,230 @@ async def test_execute_handles_exception_gracefully():
 
     assert action_result["success"] is False
     assert "error" in action_result
+
+
+# ── Position guard (reduce-only exits) ─────────────────────────────────
+# A trailing stop / reduce_only rule stores a fixed qty from creation time.
+# After a partial book or manual close, firing with the stale qty would flip
+# the remainder into an unintended opposite position (2026-07-02, Rule #18
+# partial booking). The guard caps qty at the live closable position and
+# consumes the fire (success=True, no order) when flat.
+
+def _pos(symbol="M&M", qty=0, product="I", token="NSE_EQ|TESTTOK"):
+    p = MagicMock()
+    p.tradingsymbol = symbol
+    p.trading_symbol = symbol
+    p.quantity = qty
+    p.product = product
+    p.instrument_token = token
+    return p
+
+
+def _guard_client(positions):
+    client = AsyncMock()
+    client._is_market_open = MagicMock(return_value=True)
+    client.access_token = "test-token"
+    client._get_instrument_key = MagicMock(return_value="NSE_EQ|TESTTOK")
+    if isinstance(positions, Exception):
+        client.get_positions = AsyncMock(side_effect=positions)
+    else:
+        client.get_positions = AsyncMock(return_value=positions)
+    return client
+
+
+def _trailing_rule(qty=149, side="SELL", product="I"):
+    action_config = {
+        "symbol": "M&M",
+        "transaction_type": side,
+        "quantity": qty,
+        "order_type": "MARKET",
+        "product": product,
+        "reduce_only": True,
+    }
+    rule = _make_rule(
+        trigger_type="trailing_stop",
+        trigger_config={
+            "trail_percent": 1.5, "initial_price": 3124.0,
+            "highest_price": 3166.0, "direction": "long", "reference": "ltp",
+        },
+        action_config=action_config,
+    )
+    return rule, _fired_result(action_config=action_config)
+
+
+def _ok_order_api():
+    api = AsyncMock()
+    api.place_order = AsyncMock(return_value={
+        "success": True, "order_id": "ORD777", "status": "PENDING", "message": "OK",
+    })
+    return api
+
+
+@pytest.mark.asyncio
+async def test_position_guard_skips_when_flat():
+    """Trailing stop fires against a flat position → fire consumed, no order sent."""
+    mock_client = _guard_client(positions=[])
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    rule, result = _trailing_rule()
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        action_result = await executor.execute(rule, result, {"ltp": 3119.0}, AsyncMock())
+
+    assert action_result["success"] is True  # success → daemon does NOT revert/re-fire
+    assert action_result["skipped"] is True
+    assert action_result["position_guard"] is True
+    mock_api.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_position_guard_caps_qty_after_partial_book():
+    """Position reduced 149→49 by a partial book → exit sells 49, not 149."""
+    mock_client = _guard_client(positions=[_pos(qty=49)])
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    rule, result = _trailing_rule(qty=149)
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        action_result = await executor.execute(rule, result, {"ltp": 3119.0}, AsyncMock())
+
+    assert action_result["success"] is True
+    assert mock_api.place_order.await_args.kwargs["quantity"] == 49
+
+
+@pytest.mark.asyncio
+async def test_position_guard_full_position_untouched():
+    """Position matches rule qty → order goes out at full qty."""
+    mock_client = _guard_client(positions=[_pos(qty=149)])
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    rule, result = _trailing_rule(qty=149)
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        await executor.execute(rule, result, {"ltp": 3119.0}, AsyncMock())
+
+    assert mock_api.place_order.await_args.kwargs["quantity"] == 149
+
+
+@pytest.mark.asyncio
+async def test_position_guard_covers_short_with_buy():
+    """BUY-side trail (short cover) caps at the open short qty."""
+    mock_client = _guard_client(positions=[_pos(qty=-100)])
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    rule, result = _trailing_rule(qty=149, side="BUY")
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        await executor.execute(rule, result, {"ltp": 3200.0}, AsyncMock())
+
+    assert mock_api.place_order.await_args.kwargs["quantity"] == 100
+
+
+@pytest.mark.asyncio
+async def test_position_guard_fails_open_on_lookup_error():
+    """Positions API error → order proceeds unguarded (a skipped stop-loss is worse)."""
+    mock_client = _guard_client(positions=RuntimeError("positions API down"))
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    rule, result = _trailing_rule(qty=149)
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        action_result = await executor.execute(rule, result, {"ltp": 3119.0}, AsyncMock())
+
+    assert action_result["success"] is True
+    assert mock_api.place_order.await_args.kwargs["quantity"] == 149
+
+
+@pytest.mark.asyncio
+async def test_position_guard_not_applied_to_entries():
+    """A plain price-trigger BUY (no reduce_only) is an entry — guard must not run."""
+    mock_client = _guard_client(positions=[])
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    rule = _make_rule()          # price trigger, BUY 10, no reduce_only
+    result = _fired_result()
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        action_result = await executor.execute(rule, result, {"ltp": 105.0}, AsyncMock())
+
+    assert action_result["success"] is True
+    mock_client.get_positions.assert_not_awaited()
+    assert mock_api.place_order.await_args.kwargs["quantity"] == 10
+
+
+@pytest.mark.asyncio
+async def test_position_guard_reduce_only_flag_on_time_rule():
+    """A time-trigger squareoff flagged reduce_only skips when flat (not just trails)."""
+    mock_client = _guard_client(positions=[])
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    action_config = {
+        "symbol": "M&M", "transaction_type": "SELL", "quantity": 149,
+        "order_type": "MARKET", "product": "I", "reduce_only": True,
+    }
+    rule = _make_rule(
+        trigger_type="time",
+        trigger_config={"at": "15:09"},
+        action_config=action_config,
+    )
+    result = _fired_result(action_config=action_config)
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        action_result = await executor.execute(rule, result, {"now": "15:09"}, AsyncMock())
+
+    assert action_result["skipped"] is True
+    mock_api.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_position_guard_delivery_sell_includes_holdings():
+    """Product-D SELL: closable = settled holdings + today's D-position net.
+    IDEA-style persistent delivery trail must NOT be skipped just because the
+    holding isn't in the positions API."""
+    # Sold 1000 D today (net -1000 in positions), 3000 settled in holdings → closable 2000
+    mock_client = _guard_client(positions=[_pos(symbol="IDEA", qty=-1000, product="D")])
+    executor = ActionExecutor(get_client=AsyncMock(return_value=mock_client))
+    action_config = {
+        "symbol": "IDEA", "transaction_type": "SELL", "quantity": 3000,
+        "order_type": "MARKET", "product": "D", "reduce_only": True,
+    }
+    rule = _make_rule(
+        trigger_type="trailing_stop",
+        trigger_config={
+            "trail_percent": 5.0, "initial_price": 14.06,
+            "highest_price": 14.84, "direction": "long", "reference": "ltp",
+        },
+        action_config=action_config,
+    )
+    result = _fired_result(action_config=action_config)
+    mock_api = _ok_order_api()
+
+    with patch("monitor.action_executor.crud") as mock_crud, \
+         patch("services.upstox_order_api.AsyncUpstoxOrderApi", return_value=mock_api), \
+         patch.object(executor, "_settled_holdings_qty", AsyncMock(return_value=3000)):
+        mock_crud.record_fire = AsyncMock()
+        mock_crud.sync_rule_fire_state = AsyncMock()
+        await executor.execute(rule, result, {"ltp": 14.10}, AsyncMock())
+
+    assert mock_api.place_order.await_args.kwargs["quantity"] == 2000

@@ -410,6 +410,8 @@ def cmd_add_rule(args):
             action_config["price"] = args.limit_price
         if is_option:
             action_config["instrument_token"] = instrument_token
+        if getattr(args, "reduce_only", False):
+            action_config["reduce_only"] = True
 
     elif action_type == "cancel_order":
         if not args.cancel_order_id:
@@ -544,6 +546,8 @@ def cmd_add_oco(args):
         "quantity": args.qty,
         "order_type": "MARKET",
         "product": args.product,
+        # OCO legs are exits by definition — position guard applies.
+        "reduce_only": True,
     }
     if is_option:
         base_action_config["instrument_token"] = instrument_token
@@ -735,6 +739,9 @@ def cmd_add_trailing(args):
         "quantity": args.qty,
         "order_type": "MARKET",
         "product": args.product or "I",
+        # Trailing stops are exits by definition: the executor's position guard
+        # caps qty at the live position and skips the fire when flat.
+        "reduce_only": True,
     }
     if is_option:
         action_config["instrument_token"] = instrument_token
@@ -1258,6 +1265,10 @@ Examples:
     p_add.add_argument("--order-type", choices=["MARKET", "LIMIT"], default="MARKET",
                        help="Order type (default: MARKET)")
     p_add.add_argument("--limit-price", type=float, help="Limit price (for LIMIT orders)")
+    p_add.add_argument("--reduce-only", action="store_true", dest="reduce_only",
+                       help="Mark this order as exit-only: the daemon caps qty at the live "
+                            "position and skips the fire when flat (use for squareoffs and "
+                            "any rule that closes a position — never for entries)")
     # cancel_order action args
     p_add.add_argument("--cancel-order-id", help="Order ID to cancel")
     # cancel_rule action args

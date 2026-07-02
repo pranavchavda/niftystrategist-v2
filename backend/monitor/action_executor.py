@@ -184,7 +184,10 @@ class ActionExecutor:
             symbol = config.get("symbol") or config.get("instrument_token") or "?"
             side = config.get("transaction_type") or config.get("side") or "?"
             qty = config.get("quantity") or "?"
-            head = f"{'✅' if success else '❌'} {rule_label} → {side} {qty} {symbol}"
+            if action_result.get("position_guard") and action_result.get("skipped"):
+                head = f"⏭️ {rule_label} → {side} {qty} {symbol} skipped (position guard: nothing to exit)"
+            else:
+                head = f"{'✅' if success else '❌'} {rule_label} → {side} {qty} {symbol}"
         elif action_type == "cancel_order":
             order_id = config.get("order_id") or config.get("order_ref") or "?"
             head = f"{'✅' if success else '❌'} {rule_label} → cancel order {order_id}"
@@ -233,6 +236,42 @@ class ActionExecutor:
                     "deduped_from_prior_fire": True,
                 }
 
+        # Position guard for reduce-only exits (trailing stops + explicitly
+        # flagged rules): exit rules store a fixed quantity from creation time,
+        # so after a partial book (memory Rule #18) or a manual close, a firing
+        # trail would sell the ORIGINAL qty and flip the remainder into an
+        # unintended opposite position. Cap at the live closable qty; consume
+        # the fire (success=True) when flat so the daemon doesn't revert
+        # fire_count and re-fire every tick. Best-effort: on lookup failure the
+        # order proceeds unguarded — skipping a real stop-loss is worse than
+        # the overshoot risk.
+        if not self._paper_mode and (action.reduce_only or rule.trigger_type == "trailing_stop"):
+            closable = await self._closable_qty(rule, action)
+            if closable is not None:
+                if closable <= 0:
+                    logger.warning(
+                        "Rule %d position guard: nothing to exit for %s %d %s (%s) — "
+                        "fire consumed, no order sent",
+                        rule.id, action.transaction_type, action.quantity,
+                        action.symbol, action.product,
+                    )
+                    return {
+                        "success": True,
+                        "skipped": True,
+                        "position_guard": True,
+                        "message": (
+                            f"Position guard: no open position to exit "
+                            f"({action.transaction_type} {action.quantity} {action.symbol} "
+                            f"{action.product}) — order not sent"
+                        ),
+                    }
+                if closable < action.quantity:
+                    logger.warning(
+                        "Rule %d position guard: capping exit qty %d → %d for %s (%s)",
+                        rule.id, action.quantity, closable, action.symbol, action.product,
+                    )
+                    action.quantity = closable
+
         # Check if this user has an order node configured
         node_url = None
         if self._get_order_node_url:
@@ -243,6 +282,70 @@ class ActionExecutor:
 
         # Direct path (no order node)
         return await self._place_order_direct(rule, action)
+
+    async def _closable_qty(self, rule: MonitorRule, action: PlaceOrderAction) -> int | None:
+        """Net quantity a reduce-only order may close, or None if it could not
+        be determined (caller fails open and sends the original order).
+
+        SELL closes a LONG: today's net position, plus settled holdings for
+        product D — a delivery carry lives in the holdings API, not positions,
+        so a positions-only check would wrongly skip a persistent delivery
+        trail. BUY covers a SHORT: today's net position only. F&O matches on
+        instrument_token; equity on tradingsymbol + product.
+        """
+        import asyncio
+        try:
+            client = await self._get_client(rule.user_id)
+            positions = await asyncio.wait_for(client.get_positions(), timeout=15)
+            net = 0
+            for pos in positions or []:
+                qty = getattr(pos, "quantity", 0) or 0
+                if action.instrument_token:
+                    if str(getattr(pos, "instrument_token", "") or "") != action.instrument_token:
+                        continue
+                else:
+                    sym = (getattr(pos, "tradingsymbol", None)
+                           or getattr(pos, "trading_symbol", "") or "").upper()
+                    if sym != action.symbol.upper():
+                        continue
+                    if (getattr(pos, "product", "") or "") != action.product:
+                        continue
+                net += qty
+
+            if (action.transaction_type == "SELL" and action.product == "D"
+                    and not action.instrument_token):
+                net += await self._settled_holdings_qty(rule.user_id, action.symbol)
+
+            return max(0, net) if action.transaction_type == "SELL" else max(0, -net)
+        except Exception as e:
+            logger.warning(
+                "Rule %d position guard lookup failed (failing open): %r", rule.id, e,
+            )
+            return None
+
+    async def _settled_holdings_qty(self, user_id: int, symbol: str) -> int:
+        """Settled holdings quantity for a symbol (delivery-exit guard only).
+
+        Holdings shows pre-settlement qty; today's delivery sells/buys are
+        already netted via the positions pass in _closable_qty, so the sum of
+        the two is the true closable delivery qty.
+        """
+        import asyncio
+        import upstox_client
+        client = await self._get_client(user_id)
+
+        def _do_call():
+            api_client = upstox_client.ApiClient(client._configuration)
+            return upstox_client.PortfolioApi(api_client).get_holdings(api_version="v2")
+
+        resp = await asyncio.wait_for(asyncio.to_thread(_do_call), timeout=15)
+        total = 0
+        for h in resp.data or []:
+            sym = (getattr(h, "tradingsymbol", None)
+                   or getattr(h, "trading_symbol", "") or "").upper()
+            if sym == symbol.upper():
+                total += getattr(h, "quantity", 0) or 0
+        return total
 
     async def _find_prior_fire_order(self, rule: MonitorRule) -> dict | None:
         """Scan today's broker order book for an order tagged with the exact

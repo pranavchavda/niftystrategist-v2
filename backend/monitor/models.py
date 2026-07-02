@@ -83,6 +83,12 @@ class PlaceOrderAction(BaseModel):
     product: Literal["D", "I"] = "I"
     price: float | None = None
     instrument_token: str | None = None  # F&O: pre-resolved instrument key (bypasses equity lookup)
+    # Exit-intent marker: this order only ever CLOSES a position. The executor's
+    # position guard caps quantity at the live closable qty and skips the fire
+    # when flat, so a stale full-qty exit rule can't flip a partially-booked
+    # position into an unintended opposite one. Trailing stops are guarded even
+    # without this flag (trigger_type implies exit intent).
+    reduce_only: bool = False
 
 
 class CancelOrderAction(BaseModel):
