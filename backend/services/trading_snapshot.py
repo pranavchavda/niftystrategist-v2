@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from api.upstox_oauth import get_user_upstox_token
@@ -161,14 +161,54 @@ def _market_client(user_id: int, fallback_token: str) -> UpstoxClient:
 async def _tape_read(market: UpstoxClient, symbol: str) -> str:
     """One-line indicator composite: UTBot · MACD · EMA9>21 · RSI · VWAP-pos · Renko.
 
+    Computed on 15-MINUTE candles over 10 days — the same lens and warmup
+    window as nf-analyze's default — so the tape and a fresh analysis agree
+    unless the underlying data genuinely differs. (2026-07-01: the old
+    5-minute tape legitimately contradicted NS's 15-minute nf-analyze on
+    MARICO/HEXT and was misread as "the snapshot is stale".) The line is
+    prefixed with its timeframe, the renko is labeled ATR-brick (nf-analyze
+    defaults to a flat ₹15 brick, so counts still differ by design), and
+    stale data is flagged: Upstox's historical endpoint lags a full session
+    for minute intervals, so a pre-open read is prior-session state and must
+    say so instead of posing as current.
+
     A tape line that CONTRADICTS the entry thesis is the key agent cue. Returns
     an empty string if data is unavailable (the model just sees no tape line).
     """
     try:
-        candles = await market.get_historical_data(symbol, interval="5minute", days=5)
+        candles = await market.get_historical_data(symbol, interval="15minute", days=10)
     except Exception as e:
         logger.debug(f"tape-read candles failed for {symbol}: {e}")
         return ""
+
+    # Upstox's historical-V3 window coverage is erratic: certain from-dates
+    # deterministically DROP the most recent session, and WHICH from-date is
+    # bad varies per symbol (2026-07-02 pre-open, reproducible: MARICO days=10
+    # missed Jul 1 while 5/9/11 had it; IDEA days=5 AND 10 missed it while
+    # 3/9 had it — server-side). Intra-session the intraday append masks
+    # this; when the series doesn't reach today/yesterday, ladder through
+    # alternate windows and keep the freshest.
+    try:
+        now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+        fresh_enough = {
+            now_ist.strftime("%Y-%m-%d"),
+            (now_ist - timedelta(days=1)).strftime("%Y-%m-%d"),
+        }
+
+        def _last_day(cs: list) -> str:
+            return str(cs[-1].timestamp)[:10] if cs else ""
+
+        if _last_day(candles) not in fresh_enough:
+            for alt_days in (9, 5):
+                alt = await market.get_historical_data(symbol, interval="15minute", days=alt_days)
+                cur_last = str(candles[-1].timestamp) if candles else ""
+                if alt and len(alt) >= 25 and str(alt[-1].timestamp) > cur_last:
+                    candles = alt
+                if _last_day(candles) in fresh_enough:
+                    break
+    except Exception as e:
+        logger.debug(f"tape-read fallback fetch failed for {symbol}: {e}")
+
     if not candles or len(candles) < 25:
         return ""
 
@@ -192,7 +232,7 @@ async def _tape_read(market: UpstoxClient, symbol: str) -> str:
             parts.append(">VWAP" if last >= ind.vwap else "<VWAP")
         if ind.renko_trend:
             arrow = "↑" if ind.renko_trend == "up" else "↓"
-            parts.append(f"Renko {arrow}{ind.renko_brick_count or 0}")
+            parts.append(f"Renko(ATR-brick) {arrow}{ind.renko_brick_count or 0}")
     except Exception as e:
         logger.debug(f"tape-read indicators failed for {symbol}: {e}")
 
@@ -205,7 +245,35 @@ async def _tape_read(market: UpstoxClient, symbol: str) -> str:
     except Exception as e:
         logger.debug(f"tape-read ema failed for {symbol}: {e}")
 
-    return " · ".join(parts)
+    if not parts:
+        return ""
+
+    # Freshness: candle timestamps are IST ISO strings (candle-START stamped).
+    # Not-from-today → the whole line is prior-session state; from today but
+    # >30 min old mid-session → the feed is lagging. Either way, say so.
+    stale_note = ""
+    try:
+        last_ts = datetime.fromisoformat(str(candles[-1].timestamp))
+        now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+        if last_ts.date() != now_ist.date():
+            stale_note = (
+                f" · ⚠️ data thru {last_ts.strftime('%b %d %H:%M')} — no current-session "
+                f"candles, this is PRIOR-session state"
+            )
+        else:
+            age_min = (now_ist - last_ts).total_seconds() / 60
+            in_session = (
+                now_ist.weekday() < 5
+                and (9, 15) <= (now_ist.hour, now_ist.minute) <= (15, 30)
+            )
+            if in_session and age_min > 30:
+                stale_note = f" · ⚠️ last candle {last_ts.strftime('%H:%M')} ({age_min:.0f}m old)"
+    except Exception as e:
+        logger.debug(f"tape-read freshness check failed for {symbol}: {e}")
+
+    return "15m · " + " · ".join(parts) + stale_note
 
 
 def _analysis_line(a: dict | None) -> str:
